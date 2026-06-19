@@ -5,9 +5,17 @@ version: '3'
 
 tasks:
   deps:
-    desc: Install dependencies via Homebrew
+    desc: Install dependencies (Embree 4 + TBB; POV-Ray only to regenerate references)
     cmds:
-      - brew install embree tbb povray
+      - |
+        if [ "{{OS}}" = "darwin" ]; then
+          brew install embree tbb povray
+        elif command -v apt-get >/dev/null 2>&1; then
+          sudo apt-get install -y libembree-dev libtbb-dev povray
+        else
+          echo "Unsupported platform; install Embree 4, TBB and (optionally) POV-Ray manually." >&2
+          exit 1
+        fi
 
   build:
     desc: Configure and build (Release)
