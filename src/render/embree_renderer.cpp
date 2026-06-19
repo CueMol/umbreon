@@ -84,11 +84,26 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
     // (trace.cpp gates highlights on Light_Type != FILL_LIGHT_SOURCE).
     if (!l.highlight) continue;
 
-    // Highlight color: metallic tints the highlight by the pigment, else the
-    // highlight is white (light color). Matches POV "metallic".
-    const Vec3 hl = mat.metallic
-                        ? Vec3{C.x * l.color.x, C.y * l.color.y, C.z * l.color.z}
-                        : l.color;
+    // Highlight color. POV "metallic" tints the highlight toward the pigment by
+    // an empirical Fresnel factor f(N.L): head-on (f=0) the highlight is fully
+    // pigment-tinted, at grazing (f=1) it desaturates to the light color
+    // (trace.cpp ComputeSpecularColour/ComputePhongColour). Non-metallic uses
+    // the plain light color.
+    Vec3 hl;
+    if (mat.metallic) {
+      float c = ndl;
+      if (c > 1.0f) c = 1.0f;
+      const float x = std::acos(c) * 0.63661977f;  // (angle)/(pi/2), 0..1
+      float f = 0.014567225f / ((x - 1.12f) * (x - 1.12f)) - 0.011612903f;
+      if (f < 0.0f) f = 0.0f;
+      if (f > 1.0f) f = 1.0f;
+      // cs = light * (f + (1-f)*pigment): lerp pigment->white by f.
+      hl = Vec3{l.color.x * (f + (1.0f - f) * C.x),
+                l.color.y * (f + (1.0f - f) * C.y),
+                l.color.z * (f + (1.0f - f) * C.z)};
+    } else {
+      hl = l.color;
+    }
 
     float specW = 0.0f;  // accumulated scalar specular weight
     // Blinn highlight (POV "specular S roughness R"), gated on specular > 0.

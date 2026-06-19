@@ -281,5 +281,34 @@ int main() {
             approx(ff.color[kCenterRgba + 1], 0.0f, 1e-4f));
   }
 
+  // Metallic Fresnel de-tint at a grazing angle (POV ComputeSpecularColour):
+  // the highlight lerps pigment->light by f(N.L), so a pure-red metallic shows a
+  // non-zero green/blue highlight (de-tinted toward white), not pure red.
+  // Flat quad N=V=(0,0,1); light L=(sin60,0,cos60) => N.L=0.5, N.H=cos30.
+  // specular 1.0 roughness 0.5 (exp 2): specW = 1.0*pow(cos30,2) = 0.75.
+  // f(0.5)=0.05927; hl=l*(f+(1-f)*C); out = 0.75*hl = (0.75, 0.04445, 0.04445).
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad({1.0f, 0.0f, 0.0f, 1.0f});  // pure red pigment
+    sc.mesh.material.ambient = 0.0f; sc.mesh.material.diffuse = 0.0f;
+    sc.mesh.material.specular = 1.0f; sc.mesh.material.roughness = 0.5f;
+    sc.mesh.material.brilliance = 1.0f; sc.mesh.material.metallic = true;
+    sc.mesh.material.phong = 0.0f; sc.mesh.material.reflection = 0.0f;
+    sc.camera = makeOrthoCam();
+    umbreon::DistantLight l;
+    l.direction = {-0.8660254f, 0.0f, -0.5f};  // travels opposite L=(sin60,0,cos60)
+    l.color = {1, 1, 1}; l.intensity = 1.0f;
+    sc.lights.push_back(l);
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("metallic fresnel: R highlight (0.75)",
+            approx(f.color[kCenterRgba + 0], 0.75f, 2e-3f));
+    s.check("metallic fresnel: G de-tinted toward white (0.0445)",
+            approx(f.color[kCenterRgba + 1], 0.04445f, 2e-3f));
+    s.check("metallic fresnel: achromatic de-tint (G==B)",
+            approx(f.color[kCenterRgba + 1], f.color[kCenterRgba + 2], 1e-5f));
+  }
+
   return s.report();
 }
