@@ -42,8 +42,9 @@ struct Options {
   // defaults to 2 when not set explicitly.
   int supersample = 1;
   bool supersampleSet = false;
-  // Cartoon specular control. The .pov path defaults to matte (scale 0); pass
-  // --specular-scale 1 to enable a specular highlight.
+  // Specular control: multiplies the per-material POV finish specular weight.
+  // Defaults to 1.0 (the finish highlight is rendered at full strength); pass
+  // --specular-scale 0 for a matte look with no highlight.
   float specularScale = 1.0f;
   bool specularScaleSet = false;
 

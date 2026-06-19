@@ -587,6 +587,12 @@ class SceneReader {
     L.direction = normalize(Vec3{0, 0, 0} - from);  // travel: source -> origin
     L.color = Vec3{1.0f, 1.0f, 1.0f};
     L.intensity = static_cast<float>(inten);
+    // The macro emits `shadowless` only for a parallel point light (aLightSpread
+    // <= 1) with aShadow == 0; an area light (aLightSpread > 1) or aShadow != 0
+    // is a normal light that casts highlights.
+    double spread = (args.size() > 0) ? comp(args[0], 0) : 1.0;
+    double shadow = (args.size() > 3) ? comp(args[3], 0) : 0.0;
+    L.castsHighlight = (spread > 1.0) || (shadow != 0.0);
     lights_.push_back(L);
   }
 
@@ -606,6 +612,8 @@ class SceneReader {
     L.direction = normalize(Vec3{0, 0, 0} - eye);
     L.color = Vec3{1.0f, 1.0f, 1.0f};
     L.intensity = static_cast<float>(inten);
+    // FlashLighting always emits `shadowless` -> POV fill light -> diffuse only.
+    L.castsHighlight = false;
     lights_.push_back(L);
   }
 

@@ -63,8 +63,31 @@ struct Aabb {
 struct Material {
   float ambient = 0.2f;     // POV finish ambient
   float diffuse = 0.8f;     // POV finish diffuse
-  float specular = 0.4f;    // POV finish specular
+  float specular = 0.0f;    // POV finish specular (POV default is 0)
   float roughness = 0.02f;  // POV finish roughness (smaller = sharper highlight)
+  float brilliance = 1.0f;  // POV finish brilliance (diffuse exponent)
+  float phong = 0.0f;       // POV finish phong amount
+  float phongSize = 40.0f;  // POV finish phong_size exponent
+  bool metallic = false;    // POV finish metallic (tint highlight by pigment)
+  float reflection = 0.0f;  // POV finish reflection amount
+  float emission = 0.0f;    // POV finish emission
+
+  // FLAT outline preset: ambient 1, diffuse 0, specular 0. With ambientColor
+  // (1,1,1) this yields out = pigment color exactly (raw flat color).
+  static Material flatOutline() {
+    Material m;
+    m.ambient = 1.0f;
+    m.diffuse = 0.0f;
+    m.specular = 0.0f;
+    m.roughness = 0.02f;
+    m.brilliance = 1.0f;
+    m.phong = 0.0f;
+    m.phongSize = 40.0f;
+    m.metallic = false;
+    m.reflection = 0.0f;
+    m.emission = 0.0f;
+    return m;
+  }
 };
 
 // De-indexed triangle mesh: triangle i uses vertices [3i, 3i+1, 3i+2].
@@ -76,8 +99,20 @@ struct Mesh {
   std::vector<Vec4> colors;     // size == 3 * triangleCount (rgb + opacity)
   Material material;
 
+  // Per-triangle material: when a file has multiple mesh2 blocks with distinct
+  // finishes, each block's material is appended to `materials` and every
+  // triangle in that block gets the corresponding index in `triMaterialId`.
+  // Empty vectors mean all triangles use `material` (single-material legacy).
+  std::vector<Material> materials;
+  std::vector<uint8_t> triMaterialId;
+
   std::size_t vertexCount() const { return positions.size(); }
   std::size_t triangleCount() const { return positions.size() / 3; }
+
+  const Material& materialForTri(std::size_t triIdx) const {
+    if (triMaterialId.empty()) return material;
+    return materials[triMaterialId[triIdx]];
+  }
 
   Aabb bounds() const {
     Aabb b;
@@ -91,6 +126,7 @@ struct Sphere {
   Vec3 center;
   float radius = 1.0f;
   Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
+  Material material = Material::flatOutline();
 };
 
 // A shaded cylinder/capsule (CueMol "stick" / silhouette edge), rendered as a
@@ -99,6 +135,7 @@ struct Cylinder {
   Vec3 p0, p1;
   float radius = 1.0f;
   Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
+  Material material = Material::flatOutline();
 };
 
 // --------------------------------------------------------------------------
@@ -119,6 +156,10 @@ struct DistantLight {
   Vec3 direction{0.0f, -0.3f, -1.0f};  // direction the light travels
   Vec3 color{1.0f, 1.0f, 1.0f};
   float intensity = 1.0f;
+  // POV-Ray: a `shadowless` light is a FILL_LIGHT_SOURCE, which contributes
+  // diffuse only -- it produces no specular/phong highlight (trace.cpp gates
+  // highlights on Light_Type != FILL_LIGHT_SOURCE). false reproduces that.
+  bool castsHighlight = true;
 };
 
 // POV-Ray fog (applied as a depth-based post-process). The visible surface
@@ -145,6 +186,7 @@ struct Scene {
   Vec3 background{0.0f, 0.0f, 0.0f};
   Fog fog;                            // optional POV fog (post-process)
   float aoDistance = 1.0e20f;         // AO ray max distance (scene-scaled)
+  float assumedGamma = 1.0f;         // POV assumed_gamma (from global_settings)
 
   std::size_t instanceCount() const { return instanceOffsets.size(); }
   std::size_t effectiveTriangles() const {

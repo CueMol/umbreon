@@ -78,7 +78,6 @@ int main(int argc, char** argv) {
     const bool povMode = endsWith(opt.input, ".pov");
     umbreon::Scene scene;
     umbreon::RenderOptions ropt;
-    float povAssumedGamma = 1.0f;  // POV global_settings assumed_gamma (pov path)
 
     if (povMode) {
       // ---- .pov path: reproduce the CueMol POV-Ray viewing setup. ----
@@ -114,14 +113,12 @@ int main(int argc, char** argv) {
       scene.background = ps.background;
       scene.fog = ps.fog;
 
-      // umbreon reproduces POV local illumination directly: POV-native light
-      // intensities (no pi factor); the shader applies ambient =
-      // material.ambient * pigment with ambient_light <1,1,1>.
-      for (umbreon::DistantLight& L : scene.lights) L.intensity *= opt.povGain;
-      scene.ambientIntensity = opt.povGain;  // POV ambient_light radiance
       scene.ambientColor = umbreon::Vec3{1.0f, 1.0f, 1.0f};
 
-      povAssumedGamma = ps.assumedGamma;
+      for (umbreon::DistantLight& L : scene.lights) L.intensity *= opt.povGain;
+      scene.ambientIntensity = opt.povGain;
+
+      scene.assumedGamma = ps.assumedGamma;
 
       const std::string camDesc =
           scene.camera.orthographic
@@ -144,10 +141,14 @@ int main(int argc, char** argv) {
             scene.fog.color.y, scene.fog.color.z, scene.fog.offset,
             scene.fog.up.x, scene.fog.up.y, scene.fog.up.z);
       }
-      std::printf("    assumed_gamma %.3f\n", povAssumedGamma);
+      std::printf("    assumed_gamma %.3f\n", scene.assumedGamma);
 
       ropt.width = W;
       ropt.height = H;
+      // Per-material POV finishes drive specular now (F_MetalA, phong groups),
+      // so the .pov path keeps the RenderOptions specularScale default (1.0)
+      // unless the user overrides it explicitly.
+      if (opt.specularScaleSet) ropt.specularScale = opt.specularScale;
       std::printf("rendering %dx%d  backend=umbreon (embree)\n", W, H);
     } else {
       // ---- .inc path: legacy auto-framed scene with the instance grid. ----
@@ -196,7 +197,6 @@ int main(int argc, char** argv) {
     const int ss = std::max(
         1, (povMode && !opt.supersampleSet) ? povDefaultSs : opt.supersample);
     ropt.supersample = ss;
-    ropt.assumedGamma = povMode ? povAssumedGamma : 1.0f;
     const int finalW = ropt.width, finalH = ropt.height;
     if (ss > 1)
       std::printf("  supersample %dx (%dx%d -> %dx%d)\n", ss, finalW * ss,
@@ -209,8 +209,8 @@ int main(int argc, char** argv) {
     if (scene.fog.enabled)
       std::printf("  applied fog (type %d, distance %.3f)\n", scene.fog.type,
                   scene.fog.distance);
-    if (povMode && std::fabs(povAssumedGamma - 1.0f) > 1.0e-4f)
-      std::printf("  applied assumed_gamma %.3f\n", povAssumedGamma);
+    if (povMode && std::fabs(scene.assumedGamma - 1.0f) > 1.0e-4f)
+      std::printf("  applied assumed_gamma %.3f\n", scene.assumedGamma);
 
     umbreon::writeImage(opt.output, frame.width, frame.height,
                         frame.color.data(), 4);

@@ -34,6 +34,39 @@ float srgbToLinear(float c) {
                          : std::pow((c + 0.055f) / 1.055f, 2.4f);
 }
 
+// Hardcoded metals.inc finishes (F_MetalA..E). These are POV stdinc presets
+// not present in the scene file, so they are resolved by name here.
+// Fields in order: ambient, brilliance, diffuse, specular, roughness,
+// reflection. All are metallic with phong 0.
+bool lookupNamedFinish(const std::string& name, Material& out) {
+  struct Entry {
+    const char* name;
+    float ambient, brilliance, diffuse, specular, roughness, reflection;
+  };
+  static const Entry kTable[] = {
+      {"F_MetalA", 0.35f, 2.0f, 0.3f, 0.80f, 1.0f / 20.0f, 0.10f},
+      {"F_MetalB", 0.30f, 3.0f, 0.4f, 0.70f, 1.0f / 60.0f, 0.25f},
+      {"F_MetalC", 0.25f, 4.0f, 0.5f, 0.80f, 1.0f / 80.0f, 0.50f},
+      {"F_MetalD", 0.15f, 5.0f, 0.6f, 0.80f, 1.0f / 100.0f, 0.65f},
+      {"F_MetalE", 0.10f, 6.0f, 0.7f, 0.80f, 1.0f / 120.0f, 0.80f},
+  };
+  for (const Entry& e : kTable) {
+    if (name == e.name) {
+      out = Material{};
+      out.ambient = e.ambient;
+      out.brilliance = e.brilliance;
+      out.diffuse = e.diffuse;
+      out.specular = e.specular;
+      out.roughness = e.roughness;
+      out.reflection = e.reflection;
+      out.metallic = true;
+      out.phong = 0.0f;
+      return true;
+    }
+  }
+  return false;
+}
+
 // ==========================================================================
 // Reader
 // ==========================================================================
@@ -255,9 +288,9 @@ class Reader {
 
   // ----- texture / pigment / finish --------------------------------------
   void adoptMaterial(const PovTexture& tex) {
-    if (tex.hasFinish && !haveMaterial_) {
-      material_ = tex.finish;
-      haveMaterial_ = true;
+    if (tex.hasFinish && !haveBlockMaterial_) {
+      blockMaterial_ = tex.finish;
+      haveBlockMaterial_ = true;
     }
   }
 
@@ -382,16 +415,50 @@ class Reader {
       }
       if (tk.kind == Tk::Ident &&
           (tk.s == "ambient" || tk.s == "diffuse" || tk.s == "specular" ||
-           tk.s == "roughness")) {
+           tk.s == "roughness" || tk.s == "brilliance" || tk.s == "phong" ||
+           tk.s == "phong_size" || tk.s == "reflection" ||
+           tk.s == "emission")) {
         pos_ = k + 1;
         PovValue v = evalSum();
         float f = (v.n > 0) ? static_cast<float>(v.c[0]) : 0.0f;
         if (tk.s == "ambient") m.ambient = f;
         else if (tk.s == "diffuse") m.diffuse = f;
         else if (tk.s == "specular") m.specular = f;
-        else m.roughness = f;
+        else if (tk.s == "roughness") m.roughness = f;
+        else if (tk.s == "brilliance") m.brilliance = f;
+        else if (tk.s == "phong") m.phong = f;
+        else if (tk.s == "phong_size") m.phongSize = f;
+        else if (tk.s == "reflection") m.reflection = f;
+        else m.emission = f;
         k = pos_;
         continue;
+      }
+      if (tk.kind == Tk::Ident && tk.s == "metallic") {
+        m.metallic = true;
+        // Optional amount: a value at or below 0 disables it.
+        std::size_t n = k + 1;
+        if (n < end && (t_[n].kind == Tk::Num ||
+                        (t_[n].kind == Tk::Punct &&
+                         (t_[n].s == "-" || t_[n].s == "+")))) {
+          pos_ = n;
+          PovValue v = evalSum();
+          float f = (v.n > 0) ? static_cast<float>(v.c[0]) : 1.0f;
+          m.metallic = f > 0.0f;
+          k = pos_;
+        } else {
+          k = n;
+        }
+        continue;
+      }
+      // A bare identifier may be a named finish (e.g. F_MetalA). On a hit,
+      // overwrite m with the preset so later keywords can still override.
+      if (tk.kind == Tk::Ident) {
+        Material named;
+        if (lookupNamedFinish(tk.s, named)) {
+          m = named;
+          ++k;
+          continue;
+        }
       }
       ++k;
     }
@@ -429,7 +496,8 @@ class Reader {
       ++k;
     }
     haveMesh_ = true;
-    deindexBlock();  // a CueMol file may hold several mesh2 blocks
+    deindexBlock();
+    haveBlockMaterial_ = false;  // reset for the next mesh2 block
     pos_ = close + 1;
   }
 
@@ -446,7 +514,9 @@ class Reader {
     Sphere s;
     s.center = toVec3(center);
     s.radius = static_cast<float>(comp(radius, 0));
-    s.color = colorOfTextureIn(pos_, close);
+    PovTexture tex = textureIn(pos_, close);
+    s.color = tex.color;
+    if (tex.hasFinish) s.material = tex.finish;  // else keep flatOutline
     if (s.radius > 0.0f) spheres_.push_back(s);
     pos_ = close + 1;
   }
@@ -467,7 +537,9 @@ class Reader {
     c.p0 = toVec3(p1);
     c.p1 = toVec3(p2);
     c.radius = static_cast<float>(comp(radius, 0));
-    c.color = colorOfTextureIn(pos_, close);
+    PovTexture tex = textureIn(pos_, close);
+    c.color = tex.color;
+    if (tex.hasFinish) c.material = tex.finish;  // else keep flatOutline
     if (c.radius > 0.0f) cylinders_.push_back(c);
     pos_ = close + 1;
   }
@@ -508,16 +580,20 @@ class Reader {
                 static_cast<float>(comp(v, 2))};
   }
 
-  // Find the first "texture { ... }" in [begin,end) and return its color.
-  Vec4 colorOfTextureIn(std::size_t begin, std::size_t end) {
+  // Find the first "texture { ... }" in [begin,end) and return the resolved
+  // texture (color plus optional finish). If none is found, return a default
+  // PovTexture with a black color and no finish.
+  PovTexture textureIn(std::size_t begin, std::size_t end) {
     for (std::size_t k = begin; k < end; ++k) {
       if (t_[k].kind == Tk::Ident && t_[k].s == "texture" && k + 1 < end &&
           t_[k + 1].kind == Tk::Punct && t_[k + 1].s == "{") {
         std::size_t c = matchBrace(k + 1);
-        return parseTextureBody(k + 2, c).color;
+        return parseTextureBody(k + 2, c);
       }
     }
-    return Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+    PovTexture tex;
+    tex.color = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+    return tex;
   }
 
   float readSignedNumber() {
@@ -684,6 +760,21 @@ class Reader {
       }
     }
 
+    // Record per-block material: assign a material index to every triangle in
+    // this block so the renderer can shade each mesh2 block independently.
+    if (haveBlockMaterial_) {
+      uint8_t idx = static_cast<uint8_t>(blockMaterials_.size());
+      blockMaterials_.push_back(blockMaterial_);
+      const std::size_t endTri = mesh_.triangleCount();
+      mesh_.triMaterialId.resize(endTri, idx);
+    } else {
+      // No finish found for this block; pad with a default material.
+      uint8_t idx = static_cast<uint8_t>(blockMaterials_.size());
+      blockMaterials_.push_back(Material{});
+      const std::size_t endTri = mesh_.triangleCount();
+      mesh_.triMaterialId.resize(endTri, idx);
+    }
+
     verts_.clear();
     norms_.clear();
     texColors_.clear();
@@ -693,7 +784,11 @@ class Reader {
   SceneGeometry finalize() {
     if (!haveMesh_ && spheres_.empty() && cylinders_.empty())
       throw Mesh2ReadError("no geometry (mesh2/sphere/edge_line) found in input");
-    if (haveMaterial_) mesh_.material = material_;
+    if (!blockMaterials_.empty()) {
+      mesh_.materials = std::move(blockMaterials_);
+      // mesh_.material keeps a sensible default (first block's material).
+      mesh_.material = mesh_.materials[0];
+    }
     SceneGeometry g;
     g.mesh = std::move(mesh_);
     g.spheres = std::move(spheres_);
@@ -718,8 +813,9 @@ class Reader {
   Mesh mesh_;
   std::vector<Sphere> spheres_;
   std::vector<Cylinder> cylinders_;
-  Material material_;
-  bool haveMaterial_ = false;
+  Material blockMaterial_;
+  std::vector<Material> blockMaterials_;
+  bool haveBlockMaterial_ = false;
   bool haveMesh_ = false;
 };
 
