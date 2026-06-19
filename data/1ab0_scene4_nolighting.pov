@@ -183,20 +183,16 @@ fog {
   texture{finish{ambient 1.0 diffuse 0 specular 0}};
 
 //
-// rendering properties for _34_48
+// rendering properties for _34_46
 //
-#ifndef (_show_34_48)
-#declare _show_34_48 = 1;
+#ifndef (_show_34_46)
+#declare _show_34_46 = 1;
 #end
-#declare _34_48_sl_scl = 1.00;
-#declare _34_48_sl_rise = 0.500000;
-#declare _34_48_sl_tex = 
-  texture{finish{ambient 1.0 diffuse 0 specular 0}};
 
 
 //////////////////////////////////////////////
 
-#declare _scene = #include "1ab0_scene4_toon1.inc"
+#declare _scene = #include "1ab0_scene4_nolighting.inc"
 
 object{
   _scene
