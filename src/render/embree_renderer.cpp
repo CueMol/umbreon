@@ -98,25 +98,16 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
       if (nh > 0.0f) specW += mat.specular * std::pow(nh, exp);
     }
     // Phong highlight (POV "phong P phong_size PS"), gated on phong > 0.
-    // The per-light scalar weight is clamped BEFORE tinting so a huge P (e.g.
-    // 10000) saturates to the highlight color rather than exceeding it. POV's
-    // visible phong crest is a small white pip on an otherwise clean body; a
-    // full clamp of 1.0 reproduces the crest but, after 3x supersampling,
-    // washes the surrounding lobe far too bright. A clamp of kPhongClamp (0.22,
-    // tuned against the POV reference via PSNR) suppresses that wash while
-    // keeping a believable highlight. A small kPhongTighten (added to
-    // phong_size) narrows the lobe so the saturated disk does not spread its
-    // achromatic highlight into the colored body's off-channels around the pip.
-    constexpr float kPhongClamp = 0.22f;
-    constexpr float kPhongTighten = 10.0f;
+    // POV-faithful: intensity = phong * pow(R.V, phong_size) with no clamp, so a
+    // large phong (e.g. 10000) saturates the channel to a white pip exactly as
+    // POV-Ray does (ComputePhongColour). The supersample box-average then mirrors
+    // POV's antialiasing of that crest. POV skips the term for tiny reflections
+    // at high phong_size (phong_size >= 60 && R.V <= 0.0008).
     if (mat.phong > 0.0f) {
       const Vec3 Rr = 2.0f * ndl * N - l.L;
       float rv = dot(Rr, V);
-      if (rv > 0.0f) {
-        float w = mat.phong * std::pow(rv, mat.phongSize + kPhongTighten);
-        if (w > kPhongClamp) w = kPhongClamp;
-        specW += w;
-      }
+      if (rv > 0.0f && (mat.phongSize < 60.0f || rv > 0.0008f))
+        specW += mat.phong * std::pow(rv, mat.phongSize);
     }
     if (specW > 0.0f) {
       const float s = specW * specularScale;

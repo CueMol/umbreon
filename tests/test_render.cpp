@@ -235,8 +235,8 @@ int main() {
   // Phong highlight (ambient 0.3, diffuse 0.5 brilliance 0, phong 10000
   // phong_size 50, non-metallic). For C=(0.2,0.4,0.6) the body without the
   // highlight is 0.55*C = (0.11,0.22,0.33); phong adds an ACHROMATIC lift (the
-  // same scalar to each channel, since not metallic). Assert the lift is present
-  // and equal across channels, without pinning the tuned phong clamp constant.
+  // same scalar to each channel, since not metallic). POV-faithful (no clamp):
+  // head-on R.V=1, so the lift is phong*pow(1,phong_size)*Lc = 10000*0.5 = 5000.
   {
     umbreon::Material m;
     m.ambient = 0.3f; m.diffuse = 0.5f; m.brilliance = 0.0f;
@@ -249,7 +249,7 @@ int main() {
     const float liftR = f.color[kCenterRgba + 0] - 0.11f;
     const float liftG = f.color[kCenterRgba + 1] - 0.22f;
     const float liftB = f.color[kCenterRgba + 2] - 0.33f;
-    s.check("phong: highlight present", liftR > 0.05f);
+    s.check("phong: unclamped POV lift = phong*Lc (=5000)", approx(liftR, 5000.0f, 1.0f));
     s.check("phong: achromatic lift (R==G)", approx(liftR, liftG, 1e-4f));
     s.check("phong: achromatic lift (G==B)", approx(liftG, liftB, 1e-4f));
   }
