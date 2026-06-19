@@ -101,12 +101,65 @@ int main(int argc, char** argv) {
                   geo.mesh.triangleCount(), geo.spheres.size(),
                   geo.cylinders.size());
 
+      // --list-groups: report the transparency groups (CueMol sections) so the
+      // user can target one with --alpha, then exit.
+      if (opt.listGroups) {
+        const std::size_t ng = geo.groupNames.size();
+        std::vector<int> triN(ng, 0), sphN(ng, 0), cylN(ng, 0);
+        for (std::size_t t = 0; t < geo.mesh.triangleCount(); ++t) {
+          std::size_t g = geo.mesh.groupForTri(t);
+          if (g < ng) triN[g]++;
+        }
+        for (const umbreon::Sphere& s : geo.spheres)
+          if (s.group < ng) sphN[s.group]++;
+        for (const umbreon::Cylinder& c : geo.cylinders)
+          if (c.group < ng) cylN[c.group]++;
+        std::printf("transparency groups (sections) in %s:\n", incPath.c_str());
+        for (std::size_t i = 0; i < ng; ++i) {
+          const std::string& nm = geo.groupNames[i];
+          std::printf("  %-16s  tris=%d spheres=%d cylinders=%d\n",
+                      (i == 0 && nm.empty()) ? "(default)" : nm.c_str(),
+                      triN[i], sphN[i], cylN[i]);
+        }
+        return 0;
+      }
+
       scene.mesh = std::move(geo.mesh);
       scene.spheres = std::move(geo.spheres);
       scene.cylinders = std::move(geo.cylinders);
       if (opt.outlineScale != 1.0f) {
         for (umbreon::Sphere& s : scene.spheres) s.radius *= opt.outlineScale;
         for (umbreon::Cylinder& c : scene.cylinders) c.radius *= opt.outlineScale;
+      }
+
+      // Apply per-section opacity overrides (--alpha ID=value). The section is
+      // resolved against the group names recovered by the parser; every
+      // primitive in that group gets the given opacity so the renderer
+      // composites it as one transparent layer.
+      if (!opt.sectionAlpha.empty()) {
+        std::map<std::string, int> gidx;
+        for (std::size_t i = 0; i < geo.groupNames.size(); ++i)
+          gidx[geo.groupNames[i]] = static_cast<int>(i);
+        for (const auto& kv : opt.sectionAlpha) {
+          auto it = gidx.find(kv.first);
+          if (it == gidx.end()) {
+            std::fprintf(stderr,
+                         "warning: section '%s' not found (try --list-groups)\n",
+                         kv.first.c_str());
+            continue;
+          }
+          const int g = it->second;
+          const float a = kv.second;
+          for (std::size_t t = 0; t < scene.mesh.triangleCount(); ++t)
+            if (scene.mesh.groupForTri(t) == g)
+              for (int k = 0; k < 3; ++k) scene.mesh.colors[3 * t + k].w = a;
+          for (umbreon::Sphere& s : scene.spheres)
+            if (s.group == g) s.color.w = a;
+          for (umbreon::Cylinder& c : scene.cylinders)
+            if (c.group == g) c.color.w = a;
+          std::printf("  alpha override: %s -> %.3f (group %d)\n",
+                      kv.first.c_str(), a, g);
+        }
       }
       scene.camera = ps.camera;
       scene.lights = ps.lights;
@@ -188,6 +241,10 @@ int main(int argc, char** argv) {
       std::printf("rendering %dx%d  aoDistance=%.3f  accum=%d\n",
                   ropt.width, ropt.height, ropt.aoDistance, ropt.accumFrames);
     }
+
+    // Single-layer transparency controls (apply to both input paths).
+    ropt.transparency = opt.transparency;
+    ropt.transparentBackground = opt.transparentBackground;
 
     // Supersampling factor. umbreon::render() renders at ss x the output
     // resolution so the thin silhouette lines antialias like POV-Ray; the .pov

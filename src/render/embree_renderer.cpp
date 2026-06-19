@@ -221,6 +221,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // --- spheres (CueMol balls / silhouette joints) ---
   std::vector<Vec4> sphereColor;     // indexed by primID
   std::vector<Material> sphereMat;   // parallel to sphereColor (primID order)
+  std::vector<uint16_t> sphereGroup; // parallel: transparency group (section)
   if (!scene.spheres.empty()) {
     const std::size_t n = scene.spheres.size() * bakeOffsets.size();
     RTCGeometry g = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_SPHERE_POINT);
@@ -228,6 +229,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float), n));
     sphereColor.reserve(n);
     sphereMat.reserve(n);
+    sphereGroup.reserve(n);
     std::size_t k = 0;
     for (const Vec3& off : bakeOffsets) {
       for (const Sphere& s : scene.spheres) {
@@ -237,6 +239,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         vb[k * 4 + 3] = s.radius;
         sphereColor.push_back(s.color);
         sphereMat.push_back(s.material);
+        sphereGroup.push_back(s.group);
         ++k;
       }
     }
@@ -250,6 +253,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // --- cylinders (CueMol sticks / silhouette edges) as round linear curves ---
   std::vector<Vec4> cylColor;     // indexed by primID (one per segment)
   std::vector<Material> cylMat;   // parallel to cylColor (primID order)
+  std::vector<uint16_t> cylGroup; // parallel: transparency group (section)
   if (!scene.cylinders.empty()) {
     const std::size_t segs = scene.cylinders.size() * bakeOffsets.size();
     const std::size_t nV = segs * 2;
@@ -262,6 +266,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         segs));
     cylColor.reserve(segs);
     cylMat.reserve(segs);
+    cylGroup.reserve(segs);
     std::size_t k = 0;
     for (const Vec3& off : bakeOffsets) {
       for (const Cylinder& c : scene.cylinders) {
@@ -276,6 +281,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         ib[k] = static_cast<unsigned int>(2 * k);
         cylColor.push_back(c.color);
         cylMat.push_back(c.material);
+        cylGroup.push_back(c.group);
         ++k;
       }
     }
@@ -327,6 +333,52 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
   const Vec3 bg = {scene.background.x, scene.background.y, scene.background.z};
 
+  // Shade a single hit and report its opacity and transparency group (CueMol
+  // section). Used by the front-to-back walk below.
+  struct HitShade {
+    Vec3 color{0.0f, 0.0f, 0.0f};
+    float opacity = 1.0f;
+    int group = 0;
+  };
+  auto shadeHit = [&](const RTCRayHit& rh, const Vec3& rd) -> HitShade {
+    HitShade hs;
+    const GeomRecord& rec = records[rh.hit.geomID];
+    const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
+    if (rec.kind == GeomKind::Mesh) {
+      // Interpolate the shading normal and pigment color (slots 0/1).
+      float nbuf[3] = {0, 0, 0};
+      float cbuf[4] = {0, 0, 0, 1};
+      rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                      RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
+      rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                      RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
+      Vec3 N = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rd);
+      const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
+      const Material& triMat = m.materialForTri(rh.hit.primID);
+      hs.color = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
+                            opt.specularScale);
+      hs.opacity = cbuf[3];
+      hs.group = m.groupForTri(rh.hit.primID);
+    } else {
+      // Outline / VdW primitives: shade with the per-primitive material.
+      // The Embree geometric normal Ng is valid for SPHERE_POINT and
+      // ROUND_LINEAR_CURVE (the capsule surface normal POV shades against).
+      const bool isSphere = (rec.kind == GeomKind::Sphere);
+      const Vec4& fc =
+          isSphere ? sphereColor[rh.hit.primID] : cylColor[rh.hit.primID];
+      const Material& pm =
+          isSphere ? sphereMat[rh.hit.primID] : cylMat[rh.hit.primID];
+      Vec3 N = faceForward(
+          normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
+      const Vec3 C = {fc.x, fc.y, fc.z};
+      hs.color = shadeLocal(pm, C, N, V, lights, ambLight, bg,
+                            opt.specularScale);
+      hs.opacity = fc.w;
+      hs.group = isSphere ? sphereGroup[rh.hit.primID] : cylGroup[rh.hit.primID];
+    }
+    return hs;
+  };
+
   auto t0 = std::chrono::high_resolution_clock::now();
 
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
@@ -351,75 +403,97 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         rd = normalize(dir + right * (u * persHalfW) + trueUp * (v * persHalfH));
       }
 
-      RTCRayHit rh;
-      rh.ray.org_x = org.x;
-      rh.ray.org_y = org.y;
-      rh.ray.org_z = org.z;
-      rh.ray.dir_x = rd.x;
-      rh.ray.dir_y = rd.y;
-      rh.ray.dir_z = rd.z;
-      rh.ray.tnear = 0.0f;
-      rh.ray.tfar = std::numeric_limits<float>::infinity();
-      rh.ray.mask = 0xFFFFFFFFu;
-      rh.ray.flags = 0;
-      rh.ray.time = 0.0f;
-      rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
-      rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
-
-      RTCIntersectArguments iargs;
-      rtcInitIntersectArguments(&iargs);
-      rtcIntersect1(rscene, &rh, &iargs);
-
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
-      Vec3 out;
-      float depth = 0.0f;
 
-      if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
-          rh.hit.geomID >= records.size()) {
-        out = bg;
-        depth = 0.0f;
-      } else {
-        depth = rh.ray.tfar;
-        const GeomRecord& rec = records[rh.hit.geomID];
-        if (rec.kind == GeomKind::Mesh) {
-          // Interpolate the shading normal and pigment color (slots 0/1).
-          float nbuf[3] = {0, 0, 0};
-          float cbuf[4] = {0, 0, 0, 1};
-          rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
-                          RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
-          rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
-                          RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
-          Vec3 N = normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
-          N = faceForward(N, rd);
-          const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
-          const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
-          const Material& triMat = m.materialForTri(rh.hit.primID);
-          out = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
-                           opt.specularScale);
-        } else {
-          // Outline / VdW primitives: shade with the per-primitive material.
-          // The Embree geometric normal Ng is valid for SPHERE_POINT and
-          // ROUND_LINEAR_CURVE (the capsule surface normal POV shades against).
-          const Vec4& fc = (rec.kind == GeomKind::Sphere)
-                               ? sphereColor[rh.hit.primID]
-                               : cylColor[rh.hit.primID];
-          const Material& pm = (rec.kind == GeomKind::Sphere)
-                                   ? sphereMat[rh.hit.primID]
-                                   : cylMat[rh.hit.primID];
-          Vec3 N = faceForward(
-              normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
-          const Vec3 C = {fc.x, fc.y, fc.z};
-          const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
-          out = shadeLocal(pm, C, N, V, lights, ambLight, bg,
-                           opt.specularScale);
+      // Single-layer transparency, computed in one front-to-back walk. The
+      // additive composite reproduces CueMol's blendpng (render each section
+      // opaquely, then weighted-add) exactly and is order-independent:
+      //   out = sum_g beta_g * C_g + (1 - sum beta_g) * A
+      // where A is the nearest opaque surface (the "floor"), and C_g is the
+      // frontmost surface of transparency group g in front of A. Only the
+      // frontmost surface of each group is composited (single layer per group),
+      // which also drops the back wall of a closed transparent surface.
+      Vec3 accumC{0.0f, 0.0f, 0.0f};
+      float sumBeta = 0.0f;
+      float nearDepth = 0.0f;
+      Vec3 base = bg;
+      float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
+
+      constexpr int kMaxSeen = 64;  // distinct transparent groups per ray
+      int seen[kMaxSeen];
+      int nseen = 0;
+
+      const float kOpaque = 1.0f - 1e-4f;  // opacity at/above this == opaque
+      float tnear = 0.0f;
+      const int maxIters = opt.transparency ? (opt.maxTransparentLayers + 1) : 1;
+
+      for (int iter = 0; iter < maxIters; ++iter) {
+        RTCRayHit rh;
+        rh.ray.org_x = org.x;
+        rh.ray.org_y = org.y;
+        rh.ray.org_z = org.z;
+        rh.ray.dir_x = rd.x;
+        rh.ray.dir_y = rd.y;
+        rh.ray.dir_z = rd.z;
+        rh.ray.tnear = tnear;
+        rh.ray.tfar = std::numeric_limits<float>::infinity();
+        rh.ray.mask = 0xFFFFFFFFu;
+        rh.ray.flags = 0;
+        rh.ray.time = 0.0f;
+        rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+        rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+
+        RTCIntersectArguments iargs;
+        rtcInitIntersectArguments(&iargs);
+        rtcIntersect1(rscene, &rh, &iargs);
+
+        if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
+            rh.hit.geomID >= records.size()) {
+          break;  // ray escaped: base stays the background
         }
+        if (nearDepth == 0.0f) nearDepth = rh.ray.tfar;
+
+        const HitShade hs = shadeHit(rh, rd);
+
+        if (!opt.transparency || hs.opacity >= kOpaque) {
+          base = hs.color;  // nearest opaque surface = the floor
+          baseCov = 1.0f;
+          break;
+        }
+
+        // Transparent: composite only the frontmost surface of each group.
+        bool dup = false;
+        for (int sidx = 0; sidx < nseen; ++sidx)
+          if (seen[sidx] == hs.group) { dup = true; break; }
+        if (!dup) {
+          if (nseen < kMaxSeen) seen[nseen++] = hs.group;
+          const float a = hs.opacity;
+          accumC.x += a * hs.color.x;
+          accumC.y += a * hs.color.y;
+          accumC.z += a * hs.color.z;
+          sumBeta += a;
+          if (sumBeta >= kOpaque) break;  // transparent layers fully saturate
+        }
+        tnear = rh.ray.tfar + std::fmax(rh.ray.tfar * 1e-5f, 1e-5f);
       }
 
-      res.color[pix * 4 + 0] = out.x;
-      res.color[pix * 4 + 1] = out.y;
-      res.color[pix * 4 + 2] = out.z;
-      res.color[pix * 4 + 3] = 1.0f;
-      res.depth[pix] = depth;
+      float baseWeight = 1.0f - sumBeta;
+      if (baseWeight < 0.0f) baseWeight = 0.0f;
+      // The base (opaque floor, or background) contributes only where it is
+      // covered (baseCov). With an opaque background (default) baseCov is 1, so
+      // out = accumC + (1-sumBeta)*base and alpha = 1 -- unchanged for opaque
+      // scenes. With a transparent background and no opaque floor (baseCov 0)
+      // the output is the premultiplied transparent contribution accumC with
+      // alpha = the accumulated coverage, ready to composite over any backdrop.
+      const float bw = baseWeight * baseCov;
+      float outA = sumBeta + bw;
+      outA = std::fmin(1.0f, std::fmax(0.0f, outA));
+
+      res.color[pix * 4 + 0] = accumC.x + bw * base.x;
+      res.color[pix * 4 + 1] = accumC.y + bw * base.y;
+      res.color[pix * 4 + 2] = accumC.z + bw * base.z;
+      res.color[pix * 4 + 3] = outA;
+      res.depth[pix] = nearDepth;
     }
   }
   });

@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace umbreon {
@@ -106,12 +107,23 @@ struct Mesh {
   std::vector<Material> materials;
   std::vector<uint8_t> triMaterialId;
 
+  // Per-triangle transparency group (= the CueMol section, e.g. "_34_35").
+  // Empty means all triangles are group 0. This is DISTINCT from triMaterialId:
+  // one section may hold several mesh2 blocks (distinct materials) that share a
+  // single group, and the renderer composites only the frontmost surface PER
+  // GROUP (single-layer transparency).
+  std::vector<uint16_t> triGroupId;
+
   std::size_t vertexCount() const { return positions.size(); }
   std::size_t triangleCount() const { return positions.size() / 3; }
 
   const Material& materialForTri(std::size_t triIdx) const {
     if (triMaterialId.empty()) return material;
     return materials[triMaterialId[triIdx]];
+  }
+
+  uint16_t groupForTri(std::size_t triIdx) const {
+    return triGroupId.empty() ? 0 : triGroupId[triIdx];
   }
 
   Aabb bounds() const {
@@ -127,6 +139,7 @@ struct Sphere {
   float radius = 1.0f;
   Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
   Material material = Material::flatOutline();
+  uint16_t group = 0;  // transparency group (CueMol section); 0 = default
 };
 
 // A shaded cylinder/capsule (CueMol "stick" / silhouette edge), rendered as a
@@ -136,6 +149,7 @@ struct Cylinder {
   float radius = 1.0f;
   Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
   Material material = Material::flatOutline();
+  uint16_t group = 0;  // transparency group (CueMol section); 0 = default
 };
 
 // --------------------------------------------------------------------------

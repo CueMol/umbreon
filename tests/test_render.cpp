@@ -5,6 +5,7 @@
 // detect any unintended change to the existing shading output.
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 #include "test_util.hpp"
 #include "umbreon.hpp"
@@ -308,6 +309,141 @@ int main() {
             approx(f.color[kCenterRgba + 1], 0.04445f, 2e-3f));
     s.check("metallic fresnel: achromatic de-tint (G==B)",
             approx(f.color[kCenterRgba + 1], f.color[kCenterRgba + 2], 1e-5f));
+  }
+
+  // ===== Single-layer transparency (additive, order-independent) =====
+  // Flat material (ambient 1, diffuse 0, ambientColor 1) => shaded color == raw
+  // pigment, so the composited center pixel equals an exact analytic value. Each
+  // quad spans [-2,2]^2 facing the ortho camera (which frames [-2,2]); the
+  // center ray pierces them all. Opacity is carried in the color's w channel,
+  // the transparency group in triGroupId. assumed_gamma defaults to 1 so the
+  // linear FrameResult.color is compared directly. This locks the model:
+  //   out = sum_g beta_g*C_g + (1 - sum beta_g)*A   (A = nearest opaque floor)
+  // composited front-to-back but ORDER-INDEPENDENT, one layer PER group.
+  {
+    using umbreon::Vec3;
+    using umbreon::Vec4;
+    // Append a flat quad at depth z (color.w = opacity) tagged with a group.
+    auto addQuad = [](umbreon::Mesh& m, Vec4 color, float z, std::uint16_t g) {
+      const Vec3 c[6] = {{-2, -2, z}, {2, -2, z}, {2, 2, z},
+                         {-2, -2, z}, {2, 2, z},  {-2, 2, z}};
+      const Vec3 n{0, 0, 1};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(c[i]);
+        m.normals.push_back(n);
+        m.colors.push_back(color);
+      }
+      m.triGroupId.push_back(g);
+      m.triGroupId.push_back(g);
+    };
+    auto sceneOf = [&](umbreon::Mesh mesh, Vec3 bg) {
+      umbreon::Scene sc;
+      sc.mesh = std::move(mesh);
+      sc.mesh.material = umbreon::Material::flatOutline();  // raw color shading
+      sc.camera = makeOrthoCam();
+      sc.background = bg;
+      sc.ambientColor = {1, 1, 1};
+      return sc;
+    };
+
+    // T1: blue(0.6, group 1, front) over opaque red(group 0) => 0.6*blue+0.4*red.
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
+      addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);  // transparent blue (front)
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("T1 over-opaque R=0.4", approx(f.color[kCenterRgba + 0], 0.4f, 1e-4f));
+      s.check("T1 over-opaque G=0", approx(f.color[kCenterRgba + 1], 0.0f, 1e-4f));
+      s.check("T1 over-opaque B=0.6", approx(f.color[kCenterRgba + 2], 0.6f, 1e-4f));
+      s.check("T1 alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
+
+    // T2: blue(0.6) over an opaque background (0.2) => 0.6*blue + 0.4*bg.
+    {
+      umbreon::Mesh m;
+      addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);
+      umbreon::Scene sc = sceneOf(std::move(m), {0.2f, 0.2f, 0.2f});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("T2 over-bg R=0.08", approx(f.color[kCenterRgba + 0], 0.08f, 1e-4f));
+      s.check("T2 over-bg B=0.68", approx(f.color[kCenterRgba + 2], 0.68f, 1e-4f));
+      s.check("T2 alpha=1 (opaque bg)", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
+
+    // T3: same scene with a transparent background => premultiplied transparent
+    // output (bg NOT mixed into the color), alpha = the coverage 0.6.
+    {
+      umbreon::Mesh m;
+      addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);
+      umbreon::Scene sc = sceneOf(std::move(m), {0.2f, 0.2f, 0.2f});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      o.transparentBackground = true;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("T3 transp-bg R=0 (premult)", approx(f.color[kCenterRgba + 0], 0.0f, 1e-4f));
+      s.check("T3 transp-bg B=0.6 (premult)", approx(f.color[kCenterRgba + 2], 0.6f, 1e-4f));
+      s.check("T3 transp-bg alpha=0.6", approx(f.color[kCenterRgba + 3], 0.6f, 1e-4f));
+    }
+
+    // T4: double-wall avoidance. Two SAME-group(1) blue(0.6) quads (z=1, z=0.5)
+    // over opaque red. Only the frontmost of group 1 composites (single layer),
+    // so the back wall does not double up: result == T1 (0.6*blue + 0.4*red).
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red
+      addQuad(m, {0, 0, 1, 0.6f}, 0.5f, 1);  // back wall  (group 1)
+      addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);  // front wall (group 1)
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("T4 double-wall R=0.4 (single layer)", approx(f.color[kCenterRgba + 0], 0.4f, 1e-4f));
+      s.check("T4 double-wall B=0.6 (single layer)", approx(f.color[kCenterRgba + 2], 0.6f, 1e-4f));
+    }
+
+    // T5: multi-group additive. green(0.5,g1) + blue(0.3,g2) + opaque red(g0)
+    // => 0.5*green + 0.3*blue + 0.2*red = (0.2, 0.5, 0.3).
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
+      addQuad(m, {0, 0, 1, 0.3f}, 0.5f, 2);  // blue (mid)
+      addQuad(m, {0, 1, 0, 0.5f}, 1.0f, 1);  // green (front)
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("T5 multigroup R=0.2", approx(f.color[kCenterRgba + 0], 0.2f, 1e-4f));
+      s.check("T5 multigroup G=0.5", approx(f.color[kCenterRgba + 1], 0.5f, 1e-4f));
+      s.check("T5 multigroup B=0.3", approx(f.color[kCenterRgba + 2], 0.3f, 1e-4f));
+    }
+
+    // T5b: order-independence. Swap the depths of the two transparent layers;
+    // the additive result is identical (no z-order between groups, as blendpng).
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
+      addQuad(m, {0, 1, 0, 0.5f}, 0.5f, 1);  // green now mid
+      addQuad(m, {0, 0, 1, 0.3f}, 1.0f, 2);  // blue now front
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("T5b order-indep R=0.2", approx(f.color[kCenterRgba + 0], 0.2f, 1e-4f));
+      s.check("T5b order-indep G=0.5", approx(f.color[kCenterRgba + 1], 0.5f, 1e-4f));
+      s.check("T5b order-indep B=0.3", approx(f.color[kCenterRgba + 2], 0.3f, 1e-4f));
+    }
+
+    // T6: opacity 1.0 inside a transparent group is treated as opaque (a floor):
+    // a blue(1.0) quad fully hides the red behind it, alpha 1 (no leakage).
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
+      addQuad(m, {0, 0, 1, 1.0f}, 1.0f, 1);  // opaque blue front (group 1)
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("T6 opacity1 hides back B=1", approx(f.color[kCenterRgba + 2], 1.0f, 1e-4f));
+      s.check("T6 opacity1 hides back R=0", approx(f.color[kCenterRgba + 0], 0.0f, 1e-4f));
+      s.check("T6 alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
   }
 
   return s.report();

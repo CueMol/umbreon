@@ -54,6 +54,17 @@ struct Options {
   bool widthSet = false;
   bool heightSet = false;
 
+  // Per-section transparency (single-layer compositing). Opacity override for a
+  // CueMol section id (from "#if (_show_<id>)"). Key is the id with the "_show"
+  // prefix stripped (e.g. "_34_35"); value is opacity 0..1. Repeatable: --alpha.
+  std::map<std::string, float> sectionAlpha;
+  // Print the input's section ids (transparency groups) and exit.
+  bool listGroups = false;
+  // Emit a transparent background (output alpha = accumulated coverage).
+  bool transparentBackground = false;
+  // Master switch for the single-layer transparency walk (off = opaque only).
+  bool transparency = true;
+
   // Image-compare mode: print PSNR/SSIM between two PPM files and exit.
   bool compareMode = false;
   std::string compareA;
