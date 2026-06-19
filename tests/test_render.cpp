@@ -254,5 +254,32 @@ int main() {
     s.check("phong: achromatic lift (G==B)", approx(liftG, liftB, 1e-4f));
   }
 
+  // Fill (shadowless) light: POV computes diffuse only for a FILL_LIGHT_SOURCE,
+  // no specular/phong highlight. Pure-highlight material (ambient 0, diffuse 0,
+  // specular 0.5) head-on: a normal light yields the highlight
+  // specular*Lc = 0.5*0.5 = 0.25 (achromatic); a fill light yields nothing.
+  {
+    umbreon::Material m;
+    m.ambient = 0.0f; m.diffuse = 0.0f; m.brilliance = 1.0f;
+    m.specular = 0.5f; m.roughness = 0.05f; m.phong = 0.0f;
+    m.metallic = false; m.reflection = 0.0f;
+
+    umbreon::Scene lit =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult fl = umbreon::render(lit, o);
+    s.check("highlight light: specular present (R=0.25)",
+            approx(fl.color[kCenterRgba + 0], 0.25f, 1e-3f));
+
+    umbreon::Scene fill =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    fill.lights[0].castsHighlight = false;
+    umbreon::FrameResult ff = umbreon::render(fill, o);
+    s.check("fill light: no specular highlight (R=0)",
+            approx(ff.color[kCenterRgba + 0], 0.0f, 1e-4f));
+    s.check("fill light: no specular highlight (G=0)",
+            approx(ff.color[kCenterRgba + 1], 0.0f, 1e-4f));
+  }
+
   return s.report();
 }

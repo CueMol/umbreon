@@ -156,6 +156,10 @@ struct DistantLight {
   Vec3 direction{0.0f, -0.3f, -1.0f};  // direction the light travels
   Vec3 color{1.0f, 1.0f, 1.0f};
   float intensity = 1.0f;
+  // POV-Ray: a `shadowless` light is a FILL_LIGHT_SOURCE, which contributes
+  // diffuse only -- it produces no specular/phong highlight (trace.cpp gates
+  // highlights on Light_Type != FILL_LIGHT_SOURCE). false reproduces that.
+  bool castsHighlight = true;
 };
 
 // POV-Ray fog (applied as a depth-based post-process). The visible surface

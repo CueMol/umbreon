@@ -33,6 +33,7 @@ Vec3 faceForward(Vec3 n, Vec3 rayDir) {
 struct Light {
   Vec3 L;      // unit direction from surface toward the light
   Vec3 color;  // light color * intensity
+  bool highlight = true;  // false for POV fill (shadowless) lights: diffuse only
 };
 
 // Map POV "roughness" to a Blinn-Phong specular exponent. POV-Ray's Blinn
@@ -78,6 +79,10 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
     out.x += dk * C.x * l.color.x;
     out.y += dk * C.y * l.color.y;
     out.z += dk * C.z * l.color.z;
+
+    // POV fill (shadowless) lights contribute diffuse only -- no specular/phong
+    // (trace.cpp gates highlights on Light_Type != FILL_LIGHT_SOURCE).
+    if (!l.highlight) continue;
 
     // Highlight color: metallic tints the highlight by the pigment, else the
     // highlight is white (light color). Matches POV "metallic".
@@ -300,6 +305,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     l.L = normalize(Vec3{-dl.direction.x, -dl.direction.y, -dl.direction.z});
     l.color = Vec3{dl.color.x * dl.intensity, dl.color.y * dl.intensity,
                    dl.color.z * dl.intensity};
+    l.highlight = dl.castsHighlight;
     lights.push_back(l);
   }
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
