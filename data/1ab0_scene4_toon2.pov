@@ -196,7 +196,7 @@ fog {
 
 //////////////////////////////////////////////
 
-#declare _scene = #include "1ab0_scene4_toon1.inc"
+#declare _scene = #include "1ab0_scene4_toon2.inc"
 
 object{
   _scene
