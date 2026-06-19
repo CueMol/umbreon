@@ -23,12 +23,28 @@ SDL parser, which is used only by the benchmark harness.
 
 ## Build
 
+Install the dependencies — Embree 4 and TBB (POV-Ray only to regenerate POV
+references), or just run `task deps`:
+
 ```sh
-brew install embree tbb povray   # povray only to regenerate POV references
+# macOS
+brew install embree tbb povray
+# Ubuntu / Debian
+sudo apt install libembree-dev libtbb-dev povray
+```
+
+Then configure and build:
+
+```sh
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+CMake finds Embree/TBB via their CMake package config. To link against a custom
+build in a non-standard prefix (e.g. the eventual shipping setup), point CMake at
+it with `-DCMAKE_PREFIX_PATH=/path/to/prefix` (or `-DEMBREE_ROOT=...`
+`-DTBB_ROOT=...` when no package config is present).
 
 ## Usage
 

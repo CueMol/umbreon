@@ -15,6 +15,11 @@ if(APPLE AND EXISTS /opt/homebrew)
   list(APPEND CMAKE_PREFIX_PATH /opt/homebrew)
 endif()
 
+# Extra search hints for the fallbacks below (Homebrew on macOS, common
+# system prefixes on Linux). find_library/find_path also honor CMAKE_PREFIX_PATH
+# and the <pkg>_ROOT cache/environment variables.
+set(_umbreon_dep_hints /opt/homebrew /usr/local /usr)
+
 # --------------------------------------------------------------------------
 # bench_core: pure C++17 .pov/.inc SDL parser, image IO and CLI option parsing
 # for the benchmark harness. No rendering-library dependency, so it builds and
@@ -40,12 +45,22 @@ if(embree_FOUND)
   message(STATUS "Embree ${embree_VERSION} found via CONFIG")
   set(EMBREE_LINK embree)
 else()
-  set(EMBREE_ROOT /opt/homebrew/opt/embree)
-  if(EXISTS ${EMBREE_ROOT}/include/embree4/rtcore.h)
-    message(STATUS "Embree found via Homebrew fallback at ${EMBREE_ROOT}")
+  # Fallback for installs without a CMake package config, e.g. a custom Embree
+  # build in a non-standard prefix (the eventual shipping setup). Honors
+  # -DEMBREE_ROOT=..., the EMBREE_ROOT environment variable, CMAKE_PREFIX_PATH
+  # and the common hints; find_library picks the right suffix (.so/.dylib/.a)
+  # for the platform.
+  find_path(EMBREE_INCLUDE_DIR embree4/rtcore.h
+    HINTS ${EMBREE_ROOT} ENV EMBREE_ROOT ${_umbreon_dep_hints}
+    PATH_SUFFIXES include)
+  find_library(EMBREE_LIBRARY NAMES embree4 embree
+    HINTS ${EMBREE_ROOT} ENV EMBREE_ROOT ${_umbreon_dep_hints}
+    PATH_SUFFIXES lib lib64)
+  if(EMBREE_INCLUDE_DIR AND EMBREE_LIBRARY)
+    message(STATUS "Embree found via fallback: ${EMBREE_LIBRARY}")
     add_library(embree_fallback INTERFACE)
-    target_include_directories(embree_fallback INTERFACE ${EMBREE_ROOT}/include)
-    target_link_libraries(embree_fallback INTERFACE ${EMBREE_ROOT}/lib/libembree4.dylib)
+    target_include_directories(embree_fallback INTERFACE ${EMBREE_INCLUDE_DIR})
+    target_link_libraries(embree_fallback INTERFACE ${EMBREE_LIBRARY})
     set(EMBREE_LINK embree_fallback)
   else()
     message(WARNING "Embree 4 not found")
@@ -58,12 +73,18 @@ if(TBB_FOUND)
   message(STATUS "TBB ${TBB_VERSION} found via CONFIG")
   set(TBB_LINK TBB::tbb)
 else()
-  set(TBB_ROOT /opt/homebrew/opt/tbb)
-  if(EXISTS ${TBB_ROOT}/include/tbb/parallel_for.h)
-    message(STATUS "TBB found via Homebrew fallback at ${TBB_ROOT}")
+  # Same fallback strategy as Embree above (custom build / non-standard prefix).
+  find_path(TBB_INCLUDE_DIR tbb/parallel_for.h
+    HINTS ${TBB_ROOT} ENV TBB_ROOT ${_umbreon_dep_hints}
+    PATH_SUFFIXES include)
+  find_library(TBB_LIBRARY NAMES tbb
+    HINTS ${TBB_ROOT} ENV TBB_ROOT ${_umbreon_dep_hints}
+    PATH_SUFFIXES lib lib64)
+  if(TBB_INCLUDE_DIR AND TBB_LIBRARY)
+    message(STATUS "TBB found via fallback: ${TBB_LIBRARY}")
     add_library(tbb_fallback INTERFACE)
-    target_include_directories(tbb_fallback INTERFACE ${TBB_ROOT}/include)
-    target_link_libraries(tbb_fallback INTERFACE ${TBB_ROOT}/lib/libtbb.dylib)
+    target_include_directories(tbb_fallback INTERFACE ${TBB_INCLUDE_DIR})
+    target_link_libraries(tbb_fallback INTERFACE ${TBB_LIBRARY})
     set(TBB_LINK tbb_fallback)
   else()
     message(WARNING "TBB not found")
