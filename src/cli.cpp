@@ -53,29 +53,16 @@ Options parseCli(int argc, char** argv) {
       o.spacing = static_cast<float>(std::atof(value("--spacing").c_str()));
     } else if (a == "--flatten") {
       o.flatten = true;
-    } else if (a == "--ao-samples") {
-      o.aoSamples = std::atoi(value("--ao-samples").c_str());
-      o.aoSamplesSet = true;
     } else if (a == "--ao-distance") {
       o.aoDistance = static_cast<float>(std::atof(value("--ao-distance").c_str()));
     } else if (a == "--spp") {
       o.spp = std::atoi(value("--spp").c_str());
     } else if (a == "--accum") {
       o.accumFrames = std::atoi(value("--accum").c_str());
-    } else if (a == "--denoise") {
-      std::string v = value("--denoise");
-      if (o.ok && !parseBool(v, o.denoise)) fail("--denoise expects on/off");
-      o.denoiseSet = true;
-    } else if (a == "--no-denoise") {
-      o.denoise = false;
-      o.denoiseSet = true;
     } else if (a == "--prefilter-aux") {
       std::string v = value("--prefilter-aux");
       if (o.ok && !parseBool(v, o.prefilterAux))
         fail("--prefilter-aux expects on/off");
-    } else if (a == "--renderer") {
-      o.renderer = value("--renderer");
-      o.rendererSet = true;
     } else if (a == "--pov-gain") {
       o.povGain = static_cast<float>(std::atof(value("--pov-gain").c_str()));
     } else if (a == "--outline-scale") {
@@ -88,16 +75,6 @@ Options parseCli(int argc, char** argv) {
       o.specularScale =
           static_cast<float>(std::atof(value("--specular-scale").c_str()));
       o.specularScaleSet = true;
-    } else if (a == "--shininess") {
-      o.shininess = static_cast<float>(std::atof(value("--shininess").c_str()));
-    } else if (a == "--material") {
-      o.material = value("--material");
-    } else if (a == "--ior") {
-      o.ior = static_cast<float>(std::atof(value("--ior").c_str()));
-    } else if (a == "--flat-kd") {
-      o.flatKd = static_cast<float>(std::atof(value("--flat-kd").c_str()));
-    } else if (a == "--max-path-length") {
-      o.maxPathLength = std::atoi(value("--max-path-length").c_str());
     } else if (a == "--declare") {
       // --declare name=value (predefined POV constant for the .pov path)
       std::string kv = value("--declare");
@@ -152,7 +129,7 @@ void printUsage(const char* prog) {
       "Usage: %s <input.pov|input.inc> [options]\n"
       "  A .pov input reproduces the CueMol POV-Ray scene (camera, lights,\n"
       "  background) and renders its referenced .inc geometry; defaults match\n"
-      "  the reference render (300x300, scivis, orthographic). A .inc input\n"
+      "  the reference render (300x300, orthographic). A .inc input\n"
       "  uses the legacy auto-framed scene with the N^3 instance grid.\n"
       "  -o <path>                output image (.png or .ppm)  [out.png]\n"
       "  -W, --width <int>        image width          [1024; .pov: 300]\n"
@@ -165,13 +142,10 @@ void printUsage(const char* prog) {
       "  --grid <int>             N for an N^3 instance grid    [1]\n"
       "  --spacing <float>        grid pitch (x mesh size)      [1.15]\n"
       "  --flatten                bake the instance grid into one mesh\n"
-      "  --ao-samples <int>       AO rays per shading point     [16]\n"
       "  --ao-distance <float>    AO ray max distance           [auto]\n"
       "  --spp <int>              pixel samples per frame       [1]\n"
       "  --accum <int>            accumulation frames           [16]\n"
-      "  --denoise <on|off>       OIDN denoising                [on]\n"
       "  --prefilter-aux <on|off> prefilter albedo/normal AOVs  [off]\n"
-      "  --renderer <name>        renderer (pathtracer|scivis|embree) [pathtracer]\n"
       "  --flip-normals           negate mesh normals\n"
       "  --light-intensity <f>    distant 'sun' intensity       [1.5]\n"
       "  --ambient <f>            ambient 'sky' intensity        [0.6]\n"

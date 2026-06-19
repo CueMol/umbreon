@@ -14,13 +14,10 @@ struct Options {
   int gridN = 1;                // N^3 instance grid
   float spacing = 1.15f;        // grid pitch as a multiple of mesh size
   bool flatten = false;
-  int aoSamples = 16;
   float aoDistance = -1.0f;     // < 0 => auto from scene size
   int spp = 1;
   int accumFrames = 16;
-  bool denoise = true;
   bool prefilterAux = false;
-  std::string renderer = "pathtracer";  // "pathtracer" (GI) or "scivis" (AO)
   bool flipNormals = false;
   std::string emitPov;          // empty => do not emit a POV-Ray scene
   bool povRadiosity = true;     // emit a radiosity setup in the .pov
@@ -45,27 +42,16 @@ struct Options {
   // defaults to 2 when not set explicitly.
   int supersample = 1;
   bool supersampleSet = false;
-  // Cartoon specular control. SciVis's OBJ specular is a normalized
-  // Blinn-Phong whose peak grows with shininess, so reproducing POV's sharp
-  // highlight blows out on view-facing saturated faces. The .pov path therefore
-  // defaults to matte (scale 0); pass --specular-scale 1 to restore it. The
-  // shininess override (<0 keeps the roughness-derived value) is for tuning.
+  // Cartoon specular control. The .pov path defaults to matte (scale 0); pass
+  // --specular-scale 1 to enable a specular highlight.
   float specularScale = 1.0f;
   bool specularScaleSet = false;
-  float shininess = -1.0f;
-  std::string material = "obj";  // cartoon material: "obj" or "principled"
-  float ior = 1.5f;              // principled dielectric index of refraction
-  float flatKd = 1.0f;          // outline/wireframe kd (high => flat ambient-1 look)
-  int maxPathLength = 16;       // pathtracer: GI bounce depth (1 = direct only)
 
   // Track whether these were set explicitly so the .pov path can pick
   // render defaults that match the CueMol reference without clobbering the
   // user's choices.
   bool widthSet = false;
   bool heightSet = false;
-  bool rendererSet = false;
-  bool aoSamplesSet = false;
-  bool denoiseSet = false;
 
   // Image-compare mode: print PSNR/SSIM between two PPM files and exit.
   bool compareMode = false;

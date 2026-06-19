@@ -148,7 +148,6 @@ int main(int argc, char** argv) {
 
       ropt.width = W;
       ropt.height = H;
-      ropt.renderer = "embree";
       std::printf("rendering %dx%d  backend=umbreon (embree)\n", W, H);
     } else {
       // ---- .inc path: legacy auto-framed scene with the instance grid. ----
@@ -179,25 +178,21 @@ int main(int argc, char** argv) {
 
       ropt.width = opt.width;
       ropt.height = opt.height;
-      ropt.aoSamples = opt.aoSamples;
       ropt.aoDistance =
           (opt.aoDistance > 0.0f) ? opt.aoDistance : scene.aoDistance;
       ropt.spp = opt.spp;
       ropt.accumFrames = opt.accumFrames;
       ropt.flatten = opt.flatten;
       ropt.flipNormals = opt.flipNormals;
-      ropt.renderer = opt.renderer;
-      std::printf("rendering %dx%d  aoSamples=%d  aoDistance=%.3f  accum=%d\n",
-                  ropt.width, ropt.height, ropt.aoSamples, ropt.aoDistance,
-                  ropt.accumFrames);
+      std::printf("rendering %dx%d  aoDistance=%.3f  accum=%d\n",
+                  ropt.width, ropt.height, ropt.aoDistance, ropt.accumFrames);
     }
 
     // Supersampling factor. umbreon::render() renders at ss x the output
     // resolution so the thin silhouette lines antialias like POV-Ray; the .pov
     // path defaults to 3x (a 3x3 box matches POV-Ray's Antialias_Depth=3 edge
     // coverage best).
-    int povDefaultSs = 2;
-    if (ropt.renderer == "embree") povDefaultSs = 3;
+    const int povDefaultSs = 3;
     const int ss = std::max(
         1, (povMode && !opt.supersampleSet) ? povDefaultSs : opt.supersample);
     ropt.supersample = ss;
