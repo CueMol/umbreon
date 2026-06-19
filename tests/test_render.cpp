@@ -152,10 +152,10 @@ int main() {
     sc.camera = makeOrthoCam();
     sc.lights.push_back(makeKeyLight());
 
+    sc.assumedGamma = 2.0f;
     umbreon::RenderOptions o;
     o.width = 5;
     o.height = 5;
-    o.assumedGamma = 2.0f;
     umbreon::FrameResult f = umbreon::render(sc, o);
     s.check("gamma: R squared", approx(f.color[kCenterRgba + 0], 0.30f * 0.30f, 1e-4f));
     s.check("gamma: G squared", approx(f.color[kCenterRgba + 1], 0.36f * 0.36f, 1e-4f));

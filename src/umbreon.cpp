@@ -99,7 +99,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     frame.height = finalH;
   }
 
-  applyAssumedGamma(frame, opt.assumedGamma);
+  applyAssumedGamma(frame, scene.assumedGamma);
   return frame;
 }
 

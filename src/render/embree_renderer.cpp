@@ -35,13 +35,12 @@ struct Light {
   Vec3 color;  // light color * intensity
 };
 
-// Map POV "roughness" to a Blinn-Phong specular exponent. Smaller roughness
-// gives a sharper highlight. POV's own relation is exponent = 2/roughness^2 - 2
-// (see POV-Ray source). F_MetalA roughness 0.05 -> ~798.
+// Map POV "roughness" to a Blinn-Phong specular exponent. POV-Ray's Blinn
+// specular uses pow(N.H, 1/roughness). roughness 0.01 -> exp 100.
 float blinnExp(float roughness) {
   float r = roughness;
-  if (r < 1e-4f) r = 1e-4f;
-  float e = 2.0f / (r * r) - 2.0f;
+  if (r < 1e-6f) r = 1e-6f;
+  float e = 1.0f / r;
   if (e < 1.0f) e = 1.0f;
   if (e > 1.0e6f) e = 1.0e6f;
   return e;
@@ -382,7 +381,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           N = faceForward(N, rd);
           const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
           const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
-          out = shadeLocal(m.material, C, N, V, lights, ambLight, bg,
+          const Material& triMat = m.materialForTri(rh.hit.primID);
+          out = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
                            opt.specularScale);
         } else {
           // Outline / VdW primitives: shade with the per-primitive material.

@@ -288,9 +288,9 @@ class Reader {
 
   // ----- texture / pigment / finish --------------------------------------
   void adoptMaterial(const PovTexture& tex) {
-    if (tex.hasFinish && !haveMaterial_) {
-      material_ = tex.finish;
-      haveMaterial_ = true;
+    if (tex.hasFinish && !haveBlockMaterial_) {
+      blockMaterial_ = tex.finish;
+      haveBlockMaterial_ = true;
     }
   }
 
@@ -496,7 +496,8 @@ class Reader {
       ++k;
     }
     haveMesh_ = true;
-    deindexBlock();  // a CueMol file may hold several mesh2 blocks
+    deindexBlock();
+    haveBlockMaterial_ = false;  // reset for the next mesh2 block
     pos_ = close + 1;
   }
 
@@ -759,6 +760,21 @@ class Reader {
       }
     }
 
+    // Record per-block material: assign a material index to every triangle in
+    // this block so the renderer can shade each mesh2 block independently.
+    if (haveBlockMaterial_) {
+      uint8_t idx = static_cast<uint8_t>(blockMaterials_.size());
+      blockMaterials_.push_back(blockMaterial_);
+      const std::size_t endTri = mesh_.triangleCount();
+      mesh_.triMaterialId.resize(endTri, idx);
+    } else {
+      // No finish found for this block; pad with a default material.
+      uint8_t idx = static_cast<uint8_t>(blockMaterials_.size());
+      blockMaterials_.push_back(Material{});
+      const std::size_t endTri = mesh_.triangleCount();
+      mesh_.triMaterialId.resize(endTri, idx);
+    }
+
     verts_.clear();
     norms_.clear();
     texColors_.clear();
@@ -768,7 +784,11 @@ class Reader {
   SceneGeometry finalize() {
     if (!haveMesh_ && spheres_.empty() && cylinders_.empty())
       throw Mesh2ReadError("no geometry (mesh2/sphere/edge_line) found in input");
-    if (haveMaterial_) mesh_.material = material_;
+    if (!blockMaterials_.empty()) {
+      mesh_.materials = std::move(blockMaterials_);
+      // mesh_.material keeps a sensible default (first block's material).
+      mesh_.material = mesh_.materials[0];
+    }
     SceneGeometry g;
     g.mesh = std::move(mesh_);
     g.spheres = std::move(spheres_);
@@ -793,8 +813,9 @@ class Reader {
   Mesh mesh_;
   std::vector<Sphere> spheres_;
   std::vector<Cylinder> cylinders_;
-  Material material_;
-  bool haveMaterial_ = false;
+  Material blockMaterial_;
+  std::vector<Material> blockMaterials_;
+  bool haveBlockMaterial_ = false;
   bool haveMesh_ = false;
 };
 

@@ -99,8 +99,20 @@ struct Mesh {
   std::vector<Vec4> colors;     // size == 3 * triangleCount (rgb + opacity)
   Material material;
 
+  // Per-triangle material: when a file has multiple mesh2 blocks with distinct
+  // finishes, each block's material is appended to `materials` and every
+  // triangle in that block gets the corresponding index in `triMaterialId`.
+  // Empty vectors mean all triangles use `material` (single-material legacy).
+  std::vector<Material> materials;
+  std::vector<uint8_t> triMaterialId;
+
   std::size_t vertexCount() const { return positions.size(); }
   std::size_t triangleCount() const { return positions.size() / 3; }
+
+  const Material& materialForTri(std::size_t triIdx) const {
+    if (triMaterialId.empty()) return material;
+    return materials[triMaterialId[triIdx]];
+  }
 
   Aabb bounds() const {
     Aabb b;
@@ -170,6 +182,7 @@ struct Scene {
   Vec3 background{0.0f, 0.0f, 0.0f};
   Fog fog;                            // optional POV fog (post-process)
   float aoDistance = 1.0e20f;         // AO ray max distance (scene-scaled)
+  float assumedGamma = 1.0f;         // POV assumed_gamma (from global_settings)
 
   std::size_t instanceCount() const { return instanceOffsets.size(); }
   std::size_t effectiveTriangles() const {

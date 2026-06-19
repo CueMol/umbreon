@@ -15,9 +15,6 @@ struct RenderOptions {
   // Supersampling factor: umbreon::render() renders at width*ss x height*ss and
   // box-averages down to width x height in linear space (antialiasing).
   int supersample = 1;
-  // POV-Ray assumed_gamma: the final linear radiance is raised to this power
-  // before output encoding (1.0 = no-op). Applied by umbreon::render().
-  float assumedGamma = 1.0f;
   int aoSamples = 16;          // scivis only: AO rays per shading point
   float aoDistance = 1.0e20f;  // scivis only: AO ray max distance
   int spp = 1;                 // pixel samples per accumulation frame
