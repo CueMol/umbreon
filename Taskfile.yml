@@ -3,6 +3,12 @@ version: '3'
 # Tasks for the umbreon Embree renderer + benchmark CLI.
 # Requires go-task (https://taskfile.dev): brew install go-task
 
+vars:
+  EMBREE_VERSION: "4.4.1"
+  TBB_VERSION: "2023.0.0"
+  DEPS_SRC: "{{.ROOT_DIR}}/deps/src"
+  DEPS_PREFIX: "{{.ROOT_DIR}}/deps/prefix"
+
 tasks:
   deps:
     desc: Install dependencies (Embree 4 + TBB; POV-Ray only to regenerate references)
@@ -17,22 +23,87 @@ tasks:
           exit 1
         fi
 
+  deps:build-tbb:
+    desc: Build oneTBB {{.TBB_VERSION}} as a static library into deps/prefix
+    cmds:
+      - mkdir -p {{.DEPS_SRC}}
+      - |
+        if [ ! -d "{{.DEPS_SRC}}/oneTBB-{{.TBB_VERSION}}" ]; then
+          curl -sL "https://github.com/uxlfoundation/oneTBB/archive/refs/tags/v{{.TBB_VERSION}}.tar.gz" \
+            | tar xz -C {{.DEPS_SRC}}
+        fi
+      - >-
+        cmake -S {{.DEPS_SRC}}/oneTBB-{{.TBB_VERSION}} -B {{.DEPS_SRC}}/oneTBB-{{.TBB_VERSION}}/build
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX={{.DEPS_PREFIX}}
+        -DBUILD_SHARED_LIBS=OFF
+        -DTBB_TEST=OFF
+        -DTBB_STRICT=OFF
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - cmake --build {{.DEPS_SRC}}/oneTBB-{{.TBB_VERSION}}/build -j
+      - cmake --install {{.DEPS_SRC}}/oneTBB-{{.TBB_VERSION}}/build
+    status:
+      - test -f {{.DEPS_PREFIX}}/lib/libtbb.a
+
+  deps:build-embree:
+    desc: Build Embree {{.EMBREE_VERSION}} as a static library into deps/prefix
+    deps: [deps:build-tbb]
+    cmds:
+      - mkdir -p {{.DEPS_SRC}}
+      - |
+        if [ ! -d "{{.DEPS_SRC}}/embree-{{.EMBREE_VERSION}}" ]; then
+          curl -sL "https://github.com/RenderKit/embree/archive/refs/tags/v{{.EMBREE_VERSION}}.tar.gz" \
+            | tar xz -C {{.DEPS_SRC}}
+        fi
+      - >-
+        cmake -S {{.DEPS_SRC}}/embree-{{.EMBREE_VERSION}} -B {{.DEPS_SRC}}/embree-{{.EMBREE_VERSION}}/build
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX={{.DEPS_PREFIX}}
+        -DCMAKE_PREFIX_PATH={{.DEPS_PREFIX}}
+        -DBUILD_SHARED_LIBS=OFF
+        -DEMBREE_STATIC_LIB=ON
+        -DEMBREE_TUTORIALS=OFF
+        -DEMBREE_ISPC_SUPPORT=OFF
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - cmake --build {{.DEPS_SRC}}/embree-{{.EMBREE_VERSION}}/build -j
+      - cmake --install {{.DEPS_SRC}}/embree-{{.EMBREE_VERSION}}/build
+    status:
+      - test -f {{.DEPS_PREFIX}}/lib/libembree4.a
+
+  deps:build:
+    desc: Build both TBB and Embree as static libraries into deps/prefix
+    deps: [deps:build-embree]
+
+  build:static:
+    desc: Build umbreon linked against static Embree/TBB in deps/prefix
+    deps: [deps:build]
+    cmds:
+      - cmake -S . -B build -DCMAKE_PREFIX_PATH={{.DEPS_PREFIX}}
+      - cmake --build build -j
+
+  test:static:
+    desc: Build and test against static Embree/TBB
+    deps: [deps:build]
+    cmds:
+      - cmake -S . -B build -DCMAKE_PREFIX_PATH={{.DEPS_PREFIX}}
+      - cmake --build build -j
+      - ctest --test-dir build --output-on-failure
+
   build:
     desc: Configure and build (Release)
     cmds:
       - cmake -S . -B build
-      - cmake --build build
+      - cmake --build build -j
 
   test:
     desc: Build and run the unit / integration tests
     cmds:
       - cmake -S . -B build
-      - cmake --build build
+      - cmake --build build -j
       - ctest --test-dir build --output-on-failure
 
   render:
     desc: 'Render data/test1.pov (extra args: task render -- --supersample 4)'
-    deps: [build]
     cmds:
       - ./build/umbreon_cli data/test1.pov -o out.png {{.CLI_ARGS}}
 
@@ -41,3 +112,8 @@ tasks:
     cmds:
       - rm -rf build
       - rm -f out*.png *.ppm
+
+  clean:deps:
+    desc: Remove downloaded sources and built static libraries
+    cmds:
+      - rm -rf deps
