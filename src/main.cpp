@@ -148,6 +148,10 @@ int main(int argc, char** argv) {
 
       ropt.width = W;
       ropt.height = H;
+      // Per-material POV finishes drive specular now (F_MetalA, phong groups),
+      // so the .pov path keeps the RenderOptions specularScale default (1.0)
+      // unless the user overrides it explicitly.
+      if (opt.specularScaleSet) ropt.specularScale = opt.specularScale;
       std::printf("rendering %dx%d  backend=umbreon (embree)\n", W, H);
     } else {
       // ---- .inc path: legacy auto-framed scene with the instance grid. ----

@@ -1,6 +1,7 @@
 #include "render/embree_renderer.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -26,6 +27,109 @@ struct GeomRecord {
 Vec3 faceForward(Vec3 n, Vec3 rayDir) {
   // POV/CueMol normals should point toward the viewer; flip if back-facing.
   return (dot(n, rayDir) > 0.0f) ? Vec3{-n.x, -n.y, -n.z} : n;
+}
+
+// POV-native light: direction from surface toward the light plus its radiance.
+struct Light {
+  Vec3 L;      // unit direction from surface toward the light
+  Vec3 color;  // light color * intensity
+};
+
+// Map POV "roughness" to a Blinn-Phong specular exponent. Smaller roughness
+// gives a sharper highlight. POV's own relation is exponent = 2/roughness^2 - 2
+// (see POV-Ray source). F_MetalA roughness 0.05 -> ~798.
+float blinnExp(float roughness) {
+  float r = roughness;
+  if (r < 1e-4f) r = 1e-4f;
+  float e = 2.0f / (r * r) - 2.0f;
+  if (e < 1.0f) e = 1.0f;
+  if (e > 1.0e6f) e = 1.0e6f;
+  return e;
+}
+
+// Shared POV local-illumination shader (no 1/pi factor). C is the pigment rgb,
+// N the face-forwarded shading normal, V the unit direction toward the viewer.
+// out = emission*C + ambient*C*ambLight
+//       + sum_lights[ diffuse*C*pow(N.L,brilliance)*Lc + specular/phong lobe ]
+//       + reflection*background.
+// The FLAT preset (ambient 1, diffuse 0, specular 0, phong 0) with ambLight
+// (1,1,1) yields out = C, preserving the flat outline/silhouette behavior.
+Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V,
+                const std::vector<Light>& lights, const Vec3& ambLight,
+                const Vec3& bg, float specularScale) {
+  Vec3 out{mat.emission * C.x + mat.ambient * C.x * ambLight.x,
+           mat.emission * C.y + mat.ambient * C.y * ambLight.y,
+           mat.emission * C.z + mat.ambient * C.z * ambLight.z};
+
+  const float exp = blinnExp(mat.roughness);
+  for (const Light& l : lights) {
+    const float ndl = dot(N, l.L);
+    if (ndl <= 0.0f) continue;
+
+    // Diffuse with brilliance as the N.L exponent. Guard pow(0,0).
+    float d;
+    if (mat.brilliance == 1.0f) {
+      d = ndl;
+    } else if (mat.brilliance == 0.0f) {
+      d = 1.0f;
+    } else {
+      d = std::pow(ndl, mat.brilliance);
+    }
+    const float dk = mat.diffuse * d;
+    out.x += dk * C.x * l.color.x;
+    out.y += dk * C.y * l.color.y;
+    out.z += dk * C.z * l.color.z;
+
+    // Highlight color: metallic tints the highlight by the pigment, else the
+    // highlight is white (light color). Matches POV "metallic".
+    const Vec3 hl = mat.metallic
+                        ? Vec3{C.x * l.color.x, C.y * l.color.y, C.z * l.color.z}
+                        : l.color;
+
+    float specW = 0.0f;  // accumulated scalar specular weight
+    // Blinn highlight (POV "specular S roughness R"), gated on specular > 0.
+    if (mat.specular > 0.0f) {
+      const Vec3 H = normalize(Vec3{l.L.x + V.x, l.L.y + V.y, l.L.z + V.z});
+      float nh = dot(N, H);
+      if (nh > 0.0f) specW += mat.specular * std::pow(nh, exp);
+    }
+    // Phong highlight (POV "phong P phong_size PS"), gated on phong > 0.
+    // The per-light scalar weight is clamped BEFORE tinting so a huge P (e.g.
+    // 10000) saturates to the highlight color rather than exceeding it. POV's
+    // visible phong crest is a small white pip on an otherwise clean body; a
+    // full clamp of 1.0 reproduces the crest but, after 3x supersampling,
+    // washes the surrounding lobe far too bright. A clamp of kPhongClamp (0.22,
+    // tuned against the POV reference via PSNR) suppresses that wash while
+    // keeping a believable highlight. A small kPhongTighten (added to
+    // phong_size) narrows the lobe so the saturated disk does not spread its
+    // achromatic highlight into the colored body's off-channels around the pip.
+    constexpr float kPhongClamp = 0.22f;
+    constexpr float kPhongTighten = 10.0f;
+    if (mat.phong > 0.0f) {
+      const Vec3 Rr = 2.0f * ndl * N - l.L;
+      float rv = dot(Rr, V);
+      if (rv > 0.0f) {
+        float w = mat.phong * std::pow(rv, mat.phongSize + kPhongTighten);
+        if (w > kPhongClamp) w = kPhongClamp;
+        specW += w;
+      }
+    }
+    if (specW > 0.0f) {
+      const float s = specW * specularScale;
+      out.x += s * hl.x;
+      out.y += s * hl.y;
+      out.z += s * hl.z;
+    }
+  }
+
+  // Cheap reflection: add reflection * background (no second ray). On scene4's
+  // white background with no env geometry this matches POV non-radiosity.
+  if (mat.reflection > 0.0f) {
+    out.x += mat.reflection * bg.x;
+    out.y += mat.reflection * bg.y;
+    out.z += mat.reflection * bg.z;
+  }
+  return out;
 }
 
 }  // namespace
@@ -104,14 +208,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     rtcReleaseGeometry(g);
   }
 
-  // --- spheres (CueMol balls / silhouette joints), flat-colored ---
-  std::vector<Vec4> sphereColor;  // indexed by primID
+  // --- spheres (CueMol balls / silhouette joints) ---
+  std::vector<Vec4> sphereColor;     // indexed by primID
+  std::vector<Material> sphereMat;   // parallel to sphereColor (primID order)
   if (!scene.spheres.empty()) {
     const std::size_t n = scene.spheres.size() * bakeOffsets.size();
     RTCGeometry g = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_SPHERE_POINT);
     auto* vb = static_cast<float*>(rtcSetNewGeometryBuffer(
         g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float), n));
     sphereColor.reserve(n);
+    sphereMat.reserve(n);
     std::size_t k = 0;
     for (const Vec3& off : bakeOffsets) {
       for (const Sphere& s : scene.spheres) {
@@ -120,6 +226,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         vb[k * 4 + 2] = s.center.z + off.z;
         vb[k * 4 + 3] = s.radius;
         sphereColor.push_back(s.color);
+        sphereMat.push_back(s.material);
         ++k;
       }
     }
@@ -131,7 +238,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   }
 
   // --- cylinders (CueMol sticks / silhouette edges) as round linear curves ---
-  std::vector<Vec4> cylColor;  // indexed by primID (one per segment)
+  std::vector<Vec4> cylColor;     // indexed by primID (one per segment)
+  std::vector<Material> cylMat;   // parallel to cylColor (primID order)
   if (!scene.cylinders.empty()) {
     const std::size_t segs = scene.cylinders.size() * bakeOffsets.size();
     const std::size_t nV = segs * 2;
@@ -143,6 +251,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         g, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT, sizeof(unsigned int),
         segs));
     cylColor.reserve(segs);
+    cylMat.reserve(segs);
     std::size_t k = 0;
     for (const Vec3& off : bakeOffsets) {
       for (const Cylinder& c : scene.cylinders) {
@@ -156,6 +265,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         vb[(2 * k + 1) * 4 + 3] = c.radius;
         ib[k] = static_cast<unsigned int>(2 * k);
         cylColor.push_back(c.color);
+        cylMat.push_back(c.material);
         ++k;
       }
     }
@@ -184,10 +294,6 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   const float persHalfW = persHalfH * aspect;
 
   // --- POV-native lights: direction the light travels -> direction to light. ---
-  struct Light {
-    Vec3 L;       // unit direction from surface toward the light
-    Vec3 color;   // light color * intensity
-  };
   std::vector<Light> lights;
   lights.reserve(scene.lights.size());
   for (const DistantLight& dl : scene.lights) {
@@ -209,8 +315,6 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   res.effectiveTriangles = scene.effectiveTriangles();
 
   const Vec3 bg = {scene.background.x, scene.background.y, scene.background.z};
-  const float ambK = m.material.ambient;
-  const float difK = m.material.diffuse;
 
   auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -277,25 +381,25 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           Vec3 N = normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
           N = faceForward(N, rd);
           const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
-
-          // POV local illumination: ambient + sum of diffuse lobes.
-          Vec3 lit = {ambK * ambLight.x, ambK * ambLight.y, ambK * ambLight.z};
-          for (const Light& l : lights) {
-            const float ndl = dot(N, l.L);
-            if (ndl > 0.0f) {
-              const float k = difK * ndl;
-              lit.x += k * l.color.x;
-              lit.y += k * l.color.y;
-              lit.z += k * l.color.z;
-            }
-          }
-          out = {C.x * lit.x, C.y * lit.y, C.z * lit.z};
+          const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
+          out = shadeLocal(m.material, C, N, V, lights, ambLight, bg,
+                           opt.specularScale);
         } else {
-          // Outline primitives: flat primitive color (ambient 1, diffuse 0).
+          // Outline / VdW primitives: shade with the per-primitive material.
+          // The Embree geometric normal Ng is valid for SPHERE_POINT and
+          // ROUND_LINEAR_CURVE (the capsule surface normal POV shades against).
           const Vec4& fc = (rec.kind == GeomKind::Sphere)
                                ? sphereColor[rh.hit.primID]
                                : cylColor[rh.hit.primID];
-          out = {fc.x, fc.y, fc.z};
+          const Material& pm = (rec.kind == GeomKind::Sphere)
+                                   ? sphereMat[rh.hit.primID]
+                                   : cylMat[rh.hit.primID];
+          Vec3 N = faceForward(
+              normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
+          const Vec3 C = {fc.x, fc.y, fc.z};
+          const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
+          out = shadeLocal(pm, C, N, V, lights, ambLight, bg,
+                           opt.specularScale);
         }
       }
 

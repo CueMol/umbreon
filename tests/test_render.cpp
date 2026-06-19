@@ -54,6 +54,26 @@ umbreon::DistantLight makeKeyLight() {
   return l;
 }
 
+// Build a scene with one shaded material sphere at the origin (radius 1), framed
+// head-on by the ortho camera so the center pixel hits the apex with N=(0,0,1),
+// V=(0,0,1) and the key light L=(0,0,1). Every cos term is then 1, so shadeLocal
+// reduces to the closed-form values the material checks below assert against.
+umbreon::Scene makeMaterialSphereScene(umbreon::Vec4 color,
+                                       const umbreon::Material& mat,
+                                       umbreon::Vec3 bg) {
+  umbreon::Scene sc;
+  sc.camera = makeOrthoCam();
+  sc.lights.push_back(makeKeyLight());
+  sc.background = bg;
+  umbreon::Sphere sp;
+  sp.center = {0, 0, 0};
+  sp.radius = 1.0f;
+  sp.color = color;
+  sp.material = mat;
+  sc.spheres.push_back(sp);
+  return sc;
+}
+
 // Index of the center pixel of a 5x5 image, in float-RGBA element units.
 constexpr std::size_t kCenterRgba = (2 * 5 + 2) * 4;
 constexpr std::size_t kCenterPix = 2 * 5 + 2;
@@ -160,6 +180,78 @@ int main() {
     s.check_eq("supersample: final height", f.height, 5);
     s.check("supersample: uniform region value preserved",
             approx(f.color[kCenterRgba + 0], 0.30f, 1e-4f));
+  }
+
+  // ===== Per-material sphere shading (shadeLocal model) =====
+  // Head-on geometry: N=V=L=(0,0,1), so every cos term is 1. The key light is
+  // white at intensity 0.5 (Lc=0.5); ambientColor defaults to (1,1,1).
+
+  // Matte (ambient 0, diffuse 0.8, brilliance 0): out = diffuse*Lc*C = 0.4*C.
+  {
+    umbreon::Material m;
+    m.ambient = 0.0f; m.diffuse = 0.8f; m.brilliance = 0.0f;
+    m.specular = 0.0f; m.phong = 0.0f; m.metallic = false; m.reflection = 0.0f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("matte sphere: R = 0.4*C.r", approx(f.color[kCenterRgba + 0], 0.24f, 1e-4f));
+    s.check("matte sphere: G = 0.4*C.g", approx(f.color[kCenterRgba + 1], 0.16f, 1e-4f));
+    s.check("matte sphere: B = 0.4*C.b", approx(f.color[kCenterRgba + 2], 0.08f, 1e-4f));
+  }
+
+  // Metallic F_MetalA (ambient 0.35, diffuse 0.3 brilliance 2, specular 0.80
+  // roughness 0.05, metallic). Head-on, bg=0 (no reflection): ambient 0.35*C +
+  // diffuse 0.3*0.5*C + metallic Blinn 0.80*(C*0.5) = (0.35+0.15+0.40)*C = 0.90*C.
+  {
+    umbreon::Material m;
+    m.ambient = 0.35f; m.diffuse = 0.3f; m.brilliance = 2.0f;
+    m.specular = 0.80f; m.roughness = 1.0f / 20.0f; m.metallic = true;
+    m.phong = 0.0f; m.reflection = 0.10f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("metallic sphere: R = 0.90*C.r", approx(f.color[kCenterRgba + 0], 0.54f, 1e-3f));
+    s.check("metallic sphere: G = 0.90*C.g", approx(f.color[kCenterRgba + 1], 0.36f, 1e-3f));
+    s.check("metallic sphere: B = 0.90*C.b", approx(f.color[kCenterRgba + 2], 0.18f, 1e-3f));
+  }
+
+  // Reflection term: the same metallic material on a WHITE background adds
+  // reflection*bg = 0.10*(1,1,1) on top of the 0.90*C body.
+  {
+    umbreon::Material m;
+    m.ambient = 0.35f; m.diffuse = 0.3f; m.brilliance = 2.0f;
+    m.specular = 0.80f; m.roughness = 1.0f / 20.0f; m.metallic = true;
+    m.phong = 0.0f; m.reflection = 0.10f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {1, 1, 1});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("reflection: R = 0.90*C.r + 0.10*bg", approx(f.color[kCenterRgba + 0], 0.64f, 1e-3f));
+    s.check("reflection: G = 0.90*C.g + 0.10*bg", approx(f.color[kCenterRgba + 1], 0.46f, 1e-3f));
+  }
+
+  // Phong highlight (ambient 0.3, diffuse 0.5 brilliance 0, phong 10000
+  // phong_size 50, non-metallic). For C=(0.2,0.4,0.6) the body without the
+  // highlight is 0.55*C = (0.11,0.22,0.33); phong adds an ACHROMATIC lift (the
+  // same scalar to each channel, since not metallic). Assert the lift is present
+  // and equal across channels, without pinning the tuned phong clamp constant.
+  {
+    umbreon::Material m;
+    m.ambient = 0.3f; m.diffuse = 0.5f; m.brilliance = 0.0f;
+    m.specular = 0.0f; m.phong = 10000.0f; m.phongSize = 50.0f;
+    m.metallic = false; m.reflection = 0.0f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.2f, 0.4f, 0.6f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    const float liftR = f.color[kCenterRgba + 0] - 0.11f;
+    const float liftG = f.color[kCenterRgba + 1] - 0.22f;
+    const float liftB = f.color[kCenterRgba + 2] - 0.33f;
+    s.check("phong: highlight present", liftR > 0.05f);
+    s.check("phong: achromatic lift (R==G)", approx(liftR, liftG, 1e-4f));
+    s.check("phong: achromatic lift (G==B)", approx(liftG, liftB, 1e-4f));
   }
 
   return s.report();
