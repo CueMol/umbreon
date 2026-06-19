@@ -1,0 +1,166 @@
+// Integration tests for the umbreon render pipeline: primary-ray direct shading
+// (mesh local illumination + flat outline primitives), the background/miss path,
+// and the render() facade steps (supersample downsample, assumed_gamma). These
+// lock the current no-AO / no-shadow baseline so later AO / soft-shadow work can
+// detect any unintended change to the existing shading output.
+#include <cmath>
+#include <cstddef>
+
+#include "test_util.hpp"
+#include "umbreon.hpp"
+
+namespace {
+
+bool approx(float a, float b, float eps) { return std::fabs(a - b) <= eps; }
+
+// A flat quad in the z=0 plane spanning [-2,2]^2, facing +Z (toward the camera),
+// with a single pigment color. Two de-indexed triangles, material 0.2/0.8.
+umbreon::Mesh makeQuad(umbreon::Vec4 color) {
+  using umbreon::Vec3;
+  umbreon::Mesh m;
+  const Vec3 p00{-2, -2, 0}, p10{2, -2, 0}, p11{2, 2, 0}, p01{-2, 2, 0};
+  const Vec3 corners[6] = {p00, p10, p11, p00, p11, p01};
+  const Vec3 n{0, 0, 1};
+  for (int i = 0; i < 6; ++i) {
+    m.positions.push_back(corners[i]);
+    m.normals.push_back(n);
+    m.colors.push_back(color);
+  }
+  m.material.ambient = 0.2f;
+  m.material.diffuse = 0.8f;
+  return m;
+}
+
+// Orthographic camera at +Z looking down -Z. height=4 frames y in [-2,2]; with a
+// square image that frames x in [-2,2] as well, so the quad fills the view.
+umbreon::Camera makeOrthoCam() {
+  umbreon::Camera c;
+  c.position = {0, 0, 10};
+  c.direction = {0, 0, -1};
+  c.up = {0, 1, 0};
+  c.orthographic = true;
+  c.height = 4.0f;
+  return c;
+}
+
+// A single head-on distant light traveling -Z (lighting the +Z faces) at half
+// intensity. With material 0.2/0.8 and a head-on normal (N.L = 1) this gives
+// lit = 0.2 + 0.8 * 1.0 * 0.5 = 0.6, so out = pigment * 0.6.
+umbreon::DistantLight makeKeyLight() {
+  umbreon::DistantLight l;
+  l.direction = {0, 0, -1};
+  l.color = {1, 1, 1};
+  l.intensity = 0.5f;
+  return l;
+}
+
+// Index of the center pixel of a 5x5 image, in float-RGBA element units.
+constexpr std::size_t kCenterRgba = (2 * 5 + 2) * 4;
+constexpr std::size_t kCenterPix = 2 * 5 + 2;
+
+}  // namespace
+
+int main() {
+  umbreon::test::Suite s("render");
+  const umbreon::Vec4 pigment{0.5f, 0.6f, 0.7f, 1.0f};
+
+  // --- mesh direct shading: out = C * (Ka*ambLight + Kd * max(N.L,0) * Lc) ---
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0.4f, 0.1f, 0.2f};
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("mesh: center R = C.r*0.6", approx(f.color[kCenterRgba + 0], 0.30f, 1e-4f));
+    s.check("mesh: center G = C.g*0.6", approx(f.color[kCenterRgba + 1], 0.36f, 1e-4f));
+    s.check("mesh: center B = C.b*0.6", approx(f.color[kCenterRgba + 2], 0.42f, 1e-4f));
+    s.check("mesh: alpha = 1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    s.check("mesh: center depth = ortho cam distance (10)",
+            approx(f.depth[kCenterPix], 10.0f, 1e-3f));
+  }
+
+  // --- background / miss path: empty scene -> every ray misses -> bg, depth 0 ---
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0.4f, 0.1f, 0.2f};
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("background: R", approx(f.color[kCenterRgba + 0], 0.4f, 1e-6f));
+    s.check("background: G", approx(f.color[kCenterRgba + 1], 0.1f, 1e-6f));
+    s.check("background: B", approx(f.color[kCenterRgba + 2], 0.2f, 1e-6f));
+    s.check("background: depth 0 on miss", approx(f.depth[kCenterPix], 0.0f, 1e-6f));
+  }
+
+  // --- flat outline primitive: a sphere is rendered with its raw color and no
+  // lighting (ambient 1, diffuse 0), so outlines stay exactly their color
+  // (black outlines stay black) regardless of the light present in the scene. ---
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());  // present, but must not affect the sphere
+    sc.background = {0.4f, 0.1f, 0.2f};
+    umbreon::Sphere sp;
+    sp.center = {0, 0, 0};
+    sp.radius = 1.0f;
+    sp.color = {0.3f, 0.4f, 0.5f, 1.0f};
+    sc.spheres.push_back(sp);
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("outline: sphere keeps raw R (no shading)", approx(f.color[kCenterRgba + 0], 0.3f, 1e-4f));
+    s.check("outline: sphere keeps raw G (no shading)", approx(f.color[kCenterRgba + 1], 0.4f, 1e-4f));
+    s.check("outline: sphere keeps raw B (no shading)", approx(f.color[kCenterRgba + 2], 0.5f, 1e-4f));
+  }
+
+  // --- facade: assumed_gamma raises the linear output to the power g after
+  // shading. lit pigment 0.30/0.36/0.42 at g=2 -> squared; alpha untouched. ---
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    o.assumedGamma = 2.0f;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("gamma: R squared", approx(f.color[kCenterRgba + 0], 0.30f * 0.30f, 1e-4f));
+    s.check("gamma: G squared", approx(f.color[kCenterRgba + 1], 0.36f * 0.36f, 1e-4f));
+    s.check("gamma: alpha unchanged by gamma", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+  }
+
+  // --- facade: supersample renders at width*ss then box-averages back down. Over
+  // a uniformly shaded region the value is preserved, and the final framebuffer
+  // is the requested (non-supersampled) size. ---
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    o.supersample = 2;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check_eq("supersample: final width", f.width, 5);
+    s.check_eq("supersample: final height", f.height, 5);
+    s.check("supersample: uniform region value preserved",
+            approx(f.color[kCenterRgba + 0], 0.30f, 1e-4f));
+  }
+
+  return s.report();
+}

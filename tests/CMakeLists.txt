@@ -20,9 +20,18 @@ add_test(
           ${CMAKE_SOURCE_DIR}/data/test1.pov
           ${CMAKE_SOURCE_DIR}/data/1ab0_scene1.pov)
 
-# Fog moved into the umbreon library; build its test only when umbreon exists.
+# Tests that need the rendering library (fog, image helpers, the render pipeline)
+# are built only when the umbreon target exists (Embree + TBB available).
 if(TARGET umbreon)
   add_executable(test_fog test_fog.cpp)
   target_link_libraries(test_fog PRIVATE umbreon)
   add_test(NAME fog COMMAND test_fog)
+
+  add_executable(test_image_ops test_image_ops.cpp)
+  target_link_libraries(test_image_ops PRIVATE umbreon)
+  add_test(NAME image_ops COMMAND test_image_ops)
+
+  add_executable(test_render test_render.cpp)
+  target_link_libraries(test_render PRIVATE umbreon)
+  add_test(NAME render COMMAND test_render)
 endif()
