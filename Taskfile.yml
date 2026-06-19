@@ -1,0 +1,35 @@
+version: '3'
+
+# Tasks for the umbreon Embree renderer + benchmark CLI.
+# Requires go-task (https://taskfile.dev): brew install go-task
+
+tasks:
+  deps:
+    desc: Install dependencies via Homebrew
+    cmds:
+      - brew install embree tbb povray
+
+  build:
+    desc: Configure and build (Release)
+    cmds:
+      - cmake -S . -B build
+      - cmake --build build
+
+  test:
+    desc: Build and run the unit / integration tests
+    cmds:
+      - cmake -S . -B build
+      - cmake --build build
+      - ctest --test-dir build --output-on-failure
+
+  render:
+    desc: 'Render data/test1.pov (extra args: task render -- --supersample 4)'
+    deps: [build]
+    cmds:
+      - ./build/umbreon_cli data/test1.pov -o out.png {{.CLI_ARGS}}
+
+  clean:
+    desc: Remove build artifacts and rendered images
+    cmds:
+      - rm -rf build
+      - rm -f out*.png *.ppm

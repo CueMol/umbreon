@@ -1,0 +1,751 @@
+#include "geom/mesh2_reader.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <map>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "pov/pov_lexer.hpp"
+
+namespace umbreon {
+namespace {
+
+using pov::binOp;
+using pov::comp;
+using pov::PovValue;
+using pov::Tk;
+using pov::Token;
+using pov::tokenize;
+
+// A texture identifier resolves to a representative color and (optionally) a
+// finish block.
+struct PovTexture {
+  Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+  Material finish;
+  bool hasFinish = false;
+};
+
+float srgbToLinear(float c) {
+  return (c <= 0.04045f) ? c / 12.92f
+                         : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// ==========================================================================
+// Reader
+// ==========================================================================
+class Reader {
+ public:
+  Reader(std::vector<Token> toks, const SymbolTable& seed)
+      : t_(std::move(toks)) {
+    for (const auto& kv : seed) {
+      PovValue v;
+      v.n = std::min<int>(4, static_cast<int>(kv.second.size()));
+      for (int i = 0; i < v.n; ++i) v.c[i] = kv.second[i];
+      values_[kv.first] = v;
+    }
+  }
+
+  SceneGeometry run() {
+    while (!isEnd()) {
+      if (isPunct("#")) {
+        advance();  // consume '#'
+        const std::string dir = curIsIdent() ? cur().s : std::string();
+        if (dir == "macro") {
+          skipMacro();
+        } else if (dir == "declare" || dir == "local") {
+          advance();  // consume directive keyword
+          parseDeclare();
+        } else if (!dir.empty()) {
+          // #version / #if / #ifdef / #ifndef / #else / #end / #default ...
+          // The directive keyword is skipped; the body (if any) is scanned
+          // normally so that geometry nested inside #if is still found.
+          advance();
+        }
+      } else if (curIsIdent() && cur().s == "mesh2") {
+        advance();
+        parseMesh2();
+      } else if (curIsIdent() && cur().s == "sphere" && peekPunct(1, "{")) {
+        advance();
+        parseSphere();
+      } else if (curIsIdent() && cur().s == "cylinder" && peekPunct(1, "{")) {
+        advance();
+        parseCylinder();
+      } else if (curIsIdent() &&
+                 (cur().s == "edge_line" || cur().s == "edge_line2") &&
+                 peekPunct(1, "(")) {
+        const bool two = cur().s == "edge_line2";
+        advance();
+        parseEdgeLine(two);
+      } else {
+        advance();
+      }
+    }
+    return finalize();
+  }
+
+ private:
+  // ----- token cursor -----------------------------------------------------
+  const Token& cur() const { return t_[pos_]; }
+  bool isEnd() const { return t_[pos_].kind == Tk::End; }
+  void advance() { if (!isEnd()) ++pos_; }
+  bool curIsIdent() const { return cur().kind == Tk::Ident; }
+  bool curIsNum() const { return cur().kind == Tk::Num; }
+  bool isPunct(const char* p) const {
+    return cur().kind == Tk::Punct && cur().s == p;
+  }
+  bool peekPunct(std::size_t ahead, const char* p) const {
+    std::size_t k = pos_ + ahead;
+    return k < t_.size() && t_[k].kind == Tk::Punct && t_[k].s == p;
+  }
+
+  // Index of the '}' matching the '{' at openIdx.
+  std::size_t matchBrace(std::size_t openIdx) const {
+    int depth = 0;
+    for (std::size_t k = openIdx; k < t_.size(); ++k) {
+      if (t_[k].kind == Tk::Punct && t_[k].s == "{") {
+        ++depth;
+      } else if (t_[k].kind == Tk::Punct && t_[k].s == "}") {
+        if (--depth == 0) return k;
+      } else if (t_[k].kind == Tk::End) {
+        break;
+      }
+    }
+    throw Mesh2ReadError("unbalanced '{' near line " +
+                         std::to_string(t_[openIdx].line));
+  }
+
+  // ----- expression evaluator (advances pos_) -----------------------------
+  PovValue evalPrimary() {
+    if (isPunct("-")) { advance(); PovValue v = evalPrimary();
+      for (int i = 0; i < v.n; ++i) v.c[i] = -v.c[i]; return v; }
+    if (isPunct("+")) { advance(); return evalPrimary(); }
+    if (isPunct("(")) {
+      advance();
+      PovValue v = evalSum();
+      if (isPunct(")")) advance();
+      return v;
+    }
+    if (isPunct("<")) {
+      advance();
+      PovValue v;
+      while (!isPunct(">") && !isEnd() && v.n < 4) {
+        PovValue e = evalSum();
+        v.c[v.n++] = (e.n > 0) ? e.c[0] : 0.0;
+        if (isPunct(",")) advance();
+        else break;
+      }
+      if (isPunct(">")) advance();
+      return v;
+    }
+    if (curIsNum()) {
+      PovValue v; v.n = 1; v.c[0] = cur().num; advance(); return v;
+    }
+    if (curIsIdent()) {
+      const std::string name = cur().s;
+      advance();
+      if (isPunct("(")) {
+        // function call: not needed for CueMol mesh data -> skip args, yield 0
+        int depth = 0;
+        do {
+          if (isPunct("(")) ++depth;
+          else if (isPunct(")")) --depth;
+          advance();
+        } while (depth > 0 && !isEnd());
+        return PovValue{};
+      }
+      auto it = values_.find(name);
+      if (it != values_.end()) return it->second;
+      return PovValue{};  // unknown identifier -> tolerant zero
+    }
+    return PovValue{};
+  }
+
+  PovValue evalTerm() {
+    PovValue a = evalPrimary();
+    while (isPunct("*") || isPunct("/")) {
+      char op = cur().s[0];
+      advance();
+      a = binOp(a, evalPrimary(), op);
+    }
+    return a;
+  }
+
+  PovValue evalSum() {
+    PovValue a = evalTerm();
+    while (isPunct("+") || isPunct("-")) {
+      char op = cur().s[0];
+      advance();
+      a = binOp(a, evalTerm(), op);
+    }
+    return a;
+  }
+
+  // ----- directive handling ----------------------------------------------
+  // Skip an entire "#macro ... #end" definition (handles nested directives).
+  void skipMacro() {
+    advance();  // consume 'macro'
+    int depth = 1;
+    while (!isEnd() && depth > 0) {
+      if (isPunct("#")) {
+        advance();
+        if (curIsIdent()) {
+          const std::string& d = cur().s;
+          if (d == "macro" || d == "if" || d == "ifdef" || d == "ifndef" ||
+              d == "while" || d == "for" || d == "switch") {
+            ++depth;
+          } else if (d == "end") {
+            --depth;
+          }
+          advance();
+        }
+      } else {
+        advance();
+      }
+    }
+  }
+
+  // Cursor is at the identifier being declared.
+  void parseDeclare() {
+    if (!curIsIdent()) return;
+    const std::string name = cur().s;
+    advance();
+    if (!isPunct("=")) return;
+    advance();  // consume '='
+
+    if (curIsIdent() && cur().s == "texture") {
+      advance();
+      if (!isPunct("{")) return;
+      std::size_t open = pos_;
+      std::size_t close = matchBrace(open);
+      PovTexture tex = parseTextureBody(open + 1, close);
+      textures_[name] = tex;
+      adoptMaterial(tex);
+      pos_ = close + 1;
+      return;
+    }
+    if (curIsIdent() && (cur().s == "pigment" || cur().s == "finish" ||
+                         cur().s == "normal" || cur().s == "material")) {
+      advance();
+      if (isPunct("{")) pos_ = matchBrace(pos_) + 1;
+      return;
+    }
+    // numeric / vector expression terminated by ';'
+    PovValue v = evalSum();
+    if (v.n > 0) values_[name] = v;
+    skipToSemicolon();
+  }
+
+  void skipToSemicolon() {
+    int depth = 0;
+    while (!isEnd()) {
+      if (cur().kind == Tk::Punct) {
+        const std::string& p = cur().s;
+        if (p == "{" || p == "(" || p == "[") ++depth;
+        else if (p == "}" || p == ")" || p == "]") { if (depth > 0) --depth; }
+        else if (depth == 0 && p == ";") { advance(); return; }
+        else if (depth == 0 && p == "#") return;  // next directive
+      }
+      advance();
+    }
+  }
+
+  // ----- texture / pigment / finish --------------------------------------
+  void adoptMaterial(const PovTexture& tex) {
+    if (tex.hasFinish && !haveMaterial_) {
+      material_ = tex.finish;
+      haveMaterial_ = true;
+    }
+  }
+
+  // Parse the interior of a "texture { ... }" block (token range [begin,end)).
+  PovTexture parseTextureBody(std::size_t begin, std::size_t end) {
+    PovTexture tex;
+    bool haveColor = false;
+    std::string baseName;
+    std::size_t k = begin;
+    while (k < end) {
+      const Token& tk = t_[k];
+      if (tk.kind == Tk::Ident) {
+        if (tk.s == "pigment" && k + 1 < end && t_[k + 1].kind == Tk::Punct &&
+            t_[k + 1].s == "{") {
+          std::size_t c = matchBrace(k + 1);
+          Vec4 col;
+          if (parsePigmentColor(k + 2, c, col)) {
+            tex.color = col;
+            haveColor = true;
+          }
+          k = c + 1;
+          continue;
+        }
+        if (tk.s == "finish" && k + 1 < end && t_[k + 1].kind == Tk::Punct &&
+            t_[k + 1].s == "{") {
+          std::size_t c = matchBrace(k + 1);
+          tex.finish = parseFinish(k + 2, c);
+          tex.hasFinish = true;
+          k = c + 1;
+          continue;
+        }
+        if (baseName.empty() && !haveColor && tk.s != "pigment" &&
+            tk.s != "finish") {
+          baseName = tk.s;  // reference to a previously declared texture
+        }
+        ++k;
+      } else if (tk.kind == Tk::Punct && tk.s == "{") {
+        k = matchBrace(k) + 1;  // skip an unrelated nested block
+      } else {
+        ++k;
+      }
+    }
+    if (!baseName.empty()) {
+      auto it = textures_.find(baseName);
+      if (it != textures_.end()) {
+        if (!haveColor) tex.color = it->second.color;
+        if (!tex.hasFinish && it->second.hasFinish) {
+          tex.finish = it->second.finish;
+          tex.hasFinish = true;
+        }
+      }
+    }
+    return tex;
+  }
+
+  // Find "color <kind> <expr>" inside a pigment block and evaluate the color.
+  bool parsePigmentColor(std::size_t begin, std::size_t end, Vec4& out) {
+    auto isColorKw = [](const std::string& s) {
+      return s == "rgb" || s == "rgbf" || s == "rgbt" || s == "rgbft" ||
+             s == "srgb" || s == "srgbf" || s == "srgbt" || s == "srgbft";
+    };
+    for (std::size_t k = begin; k < end; ++k) {
+      const Token& tk = t_[k];
+      if (tk.kind != Tk::Ident) continue;
+      std::string kind;
+      std::size_t exprAt = 0;
+      if (tk.s == "color" || tk.s == "colour") {
+        kind = "rgb";
+        std::size_t p = k + 1;
+        if (p < end && t_[p].kind == Tk::Ident && isColorKw(t_[p].s)) {
+          kind = t_[p].s;
+          ++p;
+        }
+        exprAt = p;
+      } else if (isColorKw(tk.s)) {
+        kind = tk.s;
+        exprAt = k + 1;
+      } else {
+        continue;
+      }
+      pos_ = exprAt;
+      PovValue v = evalSum();
+      out = toColor(v, kind);
+      return true;
+    }
+    return false;
+  }
+
+  static Vec4 toColor(const PovValue& v, const std::string& kind) {
+    float r, g, b;
+    if (v.n >= 3) {
+      r = static_cast<float>(v.c[0]);
+      g = static_cast<float>(v.c[1]);
+      b = static_cast<float>(v.c[2]);
+    } else if (v.n >= 1) {
+      r = g = b = static_cast<float>(v.c[0]);
+    } else {
+      r = g = b = 1.0f;
+    }
+    bool transparency = kind == "rgbt" || kind == "rgbf" || kind == "rgbft" ||
+                        kind == "srgbt" || kind == "srgbf" || kind == "srgbft";
+    float opacity = 1.0f;
+    if (transparency && v.n >= 4) {
+      opacity = 1.0f - static_cast<float>(v.c[3]);
+    }
+    if (kind.rfind("srgb", 0) == 0) {
+      r = srgbToLinear(r);
+      g = srgbToLinear(g);
+      b = srgbToLinear(b);
+    }
+    return Vec4{r, g, b, opacity};
+  }
+
+  Material parseFinish(std::size_t begin, std::size_t end) {
+    Material m;
+    std::size_t k = begin;
+    while (k < end) {
+      const Token& tk = t_[k];
+      if (tk.kind == Tk::Punct && tk.s == "{") {
+        k = matchBrace(k) + 1;  // skip nested block (e.g. reflection { ... })
+        continue;
+      }
+      if (tk.kind == Tk::Ident &&
+          (tk.s == "ambient" || tk.s == "diffuse" || tk.s == "specular" ||
+           tk.s == "roughness")) {
+        pos_ = k + 1;
+        PovValue v = evalSum();
+        float f = (v.n > 0) ? static_cast<float>(v.c[0]) : 0.0f;
+        if (tk.s == "ambient") m.ambient = f;
+        else if (tk.s == "diffuse") m.diffuse = f;
+        else if (tk.s == "specular") m.specular = f;
+        else m.roughness = f;
+        k = pos_;
+        continue;
+      }
+      ++k;
+    }
+    return m;
+  }
+
+  // ----- mesh2 ------------------------------------------------------------
+  void parseMesh2() {
+    if (!isPunct("{")) return;
+    std::size_t open = pos_;
+    std::size_t close = matchBrace(open);
+    std::size_t k = open + 1;
+    while (k < close) {
+      const Token& tk = t_[k];
+      if (tk.kind == Tk::Ident && k + 1 < close &&
+          t_[k + 1].kind == Tk::Punct && t_[k + 1].s == "{") {
+        std::size_t c = matchBrace(k + 1);
+        if (tk.s == "vertex_vectors") {
+          readVec3Array(k + 2, c, verts_);
+        } else if (tk.s == "normal_vectors") {
+          readVec3Array(k + 2, c, norms_);
+        } else if (tk.s == "texture_list") {
+          readTextureList(k + 2, c);
+        } else if (tk.s == "face_indices") {
+          readFaceIndices(k + 2, c);
+        }
+        // uv_vectors / normal_indices / uv_indices: intentionally ignored
+        k = c + 1;
+        continue;
+      }
+      if (tk.kind == Tk::Punct && tk.s == "{") {
+        k = matchBrace(k) + 1;
+        continue;
+      }
+      ++k;
+    }
+    haveMesh_ = true;
+    deindexBlock();  // a CueMol file may hold several mesh2 blocks
+    pos_ = close + 1;
+  }
+
+  // ----- sphere / edge_line ----------------------------------------------
+  // sphere { <center>, <radius> texture { ... pigment { color rgb COL } } }
+  void parseSphere() {
+    if (!isPunct("{")) return;
+    std::size_t open = pos_;
+    std::size_t close = matchBrace(open);
+    pos_ = open + 1;
+    PovValue center = evalSum();
+    if (isPunct(",")) advance();
+    PovValue radius = evalSum();
+    Sphere s;
+    s.center = toVec3(center);
+    s.radius = static_cast<float>(comp(radius, 0));
+    s.color = colorOfTextureIn(pos_, close);
+    if (s.radius > 0.0f) spheres_.push_back(s);
+    pos_ = close + 1;
+  }
+
+  // cylinder { <p1>, <p2>, <radius> [open] texture { ... } }
+  // CueMol emits these directly for the density-mesh wireframe (_39_40).
+  void parseCylinder() {
+    if (!isPunct("{")) return;
+    std::size_t open = pos_;
+    std::size_t close = matchBrace(open);
+    pos_ = open + 1;
+    PovValue p1 = evalSum();
+    if (isPunct(",")) advance();
+    PovValue p2 = evalSum();
+    if (isPunct(",")) advance();
+    PovValue radius = evalSum();
+    Cylinder c;
+    c.p0 = toVec3(p1);
+    c.p1 = toVec3(p2);
+    c.radius = static_cast<float>(comp(radius, 0));
+    c.color = colorOfTextureIn(pos_, close);
+    if (c.radius > 0.0f) cylinders_.push_back(c);
+    pos_ = close + 1;
+  }
+
+  // edge_line(v1, n1, v2, n2, raise, w, tex, col) and
+  // edge_line2(v1, n1, a1, v2, n2, a2, raise, w, tex, col) both expand to a
+  // cylinder from (v1 + raise*n1) to (v2 + raise*n2), radius w, color col.
+  void parseEdgeLine(bool two) {
+    std::vector<PovValue> a = parseCallArgs();
+    const std::size_t need = two ? 10u : 8u;
+    if (a.size() < need) return;
+    const int iV1 = 0, iN1 = 1;
+    const int iV2 = two ? 3 : 2, iN2 = two ? 4 : 3;
+    const int iRaise = two ? 6 : 4, iW = two ? 7 : 5, iCol = two ? 9 : 7;
+    double raise = comp(a[iRaise], 0);
+    Cylinder c;
+    c.p0 = toVec3(a[iV1]) + toVec3(a[iN1]) * static_cast<float>(raise);
+    c.p1 = toVec3(a[iV2]) + toVec3(a[iN2]) * static_cast<float>(raise);
+    c.radius = static_cast<float>(comp(a[iW], 0));
+    c.color = toColor(a[iCol], "rgb");
+    if (c.radius > 0.0f) cylinders_.push_back(c);
+  }
+
+  std::vector<PovValue> parseCallArgs() {
+    std::vector<PovValue> args;
+    if (!isPunct("(")) return args;
+    advance();
+    if (!isPunct(")")) {
+      args.push_back(evalSum());
+      while (isPunct(",")) { advance(); args.push_back(evalSum()); }
+    }
+    if (isPunct(")")) advance();
+    return args;
+  }
+
+  static Vec3 toVec3(const PovValue& v) {
+    return Vec3{static_cast<float>(comp(v, 0)), static_cast<float>(comp(v, 1)),
+                static_cast<float>(comp(v, 2))};
+  }
+
+  // Find the first "texture { ... }" in [begin,end) and return its color.
+  Vec4 colorOfTextureIn(std::size_t begin, std::size_t end) {
+    for (std::size_t k = begin; k < end; ++k) {
+      if (t_[k].kind == Tk::Ident && t_[k].s == "texture" && k + 1 < end &&
+          t_[k + 1].kind == Tk::Punct && t_[k + 1].s == "{") {
+        std::size_t c = matchBrace(k + 1);
+        return parseTextureBody(k + 2, c).color;
+      }
+    }
+    return Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+  }
+
+  float readSignedNumber() {
+    float sign = 1.0f;
+    while (isPunct("-") || isPunct("+")) {
+      if (isPunct("-")) sign = -sign;
+      advance();
+    }
+    if (curIsNum()) {
+      float n = static_cast<float>(cur().num);
+      advance();
+      return sign * n;
+    }
+    return 0.0f;
+  }
+
+  Vec3 readVec3Literal() {
+    Vec3 v;
+    if (!isPunct("<")) return v;
+    advance();
+    float c[3] = {0, 0, 0};
+    for (int i = 0; i < 3; ++i) {
+      c[i] = readSignedNumber();
+      if (isPunct(",")) advance();
+      else break;
+    }
+    while (!isPunct(">") && !isEnd()) advance();  // tolerate a 4th component
+    if (isPunct(">")) advance();
+    return Vec3{c[0], c[1], c[2]};
+  }
+
+  void readVec3Array(std::size_t begin, std::size_t end, std::vector<Vec3>& dst) {
+    pos_ = begin;
+    // optional leading element count
+    if (curIsNum()) {
+      std::size_t save = pos_;
+      advance();
+      if (isPunct(",")) advance();
+      else pos_ = save;  // it was not a count
+    }
+    while (pos_ < end && !isEnd()) {
+      if (isPunct("<")) {
+        dst.push_back(readVec3Literal());
+        if (isPunct(",")) advance();
+      } else if (isPunct(",")) {
+        advance();
+      } else {
+        break;
+      }
+    }
+  }
+
+  void readTextureList(std::size_t begin, std::size_t end) {
+    std::size_t k = begin;
+    if (k < end && t_[k].kind == Tk::Num) {
+      ++k;
+      if (k < end && t_[k].kind == Tk::Punct && t_[k].s == ",") ++k;
+    }
+    while (k < end) {
+      if (t_[k].kind == Tk::Ident && t_[k].s == "texture" && k + 1 < end &&
+          t_[k + 1].kind == Tk::Punct && t_[k + 1].s == "{") {
+        std::size_t c = matchBrace(k + 1);
+        PovTexture tex = parseTextureBody(k + 2, c);
+        texColors_.push_back(tex.color);
+        adoptMaterial(tex);
+        k = c + 1;
+        if (k < end && t_[k].kind == Tk::Punct && t_[k].s == ",") ++k;
+        continue;
+      }
+      ++k;
+    }
+  }
+
+  void readFaceIndices(std::size_t begin, std::size_t end) {
+    pos_ = begin;
+    if (curIsNum()) {  // optional leading face count
+      advance();
+      if (isPunct(",")) advance();
+    }
+    while (pos_ < end && !isEnd()) {
+      if (isPunct("<")) {
+        advance();
+        Face f;
+        f.v[0] = static_cast<int>(readSignedNumber());
+        if (isPunct(",")) advance();
+        f.v[1] = static_cast<int>(readSignedNumber());
+        if (isPunct(",")) advance();
+        f.v[2] = static_cast<int>(readSignedNumber());
+        while (!isPunct(">") && !isEnd() && pos_ < end) advance();
+        if (isPunct(">")) advance();
+        // optional per-face or per-corner texture indices
+        std::vector<int> tex;
+        while (isPunct(",") && pos_ < end) {
+          advance();
+          if (curIsNum()) {
+            tex.push_back(static_cast<int>(cur().num));
+            advance();
+          } else {
+            break;  // reached '<' (next face) or '}'
+          }
+        }
+        if (tex.size() == 1) {
+          f.tex[0] = f.tex[1] = f.tex[2] = tex[0];
+          f.hasTex = true;
+        } else if (tex.size() >= 3) {
+          f.tex[0] = tex[0];
+          f.tex[1] = tex[1];
+          f.tex[2] = tex[2];
+          f.hasTex = true;
+        }
+        faces_.push_back(f);
+      } else if (isPunct(",")) {
+        advance();
+      } else {
+        break;
+      }
+    }
+  }
+
+  // ----- finalize ---------------------------------------------------------
+  // De-index the current mesh2 block's faces and append the triangles to the
+  // accumulated mesh, then clear the block buffers (a file may hold several
+  // mesh2 blocks, each with its own 0-based vertex indices).
+  void deindexBlock() {
+    const std::size_t firstTri = mesh_.triangleCount();
+    mesh_.positions.reserve(mesh_.positions.size() + faces_.size() * 3);
+    mesh_.normals.reserve(mesh_.normals.size() + faces_.size() * 3);
+    mesh_.colors.reserve(mesh_.colors.size() + faces_.size() * 3);
+
+    for (const Face& f : faces_) {
+      for (int k = 0; k < 3; ++k) {
+        int vi = f.v[k];
+        if (vi < 0 || static_cast<std::size_t>(vi) >= verts_.size()) {
+          throw Mesh2ReadError("face vertex index out of range: " +
+                               std::to_string(vi));
+        }
+        mesh_.positions.push_back(verts_[vi]);
+        mesh_.normals.push_back(static_cast<std::size_t>(vi) < norms_.size()
+                                    ? norms_[vi]
+                                    : Vec3{0, 0, 0});
+        Vec4 col{1.0f, 1.0f, 1.0f, 1.0f};
+        if (f.hasTex && !texColors_.empty()) {
+          int ti = f.tex[k];
+          if (ti < 0) ti = 0;
+          if (static_cast<std::size_t>(ti) >= texColors_.size()) {
+            ti = static_cast<int>(texColors_.size()) - 1;
+          }
+          col = texColors_[ti];
+        }
+        mesh_.colors.push_back(col);
+      }
+    }
+
+    // If this block carried no normals, derive geometric (flat) normals for it.
+    if (norms_.empty()) {
+      for (std::size_t ti = firstTri; ti < mesh_.triangleCount(); ++ti) {
+        Vec3 a = mesh_.positions[3 * ti];
+        Vec3 b = mesh_.positions[3 * ti + 1];
+        Vec3 c = mesh_.positions[3 * ti + 2];
+        Vec3 nn = normalize(cross(b - a, c - a));
+        mesh_.normals[3 * ti] = nn;
+        mesh_.normals[3 * ti + 1] = nn;
+        mesh_.normals[3 * ti + 2] = nn;
+      }
+    }
+
+    verts_.clear();
+    norms_.clear();
+    texColors_.clear();
+    faces_.clear();
+  }
+
+  SceneGeometry finalize() {
+    if (!haveMesh_ && spheres_.empty() && cylinders_.empty())
+      throw Mesh2ReadError("no geometry (mesh2/sphere/edge_line) found in input");
+    if (haveMaterial_) mesh_.material = material_;
+    SceneGeometry g;
+    g.mesh = std::move(mesh_);
+    g.spheres = std::move(spheres_);
+    g.cylinders = std::move(cylinders_);
+    return g;
+  }
+
+  struct Face {
+    int v[3] = {0, 0, 0};
+    int tex[3] = {0, 0, 0};
+    bool hasTex = false;
+  };
+
+  std::vector<Token> t_;
+  std::size_t pos_ = 0;
+  std::map<std::string, PovValue> values_;
+  std::map<std::string, PovTexture> textures_;
+  std::vector<Vec3> verts_;
+  std::vector<Vec3> norms_;
+  std::vector<Vec4> texColors_;
+  std::vector<Face> faces_;
+  Mesh mesh_;
+  std::vector<Sphere> spheres_;
+  std::vector<Cylinder> cylinders_;
+  Material material_;
+  bool haveMaterial_ = false;
+  bool haveMesh_ = false;
+};
+
+}  // namespace
+
+SceneGeometry readGeometryFromString(const std::string& text,
+                                     const SymbolTable& seedSymbols) {
+  Reader reader(tokenize(text), seedSymbols);
+  return reader.run();
+}
+
+SceneGeometry readGeometryFromFile(const std::string& path,
+                                   const SymbolTable& seedSymbols) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) throw Mesh2ReadError("cannot open file: " + path);
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  return readGeometryFromString(ss.str(), seedSymbols);
+}
+
+Mesh readMesh2FromString(const std::string& text) {
+  return readGeometryFromString(text).mesh;
+}
+
+Mesh readMesh2FromFile(const std::string& path) {
+  return readGeometryFromFile(path).mesh;
+}
+
+}  // namespace umbreon
