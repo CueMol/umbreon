@@ -92,10 +92,15 @@ class Reader {
         } else if (dir == "declare" || dir == "local") {
           advance();  // consume directive keyword
           parseDeclare();
+        } else if (dir == "if" || dir == "ifdef" || dir == "ifndef") {
+          advance();  // consume the directive keyword
+          enterIf();  // detect a "_show_<id>" section and push the #if frame
+        } else if (dir == "end") {
+          advance();
+          leaveIf();  // pop the #if frame, restore the enclosing group
         } else if (!dir.empty()) {
-          // #version / #if / #ifdef / #ifndef / #else / #end / #default ...
-          // The directive keyword is skipped; the body (if any) is scanned
-          // normally so that geometry nested inside #if is still found.
+          // #version / #else / #default / ... : skip the keyword and scan the
+          // body normally so geometry nested inside it is still found.
           advance();
         }
       } else if (curIsIdent() && cur().s == "mesh2") {
@@ -239,6 +244,52 @@ class Reader {
         advance();
       }
     }
+  }
+
+  // ----- section (transparency-group) tracking ---------------------------
+  // CueMol wraps each rendering object's geometry in "#if (_show_<id>) ... #end".
+  // Every primitive parsed inside such a block is tagged with that section's
+  // group index, so the renderer composites one transparent layer PER section.
+  void enterIf() {
+    ifStack_.push_back(curGroup_);
+    const std::string showVar = detectSectionVar();
+    if (!showVar.empty()) curGroup_ = groupFor(showVar);
+  }
+  void leaveIf() {
+    if (!ifStack_.empty()) {
+      curGroup_ = ifStack_.back();
+      ifStack_.pop_back();
+    }
+  }
+  // Peek the just-entered #if condition for a "_show_*" identifier (e.g.
+  // "#if (_show_34_35)"). Does NOT advance the cursor.
+  std::string detectSectionVar() {
+    if (!isPunct("(")) return std::string();
+    int depth = 0;
+    for (std::size_t k = pos_; k < t_.size(); ++k) {
+      const Token& tk = t_[k];
+      if (tk.kind == Tk::End) break;
+      if (tk.kind == Tk::Punct && tk.s == "(") {
+        ++depth;
+      } else if (tk.kind == Tk::Punct && tk.s == ")") {
+        if (--depth == 0) break;
+      } else if (tk.kind == Tk::Ident && tk.s.rfind("_show", 0) == 0) {
+        return tk.s;
+      }
+    }
+    return std::string();
+  }
+  // Map a "_show_<id>" variable to a group index (created on first use). The
+  // stored group name is the section id with the "_show" prefix stripped.
+  int groupFor(const std::string& showVar) {
+    std::string id =
+        (showVar.size() > 5) ? showVar.substr(5) : showVar;  // strip "_show"
+    auto it = groupIndex_.find(id);
+    if (it != groupIndex_.end()) return it->second;
+    int idx = static_cast<int>(groupNames_.size());
+    groupNames_.push_back(id);
+    groupIndex_[id] = idx;
+    return idx;
   }
 
   // Cursor is at the identifier being declared.
@@ -517,8 +568,31 @@ class Reader {
     PovTexture tex = textureIn(pos_, close);
     s.color = tex.color;
     if (tex.hasFinish) s.material = tex.finish;  // else keep flatOutline
+    s.group = static_cast<uint16_t>(curGroup_);
     if (s.radius > 0.0f) spheres_.push_back(s);
     pos_ = close + 1;
+  }
+
+  // Detect the optional POV `open` keyword (capless cylinder) in the token range
+  // [begin, end). It appears at brace depth 0 after the radius and before any
+  // texture/pigment/finish/material block, so we scan only the top level and
+  // stop once a nested block begins.
+  bool hasOpenKeyword(std::size_t begin, std::size_t end) const {
+    int depth = 0;
+    for (std::size_t k = begin; k < end; ++k) {
+      const Token& tk = t_[k];
+      if (tk.kind == Tk::Punct && tk.s == "{") {
+        ++depth;
+      } else if (tk.kind == Tk::Punct && tk.s == "}") {
+        if (depth > 0) --depth;
+      } else if (depth == 0 && tk.kind == Tk::Ident) {
+        if (tk.s == "open") return true;
+        if (tk.s == "texture" || tk.s == "pigment" || tk.s == "finish" ||
+            tk.s == "normal" || tk.s == "material")
+          break;  // nested block reached; `open` (if any) precedes it
+      }
+    }
+    return false;
   }
 
   // cylinder { <p1>, <p2>, <radius> [open] texture { ... } }
@@ -533,6 +607,9 @@ class Reader {
     PovValue p2 = evalSum();
     if (isPunct(",")) advance();
     PovValue radius = evalSum();
+    // Position just after the radius, before textureIn() advances pos_ into the
+    // texture block: the optional `open` keyword (if any) lives in [here, close).
+    const std::size_t afterRadius = pos_;
     Cylinder c;
     c.p0 = toVec3(p1);
     c.p1 = toVec3(p2);
@@ -540,6 +617,12 @@ class Reader {
     PovTexture tex = textureIn(pos_, close);
     c.color = tex.color;
     if (tex.hasFinish) c.material = tex.finish;  // else keep flatOutline
+    c.group = static_cast<uint16_t>(curGroup_);
+    // Raw cylinder{} bonds/wireframes are CLOSED (flat disk caps at p0/p1) unless
+    // the optional `open` keyword (capless) is present after the radius. Capped
+    // bonds are rendered as CONE_LINEAR_CURVE (flat caps); open ones join the
+    // ROUND_LINEAR_CURVE edge path. (CueMol's raw cylinders are all CLOSED.)
+    c.open = hasOpenKeyword(afterRadius, close);
     if (c.radius > 0.0f) cylinders_.push_back(c);
     pos_ = close + 1;
   }
@@ -560,6 +643,25 @@ class Reader {
     c.p1 = toVec3(a[iV2]) + toVec3(a[iN2]) * static_cast<float>(raise);
     c.radius = static_cast<float>(comp(a[iW], 0));
     c.color = toColor(a[iCol], "rgb");
+    // edge_line2 carries per-endpoint transmit a1 (arg 2) and a2 (arg 5): the
+    // POV macro pigments the segment "rgbt col+<0,0,0,a>" with a "gradient z"
+    // from a1 at p0 to a2 at p1, so opacity = 1 - transmit varies linearly
+    // along the segment. Store the p0 opacity in color.w and the p1 opacity in
+    // opacity1; the renderer lerps by the axial hit fraction. This fades the
+    // silhouette toward grazing edges exactly as POV does, and because adjacent
+    // segments share endpoints with matching transmit (a2 == a1) the opacity is
+    // continuous across joints (no step / seam).
+    if (two) {
+      const double t1 = comp(a[2], 0), t2 = comp(a[5], 0);
+      float op0 = std::min(1.0f, std::max(0.0f, 1.0f - static_cast<float>(t1)));
+      float op1 = std::min(1.0f, std::max(0.0f, 1.0f - static_cast<float>(t2)));
+      c.color.w = op0;
+      c.opacity1 = op1;
+    }
+    c.group = static_cast<uint16_t>(curGroup_);
+    // POV silhouette edges expand to `open` (capless) cylinders; tag them so the
+    // renderer routes them through the ROUND_LINEAR_CURVE chain (seam) path.
+    c.open = true;
     if (c.radius > 0.0f) cylinders_.push_back(c);
   }
 
@@ -775,6 +877,11 @@ class Reader {
       mesh_.triMaterialId.resize(endTri, idx);
     }
 
+    // Tag this block's triangles with the enclosing section (transparency
+    // group). Several mesh2 blocks in one "#if (_show_*)" share a group.
+    mesh_.triGroupId.resize(mesh_.triangleCount(),
+                            static_cast<uint16_t>(curGroup_));
+
     verts_.clear();
     norms_.clear();
     texColors_.clear();
@@ -793,6 +900,7 @@ class Reader {
     g.mesh = std::move(mesh_);
     g.spheres = std::move(spheres_);
     g.cylinders = std::move(cylinders_);
+    g.groupNames = std::move(groupNames_);
     return g;
   }
 
@@ -817,6 +925,12 @@ class Reader {
   std::vector<Material> blockMaterials_;
   bool haveBlockMaterial_ = false;
   bool haveMesh_ = false;
+
+  // section / transparency-group tracking
+  std::vector<std::string> groupNames_{std::string()};  // [0] = default group
+  std::map<std::string, int> groupIndex_;
+  int curGroup_ = 0;
+  std::vector<int> ifStack_;
 };
 
 }  // namespace

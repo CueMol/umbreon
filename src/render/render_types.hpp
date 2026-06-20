@@ -29,6 +29,20 @@ struct RenderOptions {
   float ior = 1.5f;            // principled: dielectric index of refraction
   float outlineKd = 1.0f;      // outline/wireframe matte kd; high => flat (ambient-1 look)
   std::string renderer = "pathtracer";  // "pathtracer" (GI) or "scivis" (AO)
+
+  // --- transparency (single-pass single-layer-per-group compositing) ---
+  // When on, the renderer walks hits front-to-back and additively composites
+  // the frontmost surface of each transparency group over the nearest opaque
+  // surface (linear space; order-independent, matching CueMol's blendpng).
+  bool transparency = true;
+  // When on, the background contributes 0 coverage so the output alpha equals
+  // the accumulated transparent coverage (POV "_transpbg"); default = opaque bg.
+  bool transparentBackground = false;
+  // Safety ceiling on transparent hits walked per primary ray. Normal
+  // termination is the opacity early-out (accumulated alpha >= kOpaque), so this
+  // only bites pathological stacks of many faint layers; set it well above any
+  // plausible per-ray fragment count. The renderer warns if a ray ever hits it.
+  int maxTransparentLayers = 256;
 };
 
 // Rendered frame: linear HDR color plus AOV channels, top-left pixel origin.

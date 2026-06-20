@@ -55,6 +55,9 @@ Options parseCli(int argc, char** argv) {
       o.flatten = true;
     } else if (a == "--ao-distance") {
       o.aoDistance = static_cast<float>(std::atof(value("--ao-distance").c_str()));
+      std::fprintf(stderr,
+                   "warning: --ao-distance is not implemented yet (AO is on the "
+                   "roadmap); the value is ignored\n");
     } else if (a == "--spp") {
       o.spp = std::atoi(value("--spp").c_str());
     } else if (a == "--accum") {
@@ -85,6 +88,29 @@ Options parseCli(int argc, char** argv) {
         o.declares[kv.substr(0, eq)] =
             std::atof(kv.substr(eq + 1).c_str());
       }
+    } else if (a == "--alpha") {
+      // --alpha ID=value : set the opacity of a CueMol section (e.g.
+      // _34_35=0.5). The "_show" prefix is accepted and stripped.
+      std::string kv = value("--alpha");
+      std::size_t eq = kv.find('=');
+      if (eq == std::string::npos) {
+        fail("--alpha expects ID=value (e.g. _34_35=0.5)");
+      } else {
+        std::string id = kv.substr(0, eq);
+        if (id.rfind("_show", 0) == 0) id = id.substr(5);
+        o.sectionAlpha[id] =
+            static_cast<float>(std::atof(kv.substr(eq + 1).c_str()));
+      }
+    } else if (a == "--list-groups") {
+      o.listGroups = true;
+    } else if (a == "--transparent-bg") {
+      std::string v = value("--transparent-bg");
+      if (o.ok && !parseBool(v, o.transparentBackground))
+        fail("--transparent-bg expects on/off");
+    } else if (a == "--transparency") {
+      std::string v = value("--transparency");
+      if (o.ok && !parseBool(v, o.transparency))
+        fail("--transparency expects on/off");
     } else if (a == "--flip-normals") {
       o.flipNormals = true;
     } else if (a == "--emit-pov") {
@@ -139,10 +165,14 @@ void printUsage(const char* prog) {
       "  --outline-scale <float>  radius x for spheres/cylinders [1.00]\n"
       "  --supersample <int>      render NxN and downsample  [1; .pov: 2]\n"
       "  --specular-scale <float> cartoon specular x      [.pov: 0 = matte]\n"
+      "  --alpha <ID=value>       set a section's opacity (e.g. _34_35=0.5)\n"
+      "  --list-groups            list the input's section ids and exit\n"
+      "  --transparent-bg <on|off> transparent background output      [off]\n"
+      "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --grid <int>             N for an N^3 instance grid    [1]\n"
       "  --spacing <float>        grid pitch (x mesh size)      [1.15]\n"
       "  --flatten                bake the instance grid into one mesh\n"
-      "  --ao-distance <float>    AO ray max distance           [auto]\n"
+      "  --ao-distance <float>    AO ray max distance (not implemented yet)\n"
       "  --spp <int>              pixel samples per frame       [1]\n"
       "  --accum <int>            accumulation frames           [16]\n"
       "  --prefilter-aux <on|off> prefilter albedo/normal AOVs  [off]\n"

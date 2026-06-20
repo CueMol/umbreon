@@ -1,10 +1,16 @@
 #include "render/embree_renderer.hpp"
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <embree4/rtcore.h>
@@ -15,9 +21,37 @@
 namespace umbreon {
 namespace {
 
+// Map an Embree error code to a short string. Embree 4 has no last-message
+// query, so the synchronous post-commit check below reports the code via this;
+// the async callback additionally prints the detailed message Embree supplies.
+const char* rtcErrorString(RTCError code) {
+  switch (code) {
+    case RTC_ERROR_NONE: return "no error";
+    case RTC_ERROR_UNKNOWN: return "unknown error";
+    case RTC_ERROR_INVALID_ARGUMENT: return "invalid argument";
+    case RTC_ERROR_INVALID_OPERATION: return "invalid operation";
+    case RTC_ERROR_OUT_OF_MEMORY: return "out of memory";
+    case RTC_ERROR_UNSUPPORTED_CPU: return "unsupported CPU";
+    case RTC_ERROR_CANCELLED: return "cancelled";
+    default: return "unrecognized error code";
+  }
+}
+
+// Device error callback: log async Embree errors (with Embree's own message) to
+// stderr so a malformed buffer / unsupported flag / OOM is diagnosable instead
+// of corrupting the image silently.
+void embreeErrorCallback(void* /*userPtr*/, RTCError code, const char* str) {
+  std::fprintf(stderr, "embree error %d (%s): %s\n", static_cast<int>(code),
+               rtcErrorString(code), (str != nullptr) ? str : "");
+}
+
 // Per-geometry kind, recorded against the geomID so the shader knows how to
 // color a hit (smooth-shaded mesh vs flat-colored outline primitive).
-enum class GeomKind { Mesh, Sphere, Cylinder };
+// Cylinder = POV `open` silhouette edges (ROUND_LINEAR_CURVE, chained, indexed
+// by the cyl* side-tables). CylinderCapped = POV capped bonds/wireframes
+// (CONE_LINEAR_CURVE, one segment per primID, indexed by the cylCap* tables).
+// The two need distinct kinds because Embree restarts primID at 0 per geometry.
+enum class GeomKind { Mesh, Sphere, Cylinder, CylinderCapped };
 
 struct GeomRecord {
   GeomKind kind = GeomKind::Mesh;
@@ -147,9 +181,16 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
 FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
   RTCDevice device = rtcNewDevice(nullptr);
   if (!device) throw std::runtime_error("rtcNewDevice failed");
+  rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
 
   RTCScene rscene = rtcNewScene(device);
   rtcSetSceneFlags(rscene, RTC_SCENE_FLAG_ROBUST);
+  // Static offline scene: committed once, then traversed by every primary ray
+  // (and every future AO/shadow ray). A one-time HIGH-quality BVH (spatial
+  // splits) amortizes over the whole frame, so HIGH is the right default vs
+  // Embree's MEDIUM, as OSPRay builds its static scenes. Pure traversal-speed
+  // win; it cannot change which primitive a ray hits.
+  rtcSetSceneBuildQuality(rscene, RTC_BUILD_QUALITY_HIGH);
 
   const Mesh& m = scene.mesh;
 
@@ -221,6 +262,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // --- spheres (CueMol balls / silhouette joints) ---
   std::vector<Vec4> sphereColor;     // indexed by primID
   std::vector<Material> sphereMat;   // parallel to sphereColor (primID order)
+  std::vector<uint16_t> sphereGroup; // parallel: transparency group (section)
   if (!scene.spheres.empty()) {
     const std::size_t n = scene.spheres.size() * bakeOffsets.size();
     RTCGeometry g = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_SPHERE_POINT);
@@ -228,6 +270,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float), n));
     sphereColor.reserve(n);
     sphereMat.reserve(n);
+    sphereGroup.reserve(n);
     std::size_t k = 0;
     for (const Vec3& off : bakeOffsets) {
       for (const Sphere& s : scene.spheres) {
@@ -237,6 +280,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         vb[k * 4 + 3] = s.radius;
         sphereColor.push_back(s.color);
         sphereMat.push_back(s.material);
+        sphereGroup.push_back(s.group);
         ++k;
       }
     }
@@ -247,46 +291,238 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     rtcReleaseGeometry(g);
   }
 
-  // --- cylinders (CueMol sticks / silhouette edges) as round linear curves ---
-  std::vector<Vec4> cylColor;     // indexed by primID (one per segment)
-  std::vector<Material> cylMat;   // parallel to cylColor (primID order)
+  // --- cylinders: two POV cap semantics, two Embree geometries ---------------
+  // POV emits two kinds of cylinders, distinguished by the parser's `open` flag:
+  //
+  //  (1) `open` (capless) silhouette EDGES -> ROUND_LINEAR_CURVE, chained.
+  //      POV draws silhouette edges as a union of short `open` cylinders that
+  //      share endpoints. Rendering each as an independent ROUND_LINEAR_CURVE
+  //      capsule adds a hemispherical cap at every shared vertex, so two caps
+  //      stack at each joint; through a transparent (faded) edge the extra cap
+  //      layers multiply the transmittance and show as dark beads at the joints.
+  //      We therefore stitch the segments into connected polylines and tag each
+  //      with RTC_CURVE_FLAG_NEIGHBOR_*, so Embree drops the internal caps and a
+  //      joint becomes a single shared swept-sphere -- POV's seamless union.
+  //
+  //  (2) CAPPED (CLOSED) bonds/wireframes -> CONE_LINEAR_CURVE, unchained.
+  //      POV stick bonds are plain cylinder{p0,p1,r} with FLAT disk caps at the
+  //      exact endpoints. Consecutive bonds OVERLAP but do not share endpoints
+  //      and carry different colors, so they cannot chain. A ROUND cap would
+  //      poke ~radius past its endpoint into the overlap and (with no neighbor
+  //      link) never get clipped -- a hemispherical bulge that protrudes through
+  //      an overlapping transparent surface (the red arc artifact). A
+  //      CONE_LINEAR_CURVE segment ("capped cone, discontinuous at edge
+  //      boundaries") has a flat cap of zero axial thickness at each endpoint,
+  //      so it hides inside the overlap exactly as POV's disk caps do.
+  //
+  // The two geometries have independent primID spaces (Embree restarts primID at
+  // 0 per geometry), so each gets its own primID-indexed side-tables and its own
+  // GeomKind; shadeHit dispatches on the kind.
+  std::vector<Vec4> cylColor;      // ROUND edges: indexed by primID (per segment)
+  std::vector<Material> cylMat;    // parallel to cylColor (primID order)
+  std::vector<uint16_t> cylGroup;  // parallel: transparency group (section)
+  std::vector<float> cylOpacity1;  // parallel: p1 opacity (< 0 = uniform)
+  std::vector<Vec4> cylCapColor;      // CONE bonds: indexed by primID (per segment)
+  std::vector<Material> cylCapMat;    // parallel to cylCapColor (primID order)
+  std::vector<uint16_t> cylCapGroup;  // parallel: transparency group (section)
+  std::vector<float> cylCapOpacity1;  // parallel: p1 opacity (< 0 = uniform)
   if (!scene.cylinders.empty()) {
-    const std::size_t segs = scene.cylinders.size() * bakeOffsets.size();
-    const std::size_t nV = segs * 2;
-    RTCGeometry g =
-        rtcNewGeometry(device, RTC_GEOMETRY_TYPE_ROUND_LINEAR_CURVE);
-    auto* vb = static_cast<float*>(rtcSetNewGeometryBuffer(
-        g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float), nV));
-    auto* ib = static_cast<unsigned int*>(rtcSetNewGeometryBuffer(
-        g, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT, sizeof(unsigned int),
-        segs));
-    cylColor.reserve(segs);
-    cylMat.reserve(segs);
-    std::size_t k = 0;
-    for (const Vec3& off : bakeOffsets) {
-      for (const Cylinder& c : scene.cylinders) {
-        vb[(2 * k + 0) * 4 + 0] = c.p0.x + off.x;
-        vb[(2 * k + 0) * 4 + 1] = c.p0.y + off.y;
-        vb[(2 * k + 0) * 4 + 2] = c.p0.z + off.z;
-        vb[(2 * k + 0) * 4 + 3] = c.radius;
-        vb[(2 * k + 1) * 4 + 0] = c.p1.x + off.x;
-        vb[(2 * k + 1) * 4 + 1] = c.p1.y + off.y;
-        vb[(2 * k + 1) * 4 + 2] = c.p1.z + off.z;
-        vb[(2 * k + 1) * 4 + 3] = c.radius;
-        ib[k] = static_cast<unsigned int>(2 * k);
-        cylColor.push_back(c.color);
-        cylMat.push_back(c.material);
-        ++k;
-      }
+    // Partition source cylinders by cap semantics BEFORE chaining so the chain
+    // builder only ever sees `open` edges (capped bonds must not be chained).
+    std::vector<int> openIdx, capIdx;
+    openIdx.reserve(scene.cylinders.size());
+    capIdx.reserve(scene.cylinders.size());
+    for (int i = 0; i < static_cast<int>(scene.cylinders.size()); ++i) {
+      if (scene.cylinders[i].open) openIdx.push_back(i);
+      else capIdx.push_back(i);
     }
-    rtcCommitGeometry(g);
-    unsigned int id = rtcAttachGeometry(rscene, g);
-    if (id >= records.size()) records.resize(id + 1);
-    records[id] = {GeomKind::Cylinder, g};
-    rtcReleaseGeometry(g);
+
+    // ----- (1) OPEN edges: ROUND_LINEAR_CURVE chained (seam fix, unchanged) ---
+    if (!openIdx.empty()) {
+      const std::size_t no = openIdx.size();
+      const std::size_t segs = no * bakeOffsets.size();
+      cylColor.reserve(segs);
+      cylMat.reserve(segs);
+      cylGroup.reserve(segs);
+      cylOpacity1.reserve(segs);
+
+      // Curve buffers, built in chain order. Vertices are shared within a chain
+      // (chainLen+1 vertices per chain), so segment j of a chain uses vertices
+      // [base+j, base+j+1] and its neighbor flags reference base+j-1 / base+j+2,
+      // which stay inside the chain (LEFT only when j>0, RIGHT only when j<n-1).
+      std::vector<float> vbuf;          // 4 floats per vertex (x, y, z, radius)
+      std::vector<unsigned int> ibuf;   // start-vertex index per segment
+      std::vector<unsigned char> fbuf;  // RTCCurveFlags per segment
+      vbuf.reserve((segs + no) * 4);
+      ibuf.reserve(segs);
+      fbuf.reserve(segs);
+
+      const float eps = 1.0e-4f;  // endpoint match tolerance (<< radius ~0.03)
+      auto keyOf = [&](const Vec3& p) {
+        return std::array<long long, 3>{std::llround(p.x / eps),
+                                        std::llround(p.y / eps),
+                                        std::llround(p.z / eps)};
+      };
+
+      for (const Vec3& off : bakeOffsets) {
+        // Baked endpoints for this instance (local index 0..no-1 over openIdx).
+        std::vector<Vec3> a0(no), a1(no);
+        for (std::size_t i = 0; i < no; ++i) {
+          const Cylinder& c = scene.cylinders[openIdx[i]];
+          a0[i] = {c.p0.x + off.x, c.p0.y + off.y, c.p0.z + off.z};
+          a1[i] = {c.p1.x + off.x, c.p1.y + off.y, c.p1.z + off.z};
+        }
+        // Vertex incidence: key -> list of (segment, end) with end 0=p0, 1=p1.
+        std::map<std::array<long long, 3>, std::vector<std::pair<int, int>>> inc;
+        for (int i = 0; i < static_cast<int>(no); ++i) {
+          inc[keyOf(a0[i])].push_back({i, 0});
+          inc[keyOf(a1[i])].push_back({i, 1});
+        }
+        auto compatible = [&](int s, int t) {
+          const Cylinder& cs = scene.cylinders[openIdx[s]];
+          const Cylinder& ct = scene.cylinders[openIdx[t]];
+          return cs.group == ct.group &&
+                 (cs.opacity1 < 0.0f) == (ct.opacity1 < 0.0f);
+        };
+        // next[s]: the segment that continues from s.p1 (its p0 meets s.p1 at a
+        // degree-2 vertex, same direction, compatible attributes). prev derived.
+        std::vector<int> next(no, -1), prev(no, -1);
+        for (int s = 0; s < static_cast<int>(no); ++s) {
+          const auto& ends = inc[keyOf(a1[s])];
+          if (ends.size() != 2) continue;
+          int t = -1;
+          for (const auto& e : ends)
+            if (e.first != s) t = (e.second == 0) ? e.first : -1;
+          if (t >= 0 && t != s && compatible(s, t)) next[s] = t;
+        }
+        for (int s = 0; s < static_cast<int>(no); ++s)
+          if (next[s] >= 0) prev[next[s]] = s;
+
+        std::vector<char> visited(no, 0);
+        auto emitChain = [&](int start) {
+          std::vector<int> chain;
+          for (int s = start; s >= 0 && !visited[s]; s = next[s]) {
+            visited[s] = 1;
+            chain.push_back(s);
+          }
+          const unsigned int base = static_cast<unsigned int>(vbuf.size() / 4);
+          auto pushV = [&](const Vec3& p, float r) {
+            vbuf.push_back(p.x);
+            vbuf.push_back(p.y);
+            vbuf.push_back(p.z);
+            vbuf.push_back(r);
+          };
+          pushV(a0[chain[0]], scene.cylinders[openIdx[chain[0]]].radius);
+          for (int cs : chain)
+            pushV(a1[cs], scene.cylinders[openIdx[cs]].radius);
+          const int n = static_cast<int>(chain.size());
+          for (int j = 0; j < n; ++j) {
+            ibuf.push_back(base + static_cast<unsigned int>(j));
+            unsigned char fl = 0;
+            if (j > 0) fl |= RTC_CURVE_FLAG_NEIGHBOR_LEFT;
+            if (j < n - 1) fl |= RTC_CURVE_FLAG_NEIGHBOR_RIGHT;
+            fbuf.push_back(fl);
+            const Cylinder& c = scene.cylinders[openIdx[chain[j]]];
+            cylColor.push_back(c.color);
+            cylMat.push_back(c.material);
+            cylGroup.push_back(c.group);
+            cylOpacity1.push_back(c.opacity1);
+          }
+        };
+        // Open chains first (start = no predecessor), then any leftover cycles.
+        for (int s = 0; s < static_cast<int>(no); ++s)
+          if (prev[s] < 0 && !visited[s]) emitChain(s);
+        for (int s = 0; s < static_cast<int>(no); ++s)
+          if (!visited[s]) emitChain(s);
+      }
+
+      const std::size_t nSeg = ibuf.size();
+      const std::size_t nVert = vbuf.size() / 4;
+      RTCGeometry g =
+          rtcNewGeometry(device, RTC_GEOMETRY_TYPE_ROUND_LINEAR_CURVE);
+      auto* vb = static_cast<float*>(rtcSetNewGeometryBuffer(
+          g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float),
+          nVert));
+      std::memcpy(vb, vbuf.data(), vbuf.size() * sizeof(float));
+      auto* ib = static_cast<unsigned int*>(rtcSetNewGeometryBuffer(
+          g, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT, sizeof(unsigned int),
+          nSeg));
+      std::memcpy(ib, ibuf.data(), ibuf.size() * sizeof(unsigned int));
+      auto* fb = static_cast<unsigned char*>(rtcSetNewGeometryBuffer(
+          g, RTC_BUFFER_TYPE_FLAGS, 0, RTC_FORMAT_UCHAR, sizeof(unsigned char),
+          nSeg));
+      std::memcpy(fb, fbuf.data(), fbuf.size() * sizeof(unsigned char));
+      rtcCommitGeometry(g);
+      unsigned int id = rtcAttachGeometry(rscene, g);
+      if (id >= records.size()) records.resize(id + 1);
+      records[id] = {GeomKind::Cylinder, g};
+      rtcReleaseGeometry(g);
+    }
+
+    // ----- (2) CAPPED bonds: CONE_LINEAR_CURVE, one segment per primID -------
+    // Independent (unchained) segments: each control-point pair gets a flat disk
+    // cap at p0 and p1. No flags buffer is needed -- a cone is discontinuous at
+    // edge boundaries, and the flat caps occupy zero axial thickness so they
+    // hide inside the overlap of consecutive bonds regardless of neighbors.
+    if (!capIdx.empty()) {
+      const std::size_t segs = capIdx.size() * bakeOffsets.size();
+      cylCapColor.reserve(segs);
+      cylCapMat.reserve(segs);
+      cylCapGroup.reserve(segs);
+      cylCapOpacity1.reserve(segs);
+
+      std::vector<float> vbuf;         // 4 floats per vertex (x, y, z, radius)
+      std::vector<unsigned int> ibuf;  // start-vertex index per segment
+      vbuf.reserve(segs * 2 * 4);
+      ibuf.reserve(segs);
+
+      for (const Vec3& off : bakeOffsets) {
+        for (int idx : capIdx) {
+          const Cylinder& c = scene.cylinders[idx];
+          const unsigned int base = static_cast<unsigned int>(vbuf.size() / 4);
+          vbuf.push_back(c.p0.x + off.x);
+          vbuf.push_back(c.p0.y + off.y);
+          vbuf.push_back(c.p0.z + off.z);
+          vbuf.push_back(c.radius);
+          vbuf.push_back(c.p1.x + off.x);
+          vbuf.push_back(c.p1.y + off.y);
+          vbuf.push_back(c.p1.z + off.z);
+          vbuf.push_back(c.radius);
+          ibuf.push_back(base);  // segment uses vertices [base, base+1]
+          cylCapColor.push_back(c.color);
+          cylCapMat.push_back(c.material);
+          cylCapGroup.push_back(c.group);
+          cylCapOpacity1.push_back(c.opacity1);
+        }
+      }
+
+      const std::size_t nSeg = ibuf.size();
+      const std::size_t nVert = vbuf.size() / 4;
+      RTCGeometry g =
+          rtcNewGeometry(device, RTC_GEOMETRY_TYPE_CONE_LINEAR_CURVE);
+      auto* vb = static_cast<float*>(rtcSetNewGeometryBuffer(
+          g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float),
+          nVert));
+      std::memcpy(vb, vbuf.data(), vbuf.size() * sizeof(float));
+      auto* ib = static_cast<unsigned int*>(rtcSetNewGeometryBuffer(
+          g, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT, sizeof(unsigned int),
+          nSeg));
+      std::memcpy(ib, ibuf.data(), ibuf.size() * sizeof(unsigned int));
+      rtcCommitGeometry(g);
+      unsigned int id = rtcAttachGeometry(rscene, g);
+      if (id >= records.size()) records.resize(id + 1);
+      records[id] = {GeomKind::CylinderCapped, g};
+      rtcReleaseGeometry(g);
+    }
   }
 
   rtcCommitScene(rscene);
+  if (RTCError err = rtcGetDeviceError(device); err != RTC_ERROR_NONE) {
+    rtcReleaseScene(rscene);
+    rtcReleaseDevice(device);
+    throw std::runtime_error(std::string("embree scene build failed: ") +
+                             rtcErrorString(err));
+  }
 
   // --- camera basis (POV orthographic framing) ---
   const Camera& cam = scene.camera;
@@ -327,7 +563,90 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
   const Vec3 bg = {scene.background.x, scene.background.y, scene.background.z};
 
+  // Shade a single hit and report its opacity and transparency group (CueMol
+  // section). Used by the front-to-back walk below.
+  struct HitShade {
+    Vec3 color{0.0f, 0.0f, 0.0f};
+    float opacity = 1.0f;
+    int group = 0;
+  };
+  auto shadeHit = [&](const RTCRayHit& rh, const Vec3& rd) -> HitShade {
+    HitShade hs;
+    const GeomRecord& rec = records[rh.hit.geomID];
+    const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
+    if (rec.kind == GeomKind::Mesh) {
+      // Interpolate the shading normal and pigment color (slots 0/1).
+      float nbuf[3] = {0, 0, 0};
+      float cbuf[4] = {0, 0, 0, 1};
+      rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                      RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
+      rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                      RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
+      Vec3 N = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rd);
+      const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
+      const Material& triMat = m.materialForTri(rh.hit.primID);
+      hs.color = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
+                            opt.specularScale);
+      hs.opacity = cbuf[3];
+      hs.group = m.groupForTri(rh.hit.primID);
+    } else {
+      // Outline / VdW primitives: shade with the per-primitive material.
+      // The Embree geometric normal Ng is valid for SPHERE_POINT and for both
+      // linear-curve modes (ROUND swept-sphere and CONE capped-cone): in round
+      // mode and on the cone surface Ng is the non-normalized geometric surface
+      // normal POV shades against (flat-curve tangent semantics do not apply).
+      // Each cylinder geometry has its own primID space and side-tables; select
+      // the table set by kind (Sphere / Cylinder=round edge / capped=cone bond).
+      const bool isSphere = (rec.kind == GeomKind::Sphere);
+      const bool isCapped = (rec.kind == GeomKind::CylinderCapped);
+      const Vec4& fc = isSphere ? sphereColor[rh.hit.primID]
+                       : isCapped ? cylCapColor[rh.hit.primID]
+                                  : cylColor[rh.hit.primID];
+      const Material& pm = isSphere ? sphereMat[rh.hit.primID]
+                           : isCapped ? cylCapMat[rh.hit.primID]
+                                      : cylMat[rh.hit.primID];
+      Vec3 N = faceForward(
+          normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
+      const Vec3 C = {fc.x, fc.y, fc.z};
+      hs.color = shadeLocal(pm, C, N, V, lights, ambLight, bg,
+                            opt.specularScale);
+      hs.opacity = fc.w;
+      hs.group = isSphere ? sphereGroup[rh.hit.primID]
+                 : isCapped ? cylCapGroup[rh.hit.primID]
+                            : cylGroup[rh.hit.primID];
+      // edge_line2 gradient: opacity varies p0 (fc.w) -> p1 (opacity1) along the
+      // segment. For both linear-curve modes rh.hit.u is the axial curve fraction
+      // in [0,1], so a linear lerp reproduces POV's "gradient z" transmit fade
+      // (uniform when opacity1 < 0). Opaque outlines and uniform bonds
+      // (opacity1 < 0) are unaffected.
+      if (!isSphere) {
+        const float op1 =
+            isCapped ? cylCapOpacity1[rh.hit.primID] : cylOpacity1[rh.hit.primID];
+        if (op1 >= 0.0f) {
+          float u = rh.hit.u;
+          if (u < 0.0f) u = 0.0f;
+          if (u > 1.0f) u = 1.0f;
+          hs.opacity = fc.w * (1.0f - u) + op1 * u;
+        }
+      }
+    }
+    return hs;
+  };
+
+  // Veil lookup: groups rendered as additive single-layer (group alpha). Every
+  // other transparency uses front-to-back "over" (fragment alpha). Empty =>
+  // all transparency is "over".
+  std::vector<uint8_t> isVeil;
+  for (uint16_t g : scene.veilGroups) {
+    if (g >= isVeil.size()) isVeil.resize(static_cast<std::size_t>(g) + 1, 0);
+    isVeil[g] = 1;
+  }
+
   auto t0 = std::chrono::high_resolution_clock::now();
+
+  // Count primary rays that exhaust the transparent-layer cap so truncation of
+  // far transmission is observable (warned once below) rather than silent.
+  std::atomic<long long> cappedRays{0};
 
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
   // primitive). Each ray is independent and rtcIntersect1 on a committed scene
@@ -351,78 +670,150 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         rd = normalize(dir + right * (u * persHalfW) + trueUp * (v * persHalfH));
       }
 
-      RTCRayHit rh;
-      rh.ray.org_x = org.x;
-      rh.ray.org_y = org.y;
-      rh.ray.org_z = org.z;
-      rh.ray.dir_x = rd.x;
-      rh.ray.dir_y = rd.y;
-      rh.ray.dir_z = rd.z;
-      rh.ray.tnear = 0.0f;
-      rh.ray.tfar = std::numeric_limits<float>::infinity();
-      rh.ray.mask = 0xFFFFFFFFu;
-      rh.ray.flags = 0;
-      rh.ray.time = 0.0f;
-      rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
-      rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
-
-      RTCIntersectArguments iargs;
-      rtcInitIntersectArguments(&iargs);
-      rtcIntersect1(rscene, &rh, &iargs);
-
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
-      Vec3 out;
-      float depth = 0.0f;
 
-      if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
-          rh.hit.geomID >= records.size()) {
-        out = bg;
-        depth = 0.0f;
-      } else {
-        depth = rh.ray.tfar;
-        const GeomRecord& rec = records[rh.hit.geomID];
-        if (rec.kind == GeomKind::Mesh) {
-          // Interpolate the shading normal and pigment color (slots 0/1).
-          float nbuf[3] = {0, 0, 0};
-          float cbuf[4] = {0, 0, 0, 1};
-          rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
-                          RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
-          rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
-                          RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
-          Vec3 N = normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
-          N = faceForward(N, rd);
-          const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
-          const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
-          const Material& triMat = m.materialForTri(rh.hit.primID);
-          out = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
-                           opt.specularScale);
-        } else {
-          // Outline / VdW primitives: shade with the per-primitive material.
-          // The Embree geometric normal Ng is valid for SPHERE_POINT and
-          // ROUND_LINEAR_CURVE (the capsule surface normal POV shades against).
-          const Vec4& fc = (rec.kind == GeomKind::Sphere)
-                               ? sphereColor[rh.hit.primID]
-                               : cylColor[rh.hit.primID];
-          const Material& pm = (rec.kind == GeomKind::Sphere)
-                                   ? sphereMat[rh.hit.primID]
-                                   : cylMat[rh.hit.primID];
-          Vec3 N = faceForward(
-              normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
-          const Vec3 C = {fc.x, fc.y, fc.z};
-          const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
-          out = shadeLocal(pm, C, N, V, lights, ambLight, bg,
-                           opt.specularScale);
+      // Single-pass transparency with two coexisting models, selected per hit
+      // by the hit's group:
+      //   - VEIL groups (group alpha): additive single-layer, frontmost-per-
+      //     group, order-independent -- exactly CueMol's blendpng.
+      //   - everything else (fragment alpha = intrinsic per-color opacity):
+      //     front-to-back "over", every surface composited (no dedup) -- POV
+      //     native transmit; group alpha (if any) already multiplied in.
+      // Combine: fragments composite over the opaque floor, then the veils are
+      // laid additively on top. Reduces to pure "over" (no veils, e.g. scene5),
+      // pure additive (all veils, the group-alpha path), or opaque (unchanged).
+      Vec3 Cv{0.0f, 0.0f, 0.0f};  // additive (veil) premultiplied color
+      float sumBeta = 0.0f;       // sum of veil weights
+      Vec3 Cf{0.0f, 0.0f, 0.0f};  // over (fragment) premultiplied color
+      float Af = 0.0f;            // over accumulated coverage
+      float nearDepth = 0.0f;
+      Vec3 base = bg;
+      float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
+
+      constexpr int kMaxSeen = 64;  // distinct veil groups per ray
+      int seen[kMaxSeen];
+      int nseen = 0;
+
+      const float kOpaque = 1.0f - 1e-4f;  // opacity at/above this == opaque
+      float tnear = 0.0f;
+      const int maxIters = opt.transparency ? (opt.maxTransparentLayers + 1) : 1;
+
+      for (int iter = 0; iter < maxIters; ++iter) {
+        RTCRayHit rh;
+        rh.ray.org_x = org.x;
+        rh.ray.org_y = org.y;
+        rh.ray.org_z = org.z;
+        rh.ray.dir_x = rd.x;
+        rh.ray.dir_y = rd.y;
+        rh.ray.dir_z = rd.z;
+        rh.ray.tnear = tnear;
+        rh.ray.tfar = std::numeric_limits<float>::infinity();
+        rh.ray.mask = 0xFFFFFFFFu;
+        rh.ray.flags = 0;
+        rh.ray.time = 0.0f;
+        rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+        rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+
+        RTCIntersectArguments iargs;
+        rtcInitIntersectArguments(&iargs);
+        rtcIntersect1(rscene, &rh, &iargs);
+
+        if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
+            rh.hit.geomID >= records.size()) {
+          break;  // ray escaped: base stays the background
         }
+        if (nearDepth == 0.0f) nearDepth = rh.ray.tfar;
+
+        const HitShade hs = shadeHit(rh, rd);
+
+        if (!opt.transparency || hs.opacity >= kOpaque) {
+          base = hs.color;  // nearest opaque surface = the floor
+          baseCov = 1.0f;
+          break;
+        }
+
+        const bool veil =
+            hs.group >= 0 && static_cast<std::size_t>(hs.group) < isVeil.size() &&
+            isVeil[hs.group] != 0;
+        if (veil) {
+          // additive: only the frontmost surface of each veil group
+          bool dup = false;
+          for (int sidx = 0; sidx < nseen; ++sidx)
+            if (seen[sidx] == hs.group) { dup = true; break; }
+          if (!dup) {
+            if (nseen < kMaxSeen) seen[nseen++] = hs.group;
+            const float a = hs.opacity;
+            Cv.x += a * hs.color.x;
+            Cv.y += a * hs.color.y;
+            Cv.z += a * hs.color.z;
+            sumBeta += a;
+          }
+        } else {
+          // over: every fragment composited front-to-back (no dedup)
+          const float w = (1.0f - Af) * hs.opacity;
+          Cf.x += w * hs.color.x;
+          Cf.y += w * hs.color.y;
+          Cf.z += w * hs.color.z;
+          Af += w;
+        }
+        if (sumBeta >= kOpaque || Af >= kOpaque) break;  // fully saturated
+        // Advance just past this surface to find the next one. The step is a
+        // self-intersection epsilon: it must clear only floating-point jitter,
+        // never a distinct surface sitting just behind this one. A hardcoded
+        // step is wrong because the hit-point precision degrades with scale --
+        // the camera is ~200 units from the molecule, so the hit coordinates
+        // carry an absolute error ~ t * 2^-23. Use a scale-adaptive epsilon, as
+        // OSPRay does (modules/cpu/common/DifferentialGeometry.ih, calcEpsilon):
+        // max(|hit point|, |dir| * t) scaled by a small float-ULP factor. This
+        // adapts to any camera distance / scene scale with no magic constant.
+        const Vec3 hitP{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                        org.z + rd.z * rh.ray.tfar};
+        const float dirMax = std::fmax(
+            std::fabs(rd.x), std::fmax(std::fabs(rd.y), std::fabs(rd.z)));
+        const float epsScale =
+            std::fmax(std::fmax(std::fabs(hitP.x), std::fabs(hitP.y)),
+                      std::fmax(std::fabs(hitP.z), dirMax * rh.ray.tfar));
+        constexpr float kUlpEps = 0x1.0fp-21f;  // ~5.05e-7 (~4 ULP), OSPRay ulpEpsilon
+        tnear = rh.ray.tfar + epsScale * kUlpEps;
+        // Reaching the final allowed iteration after compositing a transparent
+        // layer means more surfaces may lie behind that we will not trace:
+        // record the truncation for the post-loop warning.
+        if (iter == maxIters - 1)
+          cappedRays.fetch_add(1, std::memory_order_relaxed);
       }
 
-      res.color[pix * 4 + 0] = out.x;
-      res.color[pix * 4 + 1] = out.y;
-      res.color[pix * 4 + 2] = out.z;
-      res.color[pix * 4 + 3] = 1.0f;
-      res.depth[pix] = depth;
+      // Fragments over the opaque floor; veils laid additively on top. The base
+      // (floor / background) contributes COLOR only where it is covered
+      // (baseCov), so an opaque background (default) leaves opaque scenes
+      // byte-unchanged, while a transparent background (baseCov 0) yields a
+      // premultiplied result with alpha = accumulated coverage.
+      const float floorW = (1.0f - Af) * baseCov;
+      const Vec3 baseEff{Cf.x + floorW * base.x,
+                         Cf.y + floorW * base.y,
+                         Cf.z + floorW * base.z};
+      const float covEff = Af + floorW;
+      float vw = 1.0f - sumBeta;
+      if (vw < 0.0f) vw = 0.0f;
+      float outA = sumBeta + vw * covEff;
+      outA = std::fmin(1.0f, std::fmax(0.0f, outA));
+
+      res.color[pix * 4 + 0] = Cv.x + vw * baseEff.x;
+      res.color[pix * 4 + 1] = Cv.y + vw * baseEff.y;
+      res.color[pix * 4 + 2] = Cv.z + vw * baseEff.z;
+      res.color[pix * 4 + 3] = outA;
+      res.depth[pix] = nearDepth;
     }
   }
   });
+
+  if (const long long capped = cappedRays.load(std::memory_order_relaxed);
+      capped > 0) {
+    std::fprintf(stderr,
+                 "warning: %lld ray(s) reached the transparent-layer cap (%d); "
+                 "transmission past that depth was dropped -- raise "
+                 "maxTransparentLayers if it is visible\n",
+                 capped, opt.maxTransparentLayers);
+  }
 
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();

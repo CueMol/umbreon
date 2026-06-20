@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace umbreon {
@@ -29,6 +30,44 @@ inline float length(Vec3 a) { return std::sqrt(dot(a, a)); }
 inline Vec3 normalize(Vec3 a) {
   float l = length(a);
   return l > 0.0f ? a * (1.0f / l) : a;
+}
+
+// Length-flooring normalize: divides by sqrt(max(dot, tiny)) so a zero or
+// degenerate input yields a finite (zero) vector instead of NaN/Inf. Mirrors
+// OSPRay's rkcommon safe_normalize. Intended for secondary-ray / sampling-frame
+// geometry; the plain normalize() above stays on the primary-ray path.
+inline Vec3 safeNormalize(Vec3 a) {
+  // 0x1.0p-126f is the smallest normal float (rkcommon flt_min); flooring dot
+  // here guarantees a finite reciprocal square root for any finite input.
+  float s = 1.0f / std::sqrt(std::fmax(dot(a, a), 0x1.0p-126f));
+  return a * s;
+}
+
+// As above but returns `fallback` (assumed already unit) when `a` is shorter
+// than ~1e-9, so a degenerate input gets a usable direction rather than zero.
+inline Vec3 safeNormalize(Vec3 a, Vec3 fallback) {
+  float d = dot(a, a);
+  if (d < 1.0e-18f) return fallback;  // length < 1e-9
+  return a * (1.0f / std::sqrt(d));
+}
+
+// Orthonormal basis around a unit normal n (n becomes the local +z axis). For
+// hemisphere sampling at a surface a local sample (sx, sy, sz) maps to the world
+// direction sx*t + sy*b + sz*n. Built with the larger-component branch (Duff et
+// al. / OSPRay rkcommon frame()) so the seed axis is never near-parallel to n;
+// safeNormalize guards the exactly-degenerate case (yields a finite, non-NaN
+// frame). Assumes n is approximately unit length.
+struct Frame {
+  Vec3 t, b, n;
+};
+
+inline Frame frameFromNormal(Vec3 n) {
+  const Vec3 seed0{0.0f, n.z, -n.y};
+  const Vec3 seed1{-n.z, 0.0f, n.x};
+  const Vec3 t = safeNormalize(std::fabs(n.x) < std::fabs(n.y) ? seed0 : seed1,
+                               Vec3{1.0f, 0.0f, 0.0f});
+  const Vec3 b = cross(n, t);
+  return {t, b, n};
 }
 
 inline float radians(float deg) { return deg * 0.01745329252f; }
@@ -106,12 +145,23 @@ struct Mesh {
   std::vector<Material> materials;
   std::vector<uint8_t> triMaterialId;
 
+  // Per-triangle transparency group (= the CueMol section, e.g. "_34_35").
+  // Empty means all triangles are group 0. This is DISTINCT from triMaterialId:
+  // one section may hold several mesh2 blocks (distinct materials) that share a
+  // single group, and the renderer composites only the frontmost surface PER
+  // GROUP (single-layer transparency).
+  std::vector<uint16_t> triGroupId;
+
   std::size_t vertexCount() const { return positions.size(); }
   std::size_t triangleCount() const { return positions.size() / 3; }
 
   const Material& materialForTri(std::size_t triIdx) const {
     if (triMaterialId.empty()) return material;
     return materials[triMaterialId[triIdx]];
+  }
+
+  uint16_t groupForTri(std::size_t triIdx) const {
+    return triGroupId.empty() ? 0 : triGroupId[triIdx];
   }
 
   Aabb bounds() const {
@@ -127,6 +177,7 @@ struct Sphere {
   float radius = 1.0f;
   Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
   Material material = Material::flatOutline();
+  uint16_t group = 0;  // transparency group (CueMol section); 0 = default
 };
 
 // A shaded cylinder/capsule (CueMol "stick" / silhouette edge), rendered as a
@@ -134,8 +185,21 @@ struct Sphere {
 struct Cylinder {
   Vec3 p0, p1;
   float radius = 1.0f;
-  Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
+  Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};  // rgb + opacity at p0 (color.w)
   Material material = Material::flatOutline();
+  uint16_t group = 0;  // transparency group (CueMol section); 0 = default
+  // Opacity at p1 for an edge_line2 gradient (POV "gradient z" transmit fade).
+  // < 0 means uniform opacity (use color.w along the whole segment).
+  float opacity1 = -1.0f;
+  // POV cap semantics. POV silhouette edges are emitted with the `open` keyword
+  // (capless), and the renderer stitches them into ROUND_LINEAR_CURVE chains so
+  // joints share a single swept-sphere (no double-cap seam). POV stick bonds and
+  // density-mesh wireframes are emitted as plain (CLOSED) cylinders with FLAT
+  // disk caps at the exact endpoints; the renderer draws those as independent
+  // CONE_LINEAR_CURVE segments so a cap occupies zero axial thickness and stays
+  // hidden inside the overlap of consecutive bonds (no protruding round cap).
+  // true => `open` (round/chained edge); false => capped (flat-disk bond).
+  bool open = false;
 };
 
 // --------------------------------------------------------------------------
@@ -187,6 +251,12 @@ struct Scene {
   Fog fog;                            // optional POV fog (post-process)
   float aoDistance = 1.0e20f;         // AO ray max distance (scene-scaled)
   float assumedGamma = 1.0f;         // POV assumed_gamma (from global_settings)
+
+  // Transparency groups (sections) rendered as additive single-layer "veils"
+  // (group alpha, e.g. from --alpha). A transparent hit whose group is listed
+  // uses the additive model; ALL other transparency uses front-to-back "over"
+  // (fragment alpha). Empty (default) => every transparent surface is over.
+  std::vector<uint16_t> veilGroups;
 
   std::size_t instanceCount() const { return instanceOffsets.size(); }
   std::size_t effectiveTriangles() const {

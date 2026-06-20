@@ -31,6 +31,10 @@ struct SceneGeometry {
   Mesh mesh;
   std::vector<Sphere> spheres;
   std::vector<Cylinder> cylinders;
+  // Transparency group names: group index -> CueMol section id (e.g. "_34_35",
+  // from "#if (_show_34_35)"). Index 0 is the default group (geometry outside
+  // any "#if (_show_*)" block). Lets callers map a section id to a group.
+  std::vector<std::string> groupNames;
 };
 
 // Scalar/vector constants predefined by the .pov before its `#include` of the
