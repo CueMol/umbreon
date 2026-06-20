@@ -147,9 +147,12 @@ struct Sphere {
 struct Cylinder {
   Vec3 p0, p1;
   float radius = 1.0f;
-  Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
+  Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};  // rgb + opacity at p0 (color.w)
   Material material = Material::flatOutline();
   uint16_t group = 0;  // transparency group (CueMol section); 0 = default
+  // Opacity at p1 for an edge_line2 gradient (POV "gradient z" transmit fade).
+  // < 0 means uniform opacity (use color.w along the whole segment).
+  float opacity1 = -1.0f;
 };
 
 // --------------------------------------------------------------------------

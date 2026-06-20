@@ -614,13 +614,19 @@ class Reader {
     c.radius = static_cast<float>(comp(a[iW], 0));
     c.color = toColor(a[iCol], "rgb");
     // edge_line2 carries per-endpoint transmit a1 (arg 2) and a2 (arg 5): the
-    // POV macro pigments the segment "rgbt col+<0,0,0,a>" along its length, so
-    // opacity = 1 - transmit. This fades the silhouette toward grazing edges.
-    // umbreon's cylinder has a single opacity, so use the segment mean.
+    // POV macro pigments the segment "rgbt col+<0,0,0,a>" with a "gradient z"
+    // from a1 at p0 to a2 at p1, so opacity = 1 - transmit varies linearly
+    // along the segment. Store the p0 opacity in color.w and the p1 opacity in
+    // opacity1; the renderer lerps by the axial hit fraction. This fades the
+    // silhouette toward grazing edges exactly as POV does, and because adjacent
+    // segments share endpoints with matching transmit (a2 == a1) the opacity is
+    // continuous across joints (no step / seam).
     if (two) {
       const double t1 = comp(a[2], 0), t2 = comp(a[5], 0);
-      float op = 1.0f - static_cast<float>(0.5 * (t1 + t2));
-      c.color.w = std::min(1.0f, std::max(0.0f, op));
+      float op0 = std::min(1.0f, std::max(0.0f, 1.0f - static_cast<float>(t1)));
+      float op1 = std::min(1.0f, std::max(0.0f, 1.0f - static_cast<float>(t2)));
+      c.color.w = op0;
+      c.opacity1 = op1;
     }
     c.group = static_cast<uint16_t>(curGroup_);
     if (c.radius > 0.0f) cylinders_.push_back(c);

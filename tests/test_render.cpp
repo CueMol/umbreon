@@ -523,5 +523,138 @@ int main() {
     }
   }
 
+  // ===== Silhouette edge cylinders (POV edge_line / edge_line2) =====
+  // POV draws silhouette outlines as a union of `open` cylinders; umbreon
+  // renders them as ROUND_LINEAR_CURVE capsules. These tests lock the two
+  // properties a prior capless-cylinder rewrite broke: (1) the line is SOLID
+  // (the on-axis pixel is fully covered, not stippled/under-covered), and (2)
+  // edge_line2's per-endpoint transmit produces a linear opacity fade p0->p1
+  // (not a single mean opacity), continuous across joints.
+  {
+    using umbreon::Vec3;
+    using umbreon::Vec4;
+
+    auto cylScene = [&](const umbreon::Cylinder& cyl, Vec3 bg) {
+      umbreon::Scene sc;
+      sc.camera = makeOrthoCam();          // ortho, frames [-2,2]^2
+      sc.background = bg;
+      sc.ambientColor = {1, 1, 1};         // flatOutline => raw color shading
+      sc.cylinders.push_back(cyl);
+      return sc;
+    };
+
+    // C1: an opaque black cylinder along x at the view center over a WHITE
+    // background. The on-axis center pixel must be (near) black -- a solid,
+    // fully-covered line. A thin capless cylinder would under-cover here and
+    // leave the pixel gray/white; the capsule covers it solidly.
+    {
+      umbreon::Cylinder c;
+      c.p0 = {-2, 0, 0};
+      c.p1 = {2, 0, 0};
+      c.radius = 0.5f;                     // ~0.6 px-wide at 5x5; covers center
+      c.color = {0, 0, 0, 1.0f};           // opaque black outline
+      umbreon::Scene sc = cylScene(c, {1, 1, 1});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("C1 solid line: center R black (<0.05)", f.color[kCenterRgba + 0] < 0.05f);
+      s.check("C1 solid line: center G black (<0.05)", f.color[kCenterRgba + 1] < 0.05f);
+      s.check("C1 solid line: center B black (<0.05)", f.color[kCenterRgba + 2] < 0.05f);
+      s.check("C1 solid line: center covered (alpha=1)",
+              approx(f.color[kCenterRgba + 3], 1.0f, 1e-4f));
+    }
+
+    // C2: edge_line2 gradient. Same geometry, transparent black with opacity 1
+    // at p0 (left) fading to 0 at p1 (right). The ray pierces BOTH cylinder
+    // walls (front + back at the same x, hence the same axial u and opacity a),
+    // composited "over" like POV's open-cylinder transmit, so the black-over-
+    // white brightness is (1-a)^2 with a = 1 - u, i.e. u^2 -- a monotone ramp
+    // left (dark) to right (bright). Asserts a real lerp, not a single mean.
+    {
+      umbreon::Cylinder c;
+      c.p0 = {-2, 0, 0};
+      c.p1 = {2, 0, 0};
+      c.radius = 0.5f;
+      c.color = {0, 0, 0, 1.0f};           // opacity at p0 = 1 (fully opaque)
+      c.opacity1 = 0.0f;                    // opacity at p1 = 0 (fully transmit)
+      umbreon::Scene sc = cylScene(c, {1, 1, 1});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      o.transparency = true;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      // Center row pixels (py=2): the on-axis ray at each px hits the cylinder.
+      const std::size_t lft = (2 * 5 + 1) * 4;  // px=1, u=0.3 -> bright u^2=0.09
+      const std::size_t ctr = (2 * 5 + 2) * 4;  // px=2, u=0.5 -> bright u^2=0.25
+      const std::size_t rgt = (2 * 5 + 3) * 4;  // px=3, u=0.7 -> bright u^2=0.49
+      s.check("C2 gradient: left darker than center",
+              f.color[lft + 0] + 0.05f < f.color[ctr + 0]);
+      s.check("C2 gradient: center darker than right",
+              f.color[ctr + 0] + 0.05f < f.color[rgt + 0]);
+      // Exact two-wall transmit value at center (u=0.5): (1-a)^2 = u^2 = 0.25.
+      s.check("C2 gradient: center brightness = u^2 (0.25)",
+              approx(f.color[ctr + 0], 0.25f, 0.02f));
+    }
+
+    // C3: a uniform transparent cylinder (opacity1 < 0) uses color.w everywhere,
+    // so the fade of C2 is NOT applied: every covered pixel has the same opacity
+    // 0.5 on both walls => brightness (1-0.5)^2 = 0.25 over white, constant along
+    // the line. Guards that the lerp only triggers for edge_line2 (opacity1 >= 0)
+    // and never perturbs a plain edge_line's uniform opacity.
+    {
+      umbreon::Cylinder c;
+      c.p0 = {-2, 0, 0};
+      c.p1 = {2, 0, 0};
+      c.radius = 0.5f;
+      c.color = {0, 0, 0, 0.5f};           // uniform opacity 0.5
+      c.opacity1 = -1.0f;                   // no gradient
+      umbreon::Scene sc = cylScene(c, {1, 1, 1});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      o.transparency = true;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      const std::size_t lft = (2 * 5 + 1) * 4;
+      const std::size_t ctr = (2 * 5 + 2) * 4;
+      const std::size_t rgt = (2 * 5 + 3) * 4;
+      s.check("C3 uniform: center brightness 0.25 (two walls)",
+              approx(f.color[ctr + 0], 0.25f, 0.02f));
+      s.check("C3 uniform: left == center (no fade)",
+              approx(f.color[lft + 0], f.color[ctr + 0], 0.02f));
+      s.check("C3 uniform: right == center (no fade)",
+              approx(f.color[rgt + 0], f.color[ctr + 0], 0.02f));
+    }
+
+    // C4: SEAM GUARD. Two collinear transparent cylinders share the joint at
+    // the origin. Rendered as independent capsules, each adds a hemispherical
+    // end cap at the joint, so a ray through the joint pierces BOTH caps and the
+    // extra transparent black layers darken it -- a dark bead at every segment
+    // joint (the POV-vs-umbreon seam). The renderer instead stitches segments
+    // that share an endpoint into one connected ROUND_LINEAR_CURVE with
+    // RTC_CURVE_FLAG_NEIGHBOR_* so the internal caps are dropped and the joint
+    // is a single shared swept-sphere: two walls, brightness (1-0.5)^2 = 0.25,
+    // identical to a mid-segment pixel. Asserts the joint is NOT darker than the
+    // mid-segments (would fail if the chaining/neighbor-flags were removed).
+    {
+      umbreon::Cylinder a;
+      a.p0 = {-2, 0, 0};
+      a.p1 = {0, 0, 0};
+      a.radius = 0.5f;
+      a.color = {0, 0, 0, 0.5f};             // uniform transparent black
+      umbreon::Cylinder b = a;
+      b.p0 = {0, 0, 0};
+      b.p1 = {2, 0, 0};                       // shares the joint at the origin
+      umbreon::Scene sc = cylScene(a, {1, 1, 1});
+      sc.cylinders.push_back(b);
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      o.transparency = true;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      const std::size_t lft = (2 * 5 + 1) * 4;  // mid-segment A (x=-0.8)
+      const std::size_t ctr = (2 * 5 + 2) * 4;  // the joint (x=0)
+      const std::size_t rgt = (2 * 5 + 3) * 4;  // mid-segment B (x=+0.8)
+      s.check("C4 seam: joint brightness ~0.25 (single shared sphere)",
+              approx(f.color[ctr + 0], 0.25f, 0.05f));
+      s.check("C4 seam: joint not darker than mid-segment A",
+              f.color[ctr + 0] + 0.03f >= f.color[lft + 0]);
+      s.check("C4 seam: joint not darker than mid-segment B",
+              f.color[ctr + 0] + 0.03f >= f.color[rgt + 0]);
+    }
+  }
+
   return s.report();
 }

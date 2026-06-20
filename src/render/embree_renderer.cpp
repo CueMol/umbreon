@@ -1,10 +1,13 @@
 #include "render/embree_renderer.hpp"
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <embree4/rtcore.h>
@@ -251,40 +254,133 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   }
 
   // --- cylinders (CueMol sticks / silhouette edges) as round linear curves ---
-  std::vector<Vec4> cylColor;     // indexed by primID (one per segment)
-  std::vector<Material> cylMat;   // parallel to cylColor (primID order)
-  std::vector<uint16_t> cylGroup; // parallel: transparency group (section)
+  // POV draws silhouette edges as a union of short `open` (capless) cylinders
+  // that share endpoints. Rendering each segment as an independent
+  // ROUND_LINEAR_CURVE capsule adds a hemispherical end cap at every shared
+  // vertex, so two caps stack at each joint; through a transparent (faded) edge
+  // the extra cap layers multiply the transmittance and show up as dark beads
+  // at the joints (Embree: round linear curves "viewed from the inside" render
+  // wrong without neighbor flags). We therefore stitch the segments into
+  // connected polylines and tag each segment with RTC_CURVE_FLAG_NEIGHBOR_*, so
+  // Embree drops the internal caps and a joint becomes a single shared
+  // swept-sphere -- matching POV's seamless union (no double-cap darkening).
+  std::vector<Vec4> cylColor;      // indexed by primID (one per segment)
+  std::vector<Material> cylMat;    // parallel to cylColor (primID order)
+  std::vector<uint16_t> cylGroup;  // parallel: transparency group (section)
+  std::vector<float> cylOpacity1;  // parallel: p1 opacity (< 0 = uniform)
   if (!scene.cylinders.empty()) {
-    const std::size_t segs = scene.cylinders.size() * bakeOffsets.size();
-    const std::size_t nV = segs * 2;
-    RTCGeometry g =
-        rtcNewGeometry(device, RTC_GEOMETRY_TYPE_ROUND_LINEAR_CURVE);
-    auto* vb = static_cast<float*>(rtcSetNewGeometryBuffer(
-        g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float), nV));
-    auto* ib = static_cast<unsigned int*>(rtcSetNewGeometryBuffer(
-        g, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT, sizeof(unsigned int),
-        segs));
+    const std::size_t nc = scene.cylinders.size();
+    const std::size_t segs = nc * bakeOffsets.size();
     cylColor.reserve(segs);
     cylMat.reserve(segs);
     cylGroup.reserve(segs);
-    std::size_t k = 0;
+    cylOpacity1.reserve(segs);
+
+    // Curve buffers, built in chain order. Vertices are shared within a chain
+    // (chainLen+1 vertices per chain), so segment j of a chain uses vertices
+    // [base+j, base+j+1] and its neighbor flags reference base+j-1 / base+j+2,
+    // which stay inside the chain (LEFT only when j>0, RIGHT only when j<n-1).
+    std::vector<float> vbuf;          // 4 floats per vertex (x, y, z, radius)
+    std::vector<unsigned int> ibuf;   // start-vertex index per segment
+    std::vector<unsigned char> fbuf;  // RTCCurveFlags per segment
+    vbuf.reserve((segs + nc) * 4);
+    ibuf.reserve(segs);
+    fbuf.reserve(segs);
+
+    const float eps = 1.0e-4f;  // endpoint match tolerance (<< radius ~0.03)
+    auto keyOf = [&](const Vec3& p) {
+      return std::array<long long, 3>{std::llround(p.x / eps),
+                                      std::llround(p.y / eps),
+                                      std::llround(p.z / eps)};
+    };
+
     for (const Vec3& off : bakeOffsets) {
-      for (const Cylinder& c : scene.cylinders) {
-        vb[(2 * k + 0) * 4 + 0] = c.p0.x + off.x;
-        vb[(2 * k + 0) * 4 + 1] = c.p0.y + off.y;
-        vb[(2 * k + 0) * 4 + 2] = c.p0.z + off.z;
-        vb[(2 * k + 0) * 4 + 3] = c.radius;
-        vb[(2 * k + 1) * 4 + 0] = c.p1.x + off.x;
-        vb[(2 * k + 1) * 4 + 1] = c.p1.y + off.y;
-        vb[(2 * k + 1) * 4 + 2] = c.p1.z + off.z;
-        vb[(2 * k + 1) * 4 + 3] = c.radius;
-        ib[k] = static_cast<unsigned int>(2 * k);
-        cylColor.push_back(c.color);
-        cylMat.push_back(c.material);
-        cylGroup.push_back(c.group);
-        ++k;
+      // Baked endpoints for this instance.
+      std::vector<Vec3> a0(nc), a1(nc);
+      for (std::size_t i = 0; i < nc; ++i) {
+        const Cylinder& c = scene.cylinders[i];
+        a0[i] = {c.p0.x + off.x, c.p0.y + off.y, c.p0.z + off.z};
+        a1[i] = {c.p1.x + off.x, c.p1.y + off.y, c.p1.z + off.z};
       }
+      // Vertex incidence: key -> list of (segment, end) with end 0=p0, 1=p1.
+      std::map<std::array<long long, 3>, std::vector<std::pair<int, int>>> inc;
+      for (int i = 0; i < static_cast<int>(nc); ++i) {
+        inc[keyOf(a0[i])].push_back({i, 0});
+        inc[keyOf(a1[i])].push_back({i, 1});
+      }
+      auto compatible = [&](int s, int t) {
+        const Cylinder& cs = scene.cylinders[s];
+        const Cylinder& ct = scene.cylinders[t];
+        return cs.group == ct.group &&
+               (cs.opacity1 < 0.0f) == (ct.opacity1 < 0.0f);
+      };
+      // next[s]: the segment that continues from s.p1 (its p0 meets s.p1 at a
+      // degree-2 vertex, same direction, compatible attributes). prev derived.
+      std::vector<int> next(nc, -1), prev(nc, -1);
+      for (int s = 0; s < static_cast<int>(nc); ++s) {
+        const auto& ends = inc[keyOf(a1[s])];
+        if (ends.size() != 2) continue;
+        int t = -1;
+        for (const auto& e : ends)
+          if (e.first != s) t = (e.second == 0) ? e.first : -1;
+        if (t >= 0 && t != s && compatible(s, t)) next[s] = t;
+      }
+      for (int s = 0; s < static_cast<int>(nc); ++s)
+        if (next[s] >= 0) prev[next[s]] = s;
+
+      std::vector<char> visited(nc, 0);
+      auto emitChain = [&](int start) {
+        std::vector<int> chain;
+        for (int s = start; s >= 0 && !visited[s]; s = next[s]) {
+          visited[s] = 1;
+          chain.push_back(s);
+        }
+        const unsigned int base = static_cast<unsigned int>(vbuf.size() / 4);
+        auto pushV = [&](const Vec3& p, float r) {
+          vbuf.push_back(p.x);
+          vbuf.push_back(p.y);
+          vbuf.push_back(p.z);
+          vbuf.push_back(r);
+        };
+        pushV(a0[chain[0]], scene.cylinders[chain[0]].radius);
+        for (int cs : chain) pushV(a1[cs], scene.cylinders[cs].radius);
+        const int n = static_cast<int>(chain.size());
+        for (int j = 0; j < n; ++j) {
+          ibuf.push_back(base + static_cast<unsigned int>(j));
+          unsigned char fl = 0;
+          if (j > 0) fl |= RTC_CURVE_FLAG_NEIGHBOR_LEFT;
+          if (j < n - 1) fl |= RTC_CURVE_FLAG_NEIGHBOR_RIGHT;
+          fbuf.push_back(fl);
+          const Cylinder& c = scene.cylinders[chain[j]];
+          cylColor.push_back(c.color);
+          cylMat.push_back(c.material);
+          cylGroup.push_back(c.group);
+          cylOpacity1.push_back(c.opacity1);
+        }
+      };
+      // Open chains first (start = no predecessor), then any leftover cycles.
+      for (int s = 0; s < static_cast<int>(nc); ++s)
+        if (prev[s] < 0 && !visited[s]) emitChain(s);
+      for (int s = 0; s < static_cast<int>(nc); ++s)
+        if (!visited[s]) emitChain(s);
     }
+
+    const std::size_t nSeg = ibuf.size();
+    const std::size_t nVert = vbuf.size() / 4;
+    RTCGeometry g =
+        rtcNewGeometry(device, RTC_GEOMETRY_TYPE_ROUND_LINEAR_CURVE);
+    auto* vb = static_cast<float*>(rtcSetNewGeometryBuffer(
+        g, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT4, 4 * sizeof(float),
+        nVert));
+    std::memcpy(vb, vbuf.data(), vbuf.size() * sizeof(float));
+    auto* ib = static_cast<unsigned int*>(rtcSetNewGeometryBuffer(
+        g, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT, sizeof(unsigned int),
+        nSeg));
+    std::memcpy(ib, ibuf.data(), ibuf.size() * sizeof(unsigned int));
+    auto* fb = static_cast<unsigned char*>(rtcSetNewGeometryBuffer(
+        g, RTC_BUFFER_TYPE_FLAGS, 0, RTC_FORMAT_UCHAR, sizeof(unsigned char),
+        nSeg));
+    std::memcpy(fb, fbuf.data(), fbuf.size() * sizeof(unsigned char));
     rtcCommitGeometry(g);
     unsigned int id = rtcAttachGeometry(rscene, g);
     if (id >= records.size()) records.resize(id + 1);
@@ -375,6 +471,20 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
                             opt.specularScale);
       hs.opacity = fc.w;
       hs.group = isSphere ? sphereGroup[rh.hit.primID] : cylGroup[rh.hit.primID];
+      // edge_line2 gradient: opacity varies p0 (fc.w) -> p1 (cylOpacity1) along
+      // the segment. For ROUND_LINEAR_CURVE rh.hit.u is the axial curve fraction
+      // in [0,1], so a linear lerp reproduces POV's "gradient z" transmit fade
+      // (uniform when opacity1 < 0). The opaque outlines (opacity1 < 0) are
+      // unaffected.
+      if (!isSphere) {
+        const float op1 = cylOpacity1[rh.hit.primID];
+        if (op1 >= 0.0f) {
+          float u = rh.hit.u;
+          if (u < 0.0f) u = 0.0f;
+          if (u > 1.0f) u = 1.0f;
+          hs.opacity = fc.w * (1.0f - u) + op1 * u;
+        }
+      }
     }
     return hs;
   };
