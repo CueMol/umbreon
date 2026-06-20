@@ -63,6 +63,11 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
+    } else if (a == "--shadow-samples") {
+      o.shadowSamples = std::atoi(value("--shadow-samples").c_str());
+    } else if (a == "--light-radius") {
+      o.lightRadius =
+          static_cast<float>(std::atof(value("--light-radius").c_str()));
     } else if (a == "--spp") {
       o.spp = std::atoi(value("--spp").c_str());
     } else if (a == "--accum") {
@@ -180,7 +185,9 @@ void printUsage(const char* prog) {
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
-      "  --shadows <on|off>       cast hard shadows from lights      [off]\n"
+      "  --shadows <on|off>       cast shadows from lights           [off]\n"
+      "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
+      "  --light-radius <float>   light angular radius deg (soft)     [0]\n"
       "  --spp <int>              pixel samples per frame       [1]\n"
       "  --accum <int>            accumulation frames           [16]\n"
       "  --prefilter-aux <on|off> prefilter albedo/normal AOVs  [off]\n"

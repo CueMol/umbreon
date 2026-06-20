@@ -186,20 +186,42 @@ float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng, const Vec3& Ns,
   return 1.0f - static_cast<float>(hits) / static_cast<float>(nSamples);
 }
 
-// Per-light shadow factor in [0,1]: 1 = lit, 0 = fully shadowed. Casts a shadow
-// ray from the hit point toward the (distant) light; transparent geometry is a
-// binary occluder (as OSPRay scivis). The origin is offset along the geometric
+// Sample a direction toward a distant light of angular radius l.radius: a
+// uniform-disk perturbation of l.L within a cone of half-angle l.radius, giving
+// a soft penumbra. radius 0 returns l.L exactly (the hard-shadow direction).
+Vec3 sampleLightDir(const Light& l, float u1, float u2) {
+  if (l.radius <= 0.0f) return l.L;
+  const Frame f = frameFromNormal(l.L);
+  const float phi = 6.2831853072f * u1;                 // 2*pi
+  const float rr = std::tan(l.radius) * std::sqrt(u2);  // uniform disk radius
+  const Vec3 d = f.n + f.t * (rr * std::cos(phi)) + f.b * (rr * std::sin(phi));
+  return safeNormalize(d, l.L);
+}
+
+// Per-light shadow factor in [0,1]: 1 = lit, 0 = fully shadowed. Casts shadow
+// ray(s) from the hit point toward the (distant) light; transparent geometry is
+// a binary occluder (as OSPRay scivis). The origin is offset along the geometric
 // normal Ng (face-forwarded to the lit side) by the adaptive self-intersection
-// epsilon, so a surface does not shadow itself. This is the HARD-shadow path
-// (one ray); soft area-light sampling is added later.
+// epsilon, so a surface does not shadow itself. A single ray gives a hard shadow
+// (shadowSamples <= 1 or a point light, radius 0); otherwise shadowSamples cone
+// samples are averaged for a soft area-light penumbra.
 float computeShadow(RTCScene rscene, const Vec3& P, const Vec3& Ng,
-                    const Vec3& N, const Light& l) {
+                    const Vec3& N, const Light& l, int shadowSamples,
+                    uint32_t& s0, uint32_t& s1) {
   Vec3 ng = (dot(Ng, N) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
   ng = safeNormalize(ng, N);
   const float eps = selfIntersectEps(P, ng, 1.0f);
   const Vec3 O = P + ng * eps;
   const float far = std::numeric_limits<float>::infinity();  // distant light
-  return occluded(rscene, O, l.L, eps, far) ? 0.0f : 1.0f;
+  if (shadowSamples <= 1 || l.radius <= 0.0f)
+    return occluded(rscene, O, l.L, eps, far) ? 0.0f : 1.0f;
+  int hits = 0;
+  for (int i = 0; i < shadowSamples; ++i) {
+    tea2(s0, s1);
+    const Vec3 dir = sampleLightDir(l, u32ToUnorm(s0), u32ToUnorm(s1));
+    if (occluded(rscene, O, dir, eps, far)) ++hits;
+  }
+  return 1.0f - static_cast<float>(hits) / static_cast<float>(shadowSamples);
 }
 
 // Shared POV local-illumination shader (no 1/pi factor). C is the pigment rgb,
@@ -212,12 +234,17 @@ float computeShadow(RTCScene rscene, const Vec3& P, const Vec3& Ng,
 Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V,
                 const std::vector<Light>& lights, const Vec3& ambLight,
                 const Vec3& bg, float specularScale, float aoFactor,
-                const Vec3& P, const Vec3& Ng, RTCScene rscene, bool shadowsOn) {
+                const Vec3& P, const Vec3& Ng, RTCScene rscene, bool shadowsOn,
+                int shadowSamples, uint32_t px, uint32_t py) {
   Vec3 out{mat.emission * C.x + aoFactor * mat.ambient * C.x * ambLight.x,
            mat.emission * C.y + aoFactor * mat.ambient * C.y * ambLight.y,
            mat.emission * C.z + aoFactor * mat.ambient * C.z * ambLight.z};
 
   const float exp = blinnExp(mat.roughness);
+  // Per-pixel deterministic RNG stream for soft-shadow sampling (advanced per
+  // light/sample inside computeShadow); seeded from the hi-res pixel only, so
+  // the penumbra is identical regardless of TBB thread count.
+  uint32_t s0 = px, s1 = py;
   for (const Light& l : lights) {
     const float ndl = dot(N, l.L);
     if (ndl <= 0.0f) continue;
@@ -227,7 +254,8 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
     // fully lit point) Lc == l.color bitwise, so the shadow-off render is
     // byte-identical to the pre-shadow output.
     const float shadowFactor =
-        shadowsOn ? computeShadow(rscene, P, Ng, N, l) : 1.0f;
+        shadowsOn ? computeShadow(rscene, P, Ng, N, l, shadowSamples, s0, s1)
+                  : 1.0f;
     const Vec3 Lc{l.color.x * shadowFactor, l.color.y * shadowFactor,
                   l.color.z * shadowFactor};
 
@@ -679,6 +707,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     l.color = Vec3{dl.color.x * dl.intensity, dl.color.y * dl.intensity,
                    dl.color.z * dl.intensity};
     l.highlight = dl.castsHighlight;
+    l.radius = radians(opt.lightRadius);  // soft-shadow angular radius (0 = hard)
     lights.push_back(l);
   }
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
@@ -733,7 +762,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       }
       hs.color = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
                             opt.specularScale, aoFactor, P, Ng, rscene,
-                            opt.shadows);
+                            opt.shadows, opt.shadowSamples, px, py);
       hs.opacity = cbuf[3];
       hs.group = m.groupForTri(rh.hit.primID);
     } else {
@@ -761,7 +790,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
                    org.z + rd.z * rh.ray.tfar};
       const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
       hs.color = shadeLocal(pm, C, N, V, lights, ambLight, bg,
-                            opt.specularScale, 1.0f, P, Ng, rscene, false);
+                            opt.specularScale, 1.0f, P, Ng, rscene, false, 1,
+                            px, py);
       hs.opacity = fc.w;
       hs.group = isSphere ? sphereGroup[rh.hit.primID]
                  : isCapped ? cylCapGroup[rh.hit.primID]

@@ -273,11 +273,19 @@ int main(int argc, char** argv) {
     ropt.aoIntensity = opt.aoIntensity;
     ropt.aoDistance = (opt.aoDistance > 0.0f) ? opt.aoDistance : scene.aoDistance;
     ropt.shadows = opt.shadows;
+    ropt.shadowSamples = opt.shadowSamples;
+    ropt.lightRadius = opt.lightRadius;
     if (ropt.aoSamples > 0)
       std::printf(
           "  ambient occlusion: %d samples, radius %.3f, intensity %.2f\n",
           ropt.aoSamples, ropt.aoDistance, ropt.aoIntensity);
-    if (ropt.shadows) std::printf("  hard shadows: on\n");
+    if (ropt.shadows) {
+      if (ropt.lightRadius > 0.0f && ropt.shadowSamples > 1)
+        std::printf("  soft shadows: %d samples, light radius %.2f deg\n",
+                    ropt.shadowSamples, ropt.lightRadius);
+      else
+        std::printf("  hard shadows: on\n");
+    }
 
     // Supersampling factor. umbreon::render() renders at ss x the output
     // resolution so the thin silhouette lines antialias like POV-Ray; the .pov

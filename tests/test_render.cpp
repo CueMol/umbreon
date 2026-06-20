@@ -919,5 +919,49 @@ int main() {
             fn.color[kCenterRgba + 0] + 0.2f < fo.color[kCenterRgba + 0]);
   }
 
+  // ===== Soft (area-light) shadows: a penumbra between lit and fully shadowed =
+  // The floor-center shadow ray passes through the center of a sphere occluder.
+  // A hard shadow (one ray) is fully blocked; a soft shadow (a light of angular
+  // radius > 0, many cone samples) is only partially blocked, so the center
+  // lands strictly between fully lit and fully shadowed.
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad({1, 1, 1, 1});  // floor z=0, +Z, material 0.2/0.8
+    sc.camera = makeOrthoCam();
+    sc.ambientColor = {1, 1, 1};
+    sc.background = {0, 0, 0};
+    umbreon::DistantLight l;
+    l.direction = {-0.6f, 0.0f, -0.8f};  // L = (0.6, 0, 0.8)
+    l.color = {1, 1, 1};
+    l.intensity = 1.0f;
+    sc.lights.push_back(l);
+    umbreon::Sphere occ;  // centered on the floor-center shadow ray (t = 1.5)
+    occ.center = {0.9f, 0.0f, 1.2f};
+    occ.radius = 0.45f;
+    occ.color = {0, 0, 0, 1.0f};
+    sc.spheres.push_back(occ);
+    umbreon::RenderOptions lit;
+    lit.width = 5; lit.height = 5; lit.shadows = false;
+    umbreon::RenderOptions hard = lit;
+    hard.shadows = true;  // one ray through the sphere center -> fully shadowed
+    umbreon::RenderOptions soft = hard;
+    soft.lightRadius = 22.0f; soft.shadowSamples = 64;  // wider than the sphere
+    umbreon::FrameResult fl = umbreon::render(sc, lit);
+    umbreon::FrameResult fh = umbreon::render(sc, hard);
+    umbreon::FrameResult fs = umbreon::render(sc, soft);
+    const float litR = fl.color[kCenterRgba + 0];
+    const float hardR = fh.color[kCenterRgba + 0];
+    const float softR = fs.color[kCenterRgba + 0];
+    s.check("soft shadow: hard fully shadows center (R ~ 0.2)", approx(hardR, 0.2f, 0.03f));
+    s.check("soft shadow: lit center bright (R ~ 0.84)", approx(litR, 0.84f, 0.03f));
+    s.check("soft shadow: penumbra strictly between hard and lit",
+            hardR + 0.05f < softR && softR + 0.05f < litR);
+    umbreon::FrameResult fs2 = umbreon::render(sc, soft);
+    bool same = fs.color.size() == fs2.color.size();
+    for (std::size_t i = 0; same && i < fs.color.size(); ++i)
+      if (fs.color[i] != fs2.color[i]) same = false;
+    s.check("soft shadow: deterministic (two renders identical)", same);
+  }
+
   return s.report();
 }
