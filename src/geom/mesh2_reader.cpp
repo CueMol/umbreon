@@ -573,6 +573,28 @@ class Reader {
     pos_ = close + 1;
   }
 
+  // Detect the optional POV `open` keyword (capless cylinder) in the token range
+  // [begin, end). It appears at brace depth 0 after the radius and before any
+  // texture/pigment/finish/material block, so we scan only the top level and
+  // stop once a nested block begins.
+  bool hasOpenKeyword(std::size_t begin, std::size_t end) const {
+    int depth = 0;
+    for (std::size_t k = begin; k < end; ++k) {
+      const Token& tk = t_[k];
+      if (tk.kind == Tk::Punct && tk.s == "{") {
+        ++depth;
+      } else if (tk.kind == Tk::Punct && tk.s == "}") {
+        if (depth > 0) --depth;
+      } else if (depth == 0 && tk.kind == Tk::Ident) {
+        if (tk.s == "open") return true;
+        if (tk.s == "texture" || tk.s == "pigment" || tk.s == "finish" ||
+            tk.s == "normal" || tk.s == "material")
+          break;  // nested block reached; `open` (if any) precedes it
+      }
+    }
+    return false;
+  }
+
   // cylinder { <p1>, <p2>, <radius> [open] texture { ... } }
   // CueMol emits these directly for the density-mesh wireframe (_39_40).
   void parseCylinder() {
@@ -585,6 +607,9 @@ class Reader {
     PovValue p2 = evalSum();
     if (isPunct(",")) advance();
     PovValue radius = evalSum();
+    // Position just after the radius, before textureIn() advances pos_ into the
+    // texture block: the optional `open` keyword (if any) lives in [here, close).
+    const std::size_t afterRadius = pos_;
     Cylinder c;
     c.p0 = toVec3(p1);
     c.p1 = toVec3(p2);
@@ -593,6 +618,11 @@ class Reader {
     c.color = tex.color;
     if (tex.hasFinish) c.material = tex.finish;  // else keep flatOutline
     c.group = static_cast<uint16_t>(curGroup_);
+    // Raw cylinder{} bonds/wireframes are CLOSED (flat disk caps at p0/p1) unless
+    // the optional `open` keyword (capless) is present after the radius. Capped
+    // bonds are rendered as CONE_LINEAR_CURVE (flat caps); open ones join the
+    // ROUND_LINEAR_CURVE edge path. (CueMol's raw cylinders are all CLOSED.)
+    c.open = hasOpenKeyword(afterRadius, close);
     if (c.radius > 0.0f) cylinders_.push_back(c);
     pos_ = close + 1;
   }
@@ -629,6 +659,9 @@ class Reader {
       c.opacity1 = op1;
     }
     c.group = static_cast<uint16_t>(curGroup_);
+    // POV silhouette edges expand to `open` (capless) cylinders; tag them so the
+    // renderer routes them through the ROUND_LINEAR_CURVE chain (seam) path.
+    c.open = true;
     if (c.radius > 0.0f) cylinders_.push_back(c);
   }
 

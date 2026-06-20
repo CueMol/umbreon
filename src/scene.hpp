@@ -153,6 +153,15 @@ struct Cylinder {
   // Opacity at p1 for an edge_line2 gradient (POV "gradient z" transmit fade).
   // < 0 means uniform opacity (use color.w along the whole segment).
   float opacity1 = -1.0f;
+  // POV cap semantics. POV silhouette edges are emitted with the `open` keyword
+  // (capless), and the renderer stitches them into ROUND_LINEAR_CURVE chains so
+  // joints share a single swept-sphere (no double-cap seam). POV stick bonds and
+  // density-mesh wireframes are emitted as plain (CLOSED) cylinders with FLAT
+  // disk caps at the exact endpoints; the renderer draws those as independent
+  // CONE_LINEAR_CURVE segments so a cap occupies zero axial thickness and stays
+  // hidden inside the overlap of consecutive bonds (no protruding round cap).
+  // true => `open` (round/chained edge); false => capped (flat-disk bond).
+  bool open = false;
 };
 
 // --------------------------------------------------------------------------

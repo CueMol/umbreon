@@ -553,6 +553,7 @@ int main() {
       c.p1 = {2, 0, 0};
       c.radius = 0.5f;                     // ~0.6 px-wide at 5x5; covers center
       c.color = {0, 0, 0, 1.0f};           // opaque black outline
+      c.open = true;                       // silhouette edge: ROUND capsule path
       umbreon::Scene sc = cylScene(c, {1, 1, 1});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       umbreon::FrameResult f = umbreon::render(sc, o);
@@ -576,6 +577,7 @@ int main() {
       c.radius = 0.5f;
       c.color = {0, 0, 0, 1.0f};           // opacity at p0 = 1 (fully opaque)
       c.opacity1 = 0.0f;                    // opacity at p1 = 0 (fully transmit)
+      c.open = true;                       // edge_line2: ROUND capsule path
       umbreon::Scene sc = cylScene(c, {1, 1, 1});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       o.transparency = true;
@@ -605,6 +607,7 @@ int main() {
       c.radius = 0.5f;
       c.color = {0, 0, 0, 0.5f};           // uniform opacity 0.5
       c.opacity1 = -1.0f;                   // no gradient
+      c.open = true;                       // edge_line: ROUND capsule path
       umbreon::Scene sc = cylScene(c, {1, 1, 1});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       o.transparency = true;
@@ -636,7 +639,8 @@ int main() {
       a.p1 = {0, 0, 0};
       a.radius = 0.5f;
       a.color = {0, 0, 0, 0.5f};             // uniform transparent black
-      umbreon::Cylinder b = a;
+      a.open = true;                         // silhouette edges: chain at joint
+      umbreon::Cylinder b = a;               // inherits open=true
       b.p0 = {0, 0, 0};
       b.p1 = {2, 0, 0};                       // shares the joint at the origin
       umbreon::Scene sc = cylScene(a, {1, 1, 1});
@@ -654,6 +658,92 @@ int main() {
       s.check("C4 seam: joint not darker than mid-segment B",
               f.color[ctr + 0] + 0.03f >= f.color[rgt + 0]);
     }
+
+    // C5: CAP GUARD. POV stick bonds are CLOSED cylinders (open=false) with FLAT
+    // disk caps at the exact endpoints; consecutive overlapping bonds must not
+    // show a protruding cap. A ROUND_LINEAR_CURVE capsule (open=true) instead
+    // bulges a hemisphere ~radius PAST the endpoint, which is what produced the
+    // spurious colored arc through an overlapping transparent surface. This test
+    // renders the SAME cylinder both ways over a white background and asserts
+    // that just BEYOND the p1 endpoint the capped (CONE) cylinder leaves the
+    // pixel uncovered (background) while the open (round) one bulges over it.
+    // Locks the arc fix: a regression to round caps for bonds would re-cover it.
+    {
+      umbreon::Cylinder c;
+      c.p0 = {-2, 0, 0};
+      c.p1 = {0, 0, 0};                       // ends at the view center (x=0)
+      c.radius = 0.45f;                       // round cap would reach x=+0.45
+      c.color = {0, 0, 0, 1.0f};              // opaque black
+      umbreon::RenderOptions o; o.width = 11; o.height = 11;
+      // 11-wide ortho over [-2,2]: pixel centers x_i = -2 + (i+0.5)*4/11.
+      // i=4 -> x=-0.36 (mid-body, covered both ways); i=6 -> x=+0.36 (beyond p1:
+      // inside a round cap's x<=0.45 bulge, outside a flat cap that stops at x=0).
+      const std::size_t row = 5;              // center row (py=5, y=0)
+      const std::size_t body = (row * 11 + 4) * 4;   // mid-body probe
+      const std::size_t past = (row * 11 + 6) * 4;   // just past the endpoint
+
+      c.open = false;                         // capped bond: CONE flat caps
+      umbreon::FrameResult fc = umbreon::render(cylScene(c, {1, 1, 1}), o);
+      c.open = true;                          // silhouette edge: ROUND hemicap
+      umbreon::FrameResult fo = umbreon::render(cylScene(c, {1, 1, 1}), o);
+
+      // Sanity: the body is covered (near black) in BOTH cap modes.
+      s.check("C5 cap: capped body covered (R<0.1)", fc.color[body + 0] < 0.1f);
+      s.check("C5 cap: open body covered (R<0.1)", fo.color[body + 0] < 0.1f);
+      // Discriminator: beyond p1 the flat cap leaves background (near white),
+      // while the round cap bulges over it (notably darker).
+      s.check("C5 cap: capped leaves background past endpoint (R>0.8)",
+              fc.color[past + 0] > 0.8f);
+      s.check("C5 cap: round bulges past endpoint (darker than capped)",
+              fo.color[past + 0] + 0.2f < fc.color[past + 0]);
+    }
+  }
+
+  // C6: FAR-SCENE SURFACE-SKIP GUARD. The front-to-back transparency walk steps
+  // just past each hit to find the next surface. That step must clear only
+  // floating-point jitter, never a whole distinct primitive. A relative step of
+  // t*1e-5 was too coarse at a far camera (large t): an opaque surface sitting
+  // just behind a transparent one (within ~t*1e-5) was stepped over, so a DEEPER
+  // object showed through it (in the real scene an atom sphere appeared through a
+  // bond cylinder). Three surfaces along the center ray at t~200: a transparent
+  // white quad (z=0), then an opaque BLUE sphere whose near surface is 0.001
+  // behind it (z=-0.001), then a deeper opaque RED sphere (z=-0.5). The blue
+  // sphere is nearest and must occlude the red one; stepping over its near
+  // surface would wrongly reveal red. (A two-surface test would not catch this:
+  // skipping a lone sphere's near surface still leaves its far surface to
+  // occlude, so a third, deeper, distinctly-colored object is required.)
+  {
+    using umbreon::Vec3;
+    using umbreon::Vec4;
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.camera.position = {0, 0, 200};        // far camera => large t (~200)
+    sc.background = {0, 0, 0};
+    sc.ambientColor = {1, 1, 1};
+    sc.assumedGamma = 1.0f;                   // raw values (no gamma encode)
+    sc.mesh = makeQuad(Vec4{1, 1, 1, 0.5f});  // transparent quad at z=0
+    sc.mesh.material = umbreon::Material::flatOutline();  // raw white * 0.5
+    umbreon::Sphere a;                         // nearest opaque: BLUE
+    a.center = {0, 0, -5.001f};                // near surface at z=-0.001
+    a.radius = 5.0f;
+    a.color = Vec4{0, 0, 1, 1};
+    a.material = umbreon::Material::flatOutline();
+    sc.spheres.push_back(a);
+    umbreon::Sphere b;                         // deeper opaque: RED
+    b.center = {0, 0, -1.0f};                  // near surface at z=-0.5
+    b.radius = 0.5f;
+    b.color = Vec4{1, 0, 0, 1};
+    b.material = umbreon::Material::flatOutline();
+    sc.spheres.push_back(b);
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    o.transparency = true;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    // fix: quad(0.5 white) over BLUE a => (0.5, 0.5, 1.0). bug: a's near surface
+    // is stepped over => quad over RED b => (1.0, 0.5, 0.5). blue-vs-red tells.
+    s.check("C6 far skip: nearest opaque (just behind transparent) occludes deeper",
+            f.color[kCenterRgba + 2] > f.color[kCenterRgba + 0] + 0.3f);
   }
 
   return s.report();

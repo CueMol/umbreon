@@ -67,6 +67,39 @@ int main(int argc, char** argv) {
                 std::fabs(m.colors[0].z - 0.25f) < 1e-5f);
   }
 
+  // --- cylinder cap semantics: the `open` flag ---------------------------
+  // POV silhouette edges expand to `open` (capless) cylinders, while raw stick
+  // bonds / density wireframes are CLOSED (flat disk caps) unless they carry the
+  // explicit `open` keyword. The renderer routes open vs capped to different
+  // Embree curve types, so the parser must classify each correctly. Locks: (1)
+  // edge_line / edge_line2 => open, (2) raw cylinder{} => capped by default,
+  // (3) cylinder{ ... open ... } => open.
+  {
+    // edge_line / edge_line2 take a declared texture identifier as the tex arg
+    // (exactly as CueMol emits, e.g. `_52_55_tex_0`); the macro's color comes
+    // from the trailing color arg, so the tex value itself is unused here.
+    const char* src = R"POV(
+      #declare _tex0 = texture { pigment { color rgb <0,0,0> } }
+      edge_line(<0,0,0>, <0,0,1>, <1,0,0>, <0,0,1>, 0.0, 0.05, _tex0, <0,0,0>)
+      edge_line2(<0,0,0>, <0,0,1>, 0.0, <1,0,0>, <0,0,1>, 0.0, 0.0, 0.05,
+                 _tex0, <0,0,0>)
+      cylinder { <0,0,0>, <1,0,0>, 0.05
+                 texture { pigment { color rgb <1,0,0> } } }
+      cylinder { <0,0,0>, <1,0,0>, 0.05 open
+                 texture { pigment { color rgb <0,1,0> } } }
+    )POV";
+    umbreon::SceneGeometry g = umbreon::readGeometryFromString(src);
+    s.check_eq("open-flag: cylinder count", g.cylinders.size(), std::size_t(4));
+    if (g.cylinders.size() == 4) {
+      s.check("open-flag: edge_line is open", g.cylinders[0].open);
+      s.check("open-flag: edge_line2 is open", g.cylinders[1].open);
+      s.check("open-flag: raw cylinder is capped (not open)",
+              !g.cylinders[2].open);
+      s.check("open-flag: cylinder with `open` keyword is open",
+              g.cylinders[3].open);
+    }
+  }
+
   // --- integration test: the real CueMol file ----------------------------
   if (argc > 1) {
     umbreon::Mesh m = umbreon::readMesh2FromFile(argv[1]);
