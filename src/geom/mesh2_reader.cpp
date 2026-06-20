@@ -613,6 +613,15 @@ class Reader {
     c.p1 = toVec3(a[iV2]) + toVec3(a[iN2]) * static_cast<float>(raise);
     c.radius = static_cast<float>(comp(a[iW], 0));
     c.color = toColor(a[iCol], "rgb");
+    // edge_line2 carries per-endpoint transmit a1 (arg 2) and a2 (arg 5): the
+    // POV macro pigments the segment "rgbt col+<0,0,0,a>" along its length, so
+    // opacity = 1 - transmit. This fades the silhouette toward grazing edges.
+    // umbreon's cylinder has a single opacity, so use the segment mean.
+    if (two) {
+      const double t1 = comp(a[2], 0), t2 = comp(a[5], 0);
+      float op = 1.0f - static_cast<float>(0.5 * (t1 + t2));
+      c.color.w = std::min(1.0f, std::max(0.0f, op));
+    }
     c.group = static_cast<uint16_t>(curGroup_);
     if (c.radius > 0.0f) cylinders_.push_back(c);
   }
