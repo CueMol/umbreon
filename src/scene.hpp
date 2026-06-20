@@ -202,6 +202,12 @@ struct Scene {
   float aoDistance = 1.0e20f;         // AO ray max distance (scene-scaled)
   float assumedGamma = 1.0f;         // POV assumed_gamma (from global_settings)
 
+  // Transparency groups (sections) rendered as additive single-layer "veils"
+  // (group alpha, e.g. from --alpha). A transparent hit whose group is listed
+  // uses the additive model; ALL other transparency uses front-to-back "over"
+  // (fragment alpha). Empty (default) => every transparent surface is over.
+  std::vector<uint16_t> veilGroups;
+
   std::size_t instanceCount() const { return instanceOffsets.size(); }
   std::size_t effectiveTriangles() const {
     return mesh.triangleCount() * (instanceOffsets.empty() ? 1 : instanceOffsets.size());

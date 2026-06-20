@@ -336,13 +336,19 @@ int main() {
       m.triGroupId.push_back(g);
       m.triGroupId.push_back(g);
     };
-    auto sceneOf = [&](umbreon::Mesh mesh, Vec3 bg) {
+    // veil defaults to {1,2}: the group-alpha (additive single-layer) tests
+    // T1-T6 below mark their transparent groups as veils. The fragment (over)
+    // tests F1-F4 pass {} so their transparency uses front-to-back "over".
+    auto sceneOf = [&](umbreon::Mesh mesh, Vec3 bg,
+                       std::vector<std::uint16_t> veil =
+                           std::vector<std::uint16_t>{1, 2}) {
       umbreon::Scene sc;
       sc.mesh = std::move(mesh);
       sc.mesh.material = umbreon::Material::flatOutline();  // raw color shading
       sc.camera = makeOrthoCam();
       sc.background = bg;
       sc.ambientColor = {1, 1, 1};
+      sc.veilGroups = std::move(veil);
       return sc;
     };
 
@@ -443,6 +449,77 @@ int main() {
       s.check("T6 opacity1 hides back B=1", approx(f.color[kCenterRgba + 2], 1.0f, 1e-4f));
       s.check("T6 opacity1 hides back R=0", approx(f.color[kCenterRgba + 0], 0.0f, 1e-4f));
       s.check("T6 alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
+
+    // ===== Fragment alpha (intrinsic per-color opacity): front-to-back "over",
+    // EVERY surface composited (no dedup), order-DEPENDENT -- POV native
+    // transmit. Selected when the group is NOT a veil (veilGroups empty). =====
+
+    // F1: single fragment over opaque == a*C + (1-a)*A (matches T1 numerically).
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
+      addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);  // fragment blue 0.6
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});  // no veils
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("F1 over R=0.4", approx(f.color[kCenterRgba + 0], 0.4f, 1e-4f));
+      s.check("F1 over B=0.6", approx(f.color[kCenterRgba + 2], 0.6f, 1e-4f));
+      s.check("F1 alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
+
+    // F2: ORDER DEPENDENCE (unlike additive veils, cf. T5b). green(0.5) front +
+    // blue(0.5) mid over opaque red => 0.5*green + 0.25*blue + 0.25*red.
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
+      addQuad(m, {0, 0, 1, 0.5f}, 0.5f, 2);  // blue (mid)
+      addQuad(m, {0, 1, 0, 0.5f}, 1.0f, 1);  // green (front)
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("F2 green-front G=0.5", approx(f.color[kCenterRgba + 1], 0.5f, 1e-4f));
+      s.check("F2 green-front B=0.25", approx(f.color[kCenterRgba + 2], 0.25f, 1e-4f));
+    }
+    // ...swap depths: blue front => 0.5*blue + 0.25*green + 0.25*red (DIFFERENT).
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
+      addQuad(m, {0, 1, 0, 0.5f}, 0.5f, 1);  // green (mid)
+      addQuad(m, {0, 0, 1, 0.5f}, 1.0f, 2);  // blue (front)
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("F2 blue-front B=0.5 (order-dependent)", approx(f.color[kCenterRgba + 2], 0.5f, 1e-4f));
+      s.check("F2 blue-front G=0.25 (order-dependent)", approx(f.color[kCenterRgba + 1], 0.25f, 1e-4f));
+    }
+
+    // F3: NO dedup -- both walls composite. Two same-group(1) blue(0.5) quads
+    // over opaque red => 0.75*blue + 0.25*red (a veil would give 0.5/0.5).
+    {
+      umbreon::Mesh m;
+      addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red
+      addQuad(m, {0, 0, 1, 0.5f}, 0.5f, 1);  // back wall
+      addQuad(m, {0, 0, 1, 0.5f}, 1.0f, 1);  // front wall (same group)
+      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("F3 no-dedup B=0.75 (both walls)", approx(f.color[kCenterRgba + 2], 0.75f, 1e-4f));
+      s.check("F3 no-dedup R=0.25", approx(f.color[kCenterRgba + 0], 0.25f, 1e-4f));
+    }
+
+    // F4: transparent background => premultiplied "over" output (no bg tint),
+    // alpha = accumulated coverage.
+    {
+      umbreon::Mesh m;
+      addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);  // fragment blue 0.6, nothing behind
+      umbreon::Scene sc = sceneOf(std::move(m), {0.2f, 0.2f, 0.2f}, {});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      o.transparentBackground = true;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      s.check("F4 transp-bg B=0.6 (premult)", approx(f.color[kCenterRgba + 2], 0.6f, 1e-4f));
+      s.check("F4 transp-bg R=0 (no bg tint)", approx(f.color[kCenterRgba + 0], 0.0f, 1e-4f));
+      s.check("F4 transp-bg alpha=0.6", approx(f.color[kCenterRgba + 3], 0.6f, 1e-4f));
     }
   }
 

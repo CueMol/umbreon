@@ -150,14 +150,19 @@ int main(int argc, char** argv) {
           }
           const int g = it->second;
           const float a = kv.second;
+          // Group alpha MULTIPLIES the intrinsic (fragment) opacity, so the two
+          // are orthogonal: group 0.5 x fragment 0.5 = 0.25. A fully opaque
+          // fragment (1.0) just becomes the group alpha (no change vs before).
           for (std::size_t t = 0; t < scene.mesh.triangleCount(); ++t)
             if (scene.mesh.groupForTri(t) == g)
-              for (int k = 0; k < 3; ++k) scene.mesh.colors[3 * t + k].w = a;
+              for (int k = 0; k < 3; ++k) scene.mesh.colors[3 * t + k].w *= a;
           for (umbreon::Sphere& s : scene.spheres)
-            if (s.group == g) s.color.w = a;
+            if (s.group == g) s.color.w *= a;
           for (umbreon::Cylinder& c : scene.cylinders)
-            if (c.group == g) c.color.w = a;
-          std::printf("  alpha override: %s -> %.3f (group %d)\n",
+            if (c.group == g) c.color.w *= a;
+          // Mark the section as an additive single-layer "veil" (group alpha).
+          scene.veilGroups.push_back(static_cast<uint16_t>(g));
+          std::printf("  alpha override: %s *= %.3f (group %d, veil)\n",
                       kv.first.c_str(), a, g);
         }
       }

@@ -379,6 +379,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     return hs;
   };
 
+  // Veil lookup: groups rendered as additive single-layer (group alpha). Every
+  // other transparency uses front-to-back "over" (fragment alpha). Empty =>
+  // all transparency is "over".
+  std::vector<uint8_t> isVeil;
+  for (uint16_t g : scene.veilGroups) {
+    if (g >= isVeil.size()) isVeil.resize(static_cast<std::size_t>(g) + 1, 0);
+    isVeil[g] = 1;
+  }
+
   auto t0 = std::chrono::high_resolution_clock::now();
 
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
@@ -405,21 +414,25 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
 
-      // Single-layer transparency, computed in one front-to-back walk. The
-      // additive composite reproduces CueMol's blendpng (render each section
-      // opaquely, then weighted-add) exactly and is order-independent:
-      //   out = sum_g beta_g * C_g + (1 - sum beta_g) * A
-      // where A is the nearest opaque surface (the "floor"), and C_g is the
-      // frontmost surface of transparency group g in front of A. Only the
-      // frontmost surface of each group is composited (single layer per group),
-      // which also drops the back wall of a closed transparent surface.
-      Vec3 accumC{0.0f, 0.0f, 0.0f};
-      float sumBeta = 0.0f;
+      // Single-pass transparency with two coexisting models, selected per hit
+      // by the hit's group:
+      //   - VEIL groups (group alpha): additive single-layer, frontmost-per-
+      //     group, order-independent -- exactly CueMol's blendpng.
+      //   - everything else (fragment alpha = intrinsic per-color opacity):
+      //     front-to-back "over", every surface composited (no dedup) -- POV
+      //     native transmit; group alpha (if any) already multiplied in.
+      // Combine: fragments composite over the opaque floor, then the veils are
+      // laid additively on top. Reduces to pure "over" (no veils, e.g. scene5),
+      // pure additive (all veils, the group-alpha path), or opaque (unchanged).
+      Vec3 Cv{0.0f, 0.0f, 0.0f};  // additive (veil) premultiplied color
+      float sumBeta = 0.0f;       // sum of veil weights
+      Vec3 Cf{0.0f, 0.0f, 0.0f};  // over (fragment) premultiplied color
+      float Af = 0.0f;            // over accumulated coverage
       float nearDepth = 0.0f;
       Vec3 base = bg;
       float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
-      constexpr int kMaxSeen = 64;  // distinct transparent groups per ray
+      constexpr int kMaxSeen = 64;  // distinct veil groups per ray
       int seen[kMaxSeen];
       int nseen = 0;
 
@@ -461,37 +474,52 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           break;
         }
 
-        // Transparent: composite only the frontmost surface of each group.
-        bool dup = false;
-        for (int sidx = 0; sidx < nseen; ++sidx)
-          if (seen[sidx] == hs.group) { dup = true; break; }
-        if (!dup) {
-          if (nseen < kMaxSeen) seen[nseen++] = hs.group;
-          const float a = hs.opacity;
-          accumC.x += a * hs.color.x;
-          accumC.y += a * hs.color.y;
-          accumC.z += a * hs.color.z;
-          sumBeta += a;
-          if (sumBeta >= kOpaque) break;  // transparent layers fully saturate
+        const bool veil =
+            hs.group >= 0 && static_cast<std::size_t>(hs.group) < isVeil.size() &&
+            isVeil[hs.group] != 0;
+        if (veil) {
+          // additive: only the frontmost surface of each veil group
+          bool dup = false;
+          for (int sidx = 0; sidx < nseen; ++sidx)
+            if (seen[sidx] == hs.group) { dup = true; break; }
+          if (!dup) {
+            if (nseen < kMaxSeen) seen[nseen++] = hs.group;
+            const float a = hs.opacity;
+            Cv.x += a * hs.color.x;
+            Cv.y += a * hs.color.y;
+            Cv.z += a * hs.color.z;
+            sumBeta += a;
+          }
+        } else {
+          // over: every fragment composited front-to-back (no dedup)
+          const float w = (1.0f - Af) * hs.opacity;
+          Cf.x += w * hs.color.x;
+          Cf.y += w * hs.color.y;
+          Cf.z += w * hs.color.z;
+          Af += w;
         }
+        if (sumBeta >= kOpaque || Af >= kOpaque) break;  // fully saturated
         tnear = rh.ray.tfar + std::fmax(rh.ray.tfar * 1e-5f, 1e-5f);
       }
 
-      float baseWeight = 1.0f - sumBeta;
-      if (baseWeight < 0.0f) baseWeight = 0.0f;
-      // The base (opaque floor, or background) contributes only where it is
-      // covered (baseCov). With an opaque background (default) baseCov is 1, so
-      // out = accumC + (1-sumBeta)*base and alpha = 1 -- unchanged for opaque
-      // scenes. With a transparent background and no opaque floor (baseCov 0)
-      // the output is the premultiplied transparent contribution accumC with
-      // alpha = the accumulated coverage, ready to composite over any backdrop.
-      const float bw = baseWeight * baseCov;
-      float outA = sumBeta + bw;
+      // Fragments over the opaque floor; veils laid additively on top. The base
+      // (floor / background) contributes COLOR only where it is covered
+      // (baseCov), so an opaque background (default) leaves opaque scenes
+      // byte-unchanged, while a transparent background (baseCov 0) yields a
+      // premultiplied result with alpha = accumulated coverage.
+      const float floorW = (1.0f - Af) * baseCov;
+      const Vec3 baseEff{Cf.x + floorW * base.x,
+                         Cf.y + floorW * base.y,
+                         Cf.z + floorW * base.z};
+      const float covEff = Af + floorW;
+      float vw = 1.0f - sumBeta;
+      if (vw < 0.0f) vw = 0.0f;
+      float outA = sumBeta + vw * covEff;
       outA = std::fmin(1.0f, std::fmax(0.0f, outA));
 
-      res.color[pix * 4 + 0] = accumC.x + bw * base.x;
-      res.color[pix * 4 + 1] = accumC.y + bw * base.y;
-      res.color[pix * 4 + 2] = accumC.z + bw * base.z;
+      res.color[pix * 4 + 0] = Cv.x + vw * baseEff.x;
+      res.color[pix * 4 + 1] = Cv.y + vw * baseEff.y;
+      res.color[pix * 4 + 2] = Cv.z + vw * baseEff.z;
       res.color[pix * 4 + 3] = outA;
       res.depth[pix] = nearDepth;
     }
