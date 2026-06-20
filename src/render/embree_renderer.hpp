@@ -1,6 +1,7 @@
 // Embree 4 rendering wrapper: turns a Scene into a rendered framebuffer using
-// primary camera rays plus direct POV-Ray-style local shading. No ambient
-// occlusion, no shadows, no global illumination (this is the primary-ray POC).
+// primary camera rays plus direct POV-Ray-style local shading, with optional
+// ambient occlusion (secondary occlusion rays; off by default). No shadows yet
+// and no global illumination.
 //
 // Uses the shared RenderOptions / FrameResult structs (render_types.hpp) so the
 // two renderers are interchangeable from the bench harness.

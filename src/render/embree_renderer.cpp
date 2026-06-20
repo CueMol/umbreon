@@ -81,19 +81,123 @@ float blinnExp(float roughness) {
   return e;
 }
 
+// --- Secondary-ray (ambient occlusion) helpers ----------------------------
+// Ported from OSPRay's scivis/ao renderer (Apache-2.0): a cosine-weighted
+// hemisphere AO estimator with deterministic per-pixel sampling (math only, not
+// ISPC). AO is computed on mesh hits and modulates the ambient term; it is gated
+// off by default (RenderOptions::aoSamples == 0) so flag-less output is unchanged.
+
+// Scale-adaptive self-intersection epsilon (OSPRay calcEpsilon port): the
+// distance to push a secondary-ray origin off the surface so it does not re-hit
+// the surface it left. Scales with the hit-point magnitude and ray length, so it
+// holds at any camera distance / scene scale (a fixed eps fails when the camera
+// sits far from the scene). Same formula the transparency walk uses.
+float selfIntersectEps(const Vec3& P, const Vec3& dir, float t) {
+  const float dirMax =
+      std::fmax(std::fabs(dir.x), std::fmax(std::fabs(dir.y), std::fabs(dir.z)));
+  const float epsScale =
+      std::fmax(std::fmax(std::fabs(P.x), std::fabs(P.y)),
+                std::fmax(std::fabs(P.z), dirMax * t));
+  constexpr float kUlpEps = 0x1.0fp-21f;  // ~5.05e-7 (~4 ULP), OSPRay ulpEpsilon
+  return epsScale * kUlpEps;
+}
+
+// Tiny Encryption Algorithm, 8 rounds: hash two 32-bit seeds into a decorrelated
+// pair. Seeded only from (pixel, sample index), so the stream is identical
+// regardless of TBB thread count or grain size (deterministic, reproducible AO).
+void tea2(uint32_t& v0, uint32_t& v1) {
+  uint32_t sum = 0;
+  for (int i = 0; i < 8; ++i) {
+    sum += 0x9E3779B9u;
+    v0 += ((v1 << 4) + 0xA341316Cu) ^ (v1 + sum) ^ ((v1 >> 5) + 0xC8013EA4u);
+    v1 += ((v0 << 4) + 0xAD90777Du) ^ (v0 + sum) ^ ((v0 >> 5) + 0x7E95761Eu);
+  }
+}
+
+// Map a 32-bit hash to a float in [0,1) using the top 24 bits (mantissa width).
+float u32ToUnorm(uint32_t u) { return (u >> 8) * 0x1.0p-24f; }
+
+// Cosine-weighted hemisphere sample around frame f (f.n is the surface normal),
+// Malley's method (a uniform disk lifted to the hemisphere). The cosine weight
+// cancels the estimator's 1/cos, so AO needs no per-sample weighting.
+Vec3 cosineSampleHemisphere(float u1, float u2, const Frame& f) {
+  const float phi = 6.2831853072f * u1;  // 2*pi
+  const float r = std::sqrt(u2);
+  const float z = std::sqrt(std::fmax(0.0f, 1.0f - u2));
+  const float x = std::cos(phi) * r;
+  const float y = std::sin(phi) * r;
+  return f.t * x + f.b * y + f.n * z;
+}
+
+// Any-hit visibility test along [tnear, tfar]: true if any geometry is hit
+// (rtcOccluded1 sets ray.tfar < 0 on a hit). Transparent geometry counts as an
+// opaque occluder (binary), as OSPRay scivis does -- cheaper than a second
+// transparency walk and visually close.
+bool occluded(RTCScene rscene, const Vec3& P, const Vec3& dir, float tnear,
+              float tfar) {
+  RTCRay r;
+  r.org_x = P.x;
+  r.org_y = P.y;
+  r.org_z = P.z;
+  r.dir_x = dir.x;
+  r.dir_y = dir.y;
+  r.dir_z = dir.z;
+  r.tnear = tnear;
+  r.tfar = tfar;
+  r.mask = 0xFFFFFFFFu;
+  r.flags = 0;
+  r.time = 0.0f;
+  RTCOccludedArguments oargs;
+  rtcInitOccludedArguments(&oargs);
+  rtcOccluded1(rscene, &r, &oargs);
+  return r.tfar < 0.0f;
+}
+
+// Ambient-occlusion factor in [0,1] for a hit: 1 = fully open, 0 = fully
+// occluded. Casts nSamples cosine-weighted rays over the hemisphere around the
+// shading normal Ns; each ray origin is pushed off the surface along the
+// GEOMETRIC normal Ng (not Ns: offsetting along an interpolated normal can dip
+// the origin below a concave surface and self-hit). aoRadius bounds the search.
+// Deterministic from the hi-res pixel (px, py).
+float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng, const Vec3& Ns,
+                int nSamples, float aoRadius, uint32_t px, uint32_t py,
+                int wHi) {
+  if (nSamples <= 0) return 1.0f;
+  const Frame f = frameFromNormal(Ns);
+  // Offset axis = geometric normal, face-forwarded to the shading side.
+  Vec3 ng = (dot(Ng, Ns) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
+  ng = safeNormalize(ng, Ns);
+  const float eps = selfIntersectEps(P, ng, 1.0f);
+  const Vec3 O = P + ng * eps;
+  const uint32_t base = px + py * static_cast<uint32_t>(wHi);
+  int hits = 0;
+  for (int i = 0; i < nSamples; ++i) {
+    uint32_t s0 = base;
+    uint32_t s1 = static_cast<uint32_t>(i);
+    tea2(s0, s1);
+    const Vec3 dir = cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
+    if (dot(dir, Ns) < 0.01f) {  // grazing / below the surface: treat as occluded
+      ++hits;
+      continue;
+    }
+    if (occluded(rscene, O, dir, eps, aoRadius)) ++hits;
+  }
+  return 1.0f - static_cast<float>(hits) / static_cast<float>(nSamples);
+}
+
 // Shared POV local-illumination shader (no 1/pi factor). C is the pigment rgb,
 // N the face-forwarded shading normal, V the unit direction toward the viewer.
-// out = emission*C + ambient*C*ambLight
+// out = emission*C + aoFactor*ambient*C*ambLight
 //       + sum_lights[ diffuse*C*pow(N.L,brilliance)*Lc + specular/phong lobe ]
 //       + reflection*background.
 // The FLAT preset (ambient 1, diffuse 0, specular 0, phong 0) with ambLight
 // (1,1,1) yields out = C, preserving the flat outline/silhouette behavior.
 Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V,
                 const std::vector<Light>& lights, const Vec3& ambLight,
-                const Vec3& bg, float specularScale) {
-  Vec3 out{mat.emission * C.x + mat.ambient * C.x * ambLight.x,
-           mat.emission * C.y + mat.ambient * C.y * ambLight.y,
-           mat.emission * C.z + mat.ambient * C.z * ambLight.z};
+                const Vec3& bg, float specularScale, float aoFactor) {
+  Vec3 out{mat.emission * C.x + aoFactor * mat.ambient * C.x * ambLight.x,
+           mat.emission * C.y + aoFactor * mat.ambient * C.y * ambLight.y,
+           mat.emission * C.z + aoFactor * mat.ambient * C.z * ambLight.z};
 
   const float exp = blinnExp(mat.roughness);
   for (const Light& l : lights) {
@@ -570,7 +674,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     float opacity = 1.0f;
     int group = 0;
   };
-  auto shadeHit = [&](const RTCRayHit& rh, const Vec3& rd) -> HitShade {
+  auto shadeHit = [&](const RTCRayHit& rh, const Vec3& rd, const Vec3& org,
+                      uint32_t px, uint32_t py) -> HitShade {
     HitShade hs;
     const GeomRecord& rec = records[rh.hit.geomID];
     const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
@@ -585,8 +690,22 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       Vec3 N = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rd);
       const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
       const Material& triMat = m.materialForTri(rh.hit.primID);
+      // Ambient occlusion (mesh only): cast a hemisphere of occlusion rays and
+      // darken ONLY the ambient term. Gated off by default (aoSamples == 0), so
+      // the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x). The
+      // offset axis is the GEOMETRIC normal Ng (rh.hit.Ng), not the interpolated
+      // shading normal N, to avoid self-hits on concave meshes.
+      float aoFactor = 1.0f;
+      if (opt.aoSamples > 0) {
+        const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                     org.z + rd.z * rh.ray.tfar};
+        const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+        const float rawAO = computeAO(rscene, P, Ng, N, opt.aoSamples,
+                                      opt.aoDistance, px, py, W);
+        aoFactor = 1.0f - opt.aoIntensity * (1.0f - rawAO);
+      }
       hs.color = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
-                            opt.specularScale);
+                            opt.specularScale, aoFactor);
       hs.opacity = cbuf[3];
       hs.group = m.groupForTri(rh.hit.primID);
     } else {
@@ -608,8 +727,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       Vec3 N = faceForward(
           normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
       const Vec3 C = {fc.x, fc.y, fc.z};
+      // Outline / VdW primitives are flat silhouette geometry: never AO-darkened
+      // (aoFactor 1). This is the flatOutline AO gate.
       hs.color = shadeLocal(pm, C, N, V, lights, ambLight, bg,
-                            opt.specularScale);
+                            opt.specularScale, 1.0f);
       hs.opacity = fc.w;
       hs.group = isSphere ? sphereGroup[rh.hit.primID]
                  : isCapped ? cylCapGroup[rh.hit.primID]
@@ -724,7 +845,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         }
         if (nearDepth == 0.0f) nearDepth = rh.ray.tfar;
 
-        const HitShade hs = shadeHit(rh, rd);
+        const HitShade hs = shadeHit(rh, rd, org, static_cast<uint32_t>(px),
+                                     static_cast<uint32_t>(py));
 
         if (!opt.transparency || hs.opacity >= kOpaque) {
           base = hs.color;  // nearest opaque surface = the floor

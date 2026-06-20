@@ -15,14 +15,19 @@ struct RenderOptions {
   // Supersampling factor: umbreon::render() renders at width*ss x height*ss and
   // box-averages down to width x height in linear space (antialiasing).
   int supersample = 1;
-  int aoSamples = 16;          // scivis only: AO rays per shading point
-  float aoDistance = 1.0e20f;  // scivis only: AO ray max distance
+  // Ambient occlusion (mesh hits only; modulates the ambient term). Default 0 =
+  // AO off, so flag-less output stays the bit-exact POV-matched local shading.
+  int aoSamples = 0;           // AO rays per mesh hit; 0 = off
+  float aoDistance = 1.0e20f;  // AO occluder search radius (ray tfar)
+  float aoIntensity = 1.0f;    // AO strength: aoFactor = 1 - aoIntensity*(1-rawAO)
   int spp = 1;                 // pixel samples per accumulation frame
   int accumFrames = 16;        // progressive accumulation frames
   int maxPathLength = 16;      // pathtracer only: max GI bounce depth
   bool flatten = false;        // bake the instance grid into one mesh
   bool flipNormals = false;
-  bool shadows = true;         // scivis: cast shadows from lights
+  bool shadows = false;        // cast shadows from lights; false = off (default)
+  int shadowSamples = 1;       // shadow rays per light (>1 = soft area light)
+  float lightRadius = 0.0f;    // light angular radius (deg); >0 = soft shadows
   float specularScale = 1.0f;  // multiplies the material specular (ks / weight)
   float shininess = -1.0f;     // obj: overrides the Phong exponent (ns); <0 = auto
   std::string material = "obj";  // cartoon material: "obj" or "principled"

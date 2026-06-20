@@ -746,5 +746,129 @@ int main() {
             f.color[kCenterRgba + 2] > f.color[kCenterRgba + 0] + 0.3f);
   }
 
+  // ===== Ambient occlusion (mesh hits only; modulates the ambient term) =====
+  // AO is gated off by default (aoSamples == 0, locked bit-exact by the tests
+  // above). These exercise the secondary-ray path: it must (1) leave an open
+  // surface ~unchanged, (2) darken an occluded surface via the ambient term
+  // only, (3) never touch flat outline primitives, (4) be deterministic.
+
+  // AO-open: a lone quad with nothing above it -> every hemisphere ray escapes
+  // -> aoFactor ~ 1 -> center ~ the no-AO value (0.30/0.36). Proves AO does not
+  // darken an unoccluded surface (and that the AO path actually runs).
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.aoSamples = 64;
+    o.aoDistance = 100.0f;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("AO open: center R ~ no-AO 0.30", approx(f.color[kCenterRgba + 0], 0.30f, 0.02f));
+    s.check("AO open: center G ~ no-AO 0.36", approx(f.color[kCenterRgba + 1], 0.36f, 0.02f));
+  }
+
+  // AO-occlusion: a floor with an AMBIENT-ONLY material (out == aoFactor*C) plus
+  // a slab just above it, offset in +x so it clears the center camera ray (x=0)
+  // but blocks the +x half of the floor point's hemisphere. The occluded floor
+  // must be strictly darker than the same floor with no slab; only the ambient
+  // term is affected.
+  {
+    using umbreon::Vec3;
+    auto floor = [](bool withSlab) {
+      umbreon::Mesh m;
+      const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                          {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({1, 1, 1, 1});
+      }
+      if (withSlab) {
+        const float z = 0.4f;  // close above the floor
+        const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                            {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(sl[i]);
+          m.normals.push_back({0, 0, -1});
+          m.colors.push_back({0, 0, 0, 1});
+        }
+      }
+      m.material.ambient = 1.0f;  // ambient-only: isolate AO's effect
+      m.material.diffuse = 0.0f;
+      return m;
+    };
+    auto sceneOf = [](umbreon::Mesh m) {
+      umbreon::Scene sc;
+      sc.mesh = std::move(m);
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      return sc;
+    };
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.aoSamples = 128;
+    o.aoDistance = 10.0f;
+    umbreon::FrameResult openF = umbreon::render(sceneOf(floor(false)), o);
+    umbreon::FrameResult occF = umbreon::render(sceneOf(floor(true)), o);
+    s.check("AO occ: open floor ~ full ambient (R~1)",
+            approx(openF.color[kCenterRgba + 0], 1.0f, 0.03f));
+    s.check("AO occ: slab darkens the floor (occluded < open)",
+            occF.color[kCenterRgba + 0] + 0.05f < openF.color[kCenterRgba + 0]);
+    s.check("AO occ: occluded floor not fully black",
+            occF.color[kCenterRgba + 0] > 0.05f);
+  }
+
+  // AO gate: flat outline primitives are NEVER AO-darkened. The same outline
+  // sphere with AO on vs off must be bit-identical (the primitive branch passes
+  // aoFactor == 1.0f literally), even though a lone sphere would have AO ~ 1.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0.4f, 0.1f, 0.2f};
+    umbreon::Sphere sp;
+    sp.center = {0, 0, 0};
+    sp.radius = 1.0f;
+    sp.color = {0.3f, 0.4f, 0.5f, 1.0f};
+    sc.spheres.push_back(sp);
+    umbreon::RenderOptions off;
+    off.width = 5; off.height = 5; off.aoSamples = 0;
+    umbreon::RenderOptions on = off;
+    on.aoSamples = 64;
+    on.aoDistance = 100.0f;
+    umbreon::FrameResult fo = umbreon::render(sc, off);
+    umbreon::FrameResult fn = umbreon::render(sc, on);
+    s.check("AO gate: outline R identical on/off",
+            approx(fn.color[kCenterRgba + 0], fo.color[kCenterRgba + 0], 1e-6f));
+    s.check("AO gate: outline G identical on/off",
+            approx(fn.color[kCenterRgba + 1], fo.color[kCenterRgba + 1], 1e-6f));
+    s.check("AO gate: outline B identical on/off",
+            approx(fn.color[kCenterRgba + 2], fo.color[kCenterRgba + 2], 1e-6f));
+  }
+
+  // AO determinism: the RNG is seeded only from (px, py, sample), so two renders
+  // of the same scene are bit-identical -- independent of TBB thread count.
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.aoSamples = 32;
+    o.aoDistance = 100.0f;
+    umbreon::FrameResult a = umbreon::render(sc, o);
+    umbreon::FrameResult b = umbreon::render(sc, o);
+    bool identical = a.color.size() == b.color.size();
+    for (std::size_t i = 0; identical && i < a.color.size(); ++i)
+      if (a.color[i] != b.color[i]) identical = false;
+    s.check("AO determinism: two renders bit-identical", identical);
+  }
+
   return s.report();
 }

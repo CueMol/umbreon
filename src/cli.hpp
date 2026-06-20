@@ -14,7 +14,9 @@ struct Options {
   int gridN = 1;                // N^3 instance grid
   float spacing = 1.15f;        // grid pitch as a multiple of mesh size
   bool flatten = false;
-  float aoDistance = -1.0f;     // < 0 => auto from scene size
+  float aoDistance = -1.0f;     // AO occluder radius; < 0 => auto from scene size
+  int aoSamples = 0;            // AO rays per mesh hit; 0 = AO off
+  float aoIntensity = 1.0f;     // AO strength multiplier (0..1+)
   int spp = 1;
   int accumFrames = 16;
   bool prefilterAux = false;
