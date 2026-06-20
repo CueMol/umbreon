@@ -870,5 +870,54 @@ int main() {
     s.check("AO determinism: two renders bit-identical", identical);
   }
 
+  // ===== Hard shadows (per-light visibility; off by default) =====
+  // A floor lit by an angled light, with a slab between the floor center and the
+  // light (offset in +x so it clears the straight-down camera ray). Shadows on
+  // remove the floor center's diffuse term (ambient survives); off = fully lit.
+  {
+    using umbreon::Vec3;
+    umbreon::Mesh m;
+    const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                        {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+    for (int i = 0; i < 6; ++i) {
+      m.positions.push_back(fl[i]);
+      m.normals.push_back({0, 0, 1});
+      m.colors.push_back({1, 1, 1, 1});
+    }
+    const float z = 0.4f;  // slab just above the floor, offset to +x
+    const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                        {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+    for (int i = 0; i < 6; ++i) {
+      m.positions.push_back(sl[i]);
+      m.normals.push_back({0, 0, -1});
+      m.colors.push_back({0, 0, 0, 1});
+    }
+    m.material.ambient = 0.2f;
+    m.material.diffuse = 0.8f;
+    umbreon::Scene sc;
+    sc.mesh = m;
+    sc.camera = makeOrthoCam();
+    sc.ambientColor = {1, 1, 1};
+    sc.background = {0, 0, 0};
+    umbreon::DistantLight l;
+    l.direction = {-0.6f, 0.0f, -0.8f};  // travels -x,-z => L = (0.6, 0, 0.8)
+    l.color = {1, 1, 1};
+    l.intensity = 1.0f;
+    sc.lights.push_back(l);
+    umbreon::RenderOptions off;
+    off.width = 5; off.height = 5; off.shadows = false;
+    umbreon::RenderOptions on = off;
+    on.shadows = true;
+    umbreon::FrameResult fo = umbreon::render(sc, off);
+    umbreon::FrameResult fn = umbreon::render(sc, on);
+    // off: ambient 0.2 + diffuse 0.8*0.8 = 0.84; on: ambient only 0.2.
+    s.check("shadow off: floor lit (R ~ 0.84)",
+            approx(fo.color[kCenterRgba + 0], 0.84f, 0.03f));
+    s.check("shadow on: floor center shadowed, diffuse removed (R ~ 0.2)",
+            approx(fn.color[kCenterRgba + 0], 0.2f, 0.03f));
+    s.check("shadow on darker than off",
+            fn.color[kCenterRgba + 0] + 0.2f < fo.color[kCenterRgba + 0]);
+  }
+
   return s.report();
 }

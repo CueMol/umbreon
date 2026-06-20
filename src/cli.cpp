@@ -60,6 +60,9 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--ao-intensity") {
       o.aoIntensity =
           static_cast<float>(std::atof(value("--ao-intensity").c_str()));
+    } else if (a == "--shadows") {
+      std::string v = value("--shadows");
+      if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
     } else if (a == "--spp") {
       o.spp = std::atoi(value("--spp").c_str());
     } else if (a == "--accum") {
@@ -177,6 +180,7 @@ void printUsage(const char* prog) {
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
+      "  --shadows <on|off>       cast hard shadows from lights      [off]\n"
       "  --spp <int>              pixel samples per frame       [1]\n"
       "  --accum <int>            accumulation frames           [16]\n"
       "  --prefilter-aux <on|off> prefilter albedo/normal AOVs  [off]\n"

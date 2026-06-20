@@ -68,6 +68,7 @@ struct Light {
   Vec3 L;      // unit direction from surface toward the light
   Vec3 color;  // light color * intensity
   bool highlight = true;  // false for POV fill (shadowless) lights: diffuse only
+  float radius = 0.0f;    // angular radius (radians) for soft shadows; 0 = hard
 };
 
 // Map POV "roughness" to a Blinn-Phong specular exponent. POV-Ray's Blinn
@@ -185,6 +186,22 @@ float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng, const Vec3& Ns,
   return 1.0f - static_cast<float>(hits) / static_cast<float>(nSamples);
 }
 
+// Per-light shadow factor in [0,1]: 1 = lit, 0 = fully shadowed. Casts a shadow
+// ray from the hit point toward the (distant) light; transparent geometry is a
+// binary occluder (as OSPRay scivis). The origin is offset along the geometric
+// normal Ng (face-forwarded to the lit side) by the adaptive self-intersection
+// epsilon, so a surface does not shadow itself. This is the HARD-shadow path
+// (one ray); soft area-light sampling is added later.
+float computeShadow(RTCScene rscene, const Vec3& P, const Vec3& Ng,
+                    const Vec3& N, const Light& l) {
+  Vec3 ng = (dot(Ng, N) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
+  ng = safeNormalize(ng, N);
+  const float eps = selfIntersectEps(P, ng, 1.0f);
+  const Vec3 O = P + ng * eps;
+  const float far = std::numeric_limits<float>::infinity();  // distant light
+  return occluded(rscene, O, l.L, eps, far) ? 0.0f : 1.0f;
+}
+
 // Shared POV local-illumination shader (no 1/pi factor). C is the pigment rgb,
 // N the face-forwarded shading normal, V the unit direction toward the viewer.
 // out = emission*C + aoFactor*ambient*C*ambLight
@@ -194,7 +211,8 @@ float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng, const Vec3& Ns,
 // (1,1,1) yields out = C, preserving the flat outline/silhouette behavior.
 Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V,
                 const std::vector<Light>& lights, const Vec3& ambLight,
-                const Vec3& bg, float specularScale, float aoFactor) {
+                const Vec3& bg, float specularScale, float aoFactor,
+                const Vec3& P, const Vec3& Ng, RTCScene rscene, bool shadowsOn) {
   Vec3 out{mat.emission * C.x + aoFactor * mat.ambient * C.x * ambLight.x,
            mat.emission * C.y + aoFactor * mat.ambient * C.y * ambLight.y,
            mat.emission * C.z + aoFactor * mat.ambient * C.z * ambLight.z};
@@ -203,6 +221,15 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
   for (const Light& l : lights) {
     const float ndl = dot(N, l.L);
     if (ndl <= 0.0f) continue;
+
+    // Per-light shadow factor folded into a local light color Lc, applied to
+    // BOTH the diffuse and the highlight below. With shadowsOn == false (or a
+    // fully lit point) Lc == l.color bitwise, so the shadow-off render is
+    // byte-identical to the pre-shadow output.
+    const float shadowFactor =
+        shadowsOn ? computeShadow(rscene, P, Ng, N, l) : 1.0f;
+    const Vec3 Lc{l.color.x * shadowFactor, l.color.y * shadowFactor,
+                  l.color.z * shadowFactor};
 
     // Diffuse with brilliance as the N.L exponent. Guard pow(0,0).
     float d;
@@ -214,9 +241,9 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
       d = std::pow(ndl, mat.brilliance);
     }
     const float dk = mat.diffuse * d;
-    out.x += dk * C.x * l.color.x;
-    out.y += dk * C.y * l.color.y;
-    out.z += dk * C.z * l.color.z;
+    out.x += dk * C.x * Lc.x;
+    out.y += dk * C.y * Lc.y;
+    out.z += dk * C.z * Lc.z;
 
     // POV fill (shadowless) lights contribute diffuse only -- no specular/phong
     // (trace.cpp gates highlights on Light_Type != FILL_LIGHT_SOURCE).
@@ -236,11 +263,11 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
       if (f < 0.0f) f = 0.0f;
       if (f > 1.0f) f = 1.0f;
       // cs = light * (f + (1-f)*pigment): lerp pigment->white by f.
-      hl = Vec3{l.color.x * (f + (1.0f - f) * C.x),
-                l.color.y * (f + (1.0f - f) * C.y),
-                l.color.z * (f + (1.0f - f) * C.z)};
+      hl = Vec3{Lc.x * (f + (1.0f - f) * C.x),
+                Lc.y * (f + (1.0f - f) * C.y),
+                Lc.z * (f + (1.0f - f) * C.z)};
     } else {
-      hl = l.color;
+      hl = Lc;
     }
 
     float specW = 0.0f;  // accumulated scalar specular weight
@@ -690,22 +717,23 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       Vec3 N = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rd);
       const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
       const Material& triMat = m.materialForTri(rh.hit.primID);
-      // Ambient occlusion (mesh only): cast a hemisphere of occlusion rays and
-      // darken ONLY the ambient term. Gated off by default (aoSamples == 0), so
-      // the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x). The
-      // offset axis is the GEOMETRIC normal Ng (rh.hit.Ng), not the interpolated
-      // shading normal N, to avoid self-hits on concave meshes.
+      // Hit point and GEOMETRIC normal (rh.hit.Ng, not the interpolated shading
+      // normal N): shared by the AO and shadow secondary rays. Offsetting the
+      // secondary-ray origin along Ng avoids self-hits on concave meshes.
+      const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                   org.z + rd.z * rh.ray.tfar};
+      const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+      // AO darkens ONLY the ambient term; gated off by default (aoSamples == 0)
+      // so the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x).
       float aoFactor = 1.0f;
       if (opt.aoSamples > 0) {
-        const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
-                     org.z + rd.z * rh.ray.tfar};
-        const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
         const float rawAO = computeAO(rscene, P, Ng, N, opt.aoSamples,
                                       opt.aoDistance, px, py, W);
         aoFactor = 1.0f - opt.aoIntensity * (1.0f - rawAO);
       }
       hs.color = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
-                            opt.specularScale, aoFactor);
+                            opt.specularScale, aoFactor, P, Ng, rscene,
+                            opt.shadows);
       hs.opacity = cbuf[3];
       hs.group = m.groupForTri(rh.hit.primID);
     } else {
@@ -728,9 +756,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
       const Vec3 C = {fc.x, fc.y, fc.z};
       // Outline / VdW primitives are flat silhouette geometry: never AO-darkened
-      // (aoFactor 1). This is the flatOutline AO gate.
+      // and never shadowed (aoFactor 1, shadowsOn false). This is the gate.
+      const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                   org.z + rd.z * rh.ray.tfar};
+      const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
       hs.color = shadeLocal(pm, C, N, V, lights, ambLight, bg,
-                            opt.specularScale, 1.0f);
+                            opt.specularScale, 1.0f, P, Ng, rscene, false);
       hs.opacity = fc.w;
       hs.group = isSphere ? sphereGroup[rh.hit.primID]
                  : isCapped ? cylCapGroup[rh.hit.primID]

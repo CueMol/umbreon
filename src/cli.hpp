@@ -17,6 +17,7 @@ struct Options {
   float aoDistance = -1.0f;     // AO occluder radius; < 0 => auto from scene size
   int aoSamples = 0;            // AO rays per mesh hit; 0 = AO off
   float aoIntensity = 1.0f;     // AO strength multiplier (0..1+)
+  bool shadows = false;         // cast hard shadows from lights
   int spp = 1;
   int accumFrames = 16;
   bool prefilterAux = false;
