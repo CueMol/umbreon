@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "test_util.hpp"
@@ -28,6 +29,20 @@ int main() {
     s.check("downsample: block (1,0) = mean{2,3,6,7}", approx(out[1], 4.5f, 1e-6f));
     s.check("downsample: block (0,1) = mean{8,9,12,13}", approx(out[2], 10.5f, 1e-6f));
     s.check("downsample: block (1,1) = mean{10,11,14,15}", approx(out[3], 12.5f, 1e-6f));
+  }
+
+  // --- boxDownsample NaN/Inf containment: a single non-finite subpixel must not
+  // poison its block. 2x2 -> 1x1, ss=2, one corner NaN and one +Inf; each
+  // contributes 0 (divisor stays ss*ss=4), so out = mean{0,2,4,0} = 1.5. ---
+  {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> src = {nan, 2.0f, 4.0f, inf};  // 2x2, 1 channel
+    std::vector<float> out = umbreon::boxDownsample(src, 2, 2, 1, 2);
+    s.check_eq("downsample nan-guard: output size", out.size(), std::size_t(1));
+    s.check("downsample nan-guard: output finite", std::isfinite(out[0]));
+    s.check("downsample nan-guard: = mean{0,2,4,0} = 1.5",
+            approx(out[0], 1.5f, 1e-6f));
   }
 
   // --- applyAssumedGamma: g=1 is a no-op; g=2 squares the RGB channels and

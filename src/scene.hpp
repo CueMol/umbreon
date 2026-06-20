@@ -32,6 +32,44 @@ inline Vec3 normalize(Vec3 a) {
   return l > 0.0f ? a * (1.0f / l) : a;
 }
 
+// Length-flooring normalize: divides by sqrt(max(dot, tiny)) so a zero or
+// degenerate input yields a finite (zero) vector instead of NaN/Inf. Mirrors
+// OSPRay's rkcommon safe_normalize. Intended for secondary-ray / sampling-frame
+// geometry; the plain normalize() above stays on the primary-ray path.
+inline Vec3 safeNormalize(Vec3 a) {
+  // 0x1.0p-126f is the smallest normal float (rkcommon flt_min); flooring dot
+  // here guarantees a finite reciprocal square root for any finite input.
+  float s = 1.0f / std::sqrt(std::fmax(dot(a, a), 0x1.0p-126f));
+  return a * s;
+}
+
+// As above but returns `fallback` (assumed already unit) when `a` is shorter
+// than ~1e-9, so a degenerate input gets a usable direction rather than zero.
+inline Vec3 safeNormalize(Vec3 a, Vec3 fallback) {
+  float d = dot(a, a);
+  if (d < 1.0e-18f) return fallback;  // length < 1e-9
+  return a * (1.0f / std::sqrt(d));
+}
+
+// Orthonormal basis around a unit normal n (n becomes the local +z axis). For
+// hemisphere sampling at a surface a local sample (sx, sy, sz) maps to the world
+// direction sx*t + sy*b + sz*n. Built with the larger-component branch (Duff et
+// al. / OSPRay rkcommon frame()) so the seed axis is never near-parallel to n;
+// safeNormalize guards the exactly-degenerate case (yields a finite, non-NaN
+// frame). Assumes n is approximately unit length.
+struct Frame {
+  Vec3 t, b, n;
+};
+
+inline Frame frameFromNormal(Vec3 n) {
+  const Vec3 seed0{0.0f, n.z, -n.y};
+  const Vec3 seed1{-n.z, 0.0f, n.x};
+  const Vec3 t = safeNormalize(std::fabs(n.x) < std::fabs(n.y) ? seed0 : seed1,
+                               Vec3{1.0f, 0.0f, 0.0f});
+  const Vec3 b = cross(n, t);
+  return {t, b, n};
+}
+
 inline float radians(float deg) { return deg * 0.01745329252f; }
 inline float degrees(float rad) { return rad * 57.2957795131f; }
 

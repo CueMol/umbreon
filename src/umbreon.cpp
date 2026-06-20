@@ -22,7 +22,11 @@ std::vector<float> boxDownsample(const std::vector<float>& src, int w, int h,
             std::size_t si =
                 (static_cast<std::size_t>(y * ss + dy) * w + (x * ss + dx)) *
                     channels + c;
-            acc += src[si];
+            // Contain a NaN/Inf subpixel to itself: a non-finite sample
+            // contributes 0 instead of poisoning the whole block average (the
+            // divisor stays ss*ss, matching OSPRay zeroing NaN before accum).
+            const float v = src[si];
+            acc += std::isfinite(v) ? v : 0.0f;
           }
         }
         out[(static_cast<std::size_t>(y) * ow + x) * channels + c] = acc * inv;

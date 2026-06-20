@@ -1,12 +1,15 @@
 #include "render/embree_renderer.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -17,6 +20,30 @@
 
 namespace umbreon {
 namespace {
+
+// Map an Embree error code to a short string. Embree 4 has no last-message
+// query, so the synchronous post-commit check below reports the code via this;
+// the async callback additionally prints the detailed message Embree supplies.
+const char* rtcErrorString(RTCError code) {
+  switch (code) {
+    case RTC_ERROR_NONE: return "no error";
+    case RTC_ERROR_UNKNOWN: return "unknown error";
+    case RTC_ERROR_INVALID_ARGUMENT: return "invalid argument";
+    case RTC_ERROR_INVALID_OPERATION: return "invalid operation";
+    case RTC_ERROR_OUT_OF_MEMORY: return "out of memory";
+    case RTC_ERROR_UNSUPPORTED_CPU: return "unsupported CPU";
+    case RTC_ERROR_CANCELLED: return "cancelled";
+    default: return "unrecognized error code";
+  }
+}
+
+// Device error callback: log async Embree errors (with Embree's own message) to
+// stderr so a malformed buffer / unsupported flag / OOM is diagnosable instead
+// of corrupting the image silently.
+void embreeErrorCallback(void* /*userPtr*/, RTCError code, const char* str) {
+  std::fprintf(stderr, "embree error %d (%s): %s\n", static_cast<int>(code),
+               rtcErrorString(code), (str != nullptr) ? str : "");
+}
 
 // Per-geometry kind, recorded against the geomID so the shader knows how to
 // color a hit (smooth-shaded mesh vs flat-colored outline primitive).
@@ -154,9 +181,16 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
 FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
   RTCDevice device = rtcNewDevice(nullptr);
   if (!device) throw std::runtime_error("rtcNewDevice failed");
+  rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
 
   RTCScene rscene = rtcNewScene(device);
   rtcSetSceneFlags(rscene, RTC_SCENE_FLAG_ROBUST);
+  // Static offline scene: committed once, then traversed by every primary ray
+  // (and every future AO/shadow ray). A one-time HIGH-quality BVH (spatial
+  // splits) amortizes over the whole frame, so HIGH is the right default vs
+  // Embree's MEDIUM, as OSPRay builds its static scenes. Pure traversal-speed
+  // win; it cannot change which primitive a ray hits.
+  rtcSetSceneBuildQuality(rscene, RTC_BUILD_QUALITY_HIGH);
 
   const Mesh& m = scene.mesh;
 
@@ -483,6 +517,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   }
 
   rtcCommitScene(rscene);
+  if (RTCError err = rtcGetDeviceError(device); err != RTC_ERROR_NONE) {
+    rtcReleaseScene(rscene);
+    rtcReleaseDevice(device);
+    throw std::runtime_error(std::string("embree scene build failed: ") +
+                             rtcErrorString(err));
+  }
 
   // --- camera basis (POV orthographic framing) ---
   const Camera& cam = scene.camera;
@@ -603,6 +643,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
+
+  // Count primary rays that exhaust the transparent-layer cap so truncation of
+  // far transmission is observable (warned once below) rather than silent.
+  std::atomic<long long> cappedRays{0};
 
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
   // primitive). Each ray is independent and rtcIntersect1 on a committed scene
@@ -731,6 +775,11 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
                       std::fmax(std::fabs(hitP.z), dirMax * rh.ray.tfar));
         constexpr float kUlpEps = 0x1.0fp-21f;  // ~5.05e-7 (~4 ULP), OSPRay ulpEpsilon
         tnear = rh.ray.tfar + epsScale * kUlpEps;
+        // Reaching the final allowed iteration after compositing a transparent
+        // layer means more surfaces may lie behind that we will not trace:
+        // record the truncation for the post-loop warning.
+        if (iter == maxIters - 1)
+          cappedRays.fetch_add(1, std::memory_order_relaxed);
       }
 
       // Fragments over the opaque floor; veils laid additively on top. The base
@@ -756,6 +805,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     }
   }
   });
+
+  if (const long long capped = cappedRays.load(std::memory_order_relaxed);
+      capped > 0) {
+    std::fprintf(stderr,
+                 "warning: %lld ray(s) reached the transparent-layer cap (%d); "
+                 "transmission past that depth was dropped -- raise "
+                 "maxTransparentLayers if it is visible\n",
+                 capped, opt.maxTransparentLayers);
+  }
 
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();

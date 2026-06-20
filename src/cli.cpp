@@ -55,6 +55,9 @@ Options parseCli(int argc, char** argv) {
       o.flatten = true;
     } else if (a == "--ao-distance") {
       o.aoDistance = static_cast<float>(std::atof(value("--ao-distance").c_str()));
+      std::fprintf(stderr,
+                   "warning: --ao-distance is not implemented yet (AO is on the "
+                   "roadmap); the value is ignored\n");
     } else if (a == "--spp") {
       o.spp = std::atoi(value("--spp").c_str());
     } else if (a == "--accum") {
@@ -169,7 +172,7 @@ void printUsage(const char* prog) {
       "  --grid <int>             N for an N^3 instance grid    [1]\n"
       "  --spacing <float>        grid pitch (x mesh size)      [1.15]\n"
       "  --flatten                bake the instance grid into one mesh\n"
-      "  --ao-distance <float>    AO ray max distance           [auto]\n"
+      "  --ao-distance <float>    AO ray max distance (not implemented yet)\n"
       "  --spp <int>              pixel samples per frame       [1]\n"
       "  --accum <int>            accumulation frames           [16]\n"
       "  --prefilter-aux <on|off> prefilter albedo/normal AOVs  [off]\n"
