@@ -61,10 +61,10 @@ system packages:
 task build:static      # or: task test:static
 ```
 
-On Linux x64 this downloads the CueMol2 **deplibs** bundle — prebuilt static
-Embree 4 + TBB matching CueMol's own build — into `deps/deplibs` and points CMake
-at it. On other platforms it falls back to building Embree/TBB from source into
-`deps/prefix` (`task deps:build`).
+On Linux x64, macOS x64/arm64 and Windows x64 this downloads the CueMol2
+**deplibs** bundle — prebuilt static Embree 4 + TBB matching CueMol's own build —
+into `deps/deplibs` and points CMake at it. On other platforms it falls back to
+building Embree/TBB from source into `deps/prefix` (`task deps:build`).
 
 ## Usage
 
