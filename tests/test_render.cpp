@@ -336,12 +336,14 @@ int main() {
       m.triGroupId.push_back(g);
       m.triGroupId.push_back(g);
     };
-    // veil defaults to {1,2}: the group-alpha (additive single-layer) tests
-    // T1-T6 below mark their transparent groups as veils. The fragment (over)
-    // tests F1-F4 pass {} so their transparency uses front-to-back "over".
-    auto sceneOf = [&](umbreon::Mesh mesh, Vec3 bg,
-                       std::vector<std::uint16_t> veil =
-                           std::vector<std::uint16_t>{1, 2}) {
+    // Two builders so the veil-group set is explicit. The group-alpha (additive
+    // single-layer) tests T1-T6 take the default veils {1,2} via sceneOf(); the
+    // fragment (over) tests F1-F4 pass {} via sceneOfVeil() so their
+    // transparency uses front-to-back "over". The default lives in the sceneOf()
+    // wrapper rather than as a lambda default argument, which tripped an MSVC
+    // front-end internal compiler error.
+    auto sceneOfVeil = [&](umbreon::Mesh mesh, Vec3 bg,
+                           std::vector<std::uint16_t> veil) {
       umbreon::Scene sc;
       sc.mesh = std::move(mesh);
       sc.mesh.material = umbreon::Material::flatOutline();  // raw color shading
@@ -350,6 +352,9 @@ int main() {
       sc.ambientColor = {1, 1, 1};
       sc.veilGroups = std::move(veil);
       return sc;
+    };
+    auto sceneOf = [&](umbreon::Mesh mesh, Vec3 bg) {
+      return sceneOfVeil(std::move(mesh), bg, std::vector<std::uint16_t>{1, 2});
     };
 
     // T1: blue(0.6, group 1, front) over opaque red(group 0) => 0.6*blue+0.4*red.
@@ -460,7 +465,7 @@ int main() {
       umbreon::Mesh m;
       addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
       addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);  // fragment blue 0.6
-      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});  // no veils
+      umbreon::Scene sc = sceneOfVeil(std::move(m), {0, 0, 0}, {});  // no veils
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       umbreon::FrameResult f = umbreon::render(sc, o);
       s.check("F1 over R=0.4", approx(f.color[kCenterRgba + 0], 0.4f, 1e-4f));
@@ -475,7 +480,7 @@ int main() {
       addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
       addQuad(m, {0, 0, 1, 0.5f}, 0.5f, 2);  // blue (mid)
       addQuad(m, {0, 1, 0, 0.5f}, 1.0f, 1);  // green (front)
-      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});
+      umbreon::Scene sc = sceneOfVeil(std::move(m), {0, 0, 0}, {});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       umbreon::FrameResult f = umbreon::render(sc, o);
       s.check("F2 green-front G=0.5", approx(f.color[kCenterRgba + 1], 0.5f, 1e-4f));
@@ -487,7 +492,7 @@ int main() {
       addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red (back)
       addQuad(m, {0, 1, 0, 0.5f}, 0.5f, 1);  // green (mid)
       addQuad(m, {0, 0, 1, 0.5f}, 1.0f, 2);  // blue (front)
-      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});
+      umbreon::Scene sc = sceneOfVeil(std::move(m), {0, 0, 0}, {});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       umbreon::FrameResult f = umbreon::render(sc, o);
       s.check("F2 blue-front B=0.5 (order-dependent)", approx(f.color[kCenterRgba + 2], 0.5f, 1e-4f));
@@ -501,7 +506,7 @@ int main() {
       addQuad(m, {1, 0, 0, 1.0f}, 0.0f, 0);  // opaque red
       addQuad(m, {0, 0, 1, 0.5f}, 0.5f, 1);  // back wall
       addQuad(m, {0, 0, 1, 0.5f}, 1.0f, 1);  // front wall (same group)
-      umbreon::Scene sc = sceneOf(std::move(m), {0, 0, 0}, {});
+      umbreon::Scene sc = sceneOfVeil(std::move(m), {0, 0, 0}, {});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       umbreon::FrameResult f = umbreon::render(sc, o);
       s.check("F3 no-dedup B=0.75 (both walls)", approx(f.color[kCenterRgba + 2], 0.75f, 1e-4f));
@@ -513,7 +518,7 @@ int main() {
     {
       umbreon::Mesh m;
       addQuad(m, {0, 0, 1, 0.6f}, 1.0f, 1);  // fragment blue 0.6, nothing behind
-      umbreon::Scene sc = sceneOf(std::move(m), {0.2f, 0.2f, 0.2f}, {});
+      umbreon::Scene sc = sceneOfVeil(std::move(m), {0.2f, 0.2f, 0.2f}, {});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       o.transparentBackground = true;
       umbreon::FrameResult f = umbreon::render(sc, o);

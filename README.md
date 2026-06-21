@@ -1,5 +1,7 @@
 # Umbreon
 
+[![CI](https://github.com/CueMol/umbreon/actions/workflows/ci.yml/badge.svg)](https://github.com/CueMol/umbreon/actions/workflows/ci.yml)
+
 An offline molecular renderer backend built directly on Intel Embree 4 + TBB,
 intended for static linking into CueMol (libcuemol2). It reproduces CueMol's
 POV-Ray look (without radiosity) using primary rays plus direct local shading.
@@ -29,20 +31,22 @@ SDL parser, which is used only by the benchmark harness.
 
 ## Build
 
-Install the dependencies — Embree 4 and TBB (POV-Ray only to regenerate POV
-references), or just run `task deps`:
+Install the dependencies — Embree 4, TBB and Ninja (POV-Ray only to regenerate
+POV references), or just run `task deps`:
 
 ```sh
 # macOS
-brew install embree tbb povray
+brew install embree tbb ninja povray
 # Ubuntu / Debian
-sudo apt install libembree-dev libtbb-dev povray
+sudo apt install libembree-dev libtbb-dev ninja-build povray
 ```
 
-Then configure and build:
+The build uses the Ninja generator on every platform (single-config Release; on
+Windows run from an MSVC environment so Ninja can find `cl.exe`). Then configure
+and build:
 
 ```sh
-cmake -S . -B build
+cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
@@ -61,10 +65,10 @@ system packages:
 task build:static      # or: task test:static
 ```
 
-On Linux x64 this downloads the CueMol2 **deplibs** bundle — prebuilt static
-Embree 4 + TBB matching CueMol's own build — into `deps/deplibs` and points CMake
-at it. On other platforms it falls back to building Embree/TBB from source into
-`deps/prefix` (`task deps:build`).
+On Linux x64, macOS x64/arm64 and Windows x64 this downloads the CueMol2
+**deplibs** bundle — prebuilt static Embree 4 + TBB matching CueMol's own build —
+into `deps/deplibs` and points CMake at it. On other platforms it falls back to
+building Embree/TBB from source into `deps/prefix` (`task deps:build`).
 
 ## Usage
 

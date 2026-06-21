@@ -23,6 +23,14 @@ endif()
 # and the <pkg>_ROOT cache/environment variables.
 set(_umbreon_dep_hints /opt/homebrew /usr/local /usr)
 
+# Per-target warning flags. MSVC does not understand -Wall/-Wextra (it maps -Wall
+# to /Wall, which floods warnings from system headers), so use a sane MSVC set.
+if(MSVC)
+  set(UMBREON_WARNINGS /W3)
+else()
+  set(UMBREON_WARNINGS -Wall -Wextra)
+endif()
+
 # --------------------------------------------------------------------------
 # bench_core: pure C++17 .pov/.inc SDL parser, image IO and CLI option parsing
 # for the benchmark harness. No rendering-library dependency, so it builds and
@@ -38,7 +46,7 @@ add_library(bench_core STATIC
   src/cli.cpp
 )
 target_include_directories(bench_core PUBLIC src)
-target_compile_options(bench_core PRIVATE -Wall -Wextra)
+target_compile_options(bench_core PRIVATE ${UMBREON_WARNINGS})
 
 # --------------------------------------------------------------------------
 # Embree 4 + TBB: umbreon's only rendering dependencies.
@@ -117,7 +125,7 @@ if(EMBREE_LINK AND TBB_LINK)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_link_libraries(umbreon PUBLIC ${EMBREE_LINK} ${TBB_LINK})
-  target_compile_options(umbreon PRIVATE -Wall -Wextra)
+  target_compile_options(umbreon PRIVATE ${UMBREON_WARNINGS})
   set_target_properties(umbreon PROPERTIES VERSION ${PROJECT_VERSION})
 else()
   message(WARNING "Embree/TBB not found - 'umbreon' library not built")
@@ -134,7 +142,7 @@ if(TARGET umbreon)
   message(STATUS "Building 'umbreon_cli'")
   add_executable(umbreon_cli src/main.cpp)
   target_link_libraries(umbreon_cli PRIVATE bench_core umbreon::umbreon)
-  target_compile_options(umbreon_cli PRIVATE -Wall -Wextra)
+  target_compile_options(umbreon_cli PRIVATE ${UMBREON_WARNINGS})
 else()
   message(WARNING
     "umbreon not built - 'umbreon_cli' not built. brew install embree tbb")
