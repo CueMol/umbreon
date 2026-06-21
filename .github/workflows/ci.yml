@@ -1,0 +1,49 @@
+name: CI
+
+# Build umbreon against the static deplibs (prebuilt Embree 4 + TBB) and run the
+# CTest suite on Linux, macOS (arm64) and Windows. Driven through the Taskfile so
+# CI exercises the same `task test:static` path developers use locally.
+on:
+  push:
+  pull_request:
+
+# Cancel an in-progress run when newer commits land on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-latest }
+          - { name: macos-arm64, os: macos-latest }
+          - { name: windows-x64, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Provides a recent CMake and Ninja on PATH for every OS. Ninja keeps the
+      # build single-config Release, matching the prebuilt Release deplibs.
+      - name: Install CMake + Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install go-task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Put cl.exe/link.exe and the MSVC env on PATH so Ninja drives MSVC.
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # Runs through bash on all OSes (Git Bash on Windows) so the Taskfile's
+      # POSIX-shell commands and coreutils (curl, tar, mkdir) resolve uniformly.
+      - name: Build and test (static deplibs)
+        shell: bash
+        run: task test:static
