@@ -113,6 +113,7 @@ if(EMBREE_LINK AND TBB_LINK)
   add_library(umbreon STATIC
     src/render/embree_renderer.cpp
     src/render/scene_build.cpp
+    src/render/curve_build.cpp
     src/image/fog.cpp
     src/umbreon.cpp
   )

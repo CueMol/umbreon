@@ -1,0 +1,142 @@
+// Per-hit shading dispatch for the umbreon renderer: given a primary/transparency
+// ray hit, pick the right shading path (smooth-shaded mesh vs flat outline
+// primitive), interpolate or read the surface attributes, drive the AO/shadow
+// secondary rays, and return the hit's color, opacity and transparency group.
+//
+// This is on the hot per-hit path, so it is `inline` here: embree_renderer.cpp
+// and transparency.hpp include it and the compiler inlines it into the pixel
+// loop exactly as if it were still a local lambda (no LTO needed).
+#pragma once
+
+#include <cstdint>
+
+#include <embree4/rtcore.h>
+
+#include "render/render_types.hpp"
+#include "render/scene_build.hpp"
+#include "render/secondary_rays.hpp"
+#include "render/shading.hpp"
+#include "scene.hpp"
+
+namespace umbreon {
+namespace detail {
+
+// One shaded hit: linear HDR color, its opacity, and the CueMol transparency
+// group (section) used by the front-to-back compositor.
+struct HitShade {
+  Vec3 color{0.0f, 0.0f, 0.0f};
+  float opacity = 1.0f;
+  int group = 0;
+};
+
+// Everything shadeHit() reads, gathered once per frame. References point at the
+// built Embree scene + side tables, the mesh, the converted lights and the
+// render options; copies hold the two scene constants (ambient + background).
+struct ShadeContext {
+  const BuiltScene& built;
+  const Mesh& mesh;
+  const std::vector<Light>& lights;
+  Vec3 ambLight;
+  Vec3 bg;
+  const RenderOptions& opt;
+};
+
+// Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
+// the ray origin, and (px, py) the hi-res pixel (for deterministic AO/shadow
+// sampling).
+inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
+                         const Vec3& rd, const Vec3& org, uint32_t px,
+                         uint32_t py) {
+  HitShade hs;
+  RTCScene rscene = c.built.scene;
+  const GeomRecord& rec = c.built.records[rh.hit.geomID];
+  const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
+  if (rec.kind == GeomKind::Mesh) {
+    // Interpolate the shading normal and pigment color (slots 0/1).
+    float nbuf[3] = {0, 0, 0};
+    float cbuf[4] = {0, 0, 0, 1};
+    rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                    RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
+    rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                    RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
+    Vec3 N = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rd);
+    const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
+    const Material& triMat = c.mesh.materialForTri(rh.hit.primID);
+    // Hit point and GEOMETRIC normal (rh.hit.Ng, not the interpolated shading
+    // normal N): shared by the AO and shadow secondary rays. Offsetting the
+    // secondary-ray origin along Ng avoids self-hits on concave meshes.
+    const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                 org.z + rd.z * rh.ray.tfar};
+    const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+    // Self-intersection epsilon for the secondary (AO/shadow) rays: the SAME
+    // scale-adaptive value the transparency walk uses, from the PRIMARY ray
+    // length rh.ray.tfar. A far camera makes the hit-point error ~ tfar*2^-23,
+    // so a fixed / t=1 epsilon is far too small and the surface shadows itself
+    // (shadow acne).
+    const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
+    // AO darkens ONLY the ambient term; gated off by default (aoSamples == 0)
+    // so the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x).
+    float aoFactor = 1.0f;
+    if (c.opt.aoSamples > 0) {
+      const float rawAO = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
+                                    c.opt.aoDistance, px, py, c.opt.width);
+      aoFactor = 1.0f - c.opt.aoIntensity * (1.0f - rawAO);
+    }
+    hs.color = shadeLocal(triMat, C, N, V, c.lights, c.ambLight, c.bg,
+                          c.opt.specularScale, aoFactor, P, Ng, secEps, rscene,
+                          c.opt.shadows, c.opt.shadowSamples, px, py);
+    hs.opacity = cbuf[3];
+    hs.group = c.mesh.groupForTri(rh.hit.primID);
+  } else {
+    // Outline / VdW primitives: shade with the per-primitive material.
+    // The Embree geometric normal Ng is valid for SPHERE_POINT and for both
+    // linear-curve modes (ROUND swept-sphere and CONE capped-cone): in round
+    // mode and on the cone surface Ng is the non-normalized geometric surface
+    // normal POV shades against (flat-curve tangent semantics do not apply).
+    // Each cylinder geometry has its own primID space and side-tables; select
+    // the table set by kind (Sphere / Cylinder=round edge / capped=cone bond).
+    const bool isSphere = (rec.kind == GeomKind::Sphere);
+    const bool isCapped = (rec.kind == GeomKind::CylinderCapped);
+    const Vec4& fc = isSphere ? c.built.sphereColor[rh.hit.primID]
+                     : isCapped ? c.built.cylCapColor[rh.hit.primID]
+                                : c.built.cylColor[rh.hit.primID];
+    const Material& pm = isSphere ? c.built.sphereMat[rh.hit.primID]
+                         : isCapped ? c.built.cylCapMat[rh.hit.primID]
+                                    : c.built.cylMat[rh.hit.primID];
+    Vec3 N = faceForward(
+        normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
+    const Vec3 C = {fc.x, fc.y, fc.z};
+    // Outline / VdW primitives are flat silhouette geometry: never AO-darkened
+    // and never shadowed (aoFactor 1, shadowsOn false). This is the gate.
+    const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                 org.z + rd.z * rh.ray.tfar};
+    const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+    const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
+    hs.color = shadeLocal(pm, C, N, V, c.lights, c.ambLight, c.bg,
+                          c.opt.specularScale, 1.0f, P, Ng, secEps, rscene, false,
+                          1, px, py);
+    hs.opacity = fc.w;
+    hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
+               : isCapped ? c.built.cylCapGroup[rh.hit.primID]
+                          : c.built.cylGroup[rh.hit.primID];
+    // edge_line2 gradient: opacity varies p0 (fc.w) -> p1 (opacity1) along the
+    // segment. For both linear-curve modes rh.hit.u is the axial curve fraction
+    // in [0,1], so a linear lerp reproduces POV's "gradient z" transmit fade
+    // (uniform when opacity1 < 0). Opaque outlines and uniform bonds
+    // (opacity1 < 0) are unaffected.
+    if (!isSphere) {
+      const float op1 = isCapped ? c.built.cylCapOpacity1[rh.hit.primID]
+                                 : c.built.cylOpacity1[rh.hit.primID];
+      if (op1 >= 0.0f) {
+        float u = rh.hit.u;
+        if (u < 0.0f) u = 0.0f;
+        if (u > 1.0f) u = 1.0f;
+        hs.opacity = fc.w * (1.0f - u) + op1 * u;
+      }
+    }
+  }
+  return hs;
+}
+
+}  // namespace detail
+}  // namespace umbreon
