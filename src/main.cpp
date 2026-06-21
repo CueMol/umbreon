@@ -254,12 +254,7 @@ int main(int argc, char** argv) {
 
       ropt.width = opt.width;
       ropt.height = opt.height;
-      ropt.spp = opt.spp;
-      ropt.accumFrames = opt.accumFrames;
-      ropt.flatten = opt.flatten;
-      ropt.flipNormals = opt.flipNormals;
-      std::printf("rendering %dx%d  accum=%d\n", ropt.width, ropt.height,
-                  ropt.accumFrames);
+      std::printf("rendering %dx%d\n", ropt.width, ropt.height);
     }
 
     // Single-layer transparency controls (apply to both input paths).

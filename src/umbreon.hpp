@@ -11,6 +11,11 @@
 #include "render/render_types.hpp"
 #include "scene.hpp"
 
+// Library version (kept in sync with project() in CMakeLists.txt).
+#define UMBREON_VERSION_MAJOR 0
+#define UMBREON_VERSION_MINOR 1
+#define UMBREON_VERSION_PATCH 0
+
 namespace umbreon {
 
 // High-level render. Runs: supersample (opt.supersample) -> Embree primary-ray

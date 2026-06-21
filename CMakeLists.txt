@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(umbreon LANGUAGES CXX)
+project(umbreon VERSION 0.1.0 LANGUAGES CXX)
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -104,9 +107,18 @@ if(EMBREE_LINK AND TBB_LINK)
     src/image/fog.cpp
     src/umbreon.cpp
   )
-  target_include_directories(umbreon PUBLIC src)
+  # Namespaced alias so in-tree (add_subdirectory) consumers link the same
+  # 'umbreon::umbreon' target name an installed find_package() would provide.
+  add_library(umbreon::umbreon ALIAS umbreon)
+  # Public headers live under src/ in-tree and under <prefix>/include/umbreon
+  # when installed; the public API headers #include each other with paths
+  # relative to that root (e.g. "render/render_types.hpp"), so both layouts work.
+  target_include_directories(umbreon PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_link_libraries(umbreon PUBLIC ${EMBREE_LINK} ${TBB_LINK})
   target_compile_options(umbreon PRIVATE -Wall -Wextra)
+  set_target_properties(umbreon PROPERTIES VERSION ${PROJECT_VERSION})
 else()
   message(WARNING "Embree/TBB not found - 'umbreon' library not built")
 endif()
@@ -121,9 +133,53 @@ add_subdirectory(tests)
 if(TARGET umbreon)
   message(STATUS "Building 'umbreon_cli'")
   add_executable(umbreon_cli src/main.cpp)
-  target_link_libraries(umbreon_cli PRIVATE bench_core umbreon)
+  target_link_libraries(umbreon_cli PRIVATE bench_core umbreon::umbreon)
   target_compile_options(umbreon_cli PRIVATE -Wall -Wextra)
 else()
   message(WARNING
     "umbreon not built - 'umbreon_cli' not built. brew install embree tbb")
+endif()
+
+# --------------------------------------------------------------------------
+# Install / export. Make libumbreon consumable by an external project (CueMol):
+#   find_package(umbreon) -> umbreon::umbreon, or add_subdirectory(umbreon).
+# Only the public API headers are installed; internal headers (the Embree
+# renderer, fog, and the bench-only POV/geometry/image code) stay private.
+# --------------------------------------------------------------------------
+if(TARGET umbreon)
+  install(TARGETS umbreon EXPORT umbreonTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  # Public headers, preserving the layout umbreon.hpp #includes (scene.hpp and
+  # render/render_types.hpp) so an installed <umbreon/umbreon.hpp> resolves them.
+  install(FILES src/umbreon.hpp src/scene.hpp
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
+  install(FILES src/render/render_types.hpp
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
+
+  # The exported target records its PUBLIC link to Embree/TBB. That only round-
+  # trips when they were found as CONFIG packages (imported targets the generated
+  # umbreonConfig can re-find); the fallback INTERFACE targets are not
+  # exportable. add_subdirectory consumers work regardless via the alias.
+  if(embree_FOUND AND TBB_FOUND)
+    install(EXPORT umbreonTargets
+      NAMESPACE umbreon::
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/umbreon
+      FILE umbreonTargets.cmake)
+    configure_package_config_file(
+      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/umbreonConfig.cmake.in
+      ${CMAKE_CURRENT_BINARY_DIR}/umbreonConfig.cmake
+      INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/umbreon)
+    write_basic_package_version_file(
+      ${CMAKE_CURRENT_BINARY_DIR}/umbreonConfigVersion.cmake
+      VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
+    install(FILES
+      ${CMAKE_CURRENT_BINARY_DIR}/umbreonConfig.cmake
+      ${CMAKE_CURRENT_BINARY_DIR}/umbreonConfigVersion.cmake
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/umbreon)
+    message(STATUS "umbreon: install exports find_package(umbreon)")
+  else()
+    message(STATUS
+      "umbreon: Embree/TBB found via fallback - installing lib + headers but "
+      "not the find_package export (consume via add_subdirectory instead)")
+  endif()
 endif()

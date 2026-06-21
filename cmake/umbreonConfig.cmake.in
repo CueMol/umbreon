@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+# libumbreon links Embree 4 and oneTBB PUBLIC (a static lib defers their symbols
+# to the final link), so a consumer must be able to find them too. They are
+# required to be CONFIG-discoverable, matching how the install export was built.
+include(CMakeFindDependencyMacro)
+find_dependency(embree 4)
+find_dependency(TBB)
+
+include("${CMAKE_CURRENT_LIST_DIR}/umbreonTargets.cmake")
+
+check_required_components(umbreon)

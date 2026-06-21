@@ -13,17 +13,12 @@ struct Options {
   int height = 768;
   int gridN = 1;                // N^3 instance grid
   float spacing = 1.15f;        // grid pitch as a multiple of mesh size
-  bool flatten = false;
   float aoDistance = -1.0f;     // AO occluder radius; < 0 => auto from scene size
   int aoSamples = 0;            // AO rays per mesh hit; 0 = AO off
   float aoIntensity = 1.0f;     // AO strength multiplier (0..1+)
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows
-  int spp = 1;
-  int accumFrames = 16;
-  bool prefilterAux = false;
-  bool flipNormals = false;
   std::string emitPov;          // empty => do not emit a POV-Ray scene
   bool povRadiosity = true;     // emit a radiosity setup in the .pov
   float lightIntensity = 1.5f;  // distant "sun"

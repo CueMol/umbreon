@@ -51,8 +51,6 @@ Options parseCli(int argc, char** argv) {
       o.gridN = std::atoi(value("--grid").c_str());
     } else if (a == "--spacing") {
       o.spacing = static_cast<float>(std::atof(value("--spacing").c_str()));
-    } else if (a == "--flatten") {
-      o.flatten = true;
     } else if (a == "--ao-distance") {
       o.aoDistance = static_cast<float>(std::atof(value("--ao-distance").c_str()));
     } else if (a == "--ao-samples") {
@@ -68,14 +66,6 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--light-radius") {
       o.lightRadius =
           static_cast<float>(std::atof(value("--light-radius").c_str()));
-    } else if (a == "--spp") {
-      o.spp = std::atoi(value("--spp").c_str());
-    } else if (a == "--accum") {
-      o.accumFrames = std::atoi(value("--accum").c_str());
-    } else if (a == "--prefilter-aux") {
-      std::string v = value("--prefilter-aux");
-      if (o.ok && !parseBool(v, o.prefilterAux))
-        fail("--prefilter-aux expects on/off");
     } else if (a == "--pov-gain") {
       o.povGain = static_cast<float>(std::atof(value("--pov-gain").c_str()));
     } else if (a == "--outline-scale") {
@@ -121,8 +111,6 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--transparency");
       if (o.ok && !parseBool(v, o.transparency))
         fail("--transparency expects on/off");
-    } else if (a == "--flip-normals") {
-      o.flipNormals = true;
     } else if (a == "--emit-pov") {
       o.emitPov = value("--emit-pov");
     } else if (a == "--pov-radiosity") {
@@ -181,17 +169,12 @@ void printUsage(const char* prog) {
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --grid <int>             N for an N^3 instance grid    [1]\n"
       "  --spacing <float>        grid pitch (x mesh size)      [1.15]\n"
-      "  --flatten                bake the instance grid into one mesh\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"
-      "  --spp <int>              pixel samples per frame       [1]\n"
-      "  --accum <int>            accumulation frames           [16]\n"
-      "  --prefilter-aux <on|off> prefilter albedo/normal AOVs  [off]\n"
-      "  --flip-normals           negate mesh normals\n"
       "  --light-intensity <f>    distant 'sun' intensity       [1.5]\n"
       "  --ambient <f>            ambient 'sky' intensity        [0.6]\n"
       "  --emit-pov <path>        also write an equivalent .pov scene\n"
