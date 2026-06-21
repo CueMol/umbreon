@@ -47,6 +47,9 @@ tasks:
     cmds:
       # deplibs is published for Linux x64, macOS x64/arm64 and Windows x64.
       # Select the matching bundle; fall back with a hint on other platforms.
+      # Download to a file and unpack with `cmake -E tar` (libarchive) instead of
+      # piping into the shell's tar: go-task's built-in shell uses its own tar on
+      # Windows that rejects the bare `tar xj` form, and cmake is required anyway.
       - |
         case "{{OS}}/{{ARCH}}" in
           linux/amd64)   asset=deplibs_Linux_X64.tar.bz2 ;;
@@ -58,9 +61,11 @@ tasks:
             echo "Use 'task deps:build' (build from source) or 'task deps' (system packages) instead." >&2
             exit 1 ;;
         esac
-        mkdir -p {{.DEPLIBS_DIR}}
-        # The bundle also carries CGAL etc.; umbreon only consumes embree/tbb from it.
-        curl -sL "https://github.com/CueMol/build_scripts/releases/download/{{.DEPLIBS_VERSION}}/$asset" | tar xj -C {{.DEPLIBS_DIR}}
+        # The bundle also carries CGAL etc.; umbreon only consumes embree/tbb.
+        cmake -E make_directory "{{.DEPLIBS_DIR}}"
+        curl -sL "https://github.com/CueMol/build_scripts/releases/download/{{.DEPLIBS_VERSION}}/$asset" -o "{{.DEPLIBS_DIR}}/deplibs.tar.bz2"
+        cmake -E chdir "{{.DEPLIBS_DIR}}" cmake -E tar xjf "deplibs.tar.bz2"
+        cmake -E remove "{{.DEPLIBS_DIR}}/deplibs.tar.bz2"
     status:
       # Windows ships import/static libs as embree4.lib/tbb.lib; Unix as .a files.
       - |
