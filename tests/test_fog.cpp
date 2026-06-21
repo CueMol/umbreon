@@ -3,7 +3,7 @@
 #include <cmath>
 #include <limits>
 
-#include "image/fog.hpp"
+#include "render/fog.hpp"
 #include "test_util.hpp"
 
 namespace {

@@ -24,10 +24,10 @@ links), **`src/bench/`** is the CLI harness. The dependency is one-way —
   [docs/api/libumbreon.md](docs/api/libumbreon.md).
   - `src/umbreon/umbreon.{hpp,cpp}` — the `render()` facade (public header).
   - `src/umbreon/scene.hpp` — public scene / geometry / material API types.
-  - `src/umbreon/render/` — the Embree renderer. `render_types.hpp` is public;
-    the build (`scene_build`, `curve_build`), shading (`shading`,
-    `secondary_rays`, `hit_shader`) and `transparency` units are internal.
-  - `src/umbreon/image/fog.*` — POV ground-fog depth post-process.
+  - `src/umbreon/render/` — the rendering pipeline. `render_types.hpp` is
+    public; the build (`scene_build`, `curve_build`), shading (`shading`,
+    `secondary_rays`, `hit_shader`), `transparency` and the `fog` depth
+    post-process are internal.
 - **`bench_core`** (static library, pure C++17, `src/bench/`) — the `.pov`/`.inc`
   SDL parser (`pov/`, `geom/`), image IO (`image/`, PNG/PPM + PSNR/SSIM) and CLI
   option parsing (`cli.*`). No rendering-library dependency.

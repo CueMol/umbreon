@@ -115,7 +115,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/embree_renderer.cpp
     src/umbreon/render/scene_build.cpp
     src/umbreon/render/curve_build.cpp
-    src/umbreon/image/fog.cpp
+    src/umbreon/render/fog.cpp
     src/umbreon/umbreon.cpp
   )
   # Namespaced alias so in-tree (add_subdirectory) consumers link the same

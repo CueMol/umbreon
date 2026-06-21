@@ -1,4 +1,4 @@
-#include "image/fog.hpp"
+#include "render/fog.hpp"
 
 #include <algorithm>
 #include <cmath>

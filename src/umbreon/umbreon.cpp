@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include "image/fog.hpp"
 #include "render/embree_renderer.hpp"
+#include "render/fog.hpp"
 
 namespace umbreon {
 
