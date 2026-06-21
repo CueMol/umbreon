@@ -33,19 +33,20 @@ endif()
 
 # --------------------------------------------------------------------------
 # bench_core: pure C++17 .pov/.inc SDL parser, image IO and CLI option parsing
-# for the benchmark harness. No rendering-library dependency, so it builds and
-# tests without Embree installed.
+# for the benchmark harness (src/bench). No rendering-library dependency, so it
+# builds and tests without Embree installed. It does consume libumbreon's public
+# headers (scene.hpp, render_types.hpp), so src/umbreon is on its include path.
 # --------------------------------------------------------------------------
 add_library(bench_core STATIC
-  src/pov/pov_lexer.cpp
-  src/pov/pov_scene_reader.cpp
-  src/geom/mesh2_reader.cpp
-  src/geom/scene_builder.cpp
-  src/image/image_io.cpp
-  src/povexport/pov_writer.cpp
-  src/cli.cpp
+  src/bench/pov/pov_lexer.cpp
+  src/bench/pov/pov_scene_reader.cpp
+  src/bench/geom/mesh2_reader.cpp
+  src/bench/geom/scene_builder.cpp
+  src/bench/image/image_io.cpp
+  src/bench/povexport/pov_writer.cpp
+  src/bench/cli.cpp
 )
-target_include_directories(bench_core PUBLIC src)
+target_include_directories(bench_core PUBLIC src/bench src/umbreon)
 target_compile_options(bench_core PRIVATE ${UMBREON_WARNINGS})
 
 # --------------------------------------------------------------------------
@@ -111,20 +112,20 @@ endif()
 if(EMBREE_LINK AND TBB_LINK)
   message(STATUS "Building 'umbreon' (Embree backend)")
   add_library(umbreon STATIC
-    src/render/embree_renderer.cpp
-    src/render/scene_build.cpp
-    src/render/curve_build.cpp
-    src/image/fog.cpp
-    src/umbreon.cpp
+    src/umbreon/render/embree_renderer.cpp
+    src/umbreon/render/scene_build.cpp
+    src/umbreon/render/curve_build.cpp
+    src/umbreon/image/fog.cpp
+    src/umbreon/umbreon.cpp
   )
   # Namespaced alias so in-tree (add_subdirectory) consumers link the same
   # 'umbreon::umbreon' target name an installed find_package() would provide.
   add_library(umbreon::umbreon ALIAS umbreon)
-  # Public headers live under src/ in-tree and under <prefix>/include/umbreon
+  # Public headers live under src/umbreon in-tree and under <prefix>/include/umbreon
   # when installed; the public API headers #include each other with paths
   # relative to that root (e.g. "render/render_types.hpp"), so both layouts work.
   target_include_directories(umbreon PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/umbreon>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_link_libraries(umbreon PUBLIC ${EMBREE_LINK} ${TBB_LINK})
   target_compile_options(umbreon PRIVATE ${UMBREON_WARNINGS})
@@ -142,7 +143,7 @@ add_subdirectory(tests)
 # --------------------------------------------------------------------------
 if(TARGET umbreon)
   message(STATUS "Building 'umbreon_cli'")
-  add_executable(umbreon_cli src/main.cpp)
+  add_executable(umbreon_cli src/bench/main.cpp)
   target_link_libraries(umbreon_cli PRIVATE bench_core umbreon::umbreon)
   target_compile_options(umbreon_cli PRIVATE ${UMBREON_WARNINGS})
 else()
@@ -161,9 +162,9 @@ if(TARGET umbreon)
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
   # Public headers, preserving the layout umbreon.hpp #includes (scene.hpp and
   # render/render_types.hpp) so an installed <umbreon/umbreon.hpp> resolves them.
-  install(FILES src/umbreon.hpp src/scene.hpp
+  install(FILES src/umbreon/umbreon.hpp src/umbreon/scene.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
-  install(FILES src/render/render_types.hpp
+  install(FILES src/umbreon/render/render_types.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
 
   # The exported target records its PUBLIC link to Embree/TBB. That only round-
