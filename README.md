@@ -1,4 +1,4 @@
-# umbreon
+# Umbreon
 
 An offline molecular renderer backend built directly on Intel Embree 4 + TBB,
 intended for static linking into CueMol (libcuemol2). It reproduces CueMol's
@@ -22,7 +22,8 @@ SDL parser, which is used only by the benchmark harness.
 - **`bench_core`** (static library, pure C++17) — the `.pov`/`.inc` SDL parser,
   image IO (PNG/PPM + PSNR/SSIM) and CLI option parsing.
 - **`umbreon_cli`** (executable) — parses a `.pov`/`.inc` scene, renders it
-  through umbreon and writes the image; also offers `--compare` / `--convert`.
+  through Umbreon and writes the image; also offers `--compare` / `--convert`.
+  Quality-tuning guide: [docs/umbreon_cli.md](docs/umbreon_cli.md).
 - **`examples/`** — a standalone `find_package(umbreon)` consumer
   (`minimal_render.cpp`) demonstrating the library API end to end.
 
@@ -101,6 +102,6 @@ auto rgba8 = umbreon::srgbEncode8(f, 4);               // 8-bit sRGB for display
 ## Name
 
 A renderer's core job is shading — deciding how much shade falls on each surface.
-*umbreon* is coined from **umbra**, Latin for "shade / shadow" (also the term for
+*Umbreon* is coined from **umbra**, Latin for "shade / shadow" (also the term for
 the fully-shadowed core of a shadow), with the **-on** suffix that makes it read
 like a material or particle name (neon, argon, electron).

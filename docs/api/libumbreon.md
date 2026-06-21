@@ -39,8 +39,13 @@ primary ray + **POV 忠実なローカルシェーディング**（per-geometry 
 ### 依存
 
 - C++17 コンパイラ
-- **Embree 4**（`brew install embree`）
-- **oneTBB**（`brew install tbb`）
+- **Intel Embree 4** + **oneTBB**（静的リンク）
+
+取得方法:
+- **Linux x64（推奨）**: `task build:static` が CueMol2 の **deplibs**（CueMol 本体と同一の
+  プリビルド静的 Embree 4 + TBB）を取得して静的リンクする。CueMol との依存バージョン一致が保証される。
+- **macOS / その他**: `brew install embree tbb`、または `task deps:build`（ソースから静的ビルド）。
+  詳細はリポジトリ README の「Build」を参照。
 
 `libumbreon` は **静的ライブラリ**なので、Embree/TBB のシンボルは最終リンク時に解決されます。
 つまり **consumer（CueMol）側でも Embree 4 と TBB をリンクする必要があります**
