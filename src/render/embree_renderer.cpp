@@ -161,14 +161,14 @@ bool occluded(RTCScene rscene, const Vec3& P, const Vec3& dir, float tnear,
 // the origin below a concave surface and self-hit). aoRadius bounds the search.
 // Deterministic from the hi-res pixel (px, py).
 float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng, const Vec3& Ns,
-                int nSamples, float aoRadius, uint32_t px, uint32_t py,
-                int wHi) {
+                float eps, int nSamples, float aoRadius, uint32_t px,
+                uint32_t py, int wHi) {
   if (nSamples <= 0) return 1.0f;
   const Frame f = frameFromNormal(Ns);
-  // Offset axis = geometric normal, face-forwarded to the shading side.
+  // Offset axis = geometric normal, face-forwarded to the shading side. eps is
+  // the primary-ray-scaled self-intersection distance supplied by the caller.
   Vec3 ng = (dot(Ng, Ns) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
   ng = safeNormalize(ng, Ns);
-  const float eps = selfIntersectEps(P, ng, 1.0f);
   const Vec3 O = P + ng * eps;
   const uint32_t base = px + py * static_cast<uint32_t>(wHi);
   int hits = 0;
@@ -206,11 +206,10 @@ Vec3 sampleLightDir(const Light& l, float u1, float u2) {
 // (shadowSamples <= 1 or a point light, radius 0); otherwise shadowSamples cone
 // samples are averaged for a soft area-light penumbra.
 float computeShadow(RTCScene rscene, const Vec3& P, const Vec3& Ng,
-                    const Vec3& N, const Light& l, int shadowSamples,
+                    const Vec3& N, float eps, const Light& l, int shadowSamples,
                     uint32_t& s0, uint32_t& s1) {
   Vec3 ng = (dot(Ng, N) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
   ng = safeNormalize(ng, N);
-  const float eps = selfIntersectEps(P, ng, 1.0f);
   const Vec3 O = P + ng * eps;
   const float far = std::numeric_limits<float>::infinity();  // distant light
   if (shadowSamples <= 1 || l.radius <= 0.0f)
@@ -234,8 +233,8 @@ float computeShadow(RTCScene rscene, const Vec3& P, const Vec3& Ng,
 Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V,
                 const std::vector<Light>& lights, const Vec3& ambLight,
                 const Vec3& bg, float specularScale, float aoFactor,
-                const Vec3& P, const Vec3& Ng, RTCScene rscene, bool shadowsOn,
-                int shadowSamples, uint32_t px, uint32_t py) {
+                const Vec3& P, const Vec3& Ng, float eps, RTCScene rscene,
+                bool shadowsOn, int shadowSamples, uint32_t px, uint32_t py) {
   Vec3 out{mat.emission * C.x + aoFactor * mat.ambient * C.x * ambLight.x,
            mat.emission * C.y + aoFactor * mat.ambient * C.y * ambLight.y,
            mat.emission * C.z + aoFactor * mat.ambient * C.z * ambLight.z};
@@ -254,7 +253,7 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
     // fully lit point) Lc == l.color bitwise, so the shadow-off render is
     // byte-identical to the pre-shadow output.
     const float shadowFactor =
-        shadowsOn ? computeShadow(rscene, P, Ng, N, l, shadowSamples, s0, s1)
+        shadowsOn ? computeShadow(rscene, P, Ng, N, eps, l, shadowSamples, s0, s1)
                   : 1.0f;
     const Vec3 Lc{l.color.x * shadowFactor, l.color.y * shadowFactor,
                   l.color.z * shadowFactor};
@@ -752,16 +751,22 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
                    org.z + rd.z * rh.ray.tfar};
       const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+      // Self-intersection epsilon for the secondary (AO/shadow) rays: the SAME
+      // scale-adaptive value the transparency walk uses, from the PRIMARY ray
+      // length rh.ray.tfar. A far camera makes the hit-point error ~ tfar*2^-23,
+      // so a fixed / t=1 epsilon is far too small and the surface shadows itself
+      // (shadow acne).
+      const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
       // AO darkens ONLY the ambient term; gated off by default (aoSamples == 0)
       // so the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x).
       float aoFactor = 1.0f;
       if (opt.aoSamples > 0) {
-        const float rawAO = computeAO(rscene, P, Ng, N, opt.aoSamples,
+        const float rawAO = computeAO(rscene, P, Ng, N, secEps, opt.aoSamples,
                                       opt.aoDistance, px, py, W);
         aoFactor = 1.0f - opt.aoIntensity * (1.0f - rawAO);
       }
       hs.color = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
-                            opt.specularScale, aoFactor, P, Ng, rscene,
+                            opt.specularScale, aoFactor, P, Ng, secEps, rscene,
                             opt.shadows, opt.shadowSamples, px, py);
       hs.opacity = cbuf[3];
       hs.group = m.groupForTri(rh.hit.primID);
@@ -789,9 +794,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
                    org.z + rd.z * rh.ray.tfar};
       const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+      const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
       hs.color = shadeLocal(pm, C, N, V, lights, ambLight, bg,
-                            opt.specularScale, 1.0f, P, Ng, rscene, false, 1,
-                            px, py);
+                            opt.specularScale, 1.0f, P, Ng, secEps, rscene, false,
+                            1, px, py);
       hs.opacity = fc.w;
       hs.group = isSphere ? sphereGroup[rh.hit.primID]
                  : isCapped ? cylCapGroup[rh.hit.primID]

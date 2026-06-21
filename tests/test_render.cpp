@@ -963,5 +963,46 @@ int main() {
     s.check("soft shadow: deterministic (two renders identical)", same);
   }
 
+  // ===== Shadow self-intersection (acne) guard =====
+  // A large flat quad near the origin (small |P|), viewed by a FAR, TILTED ortho
+  // camera (large tfar; non-axis-aligned rays => genuine hit-point rounding error
+  // ~ tfar*2^-23, unlike an axis-aligned view where the arithmetic cancels
+  // exactly). Head-on light, shadows on, NO occluder: every pixel must stay fully
+  // lit (~0.6). If the shadow-ray offset epsilon is scaled by t=1 instead of the
+  // primary ray length, the offset (~|P|*ulp) is far smaller than the hit-point
+  // error, so points that round just below the surface shadow themselves and drop
+  // to ambient (~0.2) -- black acne. (The near-camera shadow tests above, tfar~10
+  // and axis-aligned, do not exercise this.)
+  {
+    using umbreon::Vec3;
+    umbreon::Mesh m;
+    const float q = 100.0f;  // quad >> framed region, so no ray misses to bg
+    const Vec3 c[6] = {{-q, -q, 0}, {q, -q, 0}, {q, q, 0},
+                       {-q, -q, 0}, {q, q, 0},  {-q, q, 0}};
+    for (int i = 0; i < 6; ++i) {
+      m.positions.push_back(c[i]);
+      m.normals.push_back({0, 0, 1});
+      m.colors.push_back({1, 1, 1, 1});
+    }
+    m.material.ambient = 0.2f;
+    m.material.diffuse = 0.8f;
+    umbreon::Scene sc;
+    sc.mesh = m;
+    sc.camera.position = {0.0f, 1200.0f, 1600.0f};  // ~2000 units from the origin
+    sc.camera.direction = {0.0f, -0.6f, -0.8f};     // tilted, looking at origin
+    sc.camera.up = {0.0f, 1.0f, 0.0f};
+    sc.camera.orthographic = true;
+    sc.camera.height = 6.0f;                         // hits stay near the origin
+    sc.lights.push_back(makeKeyLight());             // L=(0,0,1), head-on => 0.6
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5; o.shadows = true;     // hard shadows, no occluder
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    float minR = 1.0e9f;
+    for (int p = 0; p < 25; ++p) minR = std::fmin(minR, f.color[p * 4 + 0]);
+    s.check("acne guard: far/tilted lit surface, no self-shadow (min ~0.6)",
+            minR > 0.5f);
+  }
+
   return s.report();
 }
