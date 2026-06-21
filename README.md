@@ -11,7 +11,10 @@ SDL parser, which is used only by the benchmark harness.
 - **`umbreon`** (static library) — the rendering backend. Depends only on
   Embree 4 and TBB. Build an `umbreon::Scene` (geometry, camera, lights,
   material, fog), call `umbreon::render()`, and get a linear HDR framebuffer.
-  This is what CueMol links and calls; no POV-Ray SDL involved.
+  This is what CueMol links and calls; no POV-Ray SDL involved. It installs as a
+  CMake package (`find_package(umbreon)` -> `umbreon::umbreon`); the public
+  headers install under `<umbreon/...>`. Full integration guide:
+  [docs/api/libumbreon.md](docs/api/libumbreon.md).
   - `src/scene.hpp` — public scene / geometry / material API types.
   - `src/render/{render_types.hpp, embree_renderer.*}` — the Embree renderer.
   - `src/image/fog.*` — POV ground-fog depth post-process.
@@ -20,6 +23,8 @@ SDL parser, which is used only by the benchmark harness.
   image IO (PNG/PPM + PSNR/SSIM) and CLI option parsing.
 - **`umbreon_cli`** (executable) — parses a `.pov`/`.inc` scene, renders it
   through umbreon and writes the image; also offers `--compare` / `--convert`.
+- **`examples/`** — a standalone `find_package(umbreon)` consumer
+  (`minimal_render.cpp`) demonstrating the library API end to end.
 
 ## Build
 
@@ -52,13 +57,29 @@ it with `-DCMAKE_PREFIX_PATH=/path/to/prefix` (or `-DEMBREE_ROOT=...`
 ./build/umbreon_cli data/test1.pov -o out.png
 ```
 
-## Public API (for CueMol)
+## Use as a library (for CueMol)
+
+libumbreon installs as a CMake package; link the `umbreon::umbreon` target. See
+**[docs/api/libumbreon.md](docs/api/libumbreon.md)** for the full integration
+guide (the CueMol2/3 starting point) and `examples/minimal_render.cpp` for a
+complete, buildable consumer.
+
+```sh
+cmake -S . -B build && cmake --build build
+cmake --install build --prefix /opt/umbreon
+```
+
+```cmake
+# CueMol-side CMake (CMAKE_PREFIX_PATH must also reach Embree 4 / TBB)
+find_package(umbreon REQUIRED)          # or: add_subdirectory(umbreon)
+target_link_libraries(cuemol PRIVATE umbreon::umbreon)
+```
 
 ```cpp
-#include "umbreon.hpp"
+#include <umbreon/umbreon.hpp>
 
-umbreon::Scene scene;        // fill geometry / camera / lights / material / fog
-umbreon::RenderOptions opt;  // width, height, supersample, assumedGamma
+umbreon::Scene scene;        // geometry / camera / lights / material / fog
+umbreon::RenderOptions opt;  // size, supersample, AO, shadows, transparency
 umbreon::FrameResult f = umbreon::render(scene, opt);  // linear HDR framebuffer
 auto rgba8 = umbreon::srgbEncode8(f, 4);               // 8-bit sRGB for display
 ```
