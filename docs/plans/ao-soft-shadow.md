@@ -1,6 +1,6 @@
 # umbreon: Ambient Occlusion + Soft Shadows 実装プラン
 
-ステータス: **計画済み・未着手**（`transp_0619` の bugfix 完了後に実装予定）。前提プリミティブ（`safeNormalize`/`frameFromNormal`）は実装済み — **§0 プレタスク**に OSPRay 監査の反映（完了分と本編への上書き）を記載。本ドキュメントは設計合意の記録。
+ステータス: **実装完了**（branch `ao_impl_0620`）。AO=`8b8de83`、ハード影=`5b879f5`、ソフト影=`c9d0f2f`。既定 OFF で現行出力と bit-exact（canonical と byte 一致を確認）、AO/影は `tests/test_render.cpp` の解析テスト（render 102 checks）と density surface (`data/1ab0_scene6_densurf.pov`) の視覚確認で検証済み。CLI: `--ao-samples` / `--ao-distance` / `--ao-intensity` / `--shadows` / `--shadow-samples` / `--light-radius`。本ドキュメントは設計合意の記録（§0 プレタスクに OSPRay 監査の反映）。実装上の差異: 本編の commit 1-4 は単一コミット（AO）に集約、ヘルパは `frameFromNormal`/`safeNormalize`（`scene.hpp`）を再利用、二次レイ origin は幾何法線 `rh.hit.Ng` 方向へ adaptive eps オフセット。
 
 ## Context（なぜこの変更を行うか）
 

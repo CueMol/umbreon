@@ -68,6 +68,7 @@ struct Light {
   Vec3 L;      // unit direction from surface toward the light
   Vec3 color;  // light color * intensity
   bool highlight = true;  // false for POV fill (shadowless) lights: diffuse only
+  float radius = 0.0f;    // angular radius (radians) for soft shadows; 0 = hard
 };
 
 // Map POV "roughness" to a Blinn-Phong specular exponent. POV-Ray's Blinn
@@ -81,24 +82,181 @@ float blinnExp(float roughness) {
   return e;
 }
 
+// --- Secondary-ray (ambient occlusion) helpers ----------------------------
+// Ported from OSPRay's scivis/ao renderer (Apache-2.0): a cosine-weighted
+// hemisphere AO estimator with deterministic per-pixel sampling (math only, not
+// ISPC). AO is computed on mesh hits and modulates the ambient term; it is gated
+// off by default (RenderOptions::aoSamples == 0) so flag-less output is unchanged.
+
+// Scale-adaptive self-intersection epsilon (OSPRay calcEpsilon port): the
+// distance to push a secondary-ray origin off the surface so it does not re-hit
+// the surface it left. Scales with the hit-point magnitude and ray length, so it
+// holds at any camera distance / scene scale (a fixed eps fails when the camera
+// sits far from the scene). Same formula the transparency walk uses.
+float selfIntersectEps(const Vec3& P, const Vec3& dir, float t) {
+  const float dirMax =
+      std::fmax(std::fabs(dir.x), std::fmax(std::fabs(dir.y), std::fabs(dir.z)));
+  const float epsScale =
+      std::fmax(std::fmax(std::fabs(P.x), std::fabs(P.y)),
+                std::fmax(std::fabs(P.z), dirMax * t));
+  constexpr float kUlpEps = 0x1.0fp-21f;  // ~5.05e-7 (~4 ULP), OSPRay ulpEpsilon
+  return epsScale * kUlpEps;
+}
+
+// Tiny Encryption Algorithm, 8 rounds: hash two 32-bit seeds into a decorrelated
+// pair. Seeded only from (pixel, sample index), so the stream is identical
+// regardless of TBB thread count or grain size (deterministic, reproducible AO).
+void tea2(uint32_t& v0, uint32_t& v1) {
+  uint32_t sum = 0;
+  for (int i = 0; i < 8; ++i) {
+    sum += 0x9E3779B9u;
+    v0 += ((v1 << 4) + 0xA341316Cu) ^ (v1 + sum) ^ ((v1 >> 5) + 0xC8013EA4u);
+    v1 += ((v0 << 4) + 0xAD90777Du) ^ (v0 + sum) ^ ((v0 >> 5) + 0x7E95761Eu);
+  }
+}
+
+// Map a 32-bit hash to a float in [0,1) using the top 24 bits (mantissa width).
+float u32ToUnorm(uint32_t u) { return (u >> 8) * 0x1.0p-24f; }
+
+// Cosine-weighted hemisphere sample around frame f (f.n is the surface normal),
+// Malley's method (a uniform disk lifted to the hemisphere). The cosine weight
+// cancels the estimator's 1/cos, so AO needs no per-sample weighting.
+Vec3 cosineSampleHemisphere(float u1, float u2, const Frame& f) {
+  const float phi = 6.2831853072f * u1;  // 2*pi
+  const float r = std::sqrt(u2);
+  const float z = std::sqrt(std::fmax(0.0f, 1.0f - u2));
+  const float x = std::cos(phi) * r;
+  const float y = std::sin(phi) * r;
+  return f.t * x + f.b * y + f.n * z;
+}
+
+// Any-hit visibility test along [tnear, tfar]: true if any geometry is hit
+// (rtcOccluded1 sets ray.tfar < 0 on a hit). Transparent geometry counts as an
+// opaque occluder (binary), as OSPRay scivis does -- cheaper than a second
+// transparency walk and visually close.
+bool occluded(RTCScene rscene, const Vec3& P, const Vec3& dir, float tnear,
+              float tfar) {
+  RTCRay r;
+  r.org_x = P.x;
+  r.org_y = P.y;
+  r.org_z = P.z;
+  r.dir_x = dir.x;
+  r.dir_y = dir.y;
+  r.dir_z = dir.z;
+  r.tnear = tnear;
+  r.tfar = tfar;
+  r.mask = 0xFFFFFFFFu;
+  r.flags = 0;
+  r.time = 0.0f;
+  RTCOccludedArguments oargs;
+  rtcInitOccludedArguments(&oargs);
+  rtcOccluded1(rscene, &r, &oargs);
+  return r.tfar < 0.0f;
+}
+
+// Ambient-occlusion factor in [0,1] for a hit: 1 = fully open, 0 = fully
+// occluded. Casts nSamples cosine-weighted rays over the hemisphere around the
+// shading normal Ns; each ray origin is pushed off the surface along the
+// GEOMETRIC normal Ng (not Ns: offsetting along an interpolated normal can dip
+// the origin below a concave surface and self-hit). aoRadius bounds the search.
+// Deterministic from the hi-res pixel (px, py).
+float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng, const Vec3& Ns,
+                float eps, int nSamples, float aoRadius, uint32_t px,
+                uint32_t py, int wHi) {
+  if (nSamples <= 0) return 1.0f;
+  const Frame f = frameFromNormal(Ns);
+  // Offset axis = geometric normal, face-forwarded to the shading side. eps is
+  // the primary-ray-scaled self-intersection distance supplied by the caller.
+  Vec3 ng = (dot(Ng, Ns) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
+  ng = safeNormalize(ng, Ns);
+  const Vec3 O = P + ng * eps;
+  const uint32_t base = px + py * static_cast<uint32_t>(wHi);
+  int hits = 0;
+  for (int i = 0; i < nSamples; ++i) {
+    uint32_t s0 = base;
+    uint32_t s1 = static_cast<uint32_t>(i);
+    tea2(s0, s1);
+    const Vec3 dir = cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
+    if (dot(dir, Ns) < 0.01f) {  // grazing / below the surface: treat as occluded
+      ++hits;
+      continue;
+    }
+    if (occluded(rscene, O, dir, eps, aoRadius)) ++hits;
+  }
+  return 1.0f - static_cast<float>(hits) / static_cast<float>(nSamples);
+}
+
+// Sample a direction toward a distant light of angular radius l.radius: a
+// uniform-disk perturbation of l.L within a cone of half-angle l.radius, giving
+// a soft penumbra. radius 0 returns l.L exactly (the hard-shadow direction).
+Vec3 sampleLightDir(const Light& l, float u1, float u2) {
+  if (l.radius <= 0.0f) return l.L;
+  const Frame f = frameFromNormal(l.L);
+  const float phi = 6.2831853072f * u1;                 // 2*pi
+  const float rr = std::tan(l.radius) * std::sqrt(u2);  // uniform disk radius
+  const Vec3 d = f.n + f.t * (rr * std::cos(phi)) + f.b * (rr * std::sin(phi));
+  return safeNormalize(d, l.L);
+}
+
+// Per-light shadow factor in [0,1]: 1 = lit, 0 = fully shadowed. Casts shadow
+// ray(s) from the hit point toward the (distant) light; transparent geometry is
+// a binary occluder (as OSPRay scivis). The origin is offset along the geometric
+// normal Ng (face-forwarded to the lit side) by the adaptive self-intersection
+// epsilon, so a surface does not shadow itself. A single ray gives a hard shadow
+// (shadowSamples <= 1 or a point light, radius 0); otherwise shadowSamples cone
+// samples are averaged for a soft area-light penumbra.
+float computeShadow(RTCScene rscene, const Vec3& P, const Vec3& Ng,
+                    const Vec3& N, float eps, const Light& l, int shadowSamples,
+                    uint32_t& s0, uint32_t& s1) {
+  Vec3 ng = (dot(Ng, N) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
+  ng = safeNormalize(ng, N);
+  const Vec3 O = P + ng * eps;
+  const float far = std::numeric_limits<float>::infinity();  // distant light
+  if (shadowSamples <= 1 || l.radius <= 0.0f)
+    return occluded(rscene, O, l.L, eps, far) ? 0.0f : 1.0f;
+  int hits = 0;
+  for (int i = 0; i < shadowSamples; ++i) {
+    tea2(s0, s1);
+    const Vec3 dir = sampleLightDir(l, u32ToUnorm(s0), u32ToUnorm(s1));
+    if (occluded(rscene, O, dir, eps, far)) ++hits;
+  }
+  return 1.0f - static_cast<float>(hits) / static_cast<float>(shadowSamples);
+}
+
 // Shared POV local-illumination shader (no 1/pi factor). C is the pigment rgb,
 // N the face-forwarded shading normal, V the unit direction toward the viewer.
-// out = emission*C + ambient*C*ambLight
+// out = emission*C + aoFactor*ambient*C*ambLight
 //       + sum_lights[ diffuse*C*pow(N.L,brilliance)*Lc + specular/phong lobe ]
 //       + reflection*background.
 // The FLAT preset (ambient 1, diffuse 0, specular 0, phong 0) with ambLight
 // (1,1,1) yields out = C, preserving the flat outline/silhouette behavior.
 Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V,
                 const std::vector<Light>& lights, const Vec3& ambLight,
-                const Vec3& bg, float specularScale) {
-  Vec3 out{mat.emission * C.x + mat.ambient * C.x * ambLight.x,
-           mat.emission * C.y + mat.ambient * C.y * ambLight.y,
-           mat.emission * C.z + mat.ambient * C.z * ambLight.z};
+                const Vec3& bg, float specularScale, float aoFactor,
+                const Vec3& P, const Vec3& Ng, float eps, RTCScene rscene,
+                bool shadowsOn, int shadowSamples, uint32_t px, uint32_t py) {
+  Vec3 out{mat.emission * C.x + aoFactor * mat.ambient * C.x * ambLight.x,
+           mat.emission * C.y + aoFactor * mat.ambient * C.y * ambLight.y,
+           mat.emission * C.z + aoFactor * mat.ambient * C.z * ambLight.z};
 
   const float exp = blinnExp(mat.roughness);
+  // Per-pixel deterministic RNG stream for soft-shadow sampling (advanced per
+  // light/sample inside computeShadow); seeded from the hi-res pixel only, so
+  // the penumbra is identical regardless of TBB thread count.
+  uint32_t s0 = px, s1 = py;
   for (const Light& l : lights) {
     const float ndl = dot(N, l.L);
     if (ndl <= 0.0f) continue;
+
+    // Per-light shadow factor folded into a local light color Lc, applied to
+    // BOTH the diffuse and the highlight below. With shadowsOn == false (or a
+    // fully lit point) Lc == l.color bitwise, so the shadow-off render is
+    // byte-identical to the pre-shadow output.
+    const float shadowFactor =
+        shadowsOn ? computeShadow(rscene, P, Ng, N, eps, l, shadowSamples, s0, s1)
+                  : 1.0f;
+    const Vec3 Lc{l.color.x * shadowFactor, l.color.y * shadowFactor,
+                  l.color.z * shadowFactor};
 
     // Diffuse with brilliance as the N.L exponent. Guard pow(0,0).
     float d;
@@ -110,9 +268,9 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
       d = std::pow(ndl, mat.brilliance);
     }
     const float dk = mat.diffuse * d;
-    out.x += dk * C.x * l.color.x;
-    out.y += dk * C.y * l.color.y;
-    out.z += dk * C.z * l.color.z;
+    out.x += dk * C.x * Lc.x;
+    out.y += dk * C.y * Lc.y;
+    out.z += dk * C.z * Lc.z;
 
     // POV fill (shadowless) lights contribute diffuse only -- no specular/phong
     // (trace.cpp gates highlights on Light_Type != FILL_LIGHT_SOURCE).
@@ -132,11 +290,11 @@ Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N, const Vec3& V
       if (f < 0.0f) f = 0.0f;
       if (f > 1.0f) f = 1.0f;
       // cs = light * (f + (1-f)*pigment): lerp pigment->white by f.
-      hl = Vec3{l.color.x * (f + (1.0f - f) * C.x),
-                l.color.y * (f + (1.0f - f) * C.y),
-                l.color.z * (f + (1.0f - f) * C.z)};
+      hl = Vec3{Lc.x * (f + (1.0f - f) * C.x),
+                Lc.y * (f + (1.0f - f) * C.y),
+                Lc.z * (f + (1.0f - f) * C.z)};
     } else {
-      hl = l.color;
+      hl = Lc;
     }
 
     float specW = 0.0f;  // accumulated scalar specular weight
@@ -548,6 +706,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     l.color = Vec3{dl.color.x * dl.intensity, dl.color.y * dl.intensity,
                    dl.color.z * dl.intensity};
     l.highlight = dl.castsHighlight;
+    l.radius = radians(opt.lightRadius);  // soft-shadow angular radius (0 = hard)
     lights.push_back(l);
   }
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
@@ -570,7 +729,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     float opacity = 1.0f;
     int group = 0;
   };
-  auto shadeHit = [&](const RTCRayHit& rh, const Vec3& rd) -> HitShade {
+  auto shadeHit = [&](const RTCRayHit& rh, const Vec3& rd, const Vec3& org,
+                      uint32_t px, uint32_t py) -> HitShade {
     HitShade hs;
     const GeomRecord& rec = records[rh.hit.geomID];
     const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
@@ -585,8 +745,29 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       Vec3 N = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rd);
       const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
       const Material& triMat = m.materialForTri(rh.hit.primID);
+      // Hit point and GEOMETRIC normal (rh.hit.Ng, not the interpolated shading
+      // normal N): shared by the AO and shadow secondary rays. Offsetting the
+      // secondary-ray origin along Ng avoids self-hits on concave meshes.
+      const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                   org.z + rd.z * rh.ray.tfar};
+      const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+      // Self-intersection epsilon for the secondary (AO/shadow) rays: the SAME
+      // scale-adaptive value the transparency walk uses, from the PRIMARY ray
+      // length rh.ray.tfar. A far camera makes the hit-point error ~ tfar*2^-23,
+      // so a fixed / t=1 epsilon is far too small and the surface shadows itself
+      // (shadow acne).
+      const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
+      // AO darkens ONLY the ambient term; gated off by default (aoSamples == 0)
+      // so the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x).
+      float aoFactor = 1.0f;
+      if (opt.aoSamples > 0) {
+        const float rawAO = computeAO(rscene, P, Ng, N, secEps, opt.aoSamples,
+                                      opt.aoDistance, px, py, W);
+        aoFactor = 1.0f - opt.aoIntensity * (1.0f - rawAO);
+      }
       hs.color = shadeLocal(triMat, C, N, V, lights, ambLight, bg,
-                            opt.specularScale);
+                            opt.specularScale, aoFactor, P, Ng, secEps, rscene,
+                            opt.shadows, opt.shadowSamples, px, py);
       hs.opacity = cbuf[3];
       hs.group = m.groupForTri(rh.hit.primID);
     } else {
@@ -608,8 +789,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       Vec3 N = faceForward(
           normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
       const Vec3 C = {fc.x, fc.y, fc.z};
+      // Outline / VdW primitives are flat silhouette geometry: never AO-darkened
+      // and never shadowed (aoFactor 1, shadowsOn false). This is the gate.
+      const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                   org.z + rd.z * rh.ray.tfar};
+      const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+      const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
       hs.color = shadeLocal(pm, C, N, V, lights, ambLight, bg,
-                            opt.specularScale);
+                            opt.specularScale, 1.0f, P, Ng, secEps, rscene, false,
+                            1, px, py);
       hs.opacity = fc.w;
       hs.group = isSphere ? sphereGroup[rh.hit.primID]
                  : isCapped ? cylCapGroup[rh.hit.primID]
@@ -724,7 +912,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         }
         if (nearDepth == 0.0f) nearDepth = rh.ray.tfar;
 
-        const HitShade hs = shadeHit(rh, rd);
+        const HitShade hs = shadeHit(rh, rd, org, static_cast<uint32_t>(px),
+                                     static_cast<uint32_t>(py));
 
         if (!opt.transparency || hs.opacity >= kOpaque) {
           base = hs.color;  // nearest opaque surface = the floor

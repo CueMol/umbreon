@@ -132,6 +132,23 @@ int main(int argc, char** argv) {
         for (umbreon::Cylinder& c : scene.cylinders) c.radius *= opt.outlineScale;
       }
 
+      // Scene-scaled default AO radius (used when --ao-distance is not given):
+      // 0.7 * the geometry bounding-box diagonal, matching the .inc scene
+      // builder. Without this the .pov scene keeps the 1e20 placeholder and AO
+      // would search the entire scene.
+      umbreon::Aabb aoBounds = scene.mesh.bounds();
+      for (const umbreon::Sphere& sp : scene.spheres) {
+        const umbreon::Vec3 r{sp.radius, sp.radius, sp.radius};
+        aoBounds.extend(sp.center - r);
+        aoBounds.extend(sp.center + r);
+      }
+      for (const umbreon::Cylinder& cy : scene.cylinders) {
+        aoBounds.extend(cy.p0);
+        aoBounds.extend(cy.p1);
+      }
+      if (aoBounds.valid())
+        scene.aoDistance = std::max(aoBounds.diagonal() * 0.7f, 1.0e-3f);
+
       // Apply per-section opacity overrides (--alpha ID=value). The section is
       // resolved against the group names recovered by the parser; every
       // primitive in that group gets the given opacity so the renderer
@@ -237,19 +254,33 @@ int main(int argc, char** argv) {
 
       ropt.width = opt.width;
       ropt.height = opt.height;
-      ropt.aoDistance =
-          (opt.aoDistance > 0.0f) ? opt.aoDistance : scene.aoDistance;
-      ropt.spp = opt.spp;
-      ropt.accumFrames = opt.accumFrames;
-      ropt.flatten = opt.flatten;
-      ropt.flipNormals = opt.flipNormals;
-      std::printf("rendering %dx%d  accum=%d\n", ropt.width, ropt.height,
-                  ropt.accumFrames);
+      std::printf("rendering %dx%d\n", ropt.width, ropt.height);
     }
 
     // Single-layer transparency controls (apply to both input paths).
     ropt.transparency = opt.transparency;
     ropt.transparentBackground = opt.transparentBackground;
+
+    // Ambient occlusion (both paths). Off unless --ao-samples > 0; the radius is
+    // an explicit --ao-distance, else the scene-scaled default (scene builder for
+    // .inc, geometry bounds for .pov). AO darkens only the ambient term.
+    ropt.aoSamples = opt.aoSamples;
+    ropt.aoIntensity = opt.aoIntensity;
+    ropt.aoDistance = (opt.aoDistance > 0.0f) ? opt.aoDistance : scene.aoDistance;
+    ropt.shadows = opt.shadows;
+    ropt.shadowSamples = opt.shadowSamples;
+    ropt.lightRadius = opt.lightRadius;
+    if (ropt.aoSamples > 0)
+      std::printf(
+          "  ambient occlusion: %d samples, radius %.3f, intensity %.2f\n",
+          ropt.aoSamples, ropt.aoDistance, ropt.aoIntensity);
+    if (ropt.shadows) {
+      if (ropt.lightRadius > 0.0f && ropt.shadowSamples > 1)
+        std::printf("  soft shadows: %d samples, light radius %.2f deg\n",
+                    ropt.shadowSamples, ropt.lightRadius);
+      else
+        std::printf("  hard shadows: on\n");
+    }
 
     // Supersampling factor. umbreon::render() renders at ss x the output
     // resolution so the thin silhouette lines antialias like POV-Ray; the .pov
