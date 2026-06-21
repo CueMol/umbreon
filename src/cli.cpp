@@ -78,6 +78,8 @@ Options parseCli(int argc, char** argv) {
       o.specularScale =
           static_cast<float>(std::atof(value("--specular-scale").c_str()));
       o.specularScaleSet = true;
+    } else if (a == "--threads") {
+      o.threads = std::atoi(value("--threads").c_str());
     } else if (a == "--declare") {
       // --declare name=value (predefined POV constant for the .pov path)
       std::string kv = value("--declare");
@@ -163,6 +165,7 @@ void printUsage(const char* prog) {
       "  --outline-scale <float>  radius x for spheres/cylinders [1.00]\n"
       "  --supersample <int>      render NxN and downsample  [1; .pov: 2]\n"
       "  --specular-scale <float> cartoon specular x      [.pov: 0 = matte]\n"
+      "  --threads <int>          TBB parallelism cap (1 = serial)  [0 = all]\n"
       "  --alpha <ID=value>       set a section's opacity (e.g. _34_35=0.5)\n"
       "  --list-groups            list the input's section ids and exit\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

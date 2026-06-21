@@ -5,8 +5,12 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include <tbb/global_control.h>
+#include <tbb/version.h>
 
 #include "cli.hpp"
 #include "geom/mesh2_reader.hpp"
@@ -295,8 +299,27 @@ int main(int argc, char** argv) {
       std::printf("  supersample %dx (%dx%d -> %dx%d)\n", ss, finalW * ss,
                   finalH * ss, finalW, finalH);
 
+    // Optional TBB parallelism cap for a no-rebuild speed comparison:
+    // --threads 1 runs the row-parallel render serially, --threads N caps at N,
+    // 0 leaves TBB at its default (all cores). global_control must outlive the
+    // render() call below, so keep it alive in this scope.
+    std::unique_ptr<tbb::global_control> tbbLimit;
+    if (opt.threads > 0)
+      tbbLimit = std::make_unique<tbb::global_control>(
+          tbb::global_control::max_allowed_parallelism,
+          static_cast<std::size_t>(opt.threads));
+
     // umbreon backend: primary rays + direct POV local shading + fog + gamma.
     // This is exactly what CueMol will call (no POV-Ray SDL involved).
+    // Report the TBB runtime backing the parallel render: the renderer
+    // parallelizes image rows with tbb::parallel_for (and Embree's tasking uses
+    // TBB too). TBB_runtime_version() reflects the actually-linked library;
+    // max parallelism reflects the --threads cap above.
+    std::printf(
+        "  parallel backend: TBB %s (interface %d), max parallelism %zu\n",
+        TBB_runtime_version(), TBB_runtime_interface_version(),
+        tbb::global_control::active_value(
+            tbb::global_control::max_allowed_parallelism));
     umbreon::FrameResult frame = umbreon::render(scene, ropt);
     std::printf("  render time:  %.3f s\n", frame.renderSeconds);
     if (scene.fog.enabled)
