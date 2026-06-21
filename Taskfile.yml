@@ -139,7 +139,7 @@ tasks:
             task deps:build
             PREFIX="{{.DEPS_PREFIX}}" ;;
         esac
-        cmake -S . -B build -DCMAKE_PREFIX_PATH="$PREFIX"
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PREFIX"
         cmake --build build -j
 
   test:static:
@@ -155,7 +155,7 @@ tasks:
             task deps:build
             PREFIX="{{.DEPS_PREFIX}}" ;;
         esac
-        cmake -S . -B build -DCMAKE_PREFIX_PATH="$PREFIX"
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PREFIX"
         cmake --build build -j
         ctest --test-dir build --output-on-failure
 
