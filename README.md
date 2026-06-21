@@ -51,6 +51,20 @@ build in a non-standard prefix (e.g. the eventual shipping setup), point CMake a
 it with `-DCMAKE_PREFIX_PATH=/path/to/prefix` (or `-DEMBREE_ROOT=...`
 `-DTBB_ROOT=...` when no package config is present).
 
+### Static build (for CueMol)
+
+For static linking into CueMol, build against prebuilt Embree/TBB instead of
+system packages:
+
+```sh
+task build:static      # or: task test:static
+```
+
+On Linux x64 this downloads the CueMol2 **deplibs** bundle — prebuilt static
+Embree 4 + TBB matching CueMol's own build — into `deps/deplibs` and points CMake
+at it. On other platforms it falls back to building Embree/TBB from source into
+`deps/prefix` (`task deps:build`).
+
 ## Usage
 
 ```sh

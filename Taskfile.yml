@@ -8,6 +8,14 @@ vars:
   TBB_VERSION: "2023.0.0"
   DEPS_SRC: "{{.ROOT_DIR}}/deps/src"
   DEPS_PREFIX: "{{.ROOT_DIR}}/deps/prefix"
+  # CueMol2 deplibs: prebuilt static Embree/TBB for Linux x64. The embree/tbb
+  # versions inside the bundle match EMBREE_VERSION/TBB_VERSION above, and each
+  # ships its own CMake package config under <prefix>/lib/cmake.
+  DEPLIBS_VERSION: "v0.0.9"
+  DEPLIBS_DIR: "{{.ROOT_DIR}}/deps/deplibs"
+  EMBREE_PREFIX: "{{.DEPLIBS_DIR}}/target/embree-{{.EMBREE_VERSION}}"
+  TBB_PREFIX: "{{.DEPLIBS_DIR}}/target/tbb-{{.TBB_VERSION}}"
+  STATIC_PREFIX_PATH: "{{.EMBREE_PREFIX}};{{.TBB_PREFIX}}"
 
 tasks:
   deps:
@@ -22,6 +30,22 @@ tasks:
           echo "Unsupported platform; install Embree 4, TBB and (optionally) POV-Ray manually." >&2
           exit 1
         fi
+
+  deps:fetch:
+    desc: Download CueMol2 deplibs (prebuilt static Embree {{.EMBREE_VERSION}} + TBB {{.TBB_VERSION}}, Linux x64) into deps/deplibs
+    cmds:
+      - |
+        if [ "{{OS}}" != "linux" ] || [ "{{ARCH}}" != "amd64" ]; then
+          echo "deplibs is published for Linux x64 only ({{OS}}/{{ARCH}} detected)." >&2
+          echo "Use 'task deps:build' (build from source) or 'task deps' (system packages) instead." >&2
+          exit 1
+        fi
+      - mkdir -p {{.DEPLIBS_DIR}}
+      # The bundle also carries CGAL etc.; umbreon only consumes embree/tbb from it.
+      - curl -sL "https://github.com/CueMol/build_scripts/releases/download/{{.DEPLIBS_VERSION}}/deplibs_Linux_X64.tar.bz2" | tar xj -C {{.DEPLIBS_DIR}}
+    status:
+      - test -f {{.EMBREE_PREFIX}}/lib/libembree4.a
+      - test -f {{.TBB_PREFIX}}/lib/libtbb.a
 
   deps:build-tbb:
     desc: Build oneTBB {{.TBB_VERSION}} as a static library into deps/prefix
@@ -75,19 +99,35 @@ tasks:
     deps: [deps:build-embree]
 
   build:static:
-    desc: Build umbreon linked against static Embree/TBB in deps/prefix
-    deps: [deps:build]
+    desc: Build umbreon against static Embree/TBB (deplibs on Linux x64, source build elsewhere)
     cmds:
-      - cmake -S . -B build -DCMAKE_PREFIX_PATH={{.DEPS_PREFIX}}
-      - cmake --build build -j
+      - |
+        set -e
+        if [ "{{OS}}" = "linux" ] && [ "{{ARCH}}" = "amd64" ]; then
+          task deps:fetch
+          PREFIX="{{.STATIC_PREFIX_PATH}}"
+        else
+          task deps:build
+          PREFIX="{{.DEPS_PREFIX}}"
+        fi
+        cmake -S . -B build -DCMAKE_PREFIX_PATH="$PREFIX"
+        cmake --build build -j
 
   test:static:
-    desc: Build and test against static Embree/TBB
-    deps: [deps:build]
+    desc: Build and test against static Embree/TBB (deplibs on Linux x64, source build elsewhere)
     cmds:
-      - cmake -S . -B build -DCMAKE_PREFIX_PATH={{.DEPS_PREFIX}}
-      - cmake --build build -j
-      - ctest --test-dir build --output-on-failure
+      - |
+        set -e
+        if [ "{{OS}}" = "linux" ] && [ "{{ARCH}}" = "amd64" ]; then
+          task deps:fetch
+          PREFIX="{{.STATIC_PREFIX_PATH}}"
+        else
+          task deps:build
+          PREFIX="{{.DEPS_PREFIX}}"
+        fi
+        cmake -S . -B build -DCMAKE_PREFIX_PATH="$PREFIX"
+        cmake --build build -j
+        ctest --test-dir build --output-on-failure
 
   build:
     desc: Configure and build (Release)

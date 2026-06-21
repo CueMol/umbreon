@@ -48,6 +48,11 @@ struct Options {
   float specularScale = 1.0f;
   bool specularScaleSet = false;
 
+  // TBB parallelism cap for a no-rebuild speed comparison: 0 = all cores
+  // (default), 1 = serial (TBB effectively disabled), N = cap at N. Applied via
+  // tbb::global_control around render() in the CLI.
+  int threads = 0;
+
   // Track whether these were set explicitly so the .pov path can pick
   // render defaults that match the CueMol reference without clobbering the
   // user's choices.
