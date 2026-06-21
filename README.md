@@ -10,22 +10,31 @@ SDL parser, which is used only by the benchmark harness.
 
 ## Layout
 
-- **`umbreon`** (static library) — the rendering backend. Depends only on
-  Embree 4 and TBB. Build an `umbreon::Scene` (geometry, camera, lights,
-  material, fog), call `umbreon::render()`, and get a linear HDR framebuffer.
-  This is what CueMol links and calls; no POV-Ray SDL involved. It installs as a
-  CMake package (`find_package(umbreon)` -> `umbreon::umbreon`); the public
-  headers install under `<umbreon/...>`. Full integration guide:
+The source tree is split so the shipped library and the test/benchmark CLI are
+physically separate: **`src/umbreon/`** is libumbreon (the only thing CueMol
+links), **`src/bench/`** is the CLI harness. The dependency is one-way —
+`src/bench` consumes libumbreon's public headers, never the reverse.
+
+- **`umbreon`** (static library, `src/umbreon/`) — the rendering backend.
+  Depends only on Embree 4 and TBB. Build an `umbreon::Scene` (geometry, camera,
+  lights, material, fog), call `umbreon::render()`, and get a linear HDR
+  framebuffer. This is what CueMol links and calls; no POV-Ray SDL involved. It
+  installs as a CMake package (`find_package(umbreon)` -> `umbreon::umbreon`);
+  the public headers install under `<umbreon/...>`. Full integration guide:
   [docs/api/libumbreon.md](docs/api/libumbreon.md).
-  - `src/scene.hpp` — public scene / geometry / material API types.
-  - `src/render/{render_types.hpp, embree_renderer.*}` — the Embree renderer.
-  - `src/image/fog.*` — POV ground-fog depth post-process.
-  - `src/umbreon.{hpp,cpp}` — the `render()` facade and helpers.
-- **`bench_core`** (static library, pure C++17) — the `.pov`/`.inc` SDL parser,
-  image IO (PNG/PPM + PSNR/SSIM) and CLI option parsing.
-- **`umbreon_cli`** (executable) — parses a `.pov`/`.inc` scene, renders it
-  through Umbreon and writes the image; also offers `--compare` / `--convert`.
-  Quality-tuning guide: [docs/umbreon_cli.md](docs/umbreon_cli.md).
+  - `src/umbreon/umbreon.{hpp,cpp}` — the `render()` facade (public header).
+  - `src/umbreon/scene.hpp` — public scene / geometry / material API types.
+  - `src/umbreon/render/` — the rendering pipeline. `render_types.hpp` is
+    public; the build (`scene_build`, `curve_build`), shading (`shading`,
+    `secondary_rays`, `hit_shader`), `transparency` and the `fog` depth
+    post-process are internal.
+- **`bench_core`** (static library, pure C++17, `src/bench/`) — the `.pov`/`.inc`
+  SDL parser (`pov/`, `geom/`), image IO (`image/`, PNG/PPM + PSNR/SSIM) and CLI
+  option parsing (`cli.*`). No rendering-library dependency.
+- **`umbreon_cli`** (executable, `src/bench/main.cpp`) — parses a `.pov`/`.inc`
+  scene, renders it through Umbreon and writes the image; also offers
+  `--compare` / `--convert`. Quality-tuning guide:
+  [docs/umbreon_cli.md](docs/umbreon_cli.md).
 - **`examples/`** — a standalone `find_package(umbreon)` consumer
   (`minimal_render.cpp`) demonstrating the library API end to end.
 
