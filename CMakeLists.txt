@@ -112,6 +112,7 @@ if(EMBREE_LINK AND TBB_LINK)
   message(STATUS "Building 'umbreon' (Embree backend)")
   add_library(umbreon STATIC
     src/render/embree_renderer.cpp
+    src/render/scene_build.cpp
     src/image/fog.cpp
     src/umbreon.cpp
   )
