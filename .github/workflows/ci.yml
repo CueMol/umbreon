@@ -3,9 +3,10 @@ name: CI
 # Build umbreon against the static deplibs (prebuilt Embree 4 + TBB) and run the
 # CTest suite on Linux, macOS (arm64) and Windows. Driven through the Taskfile so
 # CI exercises the same `task test:static` path developers use locally.
+# Runs on every push (any branch); a PR off a pushed branch would only duplicate
+# the run, so there is no pull_request trigger.
 on:
   push:
-  pull_request:
 
 # Cancel an in-progress run when newer commits land on the same ref.
 concurrency:
@@ -24,7 +25,11 @@ jobs:
           - { name: macos-arm64, os: macos-latest }
           - { name: windows-x64, os: windows-latest }
     steps:
+      # data/**/*.inc are Git LFS objects the tests read (e.g. mesh2_reader on
+      # data/test1.inc); without lfs the checkout leaves pointer files behind.
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       # Provides a recent CMake and Ninja on PATH for every OS. Ninja keeps the
       # build single-config Release, matching the prebuilt Release deplibs.
