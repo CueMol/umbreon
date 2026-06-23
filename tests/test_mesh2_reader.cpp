@@ -74,6 +74,12 @@ int main(int argc, char** argv) {
   // Embree curve types, so the parser must classify each correctly. Locks: (1)
   // edge_line / edge_line2 => open, (2) raw cylinder{} => capped by default,
   // (3) cylinder{ ... open ... } => open.
+  //
+  // The same block also locks Cylinder::fromEdgeMacro, the parse-time origin tag
+  // the screen-space --edges path keys on to drop baked POV outlines (step-7
+  // baked-edge removal): true ONLY for edge_line/edge_line2, false for any
+  // cylinder{} (even an `open` one), so a user's open bond is never mistaken for
+  // a baked edge.
   {
     // edge_line / edge_line2 take a declared texture identifier as the tex arg
     // (exactly as CueMol emits, e.g. `_52_55_tex_0`); the macro's color comes
@@ -97,6 +103,15 @@ int main(int argc, char** argv) {
               !g.cylinders[2].open);
       s.check("open-flag: cylinder with `open` keyword is open",
               g.cylinders[3].open);
+      // fromEdgeMacro: the load-bearing invariant of baked-edge removal. Only the
+      // two edge_line macros tag their cylinder; raw cylinder{} (capped or open)
+      // never does, so the --edges filter cannot strip a user's open black bond.
+      s.check("origin: edge_line is a baked POV edge", g.cylinders[0].fromEdgeMacro);
+      s.check("origin: edge_line2 is a baked POV edge", g.cylinders[1].fromEdgeMacro);
+      s.check("origin: raw cylinder is not a baked POV edge",
+              !g.cylinders[2].fromEdgeMacro);
+      s.check("origin: open cylinder{} is still not a baked POV edge",
+              !g.cylinders[3].fromEdgeMacro);
     }
   }
 

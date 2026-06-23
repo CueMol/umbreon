@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "render/render_types.hpp"
+
 namespace umbreon {
 
 // --------------------------------------------------------------------------
@@ -200,6 +202,13 @@ struct Cylinder {
   // hidden inside the overlap of consecutive bonds (no protruding round cap).
   // true => `open` (round/chained edge); false => capped (flat-disk bond).
   bool open = false;
+  // Origin tag: true only for cylinders produced by the POV edge_line/edge_line2
+  // macros (baked-in POV silhouette outlines). Set exclusively in
+  // mesh2_reader parseEdgeLine; raw cylinder{} bonds (including a user's open
+  // black bond) keep it false. The screen-space edge pass uses this to drop the
+  // baked POV outlines so they do not double-draw against the generated edges,
+  // applied per section and only when --edges is on (graceful degradation).
+  bool fromEdgeMacro = false;
 };
 
 // --------------------------------------------------------------------------
@@ -257,6 +266,14 @@ struct Scene {
   // uses the additive model; ALL other transparency uses front-to-back "over"
   // (fragment alpha). Empty (default) => every transparent surface is over.
   std::vector<uint16_t> veilGroups;
+
+  // Per-section (per transparency group) screen-space edge style, indexed by
+  // group id (objectId >> 2). Sized to groupNames.size() and pre-filled with
+  // EdgeOptions::defaultStyle when --edges is on, then overridden per --edge
+  // ID=spec. Empty (the default) means the edge pass falls back to
+  // EdgeOptions::defaultStyle for every pixel. Only consulted when
+  // RenderOptions::edges.enable is set.
+  std::vector<EdgeStyle> groupEdgeStyle;
 
   std::size_t instanceCount() const { return instanceOffsets.size(); }
   std::size_t effectiveTriangles() const {

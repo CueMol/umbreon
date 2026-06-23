@@ -19,9 +19,12 @@ namespace detail {
 // Build the cylinder geometries for `scene` (partitioned into `open` chained
 // edges and capped bonds), attach them to `rscene`, and append their geometry
 // records plus primID side tables (cyl* / cylCap*) to `out`. No-op when the
-// scene has no cylinders.
+// scene has no cylinders. When `buildEdgeTables` is true, also fills the
+// per-primitive material-index tables (cylMatIndex / cylCapMatIndex) the
+// screen-space edge pass reads; false leaves them empty (byte-identical).
 void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene,
-                           const std::vector<Vec3>& bakeOffsets, BuiltScene& out);
+                           const std::vector<Vec3>& bakeOffsets, BuiltScene& out,
+                           bool buildEdgeTables = false);
 
 }  // namespace detail
 }  // namespace umbreon

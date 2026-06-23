@@ -82,6 +82,9 @@ int main(int argc, char** argv) {
     const bool povMode = endsWith(opt.input, ".pov");
     umbreon::Scene scene;
     umbreon::RenderOptions ropt;
+    // Section names recovered by the .pov geometry parser (empty for the .inc
+    // path); used to resolve --edge / per-section styling after the input block.
+    std::vector<std::string> groupNames;
 
     if (povMode) {
       // ---- .pov path: reproduce the CueMol POV-Ray viewing setup. ----
@@ -187,6 +190,9 @@ int main(int argc, char** argv) {
                       kv.first.c_str(), a, g);
         }
       }
+      // Keep the section names for the post-block --edge resolution (the edge
+      // styles need ropt.edges.defaultStyle, populated after this block).
+      groupNames = geo.groupNames;
       scene.camera = ps.camera;
       scene.lights = ps.lights;
       scene.background = ps.background;
@@ -265,6 +271,122 @@ int main(int argc, char** argv) {
     ropt.transparency = opt.transparency;
     ropt.transparentBackground = opt.transparentBackground;
 
+    // Screen-space NPR edges (master gate). Off => byte-identical default path.
+    ropt.edges.enable = opt.edges;
+    if (ropt.edges.enable) {
+      // Global detection scalars (CLI-overridable; per design open-risk #1 the
+      // curvature/distance gates often need per-scene tuning on dense scenes).
+      if (opt.edgeDistanceSet)
+        ropt.edges.distanceThreshold = opt.edgeDistanceThreshold;
+      if (opt.edgeCurvatureSet)
+        ropt.edges.curvatureGate = opt.edgeCurvatureGate;
+      if (opt.edgeCreaseAngleSet)
+        ropt.edges.creaseAngleDeg = opt.edgeCreaseAngleDeg;
+      if (opt.edgeCreaseGrazingSet)
+        ropt.edges.creaseGrazingBias = opt.edgeCreaseGrazingBias;
+      if (opt.edgeDiscNormalAngleSet)
+        ropt.edges.discNormalAngleDeg = opt.edgeDiscNormalAngleDeg;
+
+      // Which classes EXIST (clamp guard for any enable bit, global or
+      // per-section): a class never enabled past the implemented set. All five
+      // are implemented; extend as later classes are added.
+      static const bool kImplemented[5] = {
+          true,   // Silhouette
+          true,   // Disconnected
+          true,   // Object
+          true,   // Material
+          true,   // Crease
+      };
+      // Default-ON set when --edges is given WITHOUT --edge-classes: SILHOUETTE
+      // ONLY. disc/crease/obj/mat over-ink dense molecular SES out-of-the-box
+      // (no parameterization fully cleans disc on SES), so they are opt-in via
+      // --edge-classes or per-section --edge. Bare "--edges on" then cleanly
+      // removes the baked POV edges and draws just the silhouette = the clean
+      // drop-in replacement for the baked outline.
+      static const bool kDefaultOn[5] = {
+          true,    // Silhouette
+          false,   // Disconnected
+          false,   // Object
+          false,   // Material
+          false,   // Crease
+      };
+      umbreon::EdgeStyle& ds = ropt.edges.defaultStyle;
+      for (int i = 0; i < 5; ++i) {
+        const bool want =
+            opt.edgeClassesSet ? opt.edgeClass[i] : kDefaultOn[i];
+        ds.cls[i].enabled = want && kImplemented[i];
+      }
+
+      // Per-section styling: resolve --edge ID=spec against the section names
+      // (parallel to the --alpha loop). Size groupEdgeStyle to the section count
+      // and pre-fill every slot with the resolved defaultStyle, then override the
+      // listed sections; warn-on-miss like --alpha. A section the user passes
+      // --edge for must enable only classes the global --edge-classes still
+      // permits, so kImplemented is re-applied to its enable bits (a class can be
+      // styled per section but never enabled past the global implemented set).
+      scene.groupEdgeStyle.assign(groupNames.size(), ropt.edges.defaultStyle);
+      if (!opt.sectionEdge.empty()) {
+        std::map<std::string, int> gidx;
+        for (std::size_t i = 0; i < groupNames.size(); ++i)
+          gidx[groupNames[i]] = static_cast<int>(i);
+        for (const auto& kv : opt.sectionEdge) {
+          auto it = gidx.find(kv.first);
+          if (it == gidx.end()) {
+            std::fprintf(stderr,
+                         "warning: section '%s' not found (try --list-groups)\n",
+                         kv.first.c_str());
+            continue;
+          }
+          umbreon::EdgeStyle st = kv.second;
+          for (int i = 0; i < 5; ++i)
+            st.cls[i].enabled = st.cls[i].enabled && kImplemented[i];
+          scene.groupEdgeStyle[it->second] = st;
+          std::printf("  edge override: section %s (group %d)\n",
+                      kv.first.c_str(), it->second);
+        }
+      }
+
+      // Remove baked POV edge primitives (edge_line/edge_line2 -> open
+      // cylinders, tagged fromEdgeMacro) so they do not double-draw against the
+      // screen-space silhouettes. PER-SECTION policy: a baked edge is dropped
+      // ONLY when its group resolves to a section whose EdgeStyle enables the
+      // Silhouette OR Disconnected class. Since the global default-on set is
+      // SILHOUETTE ONLY, a bare "--edges on" enables silhouette for every section
+      // and so drops all baked POV outlines -- the demonstrated clean drop-in
+      // replacement (screen-space silhouette in their place). A section whose
+      // --edge override disables both silhouette and disc (e.g. crease-only)
+      // keeps its baked POV outlines. Capped bonds (open == false,
+      // GeomKind::CylinderCapped) are NEVER removed. --keep-baked-edges on
+      // suppresses the filter entirely (A/B). Runs only with --edges on; with
+      // edges off this block does not execute, so nothing is filtered
+      // (byte-identical default).
+      if (!opt.keepBakedEdges && !scene.cylinders.empty()) {
+        const std::size_t ng = scene.groupEdgeStyle.size();
+        const int kSil = static_cast<int>(umbreon::EdgeClass::Silhouette);
+        const int kDisc = static_cast<int>(umbreon::EdgeClass::Disconnected);
+        auto sectionRemovesBaked = [&](std::uint16_t g) -> bool {
+          if (g >= ng) return false;  // unaddressable group: keep baked edges
+          const umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
+          return es.cls[kSil].enabled || es.cls[kDisc].enabled;
+        };
+        const std::size_t before = scene.cylinders.size();
+        scene.cylinders.erase(
+            std::remove_if(scene.cylinders.begin(), scene.cylinders.end(),
+                           [&](const umbreon::Cylinder& c) {
+                             // Never drop capped bonds or non-edge cylinders.
+                             return c.fromEdgeMacro && c.open &&
+                                    sectionRemovesBaked(c.group);
+                           }),
+            scene.cylinders.end());
+        const std::size_t removed = before - scene.cylinders.size();
+        if (removed > 0)
+          std::printf(
+              "  baked POV edges removed: %zu cylinders (sections with "
+              "silhouette/disconnected enabled)\n",
+              removed);
+      }
+    }
+
     // Ambient occlusion (both paths). Off unless --ao-samples > 0; the radius is
     // an explicit --ao-distance, else the scene-scaled default (scene builder for
     // .inc, geometry bounds for .pov). AO darkens only the ambient term.
@@ -331,6 +453,65 @@ int main(int argc, char** argv) {
     umbreon::writeImage(opt.output, frame.width, frame.height,
                         frame.color.data(), 4);
     std::printf("wrote %s\n", opt.output.c_str());
+
+    // Debug AOV dump (verification only): false-color the G-buffer the edge pass
+    // captured. Requires --edges on (otherwise the AOVs are empty). The edge
+    // AOVs stay at the SUPERSAMPLE resolution (hiW x hiH), unlike the downsampled
+    // color, so dump at those dims (recovered from the buffer size).
+    if (!opt.dumpAovPrefix.empty()) {
+      if (!ropt.edges.enable) {
+        std::fprintf(stderr,
+                     "warning: --dump-aov ignored (needs --edges on)\n");
+      } else if (frame.objectId.empty()) {
+        std::fprintf(stderr, "warning: --dump-aov: no edge AOVs captured\n");
+      } else {
+        const int hiW = finalW * ss;
+        const int hiH = finalH * ss;
+        const std::size_t np = static_cast<std::size_t>(hiW) * hiH;
+        const uint32_t kBg = 0xFFFFFFFFu;
+        // Deterministic id -> RGB false color (background sentinel -> black).
+        auto idColor = [&](uint32_t id, float* rgb) {
+          if (id == kBg) { rgb[0] = rgb[1] = rgb[2] = 0.0f; return; }
+          uint32_t h = id * 2654435761u;  // Knuth multiplicative hash
+          rgb[0] = ((h >> 16) & 0xFF) / 255.0f;
+          rgb[1] = ((h >> 8) & 0xFF) / 255.0f;
+          rgb[2] = (h & 0xFF) / 255.0f;
+        };
+        std::vector<float> oimg(np * 3), mimg(np * 3), nimg(np * 3), zimg(np * 3);
+        // viewZ range over real (non-background) hits for normalization.
+        float zmin = 1e30f, zmax = -1e30f;
+        for (std::size_t i = 0; i < np; ++i) {
+          if (frame.objectId[i] == kBg) continue;
+          const float z = frame.viewZ[i];
+          zmin = std::min(zmin, z);
+          zmax = std::max(zmax, z);
+        }
+        const float zspan = (zmax > zmin) ? (zmax - zmin) : 1.0f;
+        for (std::size_t i = 0; i < np; ++i) {
+          idColor(frame.objectId[i], &oimg[i * 3]);
+          idColor(frame.materialId[i], &mimg[i * 3]);
+          // normal*0.5+0.5 (background = the zero vector -> mid grey).
+          for (int c = 0; c < 3; ++c)
+            nimg[i * 3 + c] = frame.normal[i * 3 + c] * 0.5f + 0.5f;
+          // Normalized view-z (near=0..far=1); background sentinel -> black.
+          float zn = 0.0f;
+          if (frame.objectId[i] != kBg)
+            zn = (frame.viewZ[i] - zmin) / zspan;
+          zimg[i * 3 + 0] = zimg[i * 3 + 1] = zimg[i * 3 + 2] = zn;
+        }
+        umbreon::writeImage(opt.dumpAovPrefix + "_objectId.png", hiW, hiH,
+                            oimg.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_materialId.png", hiW, hiH,
+                            mimg.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_normal.png", hiW, hiH,
+                            nimg.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_viewZ.png", hiW, hiH,
+                            zimg.data(), 3);
+        std::printf("  dumped AOVs: %s_{objectId,materialId,normal,viewZ}.png "
+                    "(%dx%d)\n",
+                    opt.dumpAovPrefix.c_str(), hiW, hiH);
+      }
+    }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;

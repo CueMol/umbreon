@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "render/edge_detect.hpp"
 #include "render/embree_renderer.hpp"
 #include "render/fog.hpp"
 
@@ -91,12 +92,24 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
              frame.color.data(), frame.depth.data());
   }
 
+  // Screen-space NPR edges (Stage B/C): detect from the hi-res edge AOVs and
+  // composite the styled lines over the color in LINEAR space, here -- BEFORE
+  // the downsample -- so the box-average antialiases them. Gated on the master
+  // flag; with edges off no AOV exists and this is never entered, keeping the
+  // default render path byte-identical.
+  if (opt.edges.enable) applyEdges(frame, scene, opt);
+
   if (ss > 1) {
     frame.color = boxDownsample(frame.color, frame.width, frame.height, 4, ss);
     if (!frame.albedo.empty())
       frame.albedo =
           boxDownsample(frame.albedo, frame.width, frame.height, 3, ss);
-    if (!frame.normal.empty())
+    // Edge AOVs (normal/viewZ/objectId/materialId) are a hi-res set: the edge
+    // detection/styling pass (future Stage B/C) runs at supersample resolution
+    // before this downsample, and box-averaging integer ids is meaningless. So
+    // when edges are on, leave them at hi-res; only the legacy (dead) normal AOV
+    // path downsamples. frame.width/height below become the FINAL color dims.
+    if (!frame.normal.empty() && !opt.edges.enable)
       frame.normal =
           boxDownsample(frame.normal, frame.width, frame.height, 3, ss);
     frame.width = finalW;

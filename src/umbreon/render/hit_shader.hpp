@@ -22,11 +22,17 @@ namespace umbreon {
 namespace detail {
 
 // One shaded hit: linear HDR color, its opacity, and the CueMol transparency
-// group (section) used by the front-to-back compositor.
+// group (section) used by the front-to-back compositor. The `normal`/`objectId`/
+// `materialId` fields feed the screen-space edge G-buffer (Stage A); they are
+// always populated but only read when RenderOptions::edges is enabled.
 struct HitShade {
   Vec3 color{0.0f, 0.0f, 0.0f};
   float opacity = 1.0f;
   int group = 0;
+  Vec3 normal{0.0f, 0.0f, 0.0f};   // face-forwarded SMOOTH shading normal (mesh)
+                                   // or analytic normal (sphere/cyl); crease AOV
+  uint32_t objectId = 0;           // (group << 2) | kindBits
+  uint32_t materialId = 0;         // global per-primitive material id
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -87,6 +93,29 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                           c.opt.shadows, c.opt.shadowSamples, px, py);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
+    // Edge G-buffer (only when the screen-space edge pass is on; otherwise the
+    // material-index side-tables are empty and these reads must not happen).
+    if (c.opt.edges.enable) {
+      // Crease AOV: store the SMOOTH interpolated shading normal N (slot-0
+      // interpolated, already face-forwarded at line above). The geometric Ng
+      // is piecewise-constant per triangle and would crease at EVERY facet edge
+      // of a smooth CueMol SES/ribbon mesh; the smooth N only diverges across a
+      // genuine geometric crease, which is what the crease class must detect.
+      hs.normal = N;
+      hs.objectId = (static_cast<uint32_t>(hs.group) << 2) |
+                    static_cast<uint32_t>(rec.kind);  // kindBits: Mesh == 0
+      // Mesh materialId is the per-triangle index directly (base 0;
+      // triMaterialId is uint8 so it never collides with the sphere/cyl offsets
+      // above it). For instanced meshes the primID indexes the replicated tris,
+      // so reduce it modulo the base triangle count before reading the table.
+      if (!c.mesh.triMaterialId.empty()) {
+        const std::size_t nt = c.mesh.triMaterialId.size();
+        hs.materialId =
+            static_cast<uint32_t>(c.mesh.triMaterialId[rh.hit.primID % nt]);
+      } else {
+        hs.materialId = 0u;
+      }
+    }
   } else {
     // Outline / VdW primitives: shade with the per-primitive material.
     // The Embree geometric normal Ng is valid for SPHERE_POINT and for both
@@ -119,6 +148,25 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]
                           : c.built.cylGroup[rh.hit.primID];
+    // Edge G-buffer (only when the edge pass is on; the material-index
+    // side-tables are empty otherwise, so these reads must be gated).
+    if (c.opt.edges.enable) {
+      hs.normal = N;  // analytic face-forwarded normal: the TRUE smooth normal
+                      // of a sphere/cylinder surface (no facet interpolation)
+      hs.objectId = (static_cast<uint32_t>(hs.group) << 2) |
+                    static_cast<uint32_t>(rec.kind);  // Sphere=1,Cyl=2,CylCap=3
+      // Global materialId: per-kind offset above the mesh material block plus the
+      // precomputed raw per-primitive index.
+      const BuiltScene& b = c.built;
+      if (isSphere)
+        hs.materialId = b.meshMatCount + b.sphereMatIndex[rh.hit.primID];
+      else if (isCapped)
+        hs.materialId = b.meshMatCount + b.sphereMatCount + b.cylMatCount +
+                        b.cylCapMatIndex[rh.hit.primID];
+      else
+        hs.materialId =
+            b.meshMatCount + b.sphereMatCount + b.cylMatIndex[rh.hit.primID];
+    }
     // edge_line2 gradient: opacity varies p0 (fc.w) -> p1 (opacity1) along the
     // segment. For both linear-curve modes rh.hit.u is the axial curve fraction
     // in [0,1], so a linear lerp reproduces POV's "gradient z" transmit fade

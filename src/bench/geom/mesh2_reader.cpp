@@ -662,6 +662,11 @@ class Reader {
     // POV silhouette edges expand to `open` (capless) cylinders; tag them so the
     // renderer routes them through the ROUND_LINEAR_CURVE chain (seam) path.
     c.open = true;
+    // Mark this as a baked POV edge primitive (parseEdgeLine is the sole
+    // producer). The screen-space edge pass drops these when --edges is on so the
+    // generated edges do not double-draw against the baked ones; parseCylinder
+    // never sets this, so a user's open black bond is preserved.
+    c.fromEdgeMacro = true;
     if (c.radius > 0.0f) cylinders_.push_back(c);
   }
 

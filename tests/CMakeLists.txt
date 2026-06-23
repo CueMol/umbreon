@@ -38,4 +38,12 @@ if(TARGET umbreon)
   add_executable(test_render test_render.cpp)
   target_link_libraries(test_render PRIVATE umbreon)
   add_test(NAME render COMMAND test_render)
+
+  add_executable(test_edge_detect test_edge_detect.cpp)
+  target_link_libraries(test_edge_detect PRIVATE umbreon)
+  add_test(NAME edge_detect COMMAND test_edge_detect)
+
+  add_executable(test_edges_default test_edges_default.cpp)
+  target_link_libraries(test_edges_default PRIVATE umbreon)
+  add_test(NAME edges_default COMMAND test_edges_default)
 endif()

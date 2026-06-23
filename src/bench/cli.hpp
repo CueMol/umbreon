@@ -4,6 +4,8 @@
 #include <map>
 #include <string>
 
+#include "render/render_types.hpp"
+
 namespace umbreon {
 
 struct Options {
@@ -39,7 +41,7 @@ struct Options {
   // Supersampling factor: render at N x the output resolution and box-average
   // down in linear space. Matches POV-Ray's adaptive antialiasing on the thin
   // silhouette lines far better than per-pixel sampling alone. The .pov path
-  // defaults to 2 when not set explicitly.
+  // defaults to 3 when not set explicitly.
   int supersample = 1;
   bool supersampleSet = false;
   // Specular control: multiplies the per-material POV finish specular weight.
@@ -65,6 +67,51 @@ struct Options {
   std::map<std::string, float> sectionAlpha;
   // Print the input's section ids (transparency groups) and exit.
   bool listGroups = false;
+
+  // --- screen-space NPR edges ---
+  // Master switch for the screen-space edge pass (off => byte-identical default,
+  // no extra AOVs allocated). --edges on|off.
+  bool edges = false;
+  // TEMPORARY global edge-class selector (--edge-classes <csv of
+  // sil,disc,obj,mat,crease>, plus all/none): enables those classes in
+  // EdgeOptions::defaultStyle so each incremental class is testable before
+  // per-section --edge styling lands. Indexed by the EdgeClass enum order
+  // {Silhouette, Disconnected, Object, Material, Crease}. When --edges is on but
+  // --edge-classes is not given, main defaults to SILHOUETTE ONLY (edgeClassesSet
+  // stays false to signal that fallback); disc/crease/obj/mat are opt-in because
+  // they over-ink dense molecular SES out of the box.
+  bool edgeClass[5] = {false, false, false, false, false};
+  bool edgeClassesSet = false;
+  // Per-section edge style override (--edge ID=spec, repeatable), mirroring
+  // --alpha one-for-one. Key is the section id with the "_show" prefix stripped
+  // (e.g. "_34_35"); value is the parsed EdgeStyle (which classes are enabled and
+  // their per-class color/width/opacity). Resolved against geo.groupNames into
+  // Scene::groupEdgeStyle in main, warn-on-miss like --alpha. A section without
+  // an override keeps EdgeOptions::defaultStyle (the global --edge-classes set).
+  std::map<std::string, EdgeStyle> sectionEdge;
+  // Global edge detection scalars (override EdgeOptions defaults when set). These
+  // feed ropt.edges.{distanceThreshold,curvatureGate,creaseAngleDeg}; per design
+  // open-risk #1, curvatureGate/distanceThreshold often need per-scene tuning on
+  // dense molecular scenes, so they are CLI-exposed here.
+  float edgeDistanceThreshold = 1.0f;
+  float edgeCurvatureGate = 0.5f;
+  float edgeCreaseAngleDeg = 30.0f;
+  float edgeCreaseGrazingBias = 1.0f;
+  float edgeDiscNormalAngleDeg = 35.0f;
+  bool edgeDistanceSet = false;
+  bool edgeCurvatureSet = false;
+  bool edgeCreaseAngleSet = false;
+  bool edgeCreaseGrazingSet = false;
+  bool edgeDiscNormalAngleSet = false;
+  // Debug AOV dump prefix (--dump-aov <prefix>): when set AND edges are on, write
+  // false-color objectId/materialId, normal*0.5+0.5 and normalized viewZ images
+  // named "<prefix>_*.png". Empty => no dump.
+  std::string dumpAovPrefix;
+  // Escape hatch (--keep-baked-edges on|off, default off): when on, the baked POV
+  // edge_line cylinders are NOT filtered even with --edges on, so the baked and
+  // screen-space outlines can be A/B-compared side by side. No effect when
+  // --edges is off (nothing is filtered in either case).
+  bool keepBakedEdges = false;
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;
   // Master switch for the single-layer transparency walk (off = opaque only).

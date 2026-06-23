@@ -74,7 +74,8 @@ void buildTriangleMesh(RTCDevice device, RTCScene rscene, const Mesh& m,
 
 // --- spheres (CueMol balls / silhouette joints) ---
 void buildSpheres(RTCDevice device, RTCScene rscene, const Scene& scene,
-                  const std::vector<Vec3>& bakeOffsets, BuiltScene& out) {
+                  const std::vector<Vec3>& bakeOffsets, BuiltScene& out,
+                  bool buildEdgeTables) {
   if (scene.spheres.empty()) return;
 
   const std::size_t n = scene.spheres.size() * bakeOffsets.size();
@@ -84,6 +85,9 @@ void buildSpheres(RTCDevice device, RTCScene rscene, const Scene& scene,
   out.sphereColor.reserve(n);
   out.sphereMat.reserve(n);
   out.sphereGroup.reserve(n);
+  // Edge pass: raw per-primitive material index (phase-1, no dedup) so a pixel
+  // can recover a global materialId. Only built when edges are enabled.
+  if (buildEdgeTables) out.sphereMatIndex.reserve(n);
   std::size_t k = 0;
   for (const Vec3& off : bakeOffsets) {
     for (const Sphere& s : scene.spheres) {
@@ -94,9 +98,12 @@ void buildSpheres(RTCDevice device, RTCScene rscene, const Scene& scene,
       out.sphereColor.push_back(s.color);
       out.sphereMat.push_back(s.material);
       out.sphereGroup.push_back(s.group);
+      if (buildEdgeTables)
+        out.sphereMatIndex.push_back(static_cast<uint32_t>(k));
       ++k;
     }
   }
+  if (buildEdgeTables) out.sphereMatCount = static_cast<uint32_t>(n);
   rtcCommitGeometry(g);
   unsigned int id = rtcAttachGeometry(rscene, g);
   if (id >= out.records.size()) out.records.resize(id + 1);
@@ -106,7 +113,8 @@ void buildSpheres(RTCDevice device, RTCScene rscene, const Scene& scene,
 
 }  // namespace
 
-BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene) {
+BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
+                            bool buildEdgeTables) {
   BuiltScene out;
   RTCScene rscene = rtcNewScene(device);
   out.scene = rscene;
@@ -123,11 +131,17 @@ BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene) {
   std::vector<Vec3> bakeOffsets = scene.instanceOffsets;
   if (bakeOffsets.empty()) bakeOffsets.push_back(Vec3{0.0f, 0.0f, 0.0f});
 
+  // Edge pass: mesh materialId is the per-triangle index directly (triMaterialId
+  // is uint8, so the mesh block never exceeds 256). meshMatCount is the base
+  // offset above which the sphere/cylinder global ids start.
+  if (buildEdgeTables)
+    out.meshMatCount = static_cast<uint32_t>(scene.mesh.materials.size());
+
   // Each builder attaches its geometry and appends its geomID record (and, for
   // the flat outline primitives, the primID side tables the shader reads back).
   buildTriangleMesh(device, rscene, scene.mesh, bakeOffsets, out);
-  buildSpheres(device, rscene, scene, bakeOffsets, out);
-  buildCylinderGeometry(device, rscene, scene, bakeOffsets, out);
+  buildSpheres(device, rscene, scene, bakeOffsets, out, buildEdgeTables);
+  buildCylinderGeometry(device, rscene, scene, bakeOffsets, out, buildEdgeTables);
 
   rtcCommitScene(rscene);
   if (RTCError err = rtcGetDeviceError(device); err != RTC_ERROR_NONE) {
