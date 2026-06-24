@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include "scene.hpp"
@@ -297,6 +299,164 @@ void clipAndEmit(const RawSeg& seg, const SilEdgeOptions& opt, const Scene& scen
   if (runStart >= 0) emitRun(runStart, K);  // run reached the far endpoint
 }
 
+// --- triangle-mesh edges --------------------------------------------------
+// "Toward the viewer" unit vector at P (orthographic: constant -view direction;
+// perspective: direction to the eye).
+Vec3 viewerDirAt(const Vec3& P, const Camera& cam) {
+  const Vec3 toCam = normalize(cam.direction * -1.0f);
+  if (cam.orthographic) return toCam;
+  const Vec3 d = cam.position - P;
+  const float l = length(d);
+  return l > 0.0f ? d * (1.0f / l) : toCam;
+}
+
+// Smooth silhouette (Freestyle WXFaceLayer::BuildSmoothEdge), face-normal crease
+// and open-border edges of the de-indexed triangle mesh. Segments are raised
+// outward along the local interpolated normal by opt.raise and pushed as RawSegs
+// to be emitted VERBATIM (the ray tracer resolves their visibility).
+void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& opt,
+                   std::vector<RawSeg>& out) {
+  const std::size_t nCorner = mesh.positions.size();
+  const std::size_t nTri = nCorner / 3;
+  if (nTri == 0) return;
+  const bool haveNrm = mesh.normals.size() == nCorner;
+
+  // 1) Weld the de-indexed corners into shared vertices (quantized-position
+  //    hash), accumulating an averaged vertex normal. Welding is required so an
+  //    interior edge sees BOTH its faces (crease/border) and so the smooth
+  //    silhouette's per-edge zero-crossings coincide across adjacent faces.
+  struct VKey {
+    int x, y, z;
+    bool operator==(const VKey& o) const { return x == o.x && y == o.y && z == o.z; }
+  };
+  struct VKeyHash {
+    std::size_t operator()(const VKey& k) const {
+      return (static_cast<std::size_t>(k.x) * 73856093u) ^
+             (static_cast<std::size_t>(k.y) * 19349663u) ^
+             (static_cast<std::size_t>(k.z) * 83492791u);
+    }
+  };
+  const float kQuant = 1.0e4f;  // weld within ~1e-4 world units
+  auto keyOf = [&](const Vec3& p) {
+    return VKey{static_cast<int>(std::lround(p.x * kQuant)),
+                static_cast<int>(std::lround(p.y * kQuant)),
+                static_cast<int>(std::lround(p.z * kQuant))};
+  };
+  std::unordered_map<VKey, int, VKeyHash> vmap;
+  vmap.reserve(nCorner);
+  std::vector<Vec3> vpos, vacc;
+  std::vector<int> corner2v(nCorner);
+  for (std::size_t c = 0; c < nCorner; ++c) {
+    const VKey k = keyOf(mesh.positions[c]);
+    auto it = vmap.find(k);
+    if (it == vmap.end()) {
+      const int vi = static_cast<int>(vpos.size());
+      vmap.emplace(k, vi);
+      vpos.push_back(mesh.positions[c]);
+      vacc.push_back(haveNrm ? mesh.normals[c] : Vec3{0.0f, 0.0f, 0.0f});
+      corner2v[c] = vi;
+    } else {
+      corner2v[c] = it->second;
+      if (haveNrm)
+        vacc[static_cast<std::size_t>(it->second)] =
+            vacc[static_cast<std::size_t>(it->second)] + mesh.normals[c];
+    }
+  }
+  const std::size_t nV = vpos.size();
+
+  // 2) Face welded indices and geometric face normals.
+  std::vector<int> fa(nTri), fb(nTri), fc(nTri);
+  std::vector<Vec3> fNg(nTri);
+  for (std::size_t f = 0; f < nTri; ++f) {
+    fa[f] = corner2v[3 * f];
+    fb[f] = corner2v[3 * f + 1];
+    fc[f] = corner2v[3 * f + 2];
+    fNg[f] = normalize(cross(vpos[static_cast<std::size_t>(fb[f])] - vpos[static_cast<std::size_t>(fa[f])],
+                             vpos[static_cast<std::size_t>(fc[f])] - vpos[static_cast<std::size_t>(fa[f])]));
+  }
+  // Per-vertex normal: the averaged smooth normal, or a borrowed incident face
+  // normal where the mesh carried none (a hard-faceted mesh degrades to the
+  // face-normal silhouette).
+  std::vector<Vec3> vN(nV, Vec3{0.0f, 0.0f, 0.0f});
+  for (std::size_t v = 0; v < nV; ++v) {
+    const float l = length(vacc[v]);
+    if (haveNrm && l > 1.0e-6f) vN[v] = vacc[v] * (1.0f / l);
+  }
+  for (std::size_t f = 0; f < nTri; ++f)
+    for (int e = 0; e < 3; ++e) {
+      const std::size_t v = static_cast<std::size_t>(e == 0 ? fa[f] : e == 1 ? fb[f] : fc[f]);
+      if (length(vN[v]) < 0.5f) vN[v] = fNg[f];
+    }
+
+  std::vector<float> dotp(nV);
+  for (std::size_t v = 0; v < nV; ++v) dotp[v] = dot(vN[v], viewerDirAt(vpos[v], cam));
+
+  auto push = [&](const Vec3& A, const Vec3& nA, const Vec3& B, const Vec3& nB, uint16_t grp) {
+    out.push_back(RawSeg{A + nA * opt.raise, B + nB * opt.raise, grp});
+  };
+
+  // 3) SMOOTH SILHOUETTE: per face, connect the two n.v==0 zero-crossings.
+  if (opt.meshSilhouette) {
+    for (std::size_t f = 0; f < nTri; ++f) {
+      const int idx[3] = {fa[f], fb[f], fc[f]};
+      const float d[3] = {dotp[static_cast<std::size_t>(idx[0])],
+                          dotp[static_cast<std::size_t>(idx[1])],
+                          dotp[static_cast<std::size_t>(idx[2])]};
+      Vec3 cp[2], cn[2];
+      int nc = 0;
+      for (int e = 0; e < 3 && nc < 2; ++e) {
+        const std::size_t i = static_cast<std::size_t>(idx[e]);
+        const std::size_t j = static_cast<std::size_t>(idx[(e + 1) % 3]);
+        const float di = d[e], dj = d[(e + 1) % 3];
+        if (di * dj < 0.0f) {
+          const float t = di / (di - dj);
+          cp[nc] = vpos[i] + (vpos[j] - vpos[i]) * t;
+          cn[nc] = normalize(vN[i] + (vN[j] - vN[i]) * t);
+          ++nc;
+        }
+      }
+      if (nc == 2) push(cp[0], cn[0], cp[1], cn[1], mesh.groupForTri(f));
+    }
+  }
+
+  // 4) CREASE (face-normal dihedral) + BORDER (single-face edge) on mesh edges.
+  if (opt.meshCrease || opt.meshBorder) {
+    const float creaseCos = std::cos(opt.creaseAngleDeg * kPi / 180.0f);
+    struct EAdj {
+      int f1 = -1, f2 = -1;
+    };
+    std::unordered_map<std::uint64_t, EAdj> emap;
+    emap.reserve(nTri * 3);
+    auto ekey = [](int a, int b) {
+      const std::uint32_t lo = static_cast<std::uint32_t>(a < b ? a : b);
+      const std::uint32_t hi = static_cast<std::uint32_t>(a < b ? b : a);
+      return (static_cast<std::uint64_t>(hi) << 32) | lo;
+    };
+    for (std::size_t f = 0; f < nTri; ++f) {
+      const int v[3] = {fa[f], fb[f], fc[f]};
+      for (int e = 0; e < 3; ++e) {
+        EAdj& adj = emap[ekey(v[e], v[(e + 1) % 3])];
+        if (adj.f1 < 0)
+          adj.f1 = static_cast<int>(f);
+        else if (adj.f2 < 0)
+          adj.f2 = static_cast<int>(f);
+      }
+    }
+    for (const auto& kv : emap) {
+      const std::size_t a = static_cast<std::size_t>(kv.first & 0xffffffffu);
+      const std::size_t b = static_cast<std::size_t>(kv.first >> 32);
+      const EAdj& adj = kv.second;
+      if (adj.f2 < 0) {
+        if (opt.meshBorder)
+          push(vpos[a], vN[a], vpos[b], vN[b], mesh.groupForTri(static_cast<std::size_t>(adj.f1)));
+      } else if (opt.meshCrease &&
+                 dot(fNg[static_cast<std::size_t>(adj.f1)], fNg[static_cast<std::size_t>(adj.f2)]) < creaseCos) {
+        push(vpos[a], vN[a], vpos[b], vN[b], mesh.groupForTri(static_cast<std::size_t>(adj.f1)));
+      }
+    }
+  }
+}
+
 }  // namespace
 
 void generateSilhouetteEdges(Scene& scene, const SilEdgeOptions& opt) {
@@ -307,17 +467,21 @@ void generateSilhouetteEdges(Scene& scene, const SilEdgeOptions& opt) {
   const std::size_t sphereCount = scene.spheres.size();
   const std::size_t cylinderCount = scene.cylinders.size();
 
-  // 1) Collect the raw (unclipped) silhouette segments.
+  // 1) Collect the raw (unclipped) ANALYTIC silhouette segments from spheres and
+  //    cylinders. Baked POV outline primitives (fromEdgeMacro) are skipped: they
+  //    are themselves edges, not surfaces to silhouette.
   std::vector<RawSeg> raw;
   const int seg = opt.segments < 3 ? 3 : opt.segments;
   raw.reserve(sphereCount * static_cast<std::size_t>(seg) + cylinderCount * 2);
   for (std::size_t i = 0; i < sphereCount; ++i) {
+    if (scene.spheres[i].fromEdgeMacro) continue;
     const std::size_t before = raw.size();
     emitSphereRing(scene.spheres[i], scene.camera, opt, raw);
     for (std::size_t k = before; k < raw.size(); ++k)
       raw[k].srcSphere = static_cast<int>(i);
   }
   for (std::size_t i = 0; i < cylinderCount; ++i) {
+    if (scene.cylinders[i].fromEdgeMacro) continue;
     const std::size_t before = raw.size();
     emitCylinderEdges(scene.cylinders[i], scene.camera, opt, raw);
     for (std::size_t k = before; k < raw.size(); ++k)
@@ -334,6 +498,13 @@ void generateSilhouetteEdges(Scene& scene, const SilEdgeOptions& opt) {
   } else {
     for (const RawSeg& s : raw) edges.push_back(makeEdge(s.a, s.b, opt, s.group));
   }
+
+  // 3) Triangle-mesh edges (silhouette/crease/border). These are emitted VERBATIM
+  //    -- their visibility is the ray tracer's job, and they must not be clipped
+  //    against the analytic solids (which are unrelated to the mesh surface).
+  std::vector<RawSeg> meshRaw;
+  emitMeshEdges(scene.mesh, scene.camera, opt, meshRaw);
+  for (const RawSeg& s : meshRaw) edges.push_back(makeEdge(s.a, s.b, opt, s.group));
 
   scene.cylinders.insert(scene.cylinders.end(), edges.begin(), edges.end());
 }

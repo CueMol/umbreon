@@ -33,13 +33,28 @@ struct SilEdgeOptions {
   // "junction notch" otherwise left at coincident depth. Sampled along each
   // segment at ~`width` spacing (finer => cleaner, like a higher tessellation).
   bool clip = true;
+
+  // --- triangle-mesh edges (ribbon / SES / cartoon) ---
+  // The mesh silhouette is the SMOOTH n.v == 0 contour: per interpolated VERTEX
+  // normal a DotP = n.v is taken at each face vertex, and where it changes sign
+  // across a face the zero-crossing is interpolated and connected through the
+  // face (Freestyle WXFaceLayer::BuildSmoothEdge). This follows the shaded
+  // silhouette smoothly instead of snapping to mesh edges (which is what CueMol's
+  // face-normal extraction does, leaving a faceted line). Crease and border edges
+  // DO lie on mesh edges and are emitted there.
+  bool meshSilhouette = true;  // smooth n.v==0 contour through faces
+  bool meshCrease = true;      // sharp folds: face-normal dihedral > creaseAngleDeg
+  bool meshBorder = true;      // open boundary edges (one adjacent face)
+  float creaseAngleDeg = 30.0f;  // dihedral threshold for a crease edge
 };
 
 // Append analytic object-space silhouette edges for every original Sphere and
-// Cylinder in `scene` (a SNAPSHOT of the counts taken before appending, so the
-// generated edges are never themselves silhouetted). Reads scene.spheres,
-// scene.cylinders and scene.camera; appends Cylinder edges to scene.cylinders.
-// No-op when opt.enable is false.
+// Cylinder, AND the silhouette/crease/border edges of scene.mesh, in `scene` (a
+// SNAPSHOT of the counts is taken before appending, so the generated edges are
+// never themselves silhouetted). Primitives tagged fromEdgeMacro (baked POV
+// outlines) are skipped as sources. Reads scene.spheres, scene.cylinders,
+// scene.mesh and scene.camera; appends Cylinder edges to scene.cylinders. No-op
+// when opt.enable is false.
 void generateSilhouetteEdges(Scene& scene, const SilEdgeOptions& opt);
 
 }  // namespace umbreon

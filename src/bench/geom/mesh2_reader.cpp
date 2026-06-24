@@ -569,6 +569,19 @@ class Reader {
     s.color = tex.color;
     if (tex.hasFinish) s.material = tex.finish;  // else keep flatOutline
     s.group = static_cast<uint16_t>(curGroup_);
+    // Tag baked silhouette JOINT dots: CueMol's writePoint emits these as
+    // sphere{...texture{<sec>_sl_tex ...}} to round the edge-line polyline joints
+    // (parseEdgeLine handles the segment cylinders). The "<sec>_sl_tex" named
+    // texture is the unambiguous marker, so the edge passes can drop them with
+    // the baked cylinders instead of leaving black speckles.
+    for (std::size_t k = open + 1; k < close; ++k) {
+      const Token& tk = t_[k];
+      if (tk.kind == Tk::Ident && tk.s.size() >= 7 &&
+          tk.s.compare(tk.s.size() - 7, 7, "_sl_tex") == 0) {
+        s.fromEdgeMacro = true;
+        break;
+      }
+    }
     if (s.radius > 0.0f) spheres_.push_back(s);
     pos_ = close + 1;
   }

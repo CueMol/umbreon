@@ -125,6 +125,14 @@ struct Options {
   float objEdgeColor[3] = {0.0f, 0.0f, 0.0f};  // linear RGB (from #RRGGBB)
   bool objEdgeClip = true;       // union-boundary clip (drop notch-causing parts
                                  // inside connecting primitives); --obj-edge-clip
+  // Triangle-mesh (ribbon/SES/cartoon) edge classes for the object-space pass.
+  // The mesh silhouette is the SMOOTH n.v==0 contour (Freestyle-style per-vertex
+  // zero-crossing); crease/border lie on mesh edges. --obj-edge-mesh-* toggle
+  // each class; --obj-edge-crease-deg sets the crease dihedral threshold.
+  bool objEdgeMeshSil = true;
+  bool objEdgeMeshCrease = true;
+  bool objEdgeMeshBorder = true;
+  float objEdgeCreaseDeg = 30.0f;
 
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;

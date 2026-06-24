@@ -326,6 +326,21 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--obj-edge-clip");
       if (o.ok && !parseBool(v, o.objEdgeClip))
         fail("--obj-edge-clip expects on/off");
+    } else if (a == "--obj-edge-crease-deg") {
+      o.objEdgeCreaseDeg =
+          static_cast<float>(std::atof(value("--obj-edge-crease-deg").c_str()));
+    } else if (a == "--obj-edge-mesh-sil") {
+      std::string v = value("--obj-edge-mesh-sil");
+      if (o.ok && !parseBool(v, o.objEdgeMeshSil))
+        fail("--obj-edge-mesh-sil expects on/off");
+    } else if (a == "--obj-edge-mesh-crease") {
+      std::string v = value("--obj-edge-mesh-crease");
+      if (o.ok && !parseBool(v, o.objEdgeMeshCrease))
+        fail("--obj-edge-mesh-crease expects on/off");
+    } else if (a == "--obj-edge-mesh-border") {
+      std::string v = value("--obj-edge-mesh-border");
+      if (o.ok && !parseBool(v, o.objEdgeMeshBorder))
+        fail("--obj-edge-mesh-border expects on/off");
     } else if (a == "--dump-aov") {
       o.dumpAovPrefix = value("--dump-aov");
     } else if (a == "--keep-baked-edges") {
@@ -405,12 +420,16 @@ void printUsage(const char* prog) {
       "  --edge-crease-angle <f>  crease fold angle, degrees            [30.00]\n"
       "  --edge-crease-grazing <f> crease grazing-angle bias gain        [1.00]\n"
       "  --edge-disc-normal-angle <f> disc normal-disagree angle, deg   [35.00]\n"
-      "  --obj-edges <on|off>     analytic object-space silhouette edges  [off]\n"
+      "  --obj-edges <on|off>     analytic object-space edges (sph/cyl/mesh) [off]\n"
       "  --obj-edge-width <float> object-edge cylinder radius (world)   [0.03]\n"
       "  --obj-edge-raise <float> object-edge outward offset (world)    [0.00]\n"
       "  --obj-edge-segments <int> sphere/cap ring tessellation           [48]\n"
       "  --obj-edge-color <#RRGGBB> object-edge color              [#000000]\n"
       "  --obj-edge-clip <on|off> trim object edges at primitive joins    [on]\n"
+      "  --obj-edge-crease-deg <float> mesh crease dihedral threshold     [30]\n"
+      "  --obj-edge-mesh-sil <on|off> mesh smooth n.v==0 silhouette        [on]\n"
+      "  --obj-edge-mesh-crease <on|off> mesh crease (sharp-fold) edges    [on]\n"
+      "  --obj-edge-mesh-border <on|off> mesh open-boundary edges          [on]\n"
       "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

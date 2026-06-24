@@ -440,12 +440,35 @@ int main(int argc, char** argv) {
     // tracer below handles visibility/occlusion/AA/fog for the edges for free.
     // Off (the default) => nothing appended => byte-identical default render.
     if (opt.objEdges) {
+      // Replace the baked POV outlines with generated ones: drop the baked
+      // edge_line cylinders AND their joint-dot spheres (both fromEdgeMacro) so
+      // the generated edges do not double-draw against them. --keep-baked-edges
+      // suppresses this for an A/B comparison.
+      if (!opt.keepBakedEdges) {
+        const std::size_t bc = scene.cylinders.size(), bs = scene.spheres.size();
+        scene.cylinders.erase(
+            std::remove_if(scene.cylinders.begin(), scene.cylinders.end(),
+                           [](const umbreon::Cylinder& c) { return c.fromEdgeMacro; }),
+            scene.cylinders.end());
+        scene.spheres.erase(
+            std::remove_if(scene.spheres.begin(), scene.spheres.end(),
+                           [](const umbreon::Sphere& s) { return s.fromEdgeMacro; }),
+            scene.spheres.end());
+        const std::size_t rc = bc - scene.cylinders.size();
+        const std::size_t rs = bs - scene.spheres.size();
+        if (rc > 0 || rs > 0)
+          std::printf("  baked POV edges removed: %zu cylinders, %zu joint dots\n", rc, rs);
+      }
       umbreon::SilEdgeOptions silOpt;
       silOpt.enable = true;
       silOpt.width = opt.objEdgeWidth;
       silOpt.raise = opt.objEdgeRaise;
       silOpt.segments = opt.objEdgeSegments;
       silOpt.clip = opt.objEdgeClip;
+      silOpt.creaseAngleDeg = opt.objEdgeCreaseDeg;
+      silOpt.meshSilhouette = opt.objEdgeMeshSil;
+      silOpt.meshCrease = opt.objEdgeMeshCrease;
+      silOpt.meshBorder = opt.objEdgeMeshBorder;
       for (int k = 0; k < 3; ++k) silOpt.color[k] = opt.objEdgeColor[k];
       const std::size_t before = scene.cylinders.size();
       umbreon::generateSilhouetteEdges(scene, silOpt);

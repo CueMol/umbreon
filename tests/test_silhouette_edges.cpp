@@ -406,5 +406,68 @@ int main() {
             ringEdges(c, 1, 1) < fullRing);
   }
 
+  // ---- (8) triangle-mesh edges: border / smooth silhouette / crease ---------
+  {
+    Camera cam;
+    cam.orthographic = true;
+    cam.direction = {0, 0, -1};  // viewer toward +z
+
+    // BORDER: a lone triangle has three single-face boundary edges.
+    {
+      Scene sc;
+      sc.camera = cam;
+      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+      sc.mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+      SilEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = false;
+      o.meshCrease = false;
+      o.meshBorder = true;
+      umbreon::generateSilhouetteEdges(sc, o);
+      s.check("mesh border: a lone triangle emits 3 boundary edges",
+              sc.cylinders.size() == 3);
+    }
+
+    // SMOOTH SILHOUETTE: vertex normals (+,+,-) make n.v change sign across the
+    // face, so exactly one zero-crossing segment is emitted (Freestyle smooth).
+    {
+      Scene sc;
+      sc.camera = cam;
+      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+      sc.mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, -1}};
+      SilEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = true;
+      o.meshCrease = false;
+      o.meshBorder = false;
+      umbreon::generateSilhouetteEdges(sc, o);
+      s.check("mesh silhouette: one n.v sign-change face -> one smooth edge",
+              sc.cylinders.size() == 1);
+    }
+
+    // CREASE: two triangles folded 90 degrees share one edge whose dihedral
+    // fires a crease below the threshold but not above it.
+    auto creaseCount = [&](float deg) {
+      Scene sc;
+      sc.camera = cam;
+      // shared edge = the x-axis (0,0,0)-(1,0,0); tri A in z=0, tri B in y=0.
+      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0},
+                           {1, 0, 0}, {0, 0, 0}, {0, 0, 1}};
+      sc.mesh.normals.assign(6, Vec3{0, 0, 1});
+      SilEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = false;
+      o.meshCrease = true;
+      o.meshBorder = false;
+      o.creaseAngleDeg = deg;
+      umbreon::generateSilhouetteEdges(sc, o);
+      return sc.cylinders.size();
+    };
+    s.check("mesh crease: a 90deg fold IS a crease at 45deg threshold",
+            creaseCount(45.0f) == 1);
+    s.check("mesh crease: a 90deg fold is NOT a crease at 120deg threshold",
+            creaseCount(120.0f) == 0);
+  }
+
   return s.report();
 }

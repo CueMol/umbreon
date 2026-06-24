@@ -180,6 +180,12 @@ struct Sphere {
   Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
   Material material = Material::flatOutline();
   uint16_t group = 0;  // transparency group (CueMol section); 0 = default
+  // Origin tag for baked POV silhouette JOINT dots: the small black spheres
+  // CueMol emits at edge-line vertices (writePoint, "<sec>_sl_tex" texture) to
+  // round the outline polyline joints. Mirrors Cylinder::fromEdgeMacro so the
+  // edge passes can drop them alongside the baked edge_line cylinders (otherwise
+  // they survive as black speckles). Set in mesh2_reader; false for atom balls.
+  bool fromEdgeMacro = false;
 };
 
 // A shaded cylinder/capsule (CueMol "stick" / silhouette edge), rendered as a
