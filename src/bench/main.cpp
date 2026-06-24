@@ -469,6 +469,9 @@ int main(int argc, char** argv) {
       silOpt.meshSilhouette = opt.objEdgeMeshSil;
       silOpt.meshCrease = opt.objEdgeMeshCrease;
       silOpt.meshBorder = opt.objEdgeMeshBorder;
+      silOpt.meshCreaseSmoothVetoDeg = opt.objEdgeCreaseSmoothDeg;
+      silOpt.meshCreaseConvexOnly = opt.objEdgeCreaseConvexOnly;
+      silOpt.meshBorderCoplanarVetoDeg = opt.objEdgeBorderCoplanarDeg;
       for (int k = 0; k < 3; ++k) silOpt.color[k] = opt.objEdgeColor[k];
       const std::size_t before = scene.cylinders.size();
       umbreon::generateSilhouetteEdges(scene, silOpt);

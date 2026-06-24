@@ -42,10 +42,45 @@ struct SilEdgeOptions {
   // silhouette smoothly instead of snapping to mesh edges (which is what CueMol's
   // face-normal extraction does, leaving a faceted line). Crease and border edges
   // DO lie on mesh edges and are emitted there.
-  bool meshSilhouette = true;  // smooth n.v==0 contour through faces
-  bool meshCrease = true;      // sharp folds: face-normal dihedral > creaseAngleDeg
-  bool meshBorder = true;      // open boundary edges (one adjacent face)
-  float creaseAngleDeg = 30.0f;  // dihedral threshold for a crease edge
+  //
+  // STRATEGY (geometry only, no color): the SMOOTH SILHOUETTE is the primary
+  // edge and reproduces the CueMol OpenGL "outline" look on its own. CREASE and
+  // BORDER over-ink a smooth ribbon (helix-barrel facet hatching, strip-seam
+  // dashes on the coil tube, valley lines at SS-element junctions), so they are
+  // GEOMETRICALLY GATED to fire only on genuine features:
+  //   * a crease is a real sharp FOLD only where the interpolated vertex normals
+  //     across the edge actually DISAGREE (a smooth-shaded facet seam has them
+  //     near-parallel => tessellation, not a fold) -> meshCreaseSmoothVetoDeg;
+  //   * a real outline fold is CONVEX (a ridge bulging toward the viewer); the
+  //     concave valleys are where two ribbon strips meet at a junction step, which
+  //     CueMol's builder marks NO-EDGE -> meshCreaseConvexOnly drops them;
+  //   * a border that continues smoothly into another border edge at each end (a
+  //     near-collinear, near-coplanar chain) is an internal strip SEAM, not a
+  //     geometric terminus -> meshBorderCoplanarVetoDeg suppresses those, keeping
+  //     only true open boundaries (cap rims, strand termini).
+  // Struct defaults keep the new geometric gates OFF (neutral) so the bare-library
+  // crease/border semantics are unchanged; the ribbon-tuned values that reproduce
+  // the clean CueMol OpenGL outline live in the CLI (Options::objEdge*), which is
+  // the user-facing knob for this feature.
+  bool meshSilhouette = true;  // smooth n.v==0 contour through faces (primary)
+  bool meshCrease = true;      // sharp folds (gated below), face-normal dihedral
+  bool meshBorder = true;      // open boundary edges (gated below)
+  float creaseAngleDeg = 30.0f;  // dihedral threshold for a crease edge (degrees)
+  // Smooth-facet veto: suppress a face-normal crease when BOTH faces' normals lie
+  // within this angle of the shared edge's interpolated vertex normals (the mesh
+  // is smooth-shaded across the edge => the dihedral is tessellation facetting,
+  // not a CueMol-style crease). 0 disables the veto. Degrees.
+  float meshCreaseSmoothVetoDeg = 0.0f;
+  // Keep only CONVEX creases (ridges that bulge toward the average outward
+  // normal); drop CONCAVE creases (valleys), the geometric stand-in for CueMol's
+  // MFMOD_MESHXX no-edge junction-step faces.
+  bool meshCreaseConvexOnly = false;
+  // Coplanar-continuation border veto: suppress a border edge whose two endpoints
+  // each continue into another border edge that is near-collinear (a smooth border
+  // chain) -- an internal strip seam, not a true terminus. The angle is the max
+  // bend (in degrees) of the border chain that still counts as "smoothly
+  // continuing". 0 disables the veto.
+  float meshBorderCoplanarVetoDeg = 0.0f;
 };
 
 // Append analytic object-space silhouette edges for every original Sphere and

@@ -420,8 +420,18 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
   }
 
   // 4) CREASE (face-normal dihedral) + BORDER (single-face edge) on mesh edges.
+  //    Both are GEOMETRICALLY GATED (no color) so they fire only on genuine
+  //    features, leaving the smooth silhouette as the primary outline.
   if (opt.meshCrease || opt.meshBorder) {
     const float creaseCos = std::cos(opt.creaseAngleDeg * kPi / 180.0f);
+    // Smooth-facet veto threshold: a crease whose two faces both lie within this
+    // angle of the edge's interpolated vertex normals is tessellation facetting.
+    const bool smoothVeto = opt.meshCreaseSmoothVetoDeg > 0.0f;
+    const float smoothCos = std::cos(opt.meshCreaseSmoothVetoDeg * kPi / 180.0f);
+    // Border coplanar-continuation veto threshold (cos of the max chain bend).
+    const bool borderVeto = opt.meshBorderCoplanarVetoDeg > 0.0f;
+    const float borderColinCos = std::cos(opt.meshBorderCoplanarVetoDeg * kPi / 180.0f);
+
     struct EAdj {
       int f1 = -1, f2 = -1;
     };
@@ -442,17 +452,95 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
           adj.f2 = static_cast<int>(f);
       }
     }
+
+    // The third (apex) vertex of face f, i.e. the one not on edge (a,b).
+    auto apexOf = [&](int f, std::size_t a, std::size_t b) -> Vec3 {
+      const std::size_t x = static_cast<std::size_t>(fa[f]);
+      const std::size_t y = static_cast<std::size_t>(fb[f]);
+      const std::size_t z = static_cast<std::size_t>(fc[f]);
+      if (x != a && x != b) return vpos[x];
+      if (y != a && y != b) return vpos[y];
+      return vpos[z];
+    };
+
+    // For the border coplanar-continuation veto: collect, per vertex, the OTHER
+    // endpoint of each incident border edge (so a border edge can ask whether it
+    // continues smoothly through each of its endpoints).
+    std::unordered_map<int, std::vector<int>> borderAdj;
+    if (opt.meshBorder && borderVeto) {
+      borderAdj.reserve(nV);
+      for (const auto& kv : emap) {
+        if (kv.second.f2 >= 0) continue;  // interior, not a border edge
+        const int a = static_cast<int>(kv.first & 0xffffffffu);
+        const int b = static_cast<int>(kv.first >> 32);
+        borderAdj[a].push_back(b);
+        borderAdj[b].push_back(a);
+      }
+    }
+    // A border edge (a-b) "continues smoothly" through endpoint p if some other
+    // border edge p-q leaves p near-collinear with b->p (the chain barely bends).
+    // A seam running along the smooth body satisfies this at BOTH ends; a true
+    // terminus (cap rim corner, strand end) bends sharply or dead-ends.
+    auto borderContinues = [&](std::size_t p, std::size_t other) -> bool {
+      const auto it = borderAdj.find(static_cast<int>(p));
+      if (it == borderAdj.end()) return false;
+      const Vec3 in = normalize(vpos[p] - vpos[other]);  // direction into p
+      for (const int q : it->second) {
+        if (static_cast<std::size_t>(q) == other) continue;  // the edge itself
+        const Vec3 outDir = normalize(vpos[static_cast<std::size_t>(q)] - vpos[p]);
+        if (dot(in, outDir) >= borderColinCos) return true;  // bends < threshold
+      }
+      return false;
+    };
+
     for (const auto& kv : emap) {
       const std::size_t a = static_cast<std::size_t>(kv.first & 0xffffffffu);
       const std::size_t b = static_cast<std::size_t>(kv.first >> 32);
       const EAdj& adj = kv.second;
+
       if (adj.f2 < 0) {
-        if (opt.meshBorder)
-          push(vpos[a], vN[a], vpos[b], vN[b], mesh.groupForTri(static_cast<std::size_t>(adj.f1)));
-      } else if (opt.meshCrease &&
-                 dot(fNg[static_cast<std::size_t>(adj.f1)], fNg[static_cast<std::size_t>(adj.f2)]) < creaseCos) {
-        push(vpos[a], vN[a], vpos[b], vN[b], mesh.groupForTri(static_cast<std::size_t>(adj.f1)));
+        // BORDER: a single-face open edge. Suppress it when it is an internal
+        // strip seam (smooth border chain through BOTH endpoints); keep true
+        // termini.
+        if (!opt.meshBorder) continue;
+        if (borderVeto && borderContinues(a, b) && borderContinues(b, a)) continue;
+        push(vpos[a], vN[a], vpos[b], vN[b],
+             mesh.groupForTri(static_cast<std::size_t>(adj.f1)));
+        continue;
       }
+
+      // CREASE: an interior fold. Gate by angle, smooth-facet veto and convexity.
+      if (!opt.meshCrease) continue;
+      const std::size_t f1 = static_cast<std::size_t>(adj.f1);
+      const std::size_t f2 = static_cast<std::size_t>(adj.f2);
+      if (dot(fNg[f1], fNg[f2]) >= creaseCos) continue;  // too shallow to be a fold
+
+      // Smooth-facet veto: if BOTH face normals stay within smoothVetoDeg of the
+      // edge's interpolated vertex normals at BOTH endpoints, the surface is
+      // smooth-shaded across the edge -> the dihedral is tessellation, not a
+      // crease (helix-barrel hatching, ribbon-face facet seams). Skip it.
+      if (smoothVeto) {
+        const float agree =
+            std::fmin(std::fmin(dot(vN[a], fNg[f1]), dot(vN[a], fNg[f2])),
+                      std::fmin(dot(vN[b], fNg[f1]), dot(vN[b], fNg[f2])));
+        if (agree >= smoothCos) continue;  // smooth facet, not a real fold
+      }
+
+      // Convexity: a real outline fold is a CONVEX ridge. The two apex vertices of
+      // a convex ridge sit on the inner (below) side of the average outward
+      // normal's plane through the edge midpoint; a concave valley has them above.
+      // Concave creases are the SS-junction strip-step valleys (CueMol MESHXX
+      // no-edge faces), so drop them when meshCreaseConvexOnly is set.
+      if (opt.meshCreaseConvexOnly) {
+        const Vec3 nAvg = normalize(fNg[f1] + fNg[f2]);
+        const Vec3 edgeMid = (vpos[a] + vpos[b]) * 0.5f;
+        const Vec3 apexMid =
+            (apexOf(adj.f1, a, b) + apexOf(adj.f2, a, b)) * 0.5f;
+        if (dot(nAvg, apexMid - edgeMid) > 0.0f) continue;  // concave valley
+      }
+
+      push(vpos[a], vN[a], vpos[b], vN[b],
+           mesh.groupForTri(static_cast<std::size_t>(adj.f1)));
     }
   }
 }

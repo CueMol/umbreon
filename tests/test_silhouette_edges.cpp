@@ -469,5 +469,76 @@ int main() {
             creaseCount(120.0f) == 0);
   }
 
+  // ---- (9) mesh crease/border GEOMETRIC gates (no color) --------------------
+  {
+    Camera cam;
+    cam.orthographic = true;
+    cam.direction = {0, 0, -1};
+    auto creaseN = [&](const std::vector<Vec3>& pos, const std::vector<Vec3>& nrm,
+                       float creaseDeg, bool convexOnly, float smoothDeg) {
+      Scene sc;
+      sc.camera = cam;
+      sc.mesh.positions = pos;
+      if (!nrm.empty()) sc.mesh.normals = nrm;
+      SilEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = false;
+      o.meshCrease = true;
+      o.meshBorder = false;
+      o.creaseAngleDeg = creaseDeg;
+      o.meshCreaseConvexOnly = convexOnly;
+      o.meshCreaseSmoothVetoDeg = smoothDeg;
+      umbreon::generateSilhouetteEdges(sc, o);
+      return sc.cylinders.size();
+    };
+
+    // CONVEX-ONLY: a convex ridge survives; a concave valley of the same dihedral
+    // is dropped. Shared ridge edge along x; apexes below (convex) vs above.
+    const std::vector<Vec3> convex = {{0, 0, 0}, {2, 0, 0}, {1, 1, -0.5f},
+                                      {2, 0, 0}, {0, 0, 0}, {1, -1, -0.5f}};
+    const std::vector<Vec3> concave = {{0, 0, 0}, {2, 0, 0}, {1, 1, 0.5f},
+                                       {2, 0, 0}, {0, 0, 0}, {1, -1, 0.5f}};
+    s.check("mesh convex-only OFF: a ridge fold is a crease",
+            creaseN(convex, {}, 30.0f, false, 0.0f) == 1);
+    s.check("mesh convex-only: a convex ridge is kept",
+            creaseN(convex, {}, 30.0f, true, 0.0f) == 1);
+    s.check("mesh convex-only: a concave valley is dropped",
+            creaseN(concave, {}, 30.0f, true, 0.0f) == 0);
+
+    // SMOOTH-FACET VETO: a ~20deg fold whose vertex normals AGREE (smooth-shaded,
+    // here the +z bisector) is tessellation, not a crease. creaseDeg=10 makes the
+    // fold a candidate.
+    const std::vector<Vec3> facet = {{0, 0, 0},    {1, 0, 0}, {0.5f, 1, 0.176f},
+                                     {1, 0, 0},    {0, 0, 0}, {0.5f, -1, 0.176f}};
+    const std::vector<Vec3> smoothN(6, Vec3{0, 0, 1});
+    s.check("mesh smooth-veto OFF: a 20deg fold is a crease",
+            creaseN(facet, smoothN, 10.0f, false, 0.0f) == 1);
+    s.check("mesh smooth-veto: a smooth-shaded facet seam is dropped",
+            creaseN(facet, smoothN, 10.0f, false, 25.0f) == 0);
+
+    // BORDER COPLANAR VETO: a straight top border chain p0-p1-p2-p3 over a fan apex
+    // q. The middle edge p1-p2 continues collinearly at BOTH ends (internal seam)
+    // and is dropped; the end and side borders remain.
+    auto borderN = [&](float vetoDeg) {
+      Scene sc;
+      sc.camera = cam;
+      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {1.5f, -1, 0},
+                           {1, 0, 0}, {2, 0, 0}, {1.5f, -1, 0},
+                           {2, 0, 0}, {3, 0, 0}, {1.5f, -1, 0}};
+      SilEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = false;
+      o.meshCrease = false;
+      o.meshBorder = true;
+      o.meshBorderCoplanarVetoDeg = vetoDeg;
+      umbreon::generateSilhouetteEdges(sc, o);
+      return sc.cylinders.size();
+    };
+    const std::size_t b0 = borderN(0.0f);
+    s.check("mesh border-veto OFF: all border edges kept", b0 == 5);
+    s.check("mesh border-veto: the collinear internal seam edge is dropped",
+            borderN(35.0f) == b0 - 1);
+  }
+
   return s.report();
 }
