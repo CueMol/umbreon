@@ -46,4 +46,8 @@ if(TARGET umbreon)
   add_executable(test_edges_default test_edges_default.cpp)
   target_link_libraries(test_edges_default PRIVATE umbreon)
   add_test(NAME edges_default COMMAND test_edges_default)
+
+  add_executable(test_silhouette_edges test_silhouette_edges.cpp)
+  target_link_libraries(test_silhouette_edges PRIVATE umbreon)
+  add_test(NAME silhouette_edges COMMAND test_silhouette_edges)
 endif()

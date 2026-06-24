@@ -117,6 +117,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/curve_build.cpp
     src/umbreon/render/fog.cpp
     src/umbreon/render/edge_detect.cpp
+    src/umbreon/render/silhouette_edges.cpp
     src/umbreon/umbreon.cpp
   )
   # Namespaced alias so in-tree (add_subdirectory) consumers link the same
@@ -166,6 +167,7 @@ if(TARGET umbreon)
   install(FILES src/umbreon/umbreon.hpp src/umbreon/scene.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
   install(FILES src/umbreon/render/render_types.hpp
+                src/umbreon/render/silhouette_edges.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
 
   # The exported target records its PUBLIC link to Embree/TBB. That only round-

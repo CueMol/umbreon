@@ -18,6 +18,7 @@
 #include "image/image_io.hpp"
 #include "pov/pov_scene_reader.hpp"
 #include "povexport/pov_writer.hpp"
+#include "render/silhouette_edges.hpp"
 #include "umbreon.hpp"
 
 namespace {
@@ -430,6 +431,30 @@ int main(int argc, char** argv) {
       tbbLimit = std::make_unique<tbb::global_control>(
           tbb::global_control::max_allowed_parallelism,
           static_cast<std::size_t>(opt.threads));
+
+    // Analytic OBJECT-SPACE silhouette edges. The silhouette is camera-dependent,
+    // so this runs only now -- after scene.camera is assigned and the scene is
+    // fully assembled (geometry, per-section alpha, screen-space edge filtering) --
+    // and strictly BEFORE render(). It computes each sphere/cylinder's n.v==0
+    // contour in 3D and APPENDS it as thin flat-black open cylinders, so the ray
+    // tracer below handles visibility/occlusion/AA/fog for the edges for free.
+    // Off (the default) => nothing appended => byte-identical default render.
+    if (opt.objEdges) {
+      umbreon::SilEdgeOptions silOpt;
+      silOpt.enable = true;
+      silOpt.width = opt.objEdgeWidth;
+      silOpt.raise = opt.objEdgeRaise;
+      silOpt.segments = opt.objEdgeSegments;
+      silOpt.clip = opt.objEdgeClip;
+      for (int k = 0; k < 3; ++k) silOpt.color[k] = opt.objEdgeColor[k];
+      const std::size_t before = scene.cylinders.size();
+      umbreon::generateSilhouetteEdges(scene, silOpt);
+      std::printf(
+          "  object-space silhouette edges: +%zu cylinders "
+          "(width %.3f, raise %.3f, segments %d)\n",
+          scene.cylinders.size() - before, silOpt.width, silOpt.raise,
+          silOpt.segments);
+    }
 
     // umbreon backend: primary rays + direct POV local shading + fog + gamma.
     // This is exactly what CueMol will call (no POV-Ray SDL involved).

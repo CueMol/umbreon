@@ -307,6 +307,25 @@ Options parseCli(int argc, char** argv) {
       o.edgeDiscNormalAngleDeg = static_cast<float>(
           std::atof(value("--edge-disc-normal-angle").c_str()));
       o.edgeDiscNormalAngleSet = true;
+    } else if (a == "--obj-edges") {
+      std::string v = value("--obj-edges");
+      if (o.ok && !parseBool(v, o.objEdges)) fail("--obj-edges expects on/off");
+    } else if (a == "--obj-edge-width") {
+      o.objEdgeWidth =
+          static_cast<float>(std::atof(value("--obj-edge-width").c_str()));
+    } else if (a == "--obj-edge-raise") {
+      o.objEdgeRaise =
+          static_cast<float>(std::atof(value("--obj-edge-raise").c_str()));
+    } else if (a == "--obj-edge-segments") {
+      o.objEdgeSegments = std::atoi(value("--obj-edge-segments").c_str());
+    } else if (a == "--obj-edge-color") {
+      std::string v = value("--obj-edge-color");
+      if (o.ok && !parseHexColor(v, o.objEdgeColor))
+        fail("--obj-edge-color expects #RRGGBB");
+    } else if (a == "--obj-edge-clip") {
+      std::string v = value("--obj-edge-clip");
+      if (o.ok && !parseBool(v, o.objEdgeClip))
+        fail("--obj-edge-clip expects on/off");
     } else if (a == "--dump-aov") {
       o.dumpAovPrefix = value("--dump-aov");
     } else if (a == "--keep-baked-edges") {
@@ -386,6 +405,12 @@ void printUsage(const char* prog) {
       "  --edge-crease-angle <f>  crease fold angle, degrees            [30.00]\n"
       "  --edge-crease-grazing <f> crease grazing-angle bias gain        [1.00]\n"
       "  --edge-disc-normal-angle <f> disc normal-disagree angle, deg   [35.00]\n"
+      "  --obj-edges <on|off>     analytic object-space silhouette edges  [off]\n"
+      "  --obj-edge-width <float> object-edge cylinder radius (world)   [0.03]\n"
+      "  --obj-edge-raise <float> object-edge outward offset (world)    [0.00]\n"
+      "  --obj-edge-segments <int> sphere/cap ring tessellation           [48]\n"
+      "  --obj-edge-color <#RRGGBB> object-edge color              [#000000]\n"
+      "  --obj-edge-clip <on|off> trim object edges at primitive joins    [on]\n"
       "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

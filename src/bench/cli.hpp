@@ -112,6 +112,20 @@ struct Options {
   // screen-space outlines can be A/B-compared side by side. No effect when
   // --edges is off (nothing is filtered in either case).
   bool keepBakedEdges = false;
+  // --- analytic OBJECT-SPACE silhouette edges (spheres/cylinders) ---
+  // Master switch (--obj-edges on|off, default off => byte-identical default).
+  // When on, each analytic primitive's n.v==0 silhouette contour is emitted in
+  // 3D as thin flat-black "open" cylinders appended to the scene before render,
+  // so the ray tracer handles visibility/occlusion/AA/fog automatically. This is
+  // independent of the screen-space --edges pass above.
+  bool objEdges = false;
+  float objEdgeWidth = 0.03f;    // edge cylinder radius (world units)
+  float objEdgeRaise = 0.0f;     // outward contour offset (world units)
+  int objEdgeSegments = 48;      // ring tessellation per sphere / cap circle
+  float objEdgeColor[3] = {0.0f, 0.0f, 0.0f};  // linear RGB (from #RRGGBB)
+  bool objEdgeClip = true;       // union-boundary clip (drop notch-causing parts
+                                 // inside connecting primitives); --obj-edge-clip
+
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;
   // Master switch for the single-layer transparency walk (off = opaque only).
