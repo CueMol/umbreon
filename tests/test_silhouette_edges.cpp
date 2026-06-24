@@ -343,5 +343,68 @@ int main() {
     s.check("clip on: outline is not emptied", on.cylinders.size() > 1);
   }
 
+  // ---- (7) ball-and-stick: a protruding atom keeps its FULL circle ----------
+  {
+    // When a sphere protrudes beyond a bond (rs > rc, ball-and-stick) the bond is
+    // buried inside the atom's silhouette, so the atom's circle must stay
+    // continuous -- the thin bond must NOT clip the ring. Only an equal/larger
+    // bond (rs <= rc, licorice) takes over and clips it (no "ball bump" on the
+    // smooth tube). Edges carry their source primitive's group, so the ring edges
+    // (sphere group) are countable apart from the bond's side lines.
+    auto ringEdges = [](const Scene& sc, uint16_t grp, std::size_t origCyl) {
+      std::size_t n = 0;
+      for (std::size_t i = origCyl; i < sc.cylinders.size(); ++i)
+        if (sc.cylinders[i].group == grp) ++n;
+      return n;
+    };
+    SilEdgeOptions o;
+    o.enable = true;
+    o.segments = 24;
+    o.clip = true;
+    Sphere sp;
+    sp.center = {0, 0, 0};
+    sp.radius = 1.0f;
+    sp.group = 1;
+    Camera cam;
+    cam.orthographic = true;
+    cam.direction = {0, 0, -1};
+
+    // Sphere alone: the ring is a full closed loop of `segments` edges.
+    Scene a;
+    a.camera = cam;
+    a.spheres.push_back(sp);
+    umbreon::generateSilhouetteEdges(a, o);
+    const std::size_t fullRing = ringEdges(a, 1, 0);
+    s.check("sphere-alone ring is a full closed loop", fullRing == 24);
+
+    // Sphere + THIN coaxial bond (ball-and-stick): ring stays complete.
+    Scene b;
+    b.camera = cam;
+    b.spheres.push_back(sp);
+    Cylinder thin;
+    thin.p0 = {0, 0, 0};
+    thin.p1 = {3, 0, 0};
+    thin.radius = 0.3f;
+    thin.group = 2;
+    b.cylinders.push_back(thin);
+    umbreon::generateSilhouetteEdges(b, o);
+    s.check("ball-stick: a thinner bond does NOT clip the atom's circle",
+            ringEdges(b, 1, 1) == fullRing);
+
+    // Sphere + EQUAL-radius bond (licorice): ring is clipped where the bond runs.
+    Scene c;
+    c.camera = cam;
+    c.spheres.push_back(sp);
+    Cylinder thick;
+    thick.p0 = {0, 0, 0};
+    thick.p1 = {3, 0, 0};
+    thick.radius = 1.0f;
+    thick.group = 2;
+    c.cylinders.push_back(thick);
+    umbreon::generateSilhouetteEdges(c, o);
+    s.check("licorice: an equal-radius bond clips the ring (no ball bump)",
+            ringEdges(c, 1, 1) < fullRing);
+  }
+
   return s.report();
 }

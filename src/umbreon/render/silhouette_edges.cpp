@@ -238,16 +238,29 @@ bool insideCylinder(const Vec3& X, const Cylinder& c, float eps) {
 // (the source is skipped so a contour is never clipped by its own primitive: a
 // sphere ring is a chord polygon dipping just inside its sphere, and a cylinder
 // side line can dip inside its own cylinder under perspective).
+// `ringRs` >= 0 marks the segment as a SPHERE ring of that radius; a cylinder
+// THINNER than the ring's sphere then does NOT clip it (pass -1 for cylinder side
+// lines, which clip against everything). Rationale: when a sphere protrudes
+// beyond a bond (rs > rc, the ball-and-stick case) the sphere's whole silhouette
+// circle is on the union boundary -- the thin bond is buried inside it -- so the
+// atom circle must stay CONTINUOUS (as in the CueMol OpenGL edge reference). Only
+// when the bond is as thick as the atom (rs ~= rc, the licorice/stick case) does
+// the bond surface take over: there the ring IS clipped, so no "ball bump" breaks
+// the smooth tube. The ray tracer still occludes whatever the bond truly hides.
 bool insideAnySolid(const Vec3& X, const Scene& scene, std::size_t nSph,
-                    std::size_t nCyl, float eps, int skipSphere, int skipCyl) {
+                    std::size_t nCyl, float eps, int skipSphere, int skipCyl,
+                    float ringRs) {
   for (std::size_t i = 0; i < nSph; ++i)
     if (static_cast<int>(i) != skipSphere &&
         insideSphere(X, scene.spheres[i], eps))
       return true;
-  for (std::size_t i = 0; i < nCyl; ++i)
-    if (static_cast<int>(i) != skipCyl &&
-        insideCylinder(X, scene.cylinders[i], eps))
-      return true;
+  for (std::size_t i = 0; i < nCyl; ++i) {
+    if (static_cast<int>(i) == skipCyl) continue;
+    // A protruding sphere's ring is not clipped by a thinner bond (1e-4 tol so an
+    // exactly-equal licorice radius still counts as "as thick" and clips).
+    if (ringRs > 0.0f && scene.cylinders[i].radius < ringRs - 1.0e-4f) continue;
+    if (insideCylinder(X, scene.cylinders[i], eps)) return true;
+  }
   return false;
 }
 
@@ -268,10 +281,13 @@ void clipAndEmit(const RawSeg& seg, const SilEdgeOptions& opt, const Scene& scen
     if (e > s) out.push_back(makeEdge(pointAt(s), pointAt(e), opt, seg.group));
   };
 
+  // A sphere ring carries its sphere's radius so a thinner bond cannot clip it.
+  const float ringRs =
+      seg.srcSphere >= 0 ? scene.spheres[static_cast<std::size_t>(seg.srcSphere)].radius : -1.0f;
   int runStart = -1;
   for (int i = 0; i <= K; ++i) {
     const bool inside = insideAnySolid(pointAt(i), scene, nSph, nCyl, eps,
-                                       seg.srcSphere, seg.srcCyl);
+                                       seg.srcSphere, seg.srcCyl, ringRs);
     if (!inside && runStart < 0) runStart = i;
     if (inside && runStart >= 0) {
       emitRun(runStart, i - 1);  // last outside sample closes the run
