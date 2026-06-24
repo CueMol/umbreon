@@ -203,12 +203,21 @@ void emitCylinderEdges(const Cylinder& cyl, const Camera& cam,
 
 // --- union-boundary clip --------------------------------------------------
 // A silhouette point belongs to the molecular UNION boundary only where it is
-// not strictly inside another primitive's solid; the inside parts are where a
-// connecting primitive's surface takes over. Clipping there makes a bond's
-// silhouette terminate at the atom it enters (and vice versa) instead of the two
-// per-primitive contours crossing and leaving a coincident-depth "junction
-// notch". `eps` insets the test by ~half the edge width so a tangent contact
-// (the legitimate join point, exactly on both surfaces) is kept.
+// not inside another primitive's solid; the inside parts are where a connecting
+// primitive's surface takes over. Clipping there makes a bond's silhouette
+// terminate at the atom it enters (and vice versa) instead of the two
+// per-primitive contours crossing and leaving a "junction notch".
+//
+// The inset is STRICT (eps = 0: drop only points genuinely inside another
+// solid). It is deliberately NOT an outward margin. An earlier version inset the
+// test OUTWARD by ~half the edge width to trim the tiny tangent/overshoot stub a
+// contour leaves in a junction's concave wedge; but in a densely packed molecule
+// nearly every primitive's surface runs within that margin of some neighbor, so
+// the outward band chopped the continuous outline into dashes. Strict clip keeps
+// the outline continuous; a sub-pixel stub may remain at a sharp concave corner
+// (the analytic per-primitive contours genuinely cross there), which is the same
+// residue a finite mesh tessellation leaves and is far less objectionable than a
+// broken line. True 3D occlusion of unrelated geometry is left to the ray tracer.
 
 bool insideSphere(const Vec3& X, const Sphere& s, float eps) {
   return length(X - s.center) < s.radius - eps;
@@ -225,6 +234,10 @@ bool insideCylinder(const Vec3& X, const Cylinder& c, float eps) {
   return length(perp) < c.radius - eps;
 }
 
+// True where `X` is inside any ORIGINAL solid other than the segment's source
+// (the source is skipped so a contour is never clipped by its own primitive: a
+// sphere ring is a chord polygon dipping just inside its sphere, and a cylinder
+// side line can dip inside its own cylinder under perspective).
 bool insideAnySolid(const Vec3& X, const Scene& scene, std::size_t nSph,
                     std::size_t nCyl, float eps, int skipSphere, int skipCyl) {
   for (std::size_t i = 0; i < nSph; ++i)
@@ -246,12 +259,7 @@ void clipAndEmit(const RawSeg& seg, const SilEdgeOptions& opt, const Scene& scen
   const Vec3 d = seg.b - seg.a;
   const float len = length(d);
   if (len <= 0.0f) return;
-  // Negative eps => the "inside" test extends a margin (~half the edge width)
-  // OUTSIDE each solid, so a silhouette generator that runs tangent to a
-  // same-radius connecting primitive (its endpoint sits exactly on that surface)
-  // is trimmed too, removing the tangent "stub" at a same-size sphere/cylinder
-  // join. The connecting primitive's own ring/side line continues the outline.
-  const float eps = -(opt.width > 0.0f ? opt.width : 0.01f) * 0.5f;
+  const float eps = 0.0f;  // strict: clip only the parts genuinely inside a solid
   const float step = opt.width > 0.0f ? opt.width : len;
   const int K = std::max(2, static_cast<int>(std::ceil(len / step)));
 
