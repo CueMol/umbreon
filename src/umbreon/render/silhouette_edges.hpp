@@ -65,6 +65,19 @@ struct SilEdgeOptions {
   bool meshSilhouette = true;  // smooth n.v==0 contour through faces (primary)
   bool meshCrease = true;      // sharp folds (gated below), face-normal dihedral
   bool meshBorder = true;      // open boundary edges (gated below)
+  // Hard-edge angle (degrees). CueMol ribbon meshes are deliberately NOT
+  // water-tight: a sharp (rectangular beta-sheet) cross-section duplicates its
+  // box-corner vertices with normals this far apart or more to encode the angular
+  // shape + flat shading. The mesh-silhouette pass uses this twofold: (1) incident
+  // corner normals at a welded position that differ by MORE than this are kept in
+  // SEPARATE smoothing clusters (not averaged), so the smooth n.v==0 contour is
+  // not computed from a meaningless diagonal and stops breaking into dashes on
+  // sharp ribbons; (2) an interior edge whose two FACE normals differ by more than
+  // this is a HARD edge, drawn on the silhouette by the CueMol-style face-normal
+  // straddle test (one face front-, the other back-facing) -- a crisp continuous
+  // box-edge line the per-vertex smooth contour cannot produce. A smooth tube has
+  // all normals within this angle, so it is unaffected.
+  float meshHardEdgeDeg = 40.0f;
   float creaseAngleDeg = 30.0f;  // dihedral threshold for a crease edge (degrees)
   // Smooth-facet veto: suppress a face-normal crease when BOTH faces' normals lie
   // within this angle of the shared edge's interpolated vertex normals (the mesh

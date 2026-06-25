@@ -388,26 +388,90 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
       if (length(vN[v]) < 0.5f) vN[v] = fNg[f];
     }
 
-  std::vector<float> dotp(nV);
-  for (std::size_t v = 0; v < nV; ++v) dotp[v] = dot(vN[v], viewerDirAt(vpos[v], cam));
-
   auto push = [&](const Vec3& A, const Vec3& nA, const Vec3& B, const Vec3& nB, uint16_t grp) {
     out.push_back(RawSeg{A + nA * opt.raise, B + nB * opt.raise, grp});
   };
 
-  // 3) SMOOTH SILHOUETTE: per face, connect the two n.v==0 zero-crossings.
-  //
-  // The contour lies ON the surface exactly where it grazes the view (n.v==0), so
-  // a thin edge tube placed there is half-buried in the surface and z-fights /
-  // gets occluded by the grazing body, breaking the line into dashes. Pushing it
-  // OUTWARD lifts it clear but detaches the outline from the body (a floating
-  // halo). Instead bias the contour slightly TOWARD THE CAMERA (~half the edge
-  // radius): its screen position is unchanged so the outline still HUGS the body
-  // (no gap, like the CueMol reference), but it now wins the depth test against
-  // the coincident grazing surface and draws as one continuous line. The bias is
-  // small (< body thickness) so a contour on the FAR side stays occluded (no
-  // show-through). opt.raise still adds an explicit outward offset if wanted.
-  // (Crease/border edges are not on the grazing locus; they keep plain opt.raise.)
+  // Edge adjacency (welded-position topology), SHARED by the hard-edge silhouette
+  // below and the crease/border pass. A rectangular ribbon's box edge stays
+  // INTERIOR here (its top- and side-face corners weld to the same position), so
+  // its two faces are both known and the silhouette straddle test can run on it.
+  struct EAdj {
+    int f1 = -1, f2 = -1;
+  };
+  std::unordered_map<std::uint64_t, EAdj> emap;
+  emap.reserve(nTri * 3);
+  auto ekey = [](int a, int b) {
+    const std::uint32_t lo = static_cast<std::uint32_t>(a < b ? a : b);
+    const std::uint32_t hi = static_cast<std::uint32_t>(a < b ? b : a);
+    return (static_cast<std::uint64_t>(hi) << 32) | lo;
+  };
+  for (std::size_t f = 0; f < nTri; ++f) {
+    const int v[3] = {fa[f], fb[f], fc[f]};
+    for (int e = 0; e < 3; ++e) {
+      EAdj& adj = emap[ekey(v[e], v[(e + 1) % 3])];
+      if (adj.f1 < 0)
+        adj.f1 = static_cast<int>(f);
+      else if (adj.f2 < 0)
+        adj.f2 = static_cast<int>(f);
+    }
+  }
+
+  // Per-CORNER shading normal that PRESERVES hard edges. The position weld above
+  // recovers topology, but averaging its normals (the old vN) collapses a
+  // deliberately split hard edge (CueMol duplicates a rectangular cross-section's
+  // box corners with ~90 deg-apart normals) into a meaningless diagonal, so the
+  // smooth n.v==0 contour only grazes intermittently and dashes. Instead, at each
+  // welded position the incident corner normals are split into smoothing CLUSTERS
+  // (within meshHardEdgeDeg) and averaged per cluster: a smooth patch -> one
+  // cluster (== the old average, so smooth tubes are unchanged); a hard box edge
+  // -> two clusters kept SEPARATE. The smooth contour then finds no crossing on a
+  // hard-edge face (its corner normals are uniform), leaving that edge to the
+  // hard-edge straddle test below -- exactly the CueMol split.
+  const float hardCos = std::cos(opt.meshHardEdgeDeg * kPi / 180.0f);
+  std::vector<Vec3> cnrm(nCorner);
+  {
+    std::vector<std::vector<int>> posCorners(nV);
+    for (std::size_t c = 0; c < nCorner; ++c)
+      posCorners[static_cast<std::size_t>(corner2v[c])].push_back(static_cast<int>(c));
+    for (std::size_t v = 0; v < nV; ++v) {
+      const std::vector<int>& cs = posCorners[v];
+      std::vector<Vec3> rep, sum;  // one entry per smoothing cluster
+      std::vector<int> cl(cs.size());
+      for (std::size_t k = 0; k < cs.size(); ++k) {
+        const std::size_t c = static_cast<std::size_t>(cs[k]);
+        Vec3 n = haveNrm ? mesh.normals[c] : fNg[c / 3];
+        const float ln = length(n);
+        n = ln > 1.0e-12f ? n * (1.0f / ln) : fNg[c / 3];
+        int found = -1;
+        for (std::size_t t = 0; t < rep.size(); ++t)
+          if (dot(rep[t], n) >= hardCos) { found = static_cast<int>(t); break; }
+        if (found < 0) {
+          rep.push_back(n);
+          sum.push_back(n);
+          found = static_cast<int>(rep.size()) - 1;
+        } else {
+          sum[static_cast<std::size_t>(found)] = sum[static_cast<std::size_t>(found)] + n;
+        }
+        cl[k] = found;
+      }
+      std::vector<Vec3> avg(rep.size());
+      for (std::size_t t = 0; t < rep.size(); ++t) {
+        const float l = length(sum[t]);
+        avg[t] = l > 1.0e-12f ? sum[t] * (1.0f / l) : rep[t];
+      }
+      for (std::size_t k = 0; k < cs.size(); ++k)
+        cnrm[static_cast<std::size_t>(cs[k])] = avg[static_cast<std::size_t>(cl[k])];
+    }
+  }
+
+  // 3) SILHOUETTE = the SMOOTH n.v==0 contour (smooth patches: tubes, round coils)
+  //    PLUS the HARD-EDGE straddle line (sharp rectangular ribbon box edges). Both
+  //    lie on the grazing locus, so each emitted segment is biased slightly TOWARD
+  //    THE CAMERA (camBias) so it wins the depth test against the coincident
+  //    grazing surface and draws as one continuous line instead of z-fighting into
+  //    dashes; its screen position is unchanged so the outline still HUGS the body
+  //    (no floating-halo gap). opt.raise adds an explicit outward offset if wanted.
   if (opt.meshSilhouette) {
     const float w = opt.width > 0.0f ? opt.width : 0.0f;
     const float silOff = opt.raise;     // outward offset (0 => hug the surface)
@@ -427,25 +491,31 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
     }
     const float meanEdge = nTri ? static_cast<float>(elsum / (3.0 * nTri)) : 0.0f;
     const float camBias = std::fmax(0.5f * w, 0.15f * meanEdge);
+
+    // 3a) SMOOTH silhouette: per face, connect the two n.v==0 zero-crossings,
+    //     computed from the per-corner CLUSTER normals. A hard-edge face has a
+    //     uniform cluster normal => no intra-face crossing => silent here.
     for (std::size_t f = 0; f < nTri; ++f) {
-      const int idx[3] = {fa[f], fb[f], fc[f]};
-      const float d[3] = {dotp[static_cast<std::size_t>(idx[0])],
-                          dotp[static_cast<std::size_t>(idx[1])],
-                          dotp[static_cast<std::size_t>(idx[2])]};
+      const int cc[3] = {static_cast<int>(3 * f), static_cast<int>(3 * f + 1),
+                         static_cast<int>(3 * f + 2)};
+      Vec3 P[3], NN[3];
+      float d[3];
+      for (int k = 0; k < 3; ++k) {
+        P[k] = vpos[static_cast<std::size_t>(corner2v[static_cast<std::size_t>(cc[k])])];
+        NN[k] = cnrm[static_cast<std::size_t>(cc[k])];
+        d[k] = dot(NN[k], viewerDirAt(P[k], cam));
+      }
       Vec3 cp[2], cn[2];
       int nc = 0;
       auto addCross = [&](int i, int j) {
-        const std::size_t vi = static_cast<std::size_t>(idx[i]);
-        const std::size_t vj = static_cast<std::size_t>(idx[j]);
         const float t = d[i] / (d[i] - d[j]);
-        cp[nc] = vpos[vi] + (vpos[vj] - vpos[vi]) * t;
-        cn[nc] = normalize(vN[vi] + (vN[vj] - vN[vi]) * t);
+        cp[nc] = P[i] + (P[j] - P[i]) * t;
+        cn[nc] = normalize(NN[i] + (NN[j] - NN[i]) * t);
         ++nc;
       };
       auto addVert = [&](int i) {
-        const std::size_t vi = static_cast<std::size_t>(idx[i]);
-        cp[nc] = vpos[vi];
-        cn[nc] = vN[vi];
+        cp[nc] = P[i];
+        cn[nc] = NN[i];
         ++nc;
       };
       // Extract the n.v==0 iso-contour segment of this face. Following Freestyle
@@ -478,6 +548,34 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
                              cp[1] + cn[1] * silOff + v1, mesh.groupForTri(f)});
       }
     }
+
+    // 3b) HARD-EDGE silhouette (CueMol RendIntData::calcSilEdgeLines face-normal
+    //     test). A sharp interior edge (the two FACE normals differ by more than
+    //     meshHardEdgeDeg) is on the outline where those two faces STRADDLE the
+    //     view -- one front-, one back-facing. This draws a rectangular ribbon's
+    //     box edges as one crisp CONTINUOUS line, which the per-vertex smooth
+    //     contour cannot (a hard silhouette lies BETWEEN two faces, not within
+    //     one). Smooth edges are left to 3a so tubes stay smooth, not faceted.
+    for (const auto& kv : emap) {
+      const EAdj& adj = kv.second;
+      if (adj.f2 < 0) continue;  // border edge: handled in the crease/border pass
+      const std::size_t f1 = static_cast<std::size_t>(adj.f1);
+      const std::size_t f2 = static_cast<std::size_t>(adj.f2);
+      if (dot(fNg[f1], fNg[f2]) >= hardCos) continue;  // smooth edge: 3a covers it
+      const std::size_t a = static_cast<std::size_t>(kv.first & 0xffffffffu);
+      const std::size_t b = static_cast<std::size_t>(kv.first >> 32);
+      const Vec3 da = viewerDirAt(vpos[a], cam);
+      const Vec3 db = viewerDirAt(vpos[b], cam);
+      // CueMol tries either endpoint: emit if the face pair straddles the view at
+      // a or at b (keeps the line continuous through a slowly turning ridge).
+      const bool straddleA = dot(da, fNg[f1]) * dot(da, fNg[f2]) < 0.0f;
+      const bool straddleB = dot(db, fNg[f1]) * dot(db, fNg[f2]) < 0.0f;
+      if (!straddleA && !straddleB) continue;
+      const Vec3 outw = normalize(fNg[f1] + fNg[f2]);
+      out.push_back(RawSeg{vpos[a] + outw * silOff + da * camBias,
+                           vpos[b] + outw * silOff + db * camBias,
+                           mesh.groupForTri(adj.f1)});
+    }
   }
 
   // 4) CREASE (face-normal dihedral) + BORDER (single-face edge) on mesh edges.
@@ -493,26 +591,7 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
     const bool borderVeto = opt.meshBorderCoplanarVetoDeg > 0.0f;
     const float borderColinCos = std::cos(opt.meshBorderCoplanarVetoDeg * kPi / 180.0f);
 
-    struct EAdj {
-      int f1 = -1, f2 = -1;
-    };
-    std::unordered_map<std::uint64_t, EAdj> emap;
-    emap.reserve(nTri * 3);
-    auto ekey = [](int a, int b) {
-      const std::uint32_t lo = static_cast<std::uint32_t>(a < b ? a : b);
-      const std::uint32_t hi = static_cast<std::uint32_t>(a < b ? b : a);
-      return (static_cast<std::uint64_t>(hi) << 32) | lo;
-    };
-    for (std::size_t f = 0; f < nTri; ++f) {
-      const int v[3] = {fa[f], fb[f], fc[f]};
-      for (int e = 0; e < 3; ++e) {
-        EAdj& adj = emap[ekey(v[e], v[(e + 1) % 3])];
-        if (adj.f1 < 0)
-          adj.f1 = static_cast<int>(f);
-        else if (adj.f2 < 0)
-          adj.f2 = static_cast<int>(f);
-      }
-    }
+    // Edge adjacency (emap) and ekey are built once above and shared here.
 
     // The third (apex) vertex of face f, i.e. the one not on edge (a,b).
     auto apexOf = [&](int f, std::size_t a, std::size_t b) -> Vec3 {

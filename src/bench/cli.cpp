@@ -326,6 +326,9 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--obj-edge-clip");
       if (o.ok && !parseBool(v, o.objEdgeClip))
         fail("--obj-edge-clip expects on/off");
+    } else if (a == "--obj-edge-hard-deg") {
+      o.objEdgeHardDeg =
+          static_cast<float>(std::atof(value("--obj-edge-hard-deg").c_str()));
     } else if (a == "--obj-edge-crease-deg") {
       o.objEdgeCreaseDeg =
           static_cast<float>(std::atof(value("--obj-edge-crease-deg").c_str()));
@@ -443,8 +446,10 @@ void printUsage(const char* prog) {
       "  --obj-edge-crease-convex-only <on|off> drop concave-valley creases [on]\n"
       "  --obj-edge-border-coplanar-deg <f> veto strip-seam borders (0=off) [35]\n"
       "  --obj-edge-crease-max-deg <int> drop crease-cluster cap hubs (0=off)  [4]\n"
+      "  --obj-edge-hard-deg <float> hard-edge angle: split sharp-ribbon normals,\n"
+      "                              draw box edges by face-normal straddle   [40]\n"
       "  --obj-edge-mesh-sil <on|off> mesh smooth n.v==0 silhouette        [on]\n"
-      "  --obj-edge-mesh-crease <on|off> mesh crease (sharp-fold) edges    [on]\n"
+      "  --obj-edge-mesh-crease <on|off> mesh crease (sharp-fold) edges   [off]\n"
       "  --obj-edge-mesh-border <on|off> mesh open-boundary edges          [on]\n"
       "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"

@@ -466,6 +466,7 @@ int main(int argc, char** argv) {
       silOpt.segments = opt.objEdgeSegments;
       silOpt.clip = opt.objEdgeClip;
       silOpt.creaseAngleDeg = opt.objEdgeCreaseDeg;
+      silOpt.meshHardEdgeDeg = opt.objEdgeHardDeg;
       silOpt.meshSilhouette = opt.objEdgeMeshSil;
       silOpt.meshCrease = opt.objEdgeMeshCrease;
       silOpt.meshBorder = opt.objEdgeMeshBorder;

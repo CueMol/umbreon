@@ -129,10 +129,26 @@ struct Options {
   // The mesh silhouette is the SMOOTH n.v==0 contour (Freestyle-style per-vertex
   // zero-crossing); crease/border lie on mesh edges. --obj-edge-mesh-* toggle
   // each class; --obj-edge-crease-deg sets the crease dihedral threshold.
+  //
+  // CREASE IS OFF BY DEFAULT to match CueMol: its silhouette extractor
+  // (RendIntData::calcSilEdgeLines) gates the dihedral/crease test on
+  // creaseLimit > 0, and the default creaseLimit is -1 (PovDisplayContext /
+  // PovSceneExporter), so CueMol draws ONLY the n.v-sign-change silhouette, never
+  // an adjacent-face-normal crease line. Crease ON over-inks rectangular ribbon
+  // cross-sections (the beta-sheet box has 90-degree convex folds that pass every
+  // geometric gate). Turn it back on with --obj-edge-mesh-crease on when a faceted
+  // crease look is wanted; the gate defaults below then apply.
   bool objEdgeMeshSil = true;
-  bool objEdgeMeshCrease = true;
+  bool objEdgeMeshCrease = false;
   bool objEdgeMeshBorder = true;
   float objEdgeCreaseDeg = 75.0f;
+  // Hard-edge angle (deg): a sharp ribbon cross-section (rectangular beta-sheet)
+  // duplicates its box-corner vertices with normals this far apart. The mesh
+  // silhouette keeps such split normals SEPARATE (no averaging, so the smooth
+  // contour stops dashing on sharp ribbons) and draws the box edge by the CueMol
+  // face-normal straddle test. Smooth tubes (all normals within this angle) are
+  // unaffected. See SilEdgeOptions::meshHardEdgeDeg.
+  float objEdgeHardDeg = 40.0f;
   // Geometric crease/border gates (no color). Mirror SilEdgeOptions defaults so
   // the out-of-the-box look reproduces the clean CueMol OpenGL outline:
   //   - smooth-facet veto (deg): drop creases that are smooth-shaded tessellation
