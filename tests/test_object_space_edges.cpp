@@ -1,5 +1,5 @@
 // Unit / integration tests for analytic OBJECT-SPACE silhouette edges
-// (src/umbreon/render/silhouette_edges.{hpp,cpp}).
+// (src/umbreon/render/object_space_edges.{hpp,cpp}).
 //
 // Guards the geometric contract of the n.v==0 silhouette generator so a future
 // edit that breaks the math (wrong ring radius/center, side-line direction, the
@@ -22,7 +22,7 @@
 #include <cmath>
 #include <cstddef>
 
-#include "render/silhouette_edges.hpp"
+#include "render/object_space_edges.hpp"
 #include "scene.hpp"
 #include "test_util.hpp"
 
@@ -31,7 +31,7 @@ namespace {
 using umbreon::Camera;
 using umbreon::Cylinder;
 using umbreon::Scene;
-using umbreon::SilEdgeOptions;
+using umbreon::ObjectSpaceEdgeOptions;
 using umbreon::Sphere;
 using umbreon::Vec3;
 using umbreon::Vec4;
@@ -57,7 +57,7 @@ bool edgeAttrsOk(const Cylinder& c, float width, const float col[3],
 }  // namespace
 
 int main() {
-  umbreon::test::Suite s("silhouette_edges");
+  umbreon::test::Suite s("object_space_edges");
 
   // ---- (0) disabled => no-op (byte-identical default) --------------------
   {
@@ -68,8 +68,8 @@ int main() {
     sc.spheres.push_back(sp);
     sc.camera.orthographic = true;
     sc.camera.direction = {0, 0, -1};
-    SilEdgeOptions opt;  // enable defaults to false
-    umbreon::generateSilhouetteEdges(sc, opt);
+    ObjectSpaceEdgeOptions opt;  // enable defaults to false
+    umbreon::generateObjectSpaceEdges(sc, opt);
     s.check("disabled: no cylinders appended", sc.cylinders.empty());
   }
 
@@ -84,13 +84,13 @@ int main() {
     sp.group = 7;
     sc.spheres.push_back(sp);
 
-    SilEdgeOptions opt;
+    ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.width = 0.05f;
     opt.raise = 0.0f;
     opt.segments = 32;
     opt.color[0] = 0.1f; opt.color[1] = 0.2f; opt.color[2] = 0.3f;
-    umbreon::generateSilhouetteEdges(sc, opt);
+    umbreon::generateObjectSpaceEdges(sc, opt);
 
     s.check_eq("ortho sphere: ring has `segments` cylinders",
                sc.cylinders.size(), static_cast<std::size_t>(32));
@@ -127,10 +127,10 @@ int main() {
     sp.radius = 2.0f;
     sc.spheres.push_back(sp);
 
-    SilEdgeOptions opt;
+    ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.segments = 24;
-    umbreon::generateSilhouetteEdges(sc, opt);
+    umbreon::generateObjectSpaceEdges(sc, opt);
     s.check_eq("persp sphere: ring has `segments` cylinders",
                sc.cylinders.size(), static_cast<std::size_t>(24));
 
@@ -158,9 +158,9 @@ int main() {
     sp.center = {0, 0, 0};
     sp.radius = 2.0f;
     sc.spheres.push_back(sp);
-    SilEdgeOptions opt;
+    ObjectSpaceEdgeOptions opt;
     opt.enable = true;
-    umbreon::generateSilhouetteEdges(sc, opt);
+    umbreon::generateObjectSpaceEdges(sc, opt);
     s.check("persp sphere: camera inside => no edges", sc.cylinders.empty());
   }
 
@@ -176,12 +176,12 @@ int main() {
     cyl.group = 4;
     sc.cylinders.push_back(cyl);
 
-    SilEdgeOptions opt;
+    ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.width = 0.02f;
     opt.raise = 0.0f;
     opt.color[0] = 0.0f; opt.color[1] = 0.0f; opt.color[2] = 0.0f;
-    umbreon::generateSilhouetteEdges(sc, opt);
+    umbreon::generateObjectSpaceEdges(sc, opt);
 
     // Original + 2 side generators.
     s.check_eq("side cylinder: 2 edges appended", sc.cylinders.size(),
@@ -224,10 +224,10 @@ int main() {
     cyl.radius = 0.5f;
     sc.cylinders.push_back(cyl);
 
-    SilEdgeOptions opt;
+    ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.raise = 0.1f;
-    umbreon::generateSilhouetteEdges(sc, opt);
+    umbreon::generateObjectSpaceEdges(sc, opt);
     const Cylinder& l1 = sc.cylinders[1];
     const Vec3 o1 = l1.p0 - Vec3{l1.p0.x, 0, 0};
     s.check("raise cylinder: offset == radius + raise",
@@ -246,11 +246,11 @@ int main() {
     cyl.group = 9;
     sc.cylinders.push_back(cyl);
 
-    SilEdgeOptions opt;
+    ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.segments = 20;
     opt.width = 0.03f;
-    umbreon::generateSilhouetteEdges(sc, opt);
+    umbreon::generateObjectSpaceEdges(sc, opt);
     // A cap circle of `segments` cylinders replaces the (collapsed) side lines.
     s.check_eq("end-on cylinder: cap-rim ring emitted", sc.cylinders.size(),
                static_cast<std::size_t>(1 + 20));
@@ -282,11 +282,11 @@ int main() {
     cyl.radius = 0.3f;
     sc.cylinders.push_back(cyl);
 
-    SilEdgeOptions opt;
+    ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.segments = 16;
     opt.clip = false;  // raw-geometry count (the clip is exercised in test 6)
-    umbreon::generateSilhouetteEdges(sc, opt);
+    umbreon::generateObjectSpaceEdges(sc, opt);
     // Exactly: 1 original cylinder + 16 sphere-ring + 2 cylinder side lines.
     // (If the snapshot were broken, the appended sphere-ring/side cylinders
     // would be silhouetted again and the count would explode.)
@@ -324,19 +324,19 @@ int main() {
     };
 
     Scene off = base;
-    SilEdgeOptions oOff;
+    ObjectSpaceEdgeOptions oOff;
     oOff.enable = true;
     oOff.segments = 16;
     oOff.clip = false;
-    umbreon::generateSilhouetteEdges(off, oOff);
+    umbreon::generateObjectSpaceEdges(off, oOff);
     s.check("clip off: a side line runs deep inside the atom", deepInsideAtom(off));
 
     Scene on = base;
-    SilEdgeOptions oOn;
+    ObjectSpaceEdgeOptions oOn;
     oOn.enable = true;
     oOn.segments = 16;
     oOn.clip = true;
-    umbreon::generateSilhouetteEdges(on, oOn);
+    umbreon::generateObjectSpaceEdges(on, oOn);
     s.check("clip on: no edge runs deep inside the atom (union boundary)",
             !deepInsideAtom(on));
     // The clip splits/drops segments, so it must still leave a non-empty outline.
@@ -357,7 +357,7 @@ int main() {
         if (sc.cylinders[i].group == grp) ++n;
       return n;
     };
-    SilEdgeOptions o;
+    ObjectSpaceEdgeOptions o;
     o.enable = true;
     o.segments = 24;
     o.clip = true;
@@ -373,7 +373,7 @@ int main() {
     Scene a;
     a.camera = cam;
     a.spheres.push_back(sp);
-    umbreon::generateSilhouetteEdges(a, o);
+    umbreon::generateObjectSpaceEdges(a, o);
     const std::size_t fullRing = ringEdges(a, 1, 0);
     s.check("sphere-alone ring is a full closed loop", fullRing == 24);
 
@@ -387,7 +387,7 @@ int main() {
     thin.radius = 0.3f;
     thin.group = 2;
     b.cylinders.push_back(thin);
-    umbreon::generateSilhouetteEdges(b, o);
+    umbreon::generateObjectSpaceEdges(b, o);
     s.check("ball-stick: a thinner bond does NOT clip the atom's circle",
             ringEdges(b, 1, 1) == fullRing);
 
@@ -401,7 +401,7 @@ int main() {
     thick.radius = 1.0f;
     thick.group = 2;
     c.cylinders.push_back(thick);
-    umbreon::generateSilhouetteEdges(c, o);
+    umbreon::generateObjectSpaceEdges(c, o);
     s.check("licorice: an equal-radius bond clips the ring (no ball bump)",
             ringEdges(c, 1, 1) < fullRing);
   }
@@ -418,12 +418,12 @@ int main() {
       sc.camera = cam;
       sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
       sc.mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
-      SilEdgeOptions o;
+      ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = false;
       o.meshCrease = false;
       o.meshBorder = true;
-      umbreon::generateSilhouetteEdges(sc, o);
+      umbreon::generateObjectSpaceEdges(sc, o);
       s.check("mesh border: a lone triangle emits 3 boundary edges",
               sc.cylinders.size() == 3);
     }
@@ -435,12 +435,12 @@ int main() {
       sc.camera = cam;
       sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
       sc.mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, -1}};
-      SilEdgeOptions o;
+      ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = true;
       o.meshCrease = false;
       o.meshBorder = false;
-      umbreon::generateSilhouetteEdges(sc, o);
+      umbreon::generateObjectSpaceEdges(sc, o);
       s.check("mesh silhouette: one n.v sign-change face -> one smooth edge",
               sc.cylinders.size() == 1);
     }
@@ -454,13 +454,13 @@ int main() {
       sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0},
                            {1, 0, 0}, {0, 0, 0}, {0, 0, 1}};
       sc.mesh.normals.assign(6, Vec3{0, 0, 1});
-      SilEdgeOptions o;
+      ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = false;
       o.meshCrease = true;
       o.meshBorder = false;
       o.creaseAngleDeg = deg;
-      umbreon::generateSilhouetteEdges(sc, o);
+      umbreon::generateObjectSpaceEdges(sc, o);
       return sc.cylinders.size();
     };
     s.check("mesh crease: a 90deg fold IS a crease at 45deg threshold",
@@ -480,7 +480,7 @@ int main() {
       sc.camera = cam;
       sc.mesh.positions = pos;
       if (!nrm.empty()) sc.mesh.normals = nrm;
-      SilEdgeOptions o;
+      ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = false;
       o.meshCrease = true;
@@ -488,7 +488,7 @@ int main() {
       o.creaseAngleDeg = creaseDeg;
       o.meshCreaseConvexOnly = convexOnly;
       o.meshCreaseSmoothVetoDeg = smoothDeg;
-      umbreon::generateSilhouetteEdges(sc, o);
+      umbreon::generateObjectSpaceEdges(sc, o);
       return sc.cylinders.size();
     };
 
@@ -525,13 +525,13 @@ int main() {
       sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {1.5f, -1, 0},
                            {1, 0, 0}, {2, 0, 0}, {1.5f, -1, 0},
                            {2, 0, 0}, {3, 0, 0}, {1.5f, -1, 0}};
-      SilEdgeOptions o;
+      ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = false;
       o.meshCrease = false;
       o.meshBorder = true;
       o.meshBorderCoplanarVetoDeg = vetoDeg;
-      umbreon::generateSilhouetteEdges(sc, o);
+      umbreon::generateObjectSpaceEdges(sc, o);
       return sc.cylinders.size();
     };
     const std::size_t b0 = borderN(0.0f);
@@ -556,12 +556,12 @@ int main() {
       sc.camera = cam;
       sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
       sc.mesh.normals = {{1, 0, 0}, {0, 0, 1}, {0, 0, -1}};  // DotP = 0, +1, -1
-      SilEdgeOptions o;
+      ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = true;
       o.meshCrease = false;
       o.meshBorder = false;
-      umbreon::generateSilhouetteEdges(sc, o);
+      umbreon::generateObjectSpaceEdges(sc, o);
       s.check("mesh silhouette: an on-contour vertex (DotP==0) still emits a segment",
               sc.cylinders.size() == 1);
     }
@@ -583,7 +583,7 @@ int main() {
         sc.mesh.positions.push_back(r[i]);
         sc.mesh.positions.push_back(r[(i + 1) % 6]);
       }
-      SilEdgeOptions o;
+      ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = false;
       o.meshCrease = true;
@@ -592,7 +592,7 @@ int main() {
       o.meshCreaseConvexOnly = false;
       o.meshCreaseSmoothVetoDeg = 0.0f;
       o.meshCreaseMaxDegree = maxDeg;
-      umbreon::generateSilhouetteEdges(sc, o);
+      umbreon::generateObjectSpaceEdges(sc, o);
       return sc.cylinders.size();
     };
     s.check("cone apex: the six lateral creases are present (filter off)",

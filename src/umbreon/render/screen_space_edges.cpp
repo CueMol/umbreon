@@ -1,4 +1,4 @@
-#include "render/edge_detect.hpp"
+#include "render/screen_space_edges.hpp"
 
 #include <algorithm>
 #include <array>
@@ -508,7 +508,7 @@ void compositeClassMask(const ClassMask& m, std::vector<float>& outColor, int w,
 
 }  // namespace
 
-void applyEdges(FrameResult& frame, const Scene& scene,
+void applyScreenSpaceEdges(FrameResult& frame, const Scene& scene,
                 const RenderOptions& opt) {
   // Requires the Stage A G-buffer; a no-op without it (e.g. edges disabled).
   if (frame.objectId.empty()) return;

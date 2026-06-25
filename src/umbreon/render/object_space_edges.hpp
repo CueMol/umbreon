@@ -1,5 +1,10 @@
 // Analytic OBJECT-SPACE silhouette edges for spheres and cylinders.
 //
+// This is the OBJECT-SPACE (3D geometry) edge method, selected by --obj-edges.
+// Its counterpart is the SCREEN-SPACE (image-post-process) method in
+// render/screen_space_edges.hpp (ScreenSpaceEdgeOptions, --edges). The two are
+// independent; never enable both at once (they would double-draw).
+//
 // For each analytic primitive (Sphere, Cylinder) this computes the 3D locus
 // where the surface normal is perpendicular to the view direction (the n.v == 0
 // contour, i.e. the CueMol "edge"/silhouette) and EMITS it as thin flat-black
@@ -8,7 +13,7 @@
 // these edges for free -- exactly like the baked POV edge_line cylinders.
 //
 // The silhouette is CAMERA DEPENDENT (it is defined relative to the viewer), so
-// generateSilhouetteEdges() must run AFTER Scene::camera is assigned and the
+// generateObjectSpaceEdges() must run AFTER Scene::camera is assigned and the
 // scene is otherwise fully assembled, but BEFORE umbreon::render().
 //
 // Pure C++17, no rendering-library dependency.
@@ -19,9 +24,9 @@ namespace umbreon {
 struct Scene;
 
 // Options for the analytic silhouette-edge pass. enable == false (the default)
-// means generateSilhouetteEdges() is a no-op, so the render stays byte-identical
+// means generateObjectSpaceEdges() is a no-op, so the render stays byte-identical
 // to the no-edge path.
-struct SilEdgeOptions {
+struct ObjectSpaceEdgeOptions {
   bool enable = false;   // master gate; false => no-op, byte-identical default
   float width = 0.03f;   // edge cylinder radius, world units
   float raise = 0.0f;    // outward offset of the contour, world units
@@ -109,6 +114,6 @@ struct SilEdgeOptions {
 // outlines) are skipped as sources. Reads scene.spheres, scene.cylinders,
 // scene.mesh and scene.camera; appends Cylinder edges to scene.cylinders. No-op
 // when opt.enable is false.
-void generateSilhouetteEdges(Scene& scene, const SilEdgeOptions& opt);
+void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt);
 
 }  // namespace umbreon

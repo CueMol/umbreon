@@ -275,9 +275,9 @@ struct Scene {
 
   // Per-section (per transparency group) screen-space edge style, indexed by
   // group id (objectId >> 2). Sized to groupNames.size() and pre-filled with
-  // EdgeOptions::defaultStyle when --edges is on, then overridden per --edge
+  // ScreenSpaceEdgeOptions::defaultStyle when --edges is on, then overridden per --edge
   // ID=spec. Empty (the default) means the edge pass falls back to
-  // EdgeOptions::defaultStyle for every pixel. Only consulted when
+  // ScreenSpaceEdgeOptions::defaultStyle for every pixel. Only consulted when
   // RenderOptions::edges.enable is set.
   std::vector<EdgeStyle> groupEdgeStyle;
 

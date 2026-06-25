@@ -1,4 +1,4 @@
-// Integration tests for the screen-space NPR edge pass (applyEdges), covering
+// Integration tests for the screen-space NPR edge pass (applyScreenSpaceEdges), covering
 // all five Warabi classes plus the suppression tables and Stage-C styling:
 //   - Silhouette (class 1): object-vs-background outline; an image-border
 //     surface pixel must NOT spuriously outline.
@@ -15,7 +15,7 @@
 //   - Stage-C styling: per-class width>1 disk dilation and per-section
 //     groupEdgeStyle color routing.
 //
-// applyEdges() composites edge ink over frame.color in place. Most cases build a
+// applyScreenSpaceEdges() composites edge ink over frame.color in place. Most cases build a
 // synthetic hi-res FrameResult (orthographic camera, so pixelSize is constant
 // and viewZ is planar) with regions in the objectId/viewZ/normal/materialId
 // AOVs, then assert what each class draws. The decisive properties under test
@@ -25,7 +25,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "render/edge_detect.hpp"
+#include "render/screen_space_edges.hpp"
 #include "test_util.hpp"
 
 namespace {
@@ -49,7 +49,7 @@ int inkedCount(const umbreon::FrameResult& f, int x0, int y0, int x1, int y1) {
 
 // Enable exactly one class in opt.edges.defaultStyle (black, opacity 1).
 void enableOnly(umbreon::RenderOptions& opt, umbreon::EdgeClass cls) {
-  opt.edges = umbreon::EdgeOptions{};
+  opt.edges = umbreon::ScreenSpaceEdgeOptions{};
   opt.edges.enable = true;
   opt.edges.defaultStyle.cls[static_cast<int>(cls)].enabled = true;
 }
@@ -57,7 +57,7 @@ void enableOnly(umbreon::RenderOptions& opt, umbreon::EdgeClass cls) {
 }  // namespace
 
 int main() {
-  umbreon::test::Suite s("edge_detect");
+  umbreon::test::Suite s("screen_space_edges");
 
   // ---- Synthetic frame -----------------------------------------------------
   // Orthographic camera looking down -Z, image-plane height == H so the
@@ -179,7 +179,7 @@ int main() {
       }
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Silhouette);
-    umbreon::applyEdges(fr, scS, opt);
+    umbreon::applyScreenSpaceEdges(fr, scS, opt);
 
     // The real object/background boundary at x=15 (surface) | x=16 (bg) inks.
     int realEdgeInk = 0;
@@ -215,7 +215,7 @@ int main() {
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Disconnected);
     umbreon::FrameResult f = frame;  // fresh copy
-    umbreon::applyEdges(f, scene, opt);
+    umbreon::applyScreenSpaceEdges(f, scene, opt);
 
     // The genuine same-object step at x=50 must draw a line (curv is large).
     // Sample interior rows only, clear of the region's bg-bordered top/bottom.
@@ -282,7 +282,7 @@ int main() {
     }
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Disconnected);
-    umbreon::applyEdges(fr, sc2, opt);
+    umbreon::applyScreenSpaceEdges(fr, sc2, opt);
     const int sharpInk = inkedCount(fr, 15, 12, 17, H2 - 12);
     const int smoothInk = inkedCount(fr, 47, 12, 49, H2 - 12);
     s.check("disc: face-to-face step (normals disagree) draws", sharpInk > 10);
@@ -295,7 +295,7 @@ int main() {
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Object);
     umbreon::FrameResult f = frame;
-    umbreon::applyEdges(f, scene, opt);
+    umbreon::applyScreenSpaceEdges(f, scene, opt);
 
     // The A/B boundary with a depth gap must draw.
     const int objSeamInk = inkedCount(f, 63, 12, 65, 52);
@@ -318,7 +318,7 @@ int main() {
     enableOnly(opt, umbreon::EdgeClass::Disconnected);
     opt.edges.curvatureGate = 100.0f;  // gate >> step 2nd diff (8)
     umbreon::FrameResult f = frame;
-    umbreon::applyEdges(f, scene, opt);
+    umbreon::applyScreenSpaceEdges(f, scene, opt);
     const int stepInk = inkedCount(f, 49, 12, 51, 52);
     s.check("disc: huge curvatureGate vetoes even the genuine step",
             stepInk == 0);
@@ -331,7 +331,7 @@ int main() {
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Disconnected);
     umbreon::FrameResult f = frame;
-    umbreon::applyEdges(f, scene, opt);
+    umbreon::applyScreenSpaceEdges(f, scene, opt);
     // Column x=4..5 is the cap's left edge against background; class 2 keys on
     // SAME object, so a background neighbor never makes it a disconnected face.
     int bgAdjInk = 0;
@@ -348,7 +348,7 @@ int main() {
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Material);
     umbreon::FrameResult f = frame;
-    umbreon::applyEdges(f, scene, opt);
+    umbreon::applyScreenSpaceEdges(f, scene, opt);
 
     // The co-planar material seam at x=78 must draw despite zero depth gap.
     const int matSeamInk = inkedCount(f, 77, 12, 79, 52);
@@ -374,7 +374,7 @@ int main() {
     enableOnly(opt, umbreon::EdgeClass::Material);
     opt.edges.materialSuppress[GROUP_B] = (1u << GROUP_B);
     umbreon::FrameResult f = frame;
-    umbreon::applyEdges(f, scene, opt);
+    umbreon::applyScreenSpaceEdges(f, scene, opt);
     const int matSeamInk = inkedCount(f, 77, 12, 79, 52);
     s.check("mat: materialSuppress co-group removes the internal seam",
             matSeamInk == 0);
@@ -390,7 +390,7 @@ int main() {
     opt.edges.objectSuppress[GROUP_A] = (1u << GROUP_B);
     opt.edges.objectSuppress[GROUP_B] = (1u << GROUP_A);
     umbreon::FrameResult f = frame;
-    umbreon::applyEdges(f, scene, opt);
+    umbreon::applyScreenSpaceEdges(f, scene, opt);
     const int objSeamInk = inkedCount(f, 63, 12, 65, 52);
     s.check("obj: objectSuppress co-group removes the A/B boundary",
             objSeamInk == 0);
@@ -462,7 +462,7 @@ int main() {
     }
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Crease);
-    umbreon::applyEdges(fr, sc3, opt);
+    umbreon::applyScreenSpaceEdges(fr, sc3, opt);
     const int meshRidge = inkedCount(fr, 15, 10, 17, H3 - 10);
     const int sphRidge = inkedCount(fr, 35, 10, 37, H3 - 10);
     const int flatRidge = inkedCount(fr, 55, 10, 57, H3 - 10);
@@ -546,7 +546,7 @@ int main() {
     }
     umbreon::RenderOptions opt;
     enableOnly(opt, umbreon::EdgeClass::Crease);
-    umbreon::applyEdges(fr, sc4, opt);
+    umbreon::applyScreenSpaceEdges(fr, sc4, opt);
     // The whole smooth cap interior (away from the rim, which is a silhouette and
     // not under test here) must be free of crease ink.
     const int capInk = inkedCount(fr, capX0 + 2, 10, capX0 + capW - 2, H4 - 10);
@@ -620,7 +620,7 @@ int main() {
     // silhouette = thin (width 1, a hairline) BLUE. groupEdgeStyle is indexed by
     // group id; size it to cover both groups.
     umbreon::RenderOptions opt;
-    opt.edges = umbreon::EdgeOptions{};
+    opt.edges = umbreon::ScreenSpaceEdgeOptions{};
     opt.edges.enable = true;
     scC.groupEdgeStyle.assign(GROUP_B + 1, umbreon::EdgeStyle{});
     {
@@ -639,7 +639,7 @@ int main() {
     }
 
     umbreon::FrameResult fr = makeTwoSlabFrame();
-    umbreon::applyEdges(fr, scC, opt);
+    umbreon::applyScreenSpaceEdges(fr, scC, opt);
 
     // (1) Color routing: group A's right edge (row 10) inks RED, group B's right
     // edge (row 30) inks BLUE -- never the other color.

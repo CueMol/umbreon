@@ -18,7 +18,7 @@
 #include "image/image_io.hpp"
 #include "pov/pov_scene_reader.hpp"
 #include "povexport/pov_writer.hpp"
-#include "render/silhouette_edges.hpp"
+#include "render/object_space_edges.hpp"
 #include "umbreon.hpp"
 
 namespace {
@@ -459,7 +459,7 @@ int main(int argc, char** argv) {
         if (rc > 0 || rs > 0)
           std::printf("  baked POV edges removed: %zu cylinders, %zu joint dots\n", rc, rs);
       }
-      umbreon::SilEdgeOptions silOpt;
+      umbreon::ObjectSpaceEdgeOptions silOpt;
       silOpt.enable = true;
       silOpt.width = opt.objEdgeWidth;
       silOpt.raise = opt.objEdgeRaise;
@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
       silOpt.meshCreaseMaxDegree = opt.objEdgeCreaseMaxDeg;
       for (int k = 0; k < 3; ++k) silOpt.color[k] = opt.objEdgeColor[k];
       const std::size_t before = scene.cylinders.size();
-      umbreon::generateSilhouetteEdges(scene, silOpt);
+      umbreon::generateObjectSpaceEdges(scene, silOpt);
       std::printf(
           "  object-space silhouette edges: +%zu cylinders "
           "(width %.3f, raise %.3f, segments %d)\n",

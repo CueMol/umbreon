@@ -74,7 +74,7 @@ struct Options {
   bool edges = false;
   // TEMPORARY global edge-class selector (--edge-classes <csv of
   // sil,disc,obj,mat,crease>, plus all/none): enables those classes in
-  // EdgeOptions::defaultStyle so each incremental class is testable before
+  // ScreenSpaceEdgeOptions::defaultStyle so each incremental class is testable before
   // per-section --edge styling lands. Indexed by the EdgeClass enum order
   // {Silhouette, Disconnected, Object, Material, Crease}. When --edges is on but
   // --edge-classes is not given, main defaults to SILHOUETTE ONLY (edgeClassesSet
@@ -87,9 +87,9 @@ struct Options {
   // (e.g. "_34_35"); value is the parsed EdgeStyle (which classes are enabled and
   // their per-class color/width/opacity). Resolved against geo.groupNames into
   // Scene::groupEdgeStyle in main, warn-on-miss like --alpha. A section without
-  // an override keeps EdgeOptions::defaultStyle (the global --edge-classes set).
+  // an override keeps ScreenSpaceEdgeOptions::defaultStyle (the global --edge-classes set).
   std::map<std::string, EdgeStyle> sectionEdge;
-  // Global edge detection scalars (override EdgeOptions defaults when set). These
+  // Global edge detection scalars (override ScreenSpaceEdgeOptions defaults when set). These
   // feed ropt.edges.{distanceThreshold,curvatureGate,creaseAngleDeg}; per design
   // open-risk #1, curvatureGate/distanceThreshold often need per-scene tuning on
   // dense molecular scenes, so they are CLI-exposed here.
@@ -147,9 +147,9 @@ struct Options {
   // silhouette keeps such split normals SEPARATE (no averaging, so the smooth
   // contour stops dashing on sharp ribbons) and draws the box edge by the CueMol
   // face-normal straddle test. Smooth tubes (all normals within this angle) are
-  // unaffected. See SilEdgeOptions::meshHardEdgeDeg.
+  // unaffected. See ObjectSpaceEdgeOptions::meshHardEdgeDeg.
   float objEdgeHardDeg = 40.0f;
-  // Geometric crease/border gates (no color). Mirror SilEdgeOptions defaults so
+  // Geometric crease/border gates (no color). Mirror ObjectSpaceEdgeOptions defaults so
   // the out-of-the-box look reproduces the clean CueMol OpenGL outline:
   //   - smooth-facet veto (deg): drop creases that are smooth-shaded tessellation
   //     facets (helix-barrel / ribbon-face hatching); 0 disables.

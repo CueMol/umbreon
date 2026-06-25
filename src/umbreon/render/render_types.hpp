@@ -11,6 +11,12 @@
 namespace umbreon {
 
 // --- screen-space NPR edge rendering (Warabi-style) -----------------------
+// These types belong to the SCREEN-SPACE (image-post-process) edge pass,
+// implemented in render/screen_space_edges.cpp and driven by --edges. They are
+// the counterpart of the OBJECT-SPACE (3D geometry) edge pass, whose options
+// live in render/object_space_edges.hpp (ObjectSpaceEdgeOptions, --obj-edges);
+// the two methods are independent and never share these styling types.
+//
 // The five Warabi edge classes. A pixel can qualify for several; Stage C
 // composites them in a fixed precedence order (most-specific structural edge
 // wins). `Count` is the array size, not a class.
@@ -33,15 +39,15 @@ struct EdgeClassStyle {
 };
 
 // Per CueMol section (per transparency group): a bundle of the five class
-// styles. A section without an explicit override uses EdgeOptions::defaultStyle.
+// styles. A section without an explicit override uses ScreenSpaceEdgeOptions::defaultStyle.
 struct EdgeStyle {
   EdgeClassStyle cls[static_cast<int>(EdgeClass::Count)];
 };
 
 // Global screen-space edge block. The master `enable` flag gates ALL new work:
-// a default-constructed EdgeOptions (enable == false) allocates no AOV and runs
+// a default-constructed ScreenSpaceEdgeOptions (enable == false) allocates no AOV and runs
 // no extra pass, so the renderer output stays byte-identical to the no-edge path.
-struct EdgeOptions {
+struct ScreenSpaceEdgeOptions {
   bool enable = false;  // MASTER gate; false => zero new work, byte-identical
 
   // detection thresholds (Mol* analogues)
@@ -124,7 +130,7 @@ struct RenderOptions {
   // --- screen-space NPR edges --- defaulted OFF (enable == false). When off,
   // no new AOV is allocated and no edge pass runs, so output is byte-identical
   // to the no-edge path.
-  EdgeOptions edges;
+  ScreenSpaceEdgeOptions edges;
 };
 
 // Rendered frame: linear HDR color plus AOV channels, top-left pixel origin.

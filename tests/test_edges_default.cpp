@@ -8,7 +8,7 @@
 //       extra per-pixel work and the legacy code path is untouched.
 //   (2) Turning the master gate ON but leaving every class DISABLED must still
 //       produce a BIT-IDENTICAL color buffer: the AOVs are captured and
-//       applyEdges() runs, but with no class enabled it composites nothing.
+//       applyScreenSpaceEdges() runs, but with no class enabled it composites nothing.
 //
 // This guards the default-off invariant against any future edit to the capture
 // or styling code: if enabling the edge AOVs ever perturbs shading, or if an

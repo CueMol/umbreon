@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "render/edge_detect.hpp"
+#include "render/screen_space_edges.hpp"
 #include "render/embree_renderer.hpp"
 #include "render/fog.hpp"
 
@@ -97,7 +97,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   // the downsample -- so the box-average antialiases them. Gated on the master
   // flag; with edges off no AOV exists and this is never entered, keeping the
   // default render path byte-identical.
-  if (opt.edges.enable) applyEdges(frame, scene, opt);
+  if (opt.edges.enable) applyScreenSpaceEdges(frame, scene, opt);
 
   if (ss > 1) {
     frame.color = boxDownsample(frame.color, frame.width, frame.height, 4, ss);

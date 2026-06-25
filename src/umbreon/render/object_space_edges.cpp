@@ -1,5 +1,5 @@
-// Analytic object-space silhouette-edge generation. See silhouette_edges.hpp.
-#include "render/silhouette_edges.hpp"
+// Analytic object-space silhouette-edge generation. See object_space_edges.hpp.
+#include "render/object_space_edges.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -36,7 +36,7 @@ struct RawSeg {
 // alpha / styling applies to its edges too. fromEdgeMacro is left false: that
 // flag is reserved for the baked POV macro edges (the screen-space pass filters
 // on it), and these analytic edges are a distinct producer.
-Cylinder makeEdge(const Vec3& a, const Vec3& b, const SilEdgeOptions& opt,
+Cylinder makeEdge(const Vec3& a, const Vec3& b, const ObjectSpaceEdgeOptions& opt,
                   uint16_t group) {
   Cylinder c;
   c.p0 = a;
@@ -59,7 +59,7 @@ Cylinder makeEdge(const Vec3& a, const Vec3& b, const SilEdgeOptions& opt,
 //          exactly on the sphere surface.
 // Each ring vertex is offset OUTWARD along its surface normal by opt.raise.
 void emitSphereRing(const Sphere& s, const Camera& cam,
-                    const SilEdgeOptions& opt, std::vector<RawSeg>& out) {
+                    const ObjectSpaceEdgeOptions& opt, std::vector<RawSeg>& out) {
   const Vec3 O = s.center;
   const float r = s.radius;
   if (r <= 0.0f) return;
@@ -108,7 +108,7 @@ void emitSphereRing(const Sphere& s, const Camera& cam,
 // cylinders whose silhouette degenerates to the visible cap circle. The raise
 // is applied radially outward in the cap plane.
 void emitCapCircle(const Vec3& center, const Vec3& axis, float r,
-                   const SilEdgeOptions& opt, uint16_t group,
+                   const ObjectSpaceEdgeOptions& opt, uint16_t group,
                    std::vector<RawSeg>& out) {
   if (r <= 0.0f) return;
   const Frame fr = frameFromNormal(normalize(axis));
@@ -170,7 +170,7 @@ bool cylinderContactDirs(const Vec3& P, const Vec3& u, float r, const Camera& ca
 // projection). Near end-on the contacts degenerate and the outline is the cap
 // circle, so emit the nearer cap rim instead.
 void emitCylinderEdges(const Cylinder& cyl, const Camera& cam,
-                       const SilEdgeOptions& opt, std::vector<RawSeg>& out) {
+                       const ObjectSpaceEdgeOptions& opt, std::vector<RawSeg>& out) {
   const Vec3 A = cyl.p0;
   const Vec3 B = cyl.p1;
   const float r = cyl.radius;
@@ -269,7 +269,7 @@ bool insideAnySolid(const Vec3& X, const Scene& scene, std::size_t nSph,
 // Sample `seg` and emit edge cylinders for the maximal runs that stay OUTSIDE
 // every (original) solid. Sampling spacing ~= edge width: finer spacing yields a
 // cleaner intersection (the "tessellation -> infinity" limit).
-void clipAndEmit(const RawSeg& seg, const SilEdgeOptions& opt, const Scene& scene,
+void clipAndEmit(const RawSeg& seg, const ObjectSpaceEdgeOptions& opt, const Scene& scene,
                  std::size_t nSph, std::size_t nCyl, std::vector<Cylinder>& out) {
   const Vec3 d = seg.b - seg.a;
   const float len = length(d);
@@ -314,7 +314,7 @@ Vec3 viewerDirAt(const Vec3& P, const Camera& cam) {
 // and open-border edges of the de-indexed triangle mesh. Segments are raised
 // outward along the local interpolated normal by opt.raise and pushed as RawSegs
 // to be emitted VERBATIM (the ray tracer resolves their visibility).
-void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& opt,
+void emitMeshEdges(const Mesh& mesh, const Camera& cam, const ObjectSpaceEdgeOptions& opt,
                    std::vector<RawSeg>& out) {
   const std::size_t nCorner = mesh.positions.size();
   const std::size_t nTri = nCorner / 3;
@@ -722,7 +722,7 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
 
 }  // namespace
 
-void generateSilhouetteEdges(Scene& scene, const SilEdgeOptions& opt) {
+void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt) {
   if (!opt.enable) return;  // byte-identical default: no edges appended
 
   // SNAPSHOT the original primitive counts so the edges we append below are not
