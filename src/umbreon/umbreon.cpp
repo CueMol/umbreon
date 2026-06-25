@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "render/screen_space_edges.hpp"
+#include "render/stroke_edges.hpp"
 #include "render/embree_renderer.hpp"
 #include "render/fog.hpp"
 
@@ -92,12 +92,24 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
              frame.color.data(), frame.depth.data());
   }
 
-  // Screen-space NPR edges (Stage B/C): detect from the hi-res edge AOVs and
-  // composite the styled lines over the color in LINEAR space, here -- BEFORE
-  // the downsample -- so the box-average antialiases them. Gated on the master
-  // flag; with edges off no AOV exists and this is never entered, keeping the
-  // default render path byte-identical.
-  if (opt.edges.enable) applyScreenSpaceEdges(frame, scene, opt);
+  // Freestyle-style stroke edges (--edges, NEW): extract/chain/visibility/ribbon
+  // composited over the color in LINEAR space, here -- BEFORE the downsample --
+  // so the box-average antialiases them. The Embree scene is kept ALIVE in
+  // `renderer` through this pass (see EmbreeRenderer) for ray-cast visibility.
+  // Gated on the master flag; with edges off this is never entered, keeping the
+  // default render path byte-identical. --edges drives the stroke pipeline.
+  if (opt.strokeEdges.enable) {
+    // Bind the ray-cast visibility query to the live BVH kept alive in
+    // `renderer` (see EmbreeRenderer): occluded(P, target, selfFaces) is the QI
+    // test, excluding the edge's own incident mesh faces (Freestyle self-face
+    // exclusion). The renderer holds the mesh geomID needed to match those faces.
+    const OcclusionQuery occluded = [&renderer](const Vec3& p, const Vec3& q,
+                                                const int* excludeFaces,
+                                                int nExclude) {
+      return renderer.occluded(p, q, excludeFaces, nExclude);
+    };
+    applyStrokeEdges(frame, scene, opt, occluded);
+  }
 
   if (ss > 1) {
     frame.color = boxDownsample(frame.color, frame.width, frame.height, 4, ss);
@@ -105,11 +117,11 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
       frame.albedo =
           boxDownsample(frame.albedo, frame.width, frame.height, 3, ss);
     // Edge AOVs (normal/viewZ/objectId/materialId) are a hi-res set: the edge
-    // detection/styling pass (future Stage B/C) runs at supersample resolution
-    // before this downsample, and box-averaging integer ids is meaningless. So
-    // when edges are on, leave them at hi-res; only the legacy (dead) normal AOV
-    // path downsamples. frame.width/height below become the FINAL color dims.
-    if (!frame.normal.empty() && !opt.edges.enable)
+    // pass runs at supersample resolution before this downsample, and box-
+    // averaging integer ids is meaningless. So when edges are on, leave them at
+    // hi-res; only the legacy normal AOV path downsamples. frame.width/height
+    // below become the FINAL color dims.
+    if (!frame.normal.empty() && !opt.strokeEdges.enable)
       frame.normal =
           boxDownsample(frame.normal, frame.width, frame.height, 3, ss);
     frame.width = finalW;

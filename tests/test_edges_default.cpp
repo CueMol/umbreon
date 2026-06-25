@@ -1,18 +1,18 @@
-// Byte-identical-default regression for the screen-space NPR edge feature
-// (design doc edge-extraction-screenspace.md, section 10).
+// Byte-identical-default regression for the NPR (--edges) stroke edge feature.
 //
 // The headline guarantee of the whole edge pipeline is that it is OFF by default
-// and adds ZERO observable change unless a class is actually enabled:
+// and adds ZERO observable change unless a nature is actually enabled:
 //   (1) A default-constructed RenderOptions{} allocates NO edge AOV
 //       (objectId/viewZ/normal/materialId stay empty), so the renderer does no
 //       extra per-pixel work and the legacy code path is untouched.
-//   (2) Turning the master gate ON but leaving every class DISABLED must still
-//       produce a BIT-IDENTICAL color buffer: the AOVs are captured and
-//       applyScreenSpaceEdges() runs, but with no class enabled it composites nothing.
+//   (2) Turning the master gate ON but leaving every stroke NATURE DISABLED must
+//       still produce a BIT-IDENTICAL color buffer: the G-buffer AOVs are
+//       captured (so the edge path runs end to end) and applyStrokeEdges() runs
+//       chains/visibility/resample, but with no nature selected it inks nothing.
 //
 // This guards the default-off invariant against any future edit to the capture
 // or styling code: if enabling the edge AOVs ever perturbs shading, or if an
-// "all classes off" render ever inks a pixel, this test fails. A small fixed
+// "all natures off" render ever inks a pixel, this test fails. A small fixed
 // scene with both a mesh and an analytic primitive exercises both id paths.
 #include <cstddef>
 
@@ -90,15 +90,23 @@ int main() {
   // `normal` is the legacy AOV; the edge-off path must not size it either.
   s.check("default: normal AOV not allocated", def.normal.empty());
 
-  // (2) Master gate ON but every class disabled: AOVs ARE captured (so the edge
-  // path runs end to end), yet the color must be BIT-IDENTICAL to the default
-  // render -- enabling the gate alone must change nothing on screen.
+  // (2) Master gate ON but every stroke NATURE disabled: the G-buffer AOVs ARE
+  // captured (so the edge path runs end to end) and applyStrokeEdges runs
+  // chains/visibility/resample, yet it emits no ribbon because no nature is
+  // selected -- so the color must be BIT-IDENTICAL to the default render.
+  // Enabling the gate alone must change nothing on screen. This is the single
+  // consolidated --edges gate (it drives both the AOV capture and the stroke
+  // pass); guards the "all natures off inks nothing" invariant against future
+  // capture/styling edits.
   umbreon::RenderOptions edgesOnAllOff = base;
-  edgesOnAllOff.edges.enable = true;  // defaultStyle has every class disabled
+  edgesOnAllOff.strokeEdges.enable = true;
+  edgesOnAllOff.strokeEdges.silhouette = false;
+  edgesOnAllOff.strokeEdges.crease = false;
+  edgesOnAllOff.strokeEdges.border = false;
   umbreon::FrameResult on = umbreon::render(scene, edgesOnAllOff);
-  s.check("edges-on/all-off: edge AOV is allocated (path exercised)",
+  s.check("edges-on/all-natures-off: edge AOV is allocated (path exercised)",
           !on.objectId.empty());
-  s.check("edges-on/all-off: color is bit-identical to the default path",
+  s.check("edges-on/all-natures-off: color is bit-identical to the default path",
           colorEqual(def, on));
 
   // Same invariant without supersampling (ss == 1 takes the no-downsample
@@ -106,11 +114,14 @@ int main() {
   umbreon::RenderOptions baseNoSS = base;
   baseNoSS.supersample = 1;
   umbreon::RenderOptions onNoSS = baseNoSS;
-  onNoSS.edges.enable = true;
+  onNoSS.strokeEdges.enable = true;
+  onNoSS.strokeEdges.silhouette = false;
+  onNoSS.strokeEdges.crease = false;
+  onNoSS.strokeEdges.border = false;
   umbreon::FrameResult defNoSS = umbreon::render(scene, baseNoSS);
   umbreon::FrameResult onNoSS2 = umbreon::render(scene, onNoSS);
   s.check("ss=1 default: no edge AOV allocated", defNoSS.objectId.empty());
-  s.check("ss=1 edges-on/all-off: color is bit-identical",
+  s.check("ss=1 edges-on/all-natures-off: color is bit-identical",
           colorEqual(defNoSS, onNoSS2));
 
   return s.report();

@@ -10,16 +10,18 @@
 
 namespace umbreon {
 
-// --- screen-space NPR edge rendering (Warabi-style) -----------------------
-// These types belong to the SCREEN-SPACE (image-post-process) edge pass,
-// implemented in render/screen_space_edges.cpp and driven by --edges. They are
-// the counterpart of the OBJECT-SPACE (3D geometry) edge pass, whose options
-// live in render/object_space_edges.hpp (ObjectSpaceEdgeOptions, --obj-edges);
-// the two methods are independent and never share these styling types.
+// --- NPR edge styling types (shared) --------------------------------------
+// These styling types are consumed by the Freestyle-style STROKE edge pass
+// (render/stroke_edges.cpp, --edges): the stroke pipeline maps each EdgeNature
+// onto an EdgeClass slot for per-section coloring (see Scene::groupEdgeStyle).
+// They are independent of the OBJECT-SPACE (3D geometry) edge pass, whose
+// options live in render/object_space_edges.hpp (ObjectSpaceEdgeOptions,
+// --obj-edges).
 //
-// The five Warabi edge classes. A pixel can qualify for several; Stage C
-// composites them in a fixed precedence order (most-specific structural edge
-// wins). `Count` is the array size, not a class.
+// The five edge classes. The stroke pass uses Silhouette / Object (border) /
+// Crease as its per-nature styling slots and composites in a fixed precedence
+// order (most-specific structural edge wins). `Count` is the array size, not a
+// class.
 enum class EdgeClass : uint8_t {
   Silhouette = 0,    // object vs background boundary
   Disconnected = 1,  // same object, depth discontinuity (signature Warabi line)
@@ -39,53 +41,61 @@ struct EdgeClassStyle {
 };
 
 // Per CueMol section (per transparency group): a bundle of the five class
-// styles. A section without an explicit override uses ScreenSpaceEdgeOptions::defaultStyle.
+// styles. A section without an explicit override uses
+// StrokeEdgeOptions::defaultStyle.
 struct EdgeStyle {
   EdgeClassStyle cls[static_cast<int>(EdgeClass::Count)];
 };
 
-// Global screen-space edge block. The master `enable` flag gates ALL new work:
-// a default-constructed ScreenSpaceEdgeOptions (enable == false) allocates no AOV and runs
-// no extra pass, so the renderer output stays byte-identical to the no-edge path.
-struct ScreenSpaceEdgeOptions {
+// --- Freestyle-style stroke edge rendering (--edges) ----------------------
+// Options for the STROKE edge pipeline (render/stroke_edges.cpp), the
+// Freestyle-faithful replacement for the retired per-pixel screen-space pass.
+// It extracts topology-tagged feature edges (silhouette/crease/border), chains
+// them into continuous polylines, computes ray-cast visibility against the live
+// Embree BVH, then rasterizes variable-width ribbons composited in linear space.
+// Per-section styling reuses EdgeStyle/EdgeClassStyle/Scene::groupEdgeStyle.
+//
+// The master `enable` flag gates ALL new work: a default-constructed
+// StrokeEdgeOptions (enable == false) runs no extra pass, so the renderer output
+// stays byte-identical to the no-edge path.
+struct StrokeEdgeOptions {
   bool enable = false;  // MASTER gate; false => zero new work, byte-identical
 
-  // detection thresholds (Mol* analogues)
-  float distanceThreshold = 1.0f;  // depth-gap, LINEAR VIEW-Z world units, pixelSize-scaled
-  // SCALE-INVARIANT curvature veto. The depth 2nd-difference is normalized by the
-  // local 1st-difference (with a pixelSize floor), so curvatureGate is a
-  // dimensionless ratio: ~1 at a genuine step (where the slope jumps), well below
-  // on a smoothly curved surface (where the slope changes slowly). Independent of
-  // scene scale / camera units, unlike the old raw-view-z Mol* GPU constant.
-  float curvatureGate = 0.2f;      // dimensionless 2nd/1st-difference ratio (disc)
-  // Crease has its OWN curvature gate. A crease (fold in the normal field) occurs
-  // at near-constant depth, so its depth 2nd-difference is small and the shared
-  // disc curvatureGate would over-suppress it. Default 0 = no curvature veto for
-  // crease (it relies on the depth-gap veto + the fold-angle test); set positive
-  // only to tame a smoothly-but-tightly curved mesh barrel.
-  float creaseCurvatureGate = 0.0f;
-  float creaseAngleDeg = 22.0f;    // crease: fire when dot(n) < cos(creaseAngleDeg)
-  // Crease grazing-angle bias gain: at full grazing the effective crease angle is
-  // (1 + creaseGrazingBias)x the base angle, suppressing rim false positives on
-  // smooth curvature without affecting head-on folds.
-  float creaseGrazingBias = 0.3f;
-  // Disconnected-face (class 2) NORMAL-CONSISTENCY gate. The line fires only when
-  // the world normals across the depth gap also DISAGREE: dot(n_center, n_sample)
-  // < cos(discNormalAngleDeg). A smooth SES self-occlusion fold (normals
-  // continuous across the gap) is then NOT inked; a true face-to-face step
-  // (normals discontinuous) still inks. Keeps dense molecular SES readable.
-  float discNormalAngleDeg = 35.0f;
-  int neighborhood = 4;            // 4 (+-x,+-y) default; 8 (+diagonals) thicker/closed
+  // --- which natures to extract/draw ---
+  bool silhouette = true;  // smooth n.v==0 contour + hard-edge straddle
+  bool crease = true;      // interior fold edges (dihedral test)
+  bool border = true;      // open boundary edges (one incident face)
 
-  // suppression tables: group ids 1..32, bit i set => co-group => boundary suppressed
-  std::array<uint32_t, 33> objectSuppress{};
-  std::array<uint32_t, 33> materialSuppress{};
+  // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
+  // Ray-cast visibility is analytic, so no 3D lift is needed (raise == 0).
+  float raise = 0.0f;                      // outward contour offset, world units
+  float meshHardEdgeDeg = 40.0f;           // hard-edge straddle / cluster split
+  float creaseAngleDeg = 30.0f;            // crease dihedral threshold (degrees)
+  float meshCreaseSmoothVetoDeg = 35.0f;   // smooth-facet crease veto (0 = off)
+  bool meshCreaseConvexOnly = true;        // keep convex creases, drop valleys
+  float meshBorderCoplanarVetoDeg = 35.0f; // coplanar-continuation border veto
+  int meshCreaseMaxDegree = 4;             // drop crease hubs above this degree
 
-  // styling: a section without an override uses defaultStyle
+  // --- visibility (ray-cast Quantitative Invisibility) ---
+  // Each backbone vertex is tested by casting a ray toward the camera and
+  // counting occluders; QI==0 => visible. The vertex's OWN incident mesh faces
+  // (the feature surface the edge sits on) are excluded as self-occluders by
+  // computeChainVisibility (Freestyle ViewMapBuilder self/adjacent-face
+  // exclusion), so no along-view origin nudge or mask post-processing is needed.
+
+  // --- stylization ---
+  // Stroke geometry in FINAL-resolution pixels; applyStrokeEdges scales these by
+  // the supersample factor since it runs on the hi-res (pre-downsample) frame, so
+  // a line keeps its requested final width at any --supersample.
+  int thickness = 2;        // stroke FULL width, final px (phase-1 const)
+  int resampleStepPx = 2;   // arc-length resample step, final px
+  float color[3] = {0.0f, 0.0f, 0.0f};  // default linear RGB
+  float opacity = 1.0f;                 // 0..1
+
+  // Per-section styling: a section without an override uses defaultStyle. The
+  // stroke pipeline maps each EdgeNature onto a styling slot in EdgeStyle (see
+  // Scene::groupEdgeStyle).
   EdgeStyle defaultStyle;
-
-  // later-phase calligraphic pen (parsed/stored now, ignored until phase 2)
-  float penHardness = 1.0f, penRoundness = 1.0f, penSlant = 0.0f;
 };
 
 // Options for umbreon::render(). Every field here is honored by the renderer;
@@ -127,10 +137,12 @@ struct RenderOptions {
   // bites pathological deep stacks. The renderer warns once if a ray hits it.
   int maxTransparentLayers = 256;
 
-  // --- screen-space NPR edges --- defaulted OFF (enable == false). When off,
-  // no new AOV is allocated and no edge pass runs, so output is byte-identical
-  // to the no-edge path.
-  ScreenSpaceEdgeOptions edges;
+  // --- Freestyle-style stroke edges (--edges) --- defaulted OFF (enable ==
+  // false). When off, no edge AOV is allocated and applyStrokeEdges is never
+  // invoked, so output is byte-identical to the no-edge path. This single flag
+  // is the master gate for the whole --edges pipeline (G-buffer AOV capture,
+  // the stroke pass, and the baked-edge removal); see StrokeEdgeOptions.
+  StrokeEdgeOptions strokeEdges;
 };
 
 // Rendered frame: linear HDR color plus AOV channels, top-left pixel origin.
@@ -141,8 +153,8 @@ struct FrameResult {
   std::vector<float> albedo;  // width*height*3
   std::vector<float> normal;  // width*height*3 world-space
   std::vector<float> depth;   // width*height   ray distance from camera
-  // Screen-space edge AOVs: sized and written ONLY when RenderOptions::edges is
-  // enabled (otherwise left empty, keeping the default path byte-identical).
+  // Edge G-buffer AOVs: sized and written ONLY when RenderOptions::strokeEdges
+  // is enabled (otherwise left empty, keeping the default path byte-identical).
   std::vector<float> viewZ;          // width*height   linear view-z (edge-only)
   std::vector<std::uint32_t> objectId;    // width*height   per-pixel object id
   std::vector<std::uint32_t> materialId;  // width*height   per-pixel material id

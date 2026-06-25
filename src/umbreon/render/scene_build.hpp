@@ -99,9 +99,9 @@ struct BuiltScene {
 // Build and commit every Embree geometry for `scene` on `device`, returning the
 // committed RTCScene and its side tables. Throws std::runtime_error (after
 // releasing the partial scene) if the Embree build reports an error.
-// `buildEdgeTables` (= RenderOptions::edges.enable) additionally fills the
-// per-primitive global material-index side-tables used by the screen-space edge
-// pass; when false those tables stay empty (no extra allocation, byte-identical).
+// `buildEdgeTables` (= RenderOptions::strokeEdges.enable) additionally fills the
+// per-primitive global material-index side-tables used by the edge G-buffer
+// capture; when false those tables stay empty (no extra allocation, byte-identical).
 BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
                             bool buildEdgeTables = false);
 

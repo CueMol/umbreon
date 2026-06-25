@@ -68,41 +68,18 @@ struct Options {
   // Print the input's section ids (transparency groups) and exit.
   bool listGroups = false;
 
-  // --- screen-space NPR edges ---
-  // Master switch for the screen-space edge pass (off => byte-identical default,
-  // no extra AOVs allocated). --edges on|off.
+  // --- Freestyle-style STROKE edges (--edges) ---
+  // Master switch for the stroke edge pass (off => byte-identical default, no
+  // extra AOVs allocated). --edges on|off.
   bool edges = false;
-  // TEMPORARY global edge-class selector (--edge-classes <csv of
-  // sil,disc,obj,mat,crease>, plus all/none): enables those classes in
-  // ScreenSpaceEdgeOptions::defaultStyle so each incremental class is testable before
-  // per-section --edge styling lands. Indexed by the EdgeClass enum order
-  // {Silhouette, Disconnected, Object, Material, Crease}. When --edges is on but
-  // --edge-classes is not given, main defaults to SILHOUETTE ONLY (edgeClassesSet
-  // stays false to signal that fallback); disc/crease/obj/mat are opt-in because
-  // they over-ink dense molecular SES out of the box.
-  bool edgeClass[5] = {false, false, false, false, false};
-  bool edgeClassesSet = false;
   // Per-section edge style override (--edge ID=spec, repeatable), mirroring
   // --alpha one-for-one. Key is the section id with the "_show" prefix stripped
-  // (e.g. "_34_35"); value is the parsed EdgeStyle (which classes are enabled and
-  // their per-class color/width/opacity). Resolved against geo.groupNames into
+  // (e.g. "_34_35"); value is the parsed EdgeStyle (which natures are enabled and
+  // their per-nature color/width/opacity). Resolved against geo.groupNames into
   // Scene::groupEdgeStyle in main, warn-on-miss like --alpha. A section without
-  // an override keeps ScreenSpaceEdgeOptions::defaultStyle (the global --edge-classes set).
+  // an override keeps the global stroke style (StrokeEdgeOptions::defaultStyle,
+  // seeded from the --stroke-* toggles below).
   std::map<std::string, EdgeStyle> sectionEdge;
-  // Global edge detection scalars (override ScreenSpaceEdgeOptions defaults when set). These
-  // feed ropt.edges.{distanceThreshold,curvatureGate,creaseAngleDeg}; per design
-  // open-risk #1, curvatureGate/distanceThreshold often need per-scene tuning on
-  // dense molecular scenes, so they are CLI-exposed here.
-  float edgeDistanceThreshold = 1.0f;
-  float edgeCurvatureGate = 0.5f;
-  float edgeCreaseAngleDeg = 30.0f;
-  float edgeCreaseGrazingBias = 1.0f;
-  float edgeDiscNormalAngleDeg = 35.0f;
-  bool edgeDistanceSet = false;
-  bool edgeCurvatureSet = false;
-  bool edgeCreaseAngleSet = false;
-  bool edgeCreaseGrazingSet = false;
-  bool edgeDiscNormalAngleSet = false;
   // Debug AOV dump prefix (--dump-aov <prefix>): when set AND edges are on, write
   // false-color objectId/materialId, normal*0.5+0.5 and normalized viewZ images
   // named "<prefix>_*.png". Empty => no dump.
@@ -160,6 +137,23 @@ struct Options {
   bool objEdgeCreaseConvexOnly = true;
   float objEdgeBorderCoplanarDeg = 35.0f;
   int objEdgeCreaseMaxDeg = 4;   // drop crease-cluster (cap/terminus) hubs; 0=off
+
+  // --- Freestyle-style STROKE edges (--edges, NEW) ---
+  // --edges <on|off> now drives the stroke pipeline (StrokeEdgeOptions), the
+  // replacement for the retired per-pixel screen-space pass; the `edges` flag
+  // above is reused as its master gate. These stub scalar knobs and nature
+  // toggles are parsed/stored now (wired to ropt.strokeEdges) but only honored as
+  // later steps implement the pipeline. They mirror the --obj-edge-* block.
+  float strokeThickness = 2.0f;   // stroke full width, FINAL px (--stroke-thickness; ss-scaled internally)
+  float strokeResample = 2.0f;    // arc-length resample step, FINAL px (--stroke-resample; ss-scaled internally)
+  float strokeCreaseDeg = 30.0f;  // crease dihedral threshold (--edge-crease-deg)
+  bool strokeThicknessSet = false;
+  bool strokeResampleSet = false;
+  bool strokeCreaseDegSet = false;
+  // Per-nature toggles (--stroke-silhouette / --stroke-crease / --stroke-border).
+  bool strokeSilhouette = true;
+  bool strokeCrease = true;
+  bool strokeBorder = true;
 
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;

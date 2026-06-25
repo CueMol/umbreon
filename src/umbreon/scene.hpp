@@ -273,12 +273,12 @@ struct Scene {
   // (fragment alpha). Empty (default) => every transparent surface is over.
   std::vector<uint16_t> veilGroups;
 
-  // Per-section (per transparency group) screen-space edge style, indexed by
-  // group id (objectId >> 2). Sized to groupNames.size() and pre-filled with
-  // ScreenSpaceEdgeOptions::defaultStyle when --edges is on, then overridden per --edge
-  // ID=spec. Empty (the default) means the edge pass falls back to
-  // ScreenSpaceEdgeOptions::defaultStyle for every pixel. Only consulted when
-  // RenderOptions::edges.enable is set.
+  // Per-section (per transparency group) stroke edge style, indexed by group id
+  // (objectId >> 2). Sized to groupNames.size() and pre-filled with
+  // StrokeEdgeOptions::defaultStyle when --edges is on, then overridden per --edge
+  // ID=spec. Empty (the default) means the stroke pass falls back to the global
+  // StrokeEdgeOptions::defaultStyle. Only consulted when
+  // RenderOptions::strokeEdges.enable is set.
   std::vector<EdgeStyle> groupEdgeStyle;
 
   std::size_t instanceCount() const { return instanceOffsets.size(); }

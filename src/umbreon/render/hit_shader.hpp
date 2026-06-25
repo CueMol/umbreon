@@ -93,9 +93,9 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                           c.opt.shadows, c.opt.shadowSamples, px, py);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
-    // Edge G-buffer (only when the screen-space edge pass is on; otherwise the
+    // Edge G-buffer (only when the stroke edge pass is on; otherwise the
     // material-index side-tables are empty and these reads must not happen).
-    if (c.opt.edges.enable) {
+    if (c.opt.strokeEdges.enable) {
       // Crease AOV: store the SMOOTH interpolated shading normal N (slot-0
       // interpolated, already face-forwarded at line above). The geometric Ng
       // is piecewise-constant per triangle and would crease at EVERY facet edge
@@ -150,7 +150,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                           : c.built.cylGroup[rh.hit.primID];
     // Edge G-buffer (only when the edge pass is on; the material-index
     // side-tables are empty otherwise, so these reads must be gated).
-    if (c.opt.edges.enable) {
+    if (c.opt.strokeEdges.enable) {
       hs.normal = N;  // analytic face-forwarded normal: the TRUE smooth normal
                       // of a sphere/cylinder surface (no facet interpolation)
       hs.objectId = (static_cast<uint32_t>(hs.group) << 2) |

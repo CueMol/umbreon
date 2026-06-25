@@ -1,5 +1,6 @@
 #include "render/embree_renderer.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -15,6 +16,7 @@
 
 #include "render/hit_shader.hpp"
 #include "render/scene_build.hpp"
+#include "render/secondary_rays.hpp"
 #include "render/transparency.hpp"
 
 namespace umbreon {
@@ -24,7 +26,120 @@ namespace umbreon {
 // the detail namespace; pull it in so the driver below uses them unqualified.
 using namespace detail;
 
+namespace {
+
+// Ray query context for the self-face-excluding occlusion test. Derives from
+// RTCRayQueryContext (first member, as Embree requires) and carries the set of
+// mesh (geomID, primID) hits to REJECT -- the feature edge's own incident faces.
+// Embree passes a pointer to this through to the argument filter below.
+struct ExcludeFaceContext {
+  RTCRayQueryContext base;        // MUST be first (Embree reinterpret_casts it)
+  unsigned int meshGeomID;        // the mesh geometry id (RTC_INVALID if none)
+  unsigned int baseTriCount;      // de-indexed base tri count (for baked copies)
+  const int* faces;               // excluded base triangle ids
+  int nFaces;                     // count
+};
+
+// Argument intersection filter: reject (do not count) a hit that lands on one of
+// the excluded incident faces of the mesh. With rtcOccluded1 + this filter a
+// rejected hit leaves the ray un-occluded, so the ray is occluded only by a
+// NON-excluded primitive -- exactly Freestyle's "count occluders, skip the
+// edge's own/adjacent faces" (ViewMapBuilder.cpp:2152-2195). N==1 here.
+void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
+  const auto* ctx = reinterpret_cast<const ExcludeFaceContext*>(args->context);
+  if (ctx == nullptr || ctx->nFaces == 0) return;  // nothing to exclude
+  int* valid = args->valid;
+  for (unsigned int i = 0; i < args->N; ++i) {
+    if (valid[i] == 0) continue;  // already invalid
+    RTCHitN* hit = args->hit;
+    const unsigned int geomID = RTCHitN_geomID(hit, args->N, i);
+    if (geomID != ctx->meshGeomID) continue;  // only the mesh self-occludes here
+    unsigned int primID = RTCHitN_primID(hit, args->N, i);
+    if (ctx->baseTriCount > 0) primID %= ctx->baseTriCount;  // undo baked copies
+    for (int k = 0; k < ctx->nFaces; ++k) {
+      if (static_cast<unsigned int>(ctx->faces[k]) == primID) {
+        valid[i] = 0;  // reject this self-face hit (not an occluder)
+        break;
+      }
+    }
+  }
+}
+
+}  // namespace
+
+EmbreeRenderer::~EmbreeRenderer() { releaseEmbree(); }
+
+void EmbreeRenderer::releaseEmbree() {
+  if (scene_) {
+    rtcReleaseScene(scene_);
+    scene_ = nullptr;
+  }
+  if (device_) {
+    rtcReleaseDevice(device_);
+    device_ = nullptr;
+  }
+}
+
+bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
+                              const int* excludeFaces, int nExclude,
+                              float eps) const {
+  if (!scene_) return false;  // no live BVH (edges/visibility not built)
+  const Vec3 d = q - p;
+  const float len = length(d);
+  if (len <= 0.0f) return false;
+  const Vec3 dir = {d.x / len, d.y / len, d.z / len};
+  // Trim both ends to the OPEN interval (0, raylength): a tiny absolute+relative
+  // epsilon clears the surface the ray leaves and excludes the target itself.
+  // With true self-face exclusion below, this is only a numerical guard against
+  // a ray grazing its own (non-excluded) neighbour edge, not the load-bearing
+  // self-occlusion handling.
+  const float tnear = std::max(eps * len, eps);
+  const float tfar = len * (1.0f - eps);
+  if (tnear >= tfar) return false;
+
+  // No faces to exclude: the plain any-hit test (no filter) suffices.
+  if (excludeFaces == nullptr || nExclude == 0 ||
+      meshGeomID_ == static_cast<unsigned int>(-1))
+    return detail::occluded(scene_, p, dir, tnear, tfar);
+
+  // Self-face-excluding any-hit test: attach the argument filter that rejects
+  // hits on the edge's own incident mesh faces, so they are not counted as
+  // occluders (Freestyle self/adjacent-face exclusion).
+  RTCRay r;
+  r.org_x = p.x;
+  r.org_y = p.y;
+  r.org_z = p.z;
+  r.dir_x = dir.x;
+  r.dir_y = dir.y;
+  r.dir_z = dir.z;
+  r.tnear = tnear;
+  r.tfar = tfar;
+  r.mask = 0xFFFFFFFFu;
+  r.flags = 0;
+  r.time = 0.0f;
+
+  ExcludeFaceContext ctx;
+  rtcInitRayQueryContext(&ctx.base);
+  ctx.meshGeomID = meshGeomID_;
+  ctx.baseTriCount = meshBaseTriCount_;
+  ctx.faces = excludeFaces;
+  ctx.nFaces = nExclude;
+
+  RTCOccludedArguments oargs;
+  rtcInitOccludedArguments(&oargs);
+  oargs.flags = RTC_RAY_QUERY_FLAG_INVOKE_ARGUMENT_FILTER;
+  oargs.filter = excludeFaceFilter;
+  oargs.context = &ctx.base;
+
+  rtcOccluded1(scene_, &r, &oargs);
+  return r.tfar < 0.0f;  // a NON-excluded occluder was found
+}
+
 FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
+  // A renderer instance renders one scene; if reused, drop the previous BVH
+  // before building the new one (keeps the lifetime invariant simple).
+  releaseEmbree();
+
   RTCDevice device = rtcNewDevice(nullptr);
   if (!device) throw std::runtime_error("rtcNewDevice failed");
   rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
@@ -34,7 +149,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // propagating so render() leaks neither handle.
   BuiltScene built;
   try {
-    built = buildEmbreeScene(device, scene, opt.edges.enable);
+    built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
   } catch (...) {
     rtcReleaseDevice(device);
     throw;
@@ -79,10 +194,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   res.height = H;
   res.color.assign(static_cast<std::size_t>(W) * H * 4, 0.0f);
   res.depth.assign(static_cast<std::size_t>(W) * H, 0.0f);
-  // Screen-space edge AOVs: allocated ONLY when edges are enabled. With edges
-  // off these stay empty, so no extra memory is touched and the output path is
+  // Edge G-buffer AOVs: allocated ONLY when edges are enabled. With edges off
+  // these stay empty, so no extra memory is touched and the output path is
   // byte-identical to the no-edge render.
-  if (opt.edges.enable) {
+  if (opt.strokeEdges.enable) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     res.viewZ.assign(npix, 0.0f);
     res.normal.assign(npix * 3, 0.0f);
@@ -142,7 +257,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.color[pix * 4 + 3] = pr.a;
       res.depth[pix] = pr.depth;
       // Edge G-buffer store: gated so the default path writes nothing extra.
-      if (opt.edges.enable) {
+      if (opt.strokeEdges.enable) {
         res.viewZ[pix] = pr.viewZ;
         res.normal[pix * 3 + 0] = pr.worldNormal.x;
         res.normal[pix * 3 + 1] = pr.worldNormal.y;
@@ -166,8 +281,24 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();
 
-  rtcReleaseScene(built.scene);
-  rtcReleaseDevice(device);
+  // Record the mesh geometry identity so occluded() can map an excluded
+  // mesh-triangle id to an Embree (geomID, primID) hit for Freestyle self-face
+  // exclusion. The mesh is attached first (scene_build.cpp), so it is geomID 0
+  // when present; find it by kind to stay robust if the build order changes or
+  // the scene has no mesh.
+  meshGeomID_ = static_cast<unsigned int>(-1);  // RTC_INVALID_GEOMETRY_ID
+  for (std::size_t g = 0; g < built.records.size(); ++g)
+    if (built.records[g].kind == GeomKind::Mesh) {
+      meshGeomID_ = static_cast<unsigned int>(g);
+      break;
+    }
+  meshBaseTriCount_ = static_cast<unsigned int>(scene.mesh.triangleCount());
+
+  // Keep the device + committed scene ALIVE so the edge pass (run after this
+  // returns, before the box downsample) can ray-cast against the live BVH via
+  // occluded(). They are released in the destructor / on the next render().
+  device_ = device;
+  scene_ = built.scene;
   return res;
 }
 

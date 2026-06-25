@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
         }
       }
       // Keep the section names for the post-block --edge resolution (the edge
-      // styles need ropt.edges.defaultStyle, populated after this block).
+      // styles need ropt.strokeEdges.defaultStyle, populated after this block).
       groupNames = geo.groupNames;
       scene.camera = ps.camera;
       scene.lights = ps.lights;
@@ -272,60 +272,51 @@ int main(int argc, char** argv) {
     ropt.transparency = opt.transparency;
     ropt.transparentBackground = opt.transparentBackground;
 
-    // Screen-space NPR edges (master gate). Off => byte-identical default path.
-    ropt.edges.enable = opt.edges;
-    if (ropt.edges.enable) {
-      // Global detection scalars (CLI-overridable; per design open-risk #1 the
-      // curvature/distance gates often need per-scene tuning on dense scenes).
-      if (opt.edgeDistanceSet)
-        ropt.edges.distanceThreshold = opt.edgeDistanceThreshold;
-      if (opt.edgeCurvatureSet)
-        ropt.edges.curvatureGate = opt.edgeCurvatureGate;
-      if (opt.edgeCreaseAngleSet)
-        ropt.edges.creaseAngleDeg = opt.edgeCreaseAngleDeg;
-      if (opt.edgeCreaseGrazingSet)
-        ropt.edges.creaseGrazingBias = opt.edgeCreaseGrazingBias;
-      if (opt.edgeDiscNormalAngleSet)
-        ropt.edges.discNormalAngleDeg = opt.edgeDiscNormalAngleDeg;
+    // Freestyle STROKE edges (--edges). The single strokeEdges.enable flag is the
+    // master gate for the whole --edges pipeline (G-buffer AOV capture, the
+    // stroke pass, and the baked-edge removal below). Off => byte-identical
+    // default path. The --stroke-* knobs are wired only when edges are on.
+    ropt.strokeEdges.enable = opt.edges;
+    if (opt.edges) {
+      ropt.strokeEdges.silhouette = opt.strokeSilhouette;
+      ropt.strokeEdges.crease = opt.strokeCrease;
+      ropt.strokeEdges.border = opt.strokeBorder;
+      if (opt.strokeThicknessSet)
+        ropt.strokeEdges.thickness =
+            static_cast<int>(opt.strokeThickness + 0.5f);
+      if (opt.strokeResampleSet)
+        ropt.strokeEdges.resampleStepPx =
+            static_cast<int>(opt.strokeResample + 0.5f);
+      if (opt.strokeCreaseDegSet)
+        ropt.strokeEdges.creaseAngleDeg = opt.strokeCreaseDeg;
 
-      // Which classes EXIST (clamp guard for any enable bit, global or
-      // per-section): a class never enabled past the implemented set. All five
-      // are implemented; extend as later classes are added.
-      static const bool kImplemented[5] = {
-          true,   // Silhouette
-          true,   // Disconnected
-          true,   // Object
-          true,   // Material
-          true,   // Crease
+      // Per-section STROKE styling. The stroke pass (applyStrokeEdges) maps each
+      // EdgeNature onto an EdgeStyle::cls[] slot (Silhouette->Silhouette,
+      // Border->Object, Crease->Crease) and reads Scene::groupEdgeStyle[group].
+      // Seed defaultStyle so a bare "--edges on" enables exactly the natures the
+      // --stroke-* toggles select, inheriting the global stroke color/thickness;
+      // then resolve --edge ID=spec overrides against the section names (parallel
+      // to the --alpha loop, warn-on-miss). With groupEdgeStyle populated the
+      // stroke pass styles per section; an empty table would fall back to the
+      // single global stroke color.
+      const int kSilSlot = static_cast<int>(umbreon::EdgeClass::Silhouette);
+      const int kObjSlot = static_cast<int>(umbreon::EdgeClass::Object);
+      const int kCreaseSlot = static_cast<int>(umbreon::EdgeClass::Crease);
+      umbreon::EdgeStyle& ds = ropt.strokeEdges.defaultStyle;
+      auto seedSlot = [&](int slot, bool on) {
+        umbreon::EdgeClassStyle& cs = ds.cls[slot];
+        cs.enabled = on;
+        cs.color[0] = ropt.strokeEdges.color[0];
+        cs.color[1] = ropt.strokeEdges.color[1];
+        cs.color[2] = ropt.strokeEdges.color[2];
+        cs.opacity = ropt.strokeEdges.opacity;
+        cs.width = static_cast<float>(ropt.strokeEdges.thickness);
       };
-      // Default-ON set when --edges is given WITHOUT --edge-classes: SILHOUETTE
-      // ONLY. disc/crease/obj/mat over-ink dense molecular SES out-of-the-box
-      // (no parameterization fully cleans disc on SES), so they are opt-in via
-      // --edge-classes or per-section --edge. Bare "--edges on" then cleanly
-      // removes the baked POV edges and draws just the silhouette = the clean
-      // drop-in replacement for the baked outline.
-      static const bool kDefaultOn[5] = {
-          true,    // Silhouette
-          true,    // Disconnected
-          false,   // Object   (one section => never fires; off avoids cost)
-          false,   // Material (gradient bands would over-ink; leave OFF)
-          true,    // Crease
-      };
-      umbreon::EdgeStyle& ds = ropt.edges.defaultStyle;
-      for (int i = 0; i < 5; ++i) {
-        const bool want =
-            opt.edgeClassesSet ? opt.edgeClass[i] : kDefaultOn[i];
-        ds.cls[i].enabled = want && kImplemented[i];
-      }
+      seedSlot(kSilSlot, opt.strokeSilhouette);
+      seedSlot(kObjSlot, opt.strokeBorder);
+      seedSlot(kCreaseSlot, opt.strokeCrease);
 
-      // Per-section styling: resolve --edge ID=spec against the section names
-      // (parallel to the --alpha loop). Size groupEdgeStyle to the section count
-      // and pre-fill every slot with the resolved defaultStyle, then override the
-      // listed sections; warn-on-miss like --alpha. A section the user passes
-      // --edge for must enable only classes the global --edge-classes still
-      // permits, so kImplemented is re-applied to its enable bits (a class can be
-      // styled per section but never enabled past the global implemented set).
-      scene.groupEdgeStyle.assign(groupNames.size(), ropt.edges.defaultStyle);
+      scene.groupEdgeStyle.assign(groupNames.size(), ds);
       if (!opt.sectionEdge.empty()) {
         std::map<std::string, int> gidx;
         for (std::size_t i = 0; i < groupNames.size(); ++i)
@@ -338,25 +329,22 @@ int main(int argc, char** argv) {
                          kv.first.c_str());
             continue;
           }
-          umbreon::EdgeStyle st = kv.second;
-          for (int i = 0; i < 5; ++i)
-            st.cls[i].enabled = st.cls[i].enabled && kImplemented[i];
-          scene.groupEdgeStyle[it->second] = st;
+          scene.groupEdgeStyle[it->second] = kv.second;
           std::printf("  edge override: section %s (group %d)\n",
                       kv.first.c_str(), it->second);
         }
       }
-
+    }
+    if (ropt.strokeEdges.enable) {
       // Remove baked POV edge primitives (edge_line/edge_line2 -> open
       // cylinders, tagged fromEdgeMacro) so they do not double-draw against the
-      // screen-space silhouettes. PER-SECTION policy: a baked edge is dropped
-      // ONLY when its group resolves to a section whose EdgeStyle enables the
-      // Silhouette OR Disconnected class. Since the global default-on set is
-      // SILHOUETTE ONLY, a bare "--edges on" enables silhouette for every section
-      // and so drops all baked POV outlines -- the demonstrated clean drop-in
-      // replacement (screen-space silhouette in their place). A section whose
-      // --edge override disables both silhouette and disc (e.g. crease-only)
-      // keeps its baked POV outlines. Capped bonds (open == false,
+      // Freestyle STROKE edges. PER-SECTION policy: a baked edge is dropped ONLY
+      // when its group resolves to a section whose stroke EdgeStyle enables ANY
+      // drawn nature (Silhouette / Border->Object / Crease slot). A bare
+      // "--edges on" enables silhouette+crease+border for every section and so
+      // drops all baked POV outlines -- the clean drop-in replacement (strokes in
+      // their place). A section whose --edge override disables every nature keeps
+      // its baked POV outlines. Capped bonds (open == false,
       // GeomKind::CylinderCapped) are NEVER removed. --keep-baked-edges on
       // suppresses the filter entirely (A/B). Runs only with --edges on; with
       // edges off this block does not execute, so nothing is filtered
@@ -364,11 +352,13 @@ int main(int argc, char** argv) {
       if (!opt.keepBakedEdges && !scene.cylinders.empty()) {
         const std::size_t ng = scene.groupEdgeStyle.size();
         const int kSil = static_cast<int>(umbreon::EdgeClass::Silhouette);
-        const int kDisc = static_cast<int>(umbreon::EdgeClass::Disconnected);
+        const int kObj = static_cast<int>(umbreon::EdgeClass::Object);
+        const int kCrease = static_cast<int>(umbreon::EdgeClass::Crease);
         auto sectionRemovesBaked = [&](std::uint16_t g) -> bool {
           if (g >= ng) return false;  // unaddressable group: keep baked edges
           const umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
-          return es.cls[kSil].enabled || es.cls[kDisc].enabled;
+          return es.cls[kSil].enabled || es.cls[kObj].enabled ||
+                 es.cls[kCrease].enabled;
         };
         const std::size_t before = scene.cylinders.size();
         scene.cylinders.erase(
@@ -382,8 +372,8 @@ int main(int argc, char** argv) {
         const std::size_t removed = before - scene.cylinders.size();
         if (removed > 0)
           std::printf(
-              "  baked POV edges removed: %zu cylinders (sections with "
-              "silhouette/disconnected enabled)\n",
+              "  baked POV edges removed: %zu cylinders (sections with a "
+              "stroke nature enabled)\n",
               removed);
       }
     }
@@ -512,7 +502,7 @@ int main(int argc, char** argv) {
     // AOVs stay at the SUPERSAMPLE resolution (hiW x hiH), unlike the downsampled
     // color, so dump at those dims (recovered from the buffer size).
     if (!opt.dumpAovPrefix.empty()) {
-      if (!ropt.edges.enable) {
+      if (!ropt.strokeEdges.enable) {
         std::fprintf(stderr,
                      "warning: --dump-aov ignored (needs --edges on)\n");
       } else if (frame.objectId.empty()) {

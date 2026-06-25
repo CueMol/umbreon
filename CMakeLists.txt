@@ -116,7 +116,8 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/scene_build.cpp
     src/umbreon/render/curve_build.cpp
     src/umbreon/render/fog.cpp
-    src/umbreon/render/screen_space_edges.cpp
+    src/umbreon/render/stroke_edges.cpp
+    src/umbreon/render/mesh_feature_edges.cpp
     src/umbreon/render/object_space_edges.cpp
     src/umbreon/umbreon.cpp
   )
@@ -168,6 +169,8 @@ if(TARGET umbreon)
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
   install(FILES src/umbreon/render/render_types.hpp
                 src/umbreon/render/object_space_edges.hpp
+                src/umbreon/render/mesh_feature_edges.hpp
+                src/umbreon/render/stroke_edges.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
 
   # The exported target records its PUBLIC link to Embree/TBB. That only round-

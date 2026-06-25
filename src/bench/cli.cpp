@@ -130,41 +130,6 @@ bool parseEdgeSpec(const std::string& spec, EdgeStyle& out) {
   return true;
 }
 
-// Parse the TEMPORARY --edge-classes csv (sil,disc,obj,mat,crease, plus the
-// shorthands all/none) into the EdgeClass-ordered enable flags
-// {Silhouette, Disconnected, Object, Material, Crease}. Returns false on an
-// unknown token (caller reports the error).
-bool parseEdgeClasses(const std::string& csv, bool out[5]) {
-  for (int i = 0; i < 5; ++i) out[i] = false;
-  std::size_t pos = 0;
-  while (pos <= csv.size()) {
-    std::size_t comma = csv.find(',', pos);
-    std::string tok =
-        csv.substr(pos, comma == std::string::npos ? std::string::npos
-                                                   : comma - pos);
-    pos = (comma == std::string::npos) ? csv.size() + 1 : comma + 1;
-    if (tok.empty()) continue;  // tolerate stray / trailing commas
-    if (tok == "none") {
-      for (int i = 0; i < 5; ++i) out[i] = false;
-    } else if (tok == "all") {
-      for (int i = 0; i < 5; ++i) out[i] = true;
-    } else if (tok == "sil") {
-      out[0] = true;
-    } else if (tok == "disc") {
-      out[1] = true;
-    } else if (tok == "obj") {
-      out[2] = true;
-    } else if (tok == "mat") {
-      out[3] = true;
-    } else if (tok == "crease") {
-      out[4] = true;
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
 }  // namespace
 
 Options parseCli(int argc, char** argv) {
@@ -261,13 +226,6 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--edges") {
       std::string v = value("--edges");
       if (o.ok && !parseBool(v, o.edges)) fail("--edges expects on/off");
-    } else if (a == "--edge-classes") {
-      std::string v = value("--edge-classes");
-      if (o.ok && !parseEdgeClasses(v, o.edgeClass))
-        fail("--edge-classes expects a csv of sil,disc,obj,mat,crease "
-             "(or all/none)");
-      else
-        o.edgeClassesSet = true;
     } else if (a == "--edge") {
       // --edge ID=spec : per-section edge style override (repeatable), mirroring
       // --alpha. Split on the first '=', strip a leading "_show", parse the spec
@@ -287,26 +245,6 @@ Options parseCli(int argc, char** argv) {
         else
           o.sectionEdge[id] = st;
       }
-    } else if (a == "--edge-distance") {
-      o.edgeDistanceThreshold =
-          static_cast<float>(std::atof(value("--edge-distance").c_str()));
-      o.edgeDistanceSet = true;
-    } else if (a == "--edge-curvature") {
-      o.edgeCurvatureGate =
-          static_cast<float>(std::atof(value("--edge-curvature").c_str()));
-      o.edgeCurvatureSet = true;
-    } else if (a == "--edge-crease-angle") {
-      o.edgeCreaseAngleDeg =
-          static_cast<float>(std::atof(value("--edge-crease-angle").c_str()));
-      o.edgeCreaseAngleSet = true;
-    } else if (a == "--edge-crease-grazing") {
-      o.edgeCreaseGrazingBias =
-          static_cast<float>(std::atof(value("--edge-crease-grazing").c_str()));
-      o.edgeCreaseGrazingSet = true;
-    } else if (a == "--edge-disc-normal-angle") {
-      o.edgeDiscNormalAngleDeg = static_cast<float>(
-          std::atof(value("--edge-disc-normal-angle").c_str()));
-      o.edgeDiscNormalAngleSet = true;
     } else if (a == "--obj-edges") {
       std::string v = value("--obj-edges");
       if (o.ok && !parseBool(v, o.objEdges)) fail("--obj-edges expects on/off");
@@ -356,6 +294,30 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--obj-edge-mesh-border");
       if (o.ok && !parseBool(v, o.objEdgeMeshBorder))
         fail("--obj-edge-mesh-border expects on/off");
+    } else if (a == "--stroke-thickness") {
+      o.strokeThickness =
+          static_cast<float>(std::atof(value("--stroke-thickness").c_str()));
+      o.strokeThicknessSet = true;
+    } else if (a == "--stroke-resample") {
+      o.strokeResample =
+          static_cast<float>(std::atof(value("--stroke-resample").c_str()));
+      o.strokeResampleSet = true;
+    } else if (a == "--edge-crease-deg") {
+      o.strokeCreaseDeg =
+          static_cast<float>(std::atof(value("--edge-crease-deg").c_str()));
+      o.strokeCreaseDegSet = true;
+    } else if (a == "--stroke-silhouette") {
+      std::string v = value("--stroke-silhouette");
+      if (o.ok && !parseBool(v, o.strokeSilhouette))
+        fail("--stroke-silhouette expects on/off");
+    } else if (a == "--stroke-crease") {
+      std::string v = value("--stroke-crease");
+      if (o.ok && !parseBool(v, o.strokeCrease))
+        fail("--stroke-crease expects on/off");
+    } else if (a == "--stroke-border") {
+      std::string v = value("--stroke-border");
+      if (o.ok && !parseBool(v, o.strokeBorder))
+        fail("--stroke-border expects on/off");
     } else if (a == "--dump-aov") {
       o.dumpAovPrefix = value("--dump-aov");
     } else if (a == "--keep-baked-edges") {
@@ -425,16 +387,9 @@ void printUsage(const char* prog) {
       "  --threads <int>          TBB parallelism cap (1 = serial)  [0 = all]\n"
       "  --alpha <ID=value>       set a section's opacity (e.g. _34_35=0.5)\n"
       "  --list-groups            list the input's section ids and exit\n"
-      "  --edges <on|off>         screen-space NPR edge pass (sil+disc+crease) [off]\n"
-      "  --edge-classes <csv>     edge classes: sil,disc,obj,mat,crease|all|none\n"
-      "                           (default with --edges on: sil,disc,crease)\n"
+      "  --edges <on|off>         Freestyle stroke edge pass (sil/crease/border) [off]\n"
       "  --edge <ID=spec>         per-section edge style (repeatable), e.g.\n"
       "                           _34_35=sil,crease:color=#000000:width=1.5\n"
-      "  --edge-distance <float>  depth-gap threshold (view-z units)     [1.00]\n"
-      "  --edge-curvature <float> disc curvature-veto gate (2nd/1st)      [0.20]\n"
-      "  --edge-crease-angle <f>  crease fold angle, degrees            [22.00]\n"
-      "  --edge-crease-grazing <f> crease grazing-angle bias gain        [0.30]\n"
-      "  --edge-disc-normal-angle <f> disc normal-disagree angle, deg   [35.00]\n"
       "  --obj-edges <on|off>     analytic object-space edges (sph/cyl/mesh) [off]\n"
       "  --obj-edge-width <float> object-edge cylinder radius (world)   [0.03]\n"
       "  --obj-edge-raise <float> object-edge outward offset (world)    [0.00]\n"
@@ -451,6 +406,12 @@ void printUsage(const char* prog) {
       "  --obj-edge-mesh-sil <on|off> mesh smooth n.v==0 silhouette        [on]\n"
       "  --obj-edge-mesh-crease <on|off> mesh crease (sharp-fold) edges   [off]\n"
       "  --obj-edge-mesh-border <on|off> mesh open-boundary edges          [on]\n"
+      "  --stroke-thickness <float> stroke full width, final px             [2]\n"
+      "  --stroke-resample <float> stroke arc-length resample step, px      [2]\n"
+      "  --edge-crease-deg <float> stroke crease dihedral threshold (deg)  [30]\n"
+      "  --stroke-silhouette <on|off> stroke silhouette nature             [on]\n"
+      "  --stroke-crease <on|off> stroke crease nature                     [on]\n"
+      "  --stroke-border <on|off> stroke border nature                     [on]\n"
       "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

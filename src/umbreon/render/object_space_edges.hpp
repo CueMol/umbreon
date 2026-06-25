@@ -1,8 +1,8 @@
 // Analytic OBJECT-SPACE silhouette edges for spheres and cylinders.
 //
 // This is the OBJECT-SPACE (3D geometry) edge method, selected by --obj-edges.
-// Its counterpart is the SCREEN-SPACE (image-post-process) method in
-// render/screen_space_edges.hpp (ScreenSpaceEdgeOptions, --edges). The two are
+// Its counterpart is the Freestyle-style STROKE method in
+// render/stroke_edges.hpp (StrokeEdgeOptions, --edges). The two are
 // independent; never enable both at once (they would double-draw).
 //
 // For each analytic primitive (Sphere, Cylinder) this computes the 3D locus
