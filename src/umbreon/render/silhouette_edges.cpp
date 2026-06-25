@@ -467,14 +467,24 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
 
   // 3) SILHOUETTE = the SMOOTH n.v==0 contour (smooth patches: tubes, round coils)
   //    PLUS the HARD-EDGE straddle line (sharp rectangular ribbon box edges). Both
-  //    lie on the grazing locus, so each emitted segment is biased slightly TOWARD
-  //    THE CAMERA (camBias) so it wins the depth test against the coincident
-  //    grazing surface and draws as one continuous line instead of z-fighting into
-  //    dashes; its screen position is unchanged so the outline still HUGS the body
-  //    (no floating-halo gap). opt.raise adds an explicit outward offset if wanted.
+  //    lie on the grazing locus, so each emitted segment is (a) lifted OUTWARD by
+  //    one edge radius (silOff) so the tube is tangent to the body and fully
+  //    exposed -- not half-buried, which would make a thin line render mottled grey
+  //    -- and (b) biased slightly TOWARD THE CAMERA (camBias) so it wins the depth
+  //    test against the coincident grazing surface and draws as one continuous line
+  //    instead of z-fighting into dashes. The lift is small (one radius, tangent),
+  //    so the outline still touches the body with no floating-halo gap.
   if (opt.meshSilhouette) {
     const float w = opt.width > 0.0f ? opt.width : 0.0f;
-    const float silOff = opt.raise;     // outward offset (0 => hug the surface)
+    // Lift the silhouette OUTWARD by one edge radius so the tube is tangent to the
+    // body -- fully exposed, yet still touching it (no floating gap). A pure hug
+    // (lift 0) leaves the tube ~half occluded by the convex body, so its visible
+    // sliver goes sub-pixel and the line renders MOTTLED GREY at low resolution.
+    // This mirrors CueMol's edge_line rise = w/2 (its w is the line DIAMETER, so
+    // the lift is one radius == our opt.width). The toward-camera camBias below
+    // still wins the depth test exactly at the grazing point. opt.raise adds any
+    // further explicit outward offset.
+    const float silOff = opt.raise + w;
     // The depth bias needed to clear the grazing surface depends on the local
     // SURFACE scale, not the edge width: a thin line at width*0.5 alone is too
     // small a bias and breaks up. Use the mean mesh edge length (the tessellation
