@@ -306,10 +306,10 @@ int main(int argc, char** argv) {
       // drop-in replacement for the baked outline.
       static const bool kDefaultOn[5] = {
           true,    // Silhouette
-          false,   // Disconnected
-          false,   // Object
-          false,   // Material
-          false,   // Crease
+          true,    // Disconnected
+          false,   // Object   (one section => never fires; off avoids cost)
+          false,   // Material (gradient bands would over-ink; leave OFF)
+          true,    // Crease
       };
       umbreon::EdgeStyle& ds = ropt.edges.defaultStyle;
       for (int i = 0; i < 5; ++i) {

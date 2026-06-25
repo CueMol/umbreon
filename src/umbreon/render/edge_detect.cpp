@@ -201,8 +201,18 @@ inline float creaseStrength(const std::vector<std::uint32_t>& objectId,
   if (effAngle > 3.14159265f) effAngle = 3.14159265f;  // clamp to 180 deg
   const float cosT = std::cos(effAngle);
 
-  // Depth-gap threshold at this pixel (perspective/resolution robust).
-  const float gapThresh = pxSize * distanceThreshold;
+  // Depth-gap VETO threshold at this pixel (perspective/resolution robust).
+  // NOTE this is intentionally LOOSER than the disconnected-face gap test: a
+  // box-edge fold of a thin ribbon strand (a ~90-degree fold where the flat top
+  // meets the thin side face) is seen nearly edge-on, so adjacent pixels straddle
+  // a MODEST depth step that is still a genuine crease, not a strand-over-strand
+  // cliff. Vetoing crease at the disc gap (distanceThreshold) erases exactly those
+  // box edges. The veto here only rejects a LARGE step (kCreaseGapVetoScale x the
+  // disc threshold) -- the true self-occlusion cliffs that the disconnected-face
+  // class owns -- so the two classes still partition the work without crease
+  // losing the thin-ribbon fold network.
+  constexpr float kCreaseGapVetoScale = 8.0f;
+  const float gapThresh = pxSize * distanceThreshold * kCreaseGapVetoScale;
 
   float minDot = 1.0f;  // 1 = perfectly flat (no fold)
   const int offs[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
@@ -217,20 +227,26 @@ inline float creaseStrength(const std::vector<std::uint32_t>& objectId,
   }
   if (minDot >= cosT) return 0.0f;  // fold shallower than threshold
 
-  // Guard (3): curvature veto. Build the same-object 2nd-difference stencil
-  // (a different-object / off-image neighbor is neutralised to selfZ so no fold
-  // from a silhouette/boundary leaks in), then cancel the crease if the surface
-  // is merely smoothly curved (sub-gate scale-invariant curvature ratio).
-  const bool hasL = x > 0, hasR = x + 1 < w, hasU = y > 0, hasD = y + 1 < h;
-  auto sameZ = [&](bool has, int nx, int ny) -> float {
-    if (!has) return selfZ;
-    const std::size_t s = static_cast<std::size_t>(ny) * w + nx;
-    return objectId[s] == selfId ? viewZ[s] : selfZ;
-  };
-  const float zL = sameZ(hasL, x - 1, y), zR = sameZ(hasR, x + 1, y);
-  const float zU = sameZ(hasU, x, y - 1), zD = sameZ(hasD, x, y + 1);
-  if (curvatureRatio(selfZ, zL, zR, zU, zD, pxSize) < curvatureGate)
-    return 0.0f;  // smoothly curved, not a geometric crease
+  // Guard (3): OPTIONAL curvature veto. A crease is a NORMAL-space event at
+  // (near-)constant depth -- a box-edge fold has a small depth 2nd-difference, so
+  // a depth-curvature gate over-suppresses it. The depth-gap veto (guard 2) above
+  // already rejects genuine depth steps (those are the disconnected-face class),
+  // so the curvature veto is DISABLED by default (curvatureGate <= 0). It is kept
+  // as an opt-in knob (a positive gate) for scenes where a smoothly-but-tightly
+  // curved mesh barrel creases spuriously; there the normal field is continuous
+  // and the depth curvature ratio stays low, so a mild gate can cancel it.
+  if (curvatureGate > 0.0f) {
+    const bool hasL = x > 0, hasR = x + 1 < w, hasU = y > 0, hasD = y + 1 < h;
+    auto sameZ = [&](bool has, int nx, int ny) -> float {
+      if (!has) return selfZ;
+      const std::size_t s = static_cast<std::size_t>(ny) * w + nx;
+      return objectId[s] == selfId ? viewZ[s] : selfZ;
+    };
+    const float zL = sameZ(hasL, x - 1, y), zR = sameZ(hasR, x + 1, y);
+    const float zU = sameZ(hasU, x, y - 1), zD = sameZ(hasD, x, y + 1);
+    if (curvatureRatio(selfZ, zL, zR, zU, zD, pxSize) < curvatureGate)
+      return 0.0f;  // smoothly curved, not a geometric crease
+  }
 
   const float denom = 1.0f + cosT;
   const float strength = (denom > 1.0e-6f) ? (cosT - minDot) / denom : 1.0f;
@@ -602,7 +618,7 @@ void applyEdges(FrameResult& frame, const Scene& scene,
               const float s = creaseStrength(
                   frame.objectId, frame.normal, frame.viewZ, vb, cosCrease,
                   opt.edges.creaseGrazingBias, opt.edges.distanceThreshold,
-                  opt.edges.curvatureGate, w, h, x, y);
+                  opt.edges.creaseCurvatureGate, w, h, x, y);
               if (s > 0.0f) writeMask(mCrease, i, s, st.cls[kCrease]);
             }
             // Disconnected / Object share one neighborhood scan; each writes its

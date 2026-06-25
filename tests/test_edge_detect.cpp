@@ -7,9 +7,11 @@
 //   - Object boundary (class 3): different-object gap, with objectSuppress.
 //   - Material boundary (class 4): co-planar materialId seam, with
 //     materialSuppress.
-//   - Crease (class 5): mesh-only normal fold, gated by the curvature veto, the
-//     grazing-angle bias and the smooth-normal field (a smoothly curved mesh
-//     region must NOT crease while a sharp ridge does).
+//   - Crease (class 5): mesh-only normal fold. A crease is a normal-space event
+//     (a sharp fold draws even at constant depth = a box edge); the depth-gap
+//     veto excludes large self-occlusion steps (the disconnected-face class) and
+//     the grazing-angle bias plus the continuous-normal field keep a smoothly
+//     curved mesh region clean while a sharp ridge does crease.
 //   - Stage-C styling: per-class width>1 disk dilation and per-section
 //     groupEdgeStyle color routing.
 //
@@ -186,21 +188,24 @@ int main() {
     s.check("sil: object-vs-background boundary inks", realEdgeInk > 10);
 
     // The left/top/bottom image-border surface pixels must NOT outline (off-image
-    // neighbors are surface-continuation). Sample columns [0,14): clear of the
-    // real right edge at x=15, whose width-1 dilation reaches x=14 -- counting
-    // there would catch the legitimate boundary, not a spurious frame line.
+    // neighbors are surface-continuation). Sample columns [0,13): clear of the
+    // real right edge at x=15, whose default width-2 disk dilation reaches x=13 --
+    // counting there would catch the legitimate boundary, not a spurious frame
+    // line.
     int borderInk = 0;
     for (int y = 0; y < Hs; ++y)
       if (inked(fr, 0, y)) ++borderInk;          // left border column
-    for (int x = 0; x < 14; ++x)
+    for (int x = 0; x < 13; ++x)
       if (inked(fr, x, 0) || inked(fr, x, Hs - 1)) ++borderInk;  // top/bottom
     s.check("sil: image-border surface does not spuriously outline",
             borderInk == 0);
 
-    // Background pixels themselves are never inked (no line ORIGINATES in bg).
+    // Background pixels beyond the outline's dilation are never inked (no line
+    // ORIGINATES in bg; the line straddles the x=15/16 boundary and its width-2
+    // disk reaches x=17, so sample the clear interior from x=18).
     int bgInk = 0;
     for (int y = 0; y < Hs; ++y)
-      for (int x = 17; x < Ws; ++x)
+      for (int x = 18; x < Ws; ++x)
         if (inked(fr, x, y)) ++bgInk;
     s.check("sil: background interior stays clean", bgInk == 0);
   }
@@ -407,8 +412,11 @@ int main() {
   //   left  [8,24)  kind=Mesh(0)   , roof depth (slope flips) -> a real crease.
   //   mid   [28,44) kind=Sphere(1) , roof depth, SAME normal fold -> must NOT
   //                                  crease (mesh-only restriction, MAJOR 4).
-  //   right [48,64) kind=Mesh(0)   , FLAT depth, SAME normal fold -> must NOT
-  //                                  crease (curvature veto cancels it, MAJOR 3).
+  //   right [48,64) kind=Mesh(0)   , FLAT depth, SAME normal fold -> a real
+  //                                  crease (a box-edge fold at constant depth is
+  //                                  the signature beta-sheet box edge; crease is
+  //                                  a NORMAL-space event and no longer requires a
+  //                                  depth-curvature signal to draw).
   {
     const int W3 = 72, H3 = 48;
     umbreon::Scene sc3 = scene;
@@ -462,8 +470,13 @@ int main() {
             meshRidge > 10);
     s.check("crease: analytic primitive normal fold does NOT crease (mesh-only)",
             sphRidge == 0);
-    s.check("crease: smooth-depth normal fold is vetoed (curvature veto)",
-            flatRidge == 0);
+    // A sharp ~90deg normal fold at CONSTANT depth is a genuine geometric crease
+    // (the beta-sheet box edge). Crease is a normal-space event; it no longer
+    // gates on a depth-curvature signal, so this flat-depth fold must DRAW. The
+    // separate smooth-curved-normal-field case below (the cylinder cap, where the
+    // normal field is continuous) is what must stay clean.
+    s.check("crease: flat-depth sharp normal fold draws (box-edge crease)",
+            flatRidge > 10);
   }
 
   // ---- Crease (class 5): smooth-normal field vs a sharp ridge ---------------

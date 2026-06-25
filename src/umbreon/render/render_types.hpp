@@ -29,7 +29,7 @@ struct EdgeClassStyle {
   bool enabled = false;
   float color[3] = {0.0f, 0.0f, 0.0f};  // linear RGB
   float opacity = 1.0f;                 // 0..1
-  float width = 1.0f;                   // dilation radius, hi-res px
+  float width = 2.0f;                   // dilation radius, hi-res px
 };
 
 // Per CueMol section (per transparency group): a bundle of the five class
@@ -51,12 +51,18 @@ struct EdgeOptions {
   // dimensionless ratio: ~1 at a genuine step (where the slope jumps), well below
   // on a smoothly curved surface (where the slope changes slowly). Independent of
   // scene scale / camera units, unlike the old raw-view-z Mol* GPU constant.
-  float curvatureGate = 0.5f;      // dimensionless 2nd/1st-difference ratio
-  float creaseAngleDeg = 30.0f;    // crease: fire when dot(n) < cos(creaseAngleDeg)
+  float curvatureGate = 0.2f;      // dimensionless 2nd/1st-difference ratio (disc)
+  // Crease has its OWN curvature gate. A crease (fold in the normal field) occurs
+  // at near-constant depth, so its depth 2nd-difference is small and the shared
+  // disc curvatureGate would over-suppress it. Default 0 = no curvature veto for
+  // crease (it relies on the depth-gap veto + the fold-angle test); set positive
+  // only to tame a smoothly-but-tightly curved mesh barrel.
+  float creaseCurvatureGate = 0.0f;
+  float creaseAngleDeg = 22.0f;    // crease: fire when dot(n) < cos(creaseAngleDeg)
   // Crease grazing-angle bias gain: at full grazing the effective crease angle is
   // (1 + creaseGrazingBias)x the base angle, suppressing rim false positives on
   // smooth curvature without affecting head-on folds.
-  float creaseGrazingBias = 1.0f;
+  float creaseGrazingBias = 0.3f;
   // Disconnected-face (class 2) NORMAL-CONSISTENCY gate. The line fires only when
   // the world normals across the depth gap also DISAGREE: dot(n_center, n_sample)
   // < cos(discNormalAngleDeg). A smooth SES self-occlusion fold (normals
