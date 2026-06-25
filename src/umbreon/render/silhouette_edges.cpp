@@ -399,15 +399,19 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
   //
   // The contour lies ON the surface exactly where it grazes the view (n.v==0), so
   // a thin edge tube placed there is half-buried in the surface and z-fights /
-  // gets occluded by the grazing body, breaking the line into dashes. Offsetting
-  // the contour OUTWARD along its (view-perpendicular) normal by at least the edge
-  // radius lifts the whole tube clear of the surface, so the ray tracer draws a
-  // continuous outline. ~1.3x the radius covers the surface curvature near the
-  // contour; an explicit larger opt.raise still wins. (Crease/border edges are not
-  // on the grazing locus, so they keep the plain opt.raise.)
+  // gets occluded by the grazing body, breaking the line into dashes. Pushing it
+  // OUTWARD lifts it clear but detaches the outline from the body (a floating
+  // halo). Instead bias the contour slightly TOWARD THE CAMERA (~half the edge
+  // radius): its screen position is unchanged so the outline still HUGS the body
+  // (no gap, like the CueMol reference), but it now wins the depth test against
+  // the coincident grazing surface and draws as one continuous line. The bias is
+  // small (< body thickness) so a contour on the FAR side stays occluded (no
+  // show-through). opt.raise still adds an explicit outward offset if wanted.
+  // (Crease/border edges are not on the grazing locus; they keep plain opt.raise.)
   if (opt.meshSilhouette) {
     const float w = opt.width > 0.0f ? opt.width : 0.0f;
-    const float silOff = std::fmax(opt.raise, 1.3f * w);
+    const float silOff = opt.raise;     // outward offset (0 => hug the surface)
+    const float camBias = 0.5f * w;     // toward-camera depth bias (z-fight win)
     for (std::size_t f = 0; f < nTri; ++f) {
       const int idx[3] = {fa[f], fb[f], fc[f]};
       const float d[3] = {dotp[static_cast<std::size_t>(idx[0])],
@@ -452,9 +456,12 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
         addVert(nullIdx[0]);
         addVert(nullIdx[1]);
       }
-      if (nc == 2)
-        out.push_back(RawSeg{cp[0] + cn[0] * silOff, cp[1] + cn[1] * silOff,
-                             mesh.groupForTri(f)});
+      if (nc == 2) {
+        const Vec3 v0 = viewerDirAt(cp[0], cam) * camBias;
+        const Vec3 v1 = viewerDirAt(cp[1], cam) * camBias;
+        out.push_back(RawSeg{cp[0] + cn[0] * silOff + v0,
+                             cp[1] + cn[1] * silOff + v1, mesh.groupForTri(f)});
+      }
     }
   }
 
