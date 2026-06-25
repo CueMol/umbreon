@@ -76,12 +76,21 @@ struct StrokeEdgeOptions {
   float meshBorderCoplanarVetoDeg = 35.0f; // coplanar-continuation border veto
   int meshCreaseMaxDegree = 4;             // drop crease hubs above this degree
 
-  // --- visibility (ray-cast Quantitative Invisibility) ---
-  // Each backbone vertex is tested by casting a ray toward the camera and
-  // counting occluders; QI==0 => visible. The vertex's OWN incident mesh faces
-  // (the feature surface the edge sits on) are excluded as self-occluders by
-  // computeChainVisibility (Freestyle ViewMapBuilder self/adjacent-face
-  // exclusion), so no along-view origin nudge or mask post-processing is needed.
+  // --- visibility (FREESTYLE-FAITHFUL image-space hidden-line) ---
+  // Visibility is decided in two complementary image-space stages, run per chain
+  // by applyStrokeEdges (NO primary z-buffer / G-buffer is read, keeping this
+  // distinct from --obj-edges):
+  //  (A) Quantitative Invisibility: a ray cast from each feature SEGMENT's 3D
+  //      center toward the eye, counting solid surfaces, with the segment's OWN
+  //      incident mesh faces excluded as self-occluders (Freestyle
+  //      ViewMapBuilder self/adjacent-face skip, live via the Embree argument
+  //      filter). qi>0 => hidden.
+  //  (B) a 2D crossing pass over the PROJECTED feature segments: where two drawn
+  //      lines cross in screen space, the farther one (larger eye-space view-z
+  //      at the crossing) is hidden (Freestyle CreateTVertex).
+  // A stroke point is visible iff QI says visible AND it is not inside a (B)
+  // hidden notch. There are no tuning knobs: the zTol that guards a coincident-
+  // depth junction is derived from the mesh mean edge length internally.
 
   // --- stylization ---
   // Stroke geometry in FINAL-resolution pixels; applyStrokeEdges scales these by

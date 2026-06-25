@@ -88,25 +88,6 @@ struct Pt2 {
   bool visible = true;
 };
 
-// Project a chain backbone to 2D, dropping vertices that fail to project. Keeps
-// per-vertex visibility. A perspective vertex at/behind the eye is dropped (it
-// also breaks the polyline run, like the prior 1px path).
-std::vector<Pt2> projectChain(const ScreenProj& sp, const std::vector<Vec3>& pts,
-                              const std::vector<char>& visible) {
-  std::vector<Pt2> out;
-  out.reserve(pts.size());
-  for (std::size_t i = 0; i < pts.size(); ++i) {
-    float x, y, vz;
-    if (!worldToScreen(sp, pts[i], x, y, vz)) continue;  // unprojectable
-    Pt2 q;
-    q.p = {x, y};
-    q.vz = vz;
-    q.visible = visible.empty() || visible[i] != 0;
-    out.push_back(q);
-  }
-  return out;
-}
-
 // Resample a projected polyline by 2D arc length every `stepPx` pixels, linearly
 // interpolating position/view-z/visibility. A segment whose endpoints differ in
 // visibility is SPLIT at the midpoint so the boundary between a visible and a
@@ -485,6 +466,16 @@ std::vector<EdgeChain> chainFeatureSegs(const std::vector<FeatureSeg>& segs,
         if (ki == static_cast<int>(nPts) - 1) addSegFaces(dst, 0);
       }
     }
+
+    // Per-SEGMENT exact exclude set + nature for the QI ray and the crossing
+    // pass: the segment's own two incident faces (no hub union) and its nature.
+    ch.segFaces.assign(ch.segs.size(), std::array<int, 2>{-1, -1});
+    ch.segNature.assign(ch.segs.size(), EdgeNature::Silhouette);
+    for (std::size_t k = 0; k < ch.segs.size(); ++k) {
+      const FeatureSeg& s = segs[static_cast<std::size_t>(ch.segs[k])];
+      ch.segFaces[k] = {s.face0, s.face1};
+      ch.segNature[k] = s.nature;
+    }
     chains.push_back(std::move(ch));
   }
   return chains;
@@ -530,43 +521,195 @@ void closeVisibilityMask(std::vector<char>& vis, int maxBridge, bool closed) {
   }
 }
 
+namespace {
+
+// QI ray length for the ortho camera-ward target push (world units).
+constexpr float kOrthoQiReach = 1.0e4f;
+
+// Maximum 3D length a QI segment may span before it is subdivided into interior
+// samples (Freestyle samples the FEdge center; a long segment whose MIDDLE dips
+// behind a body would leak if tested at its center alone). World units, scaled
+// off the segment so the count stays small.
+constexpr int kQiMaxInteriorSamples = 3;
+
+// QI occlusion of one 3D point P with the given per-segment exclude faces. Casts
+// a ray P->eye (persp) or P->far-camera-ward (ortho); true == an un-excluded
+// solid surface lies strictly between P and the eye (qi > 0 => hidden).
+bool qiOccludedAt(const Vec3& P, const ScreenProj& sp,
+                  const OcclusionQuery& occluded, const int* faces, int nFaces) {
+  const Vec3 target = sp.ortho ? P + (sp.dir * -1.0f) * kOrthoQiReach : sp.pos;
+  return occluded(P, target, faces, nFaces);
+}
+
+}  // namespace
+
 std::vector<char> computeChainVisibility(const EdgeChain& chain,
                                          const ScreenProj& sp,
                                          const OcclusionQuery& occluded) {
-  std::vector<char> visible(chain.pts.size(), 1);
-  if (!occluded) return visible;  // no live BVH: treat everything as visible
+  const std::size_t nPts = chain.pts.size();
+  std::vector<char> visible(nPts, 1);
+  if (!occluded || nPts < 2) return visible;  // no live BVH: all visible
 
-  const bool haveFaces = chain.incidentFaces.size() == chain.pts.size();
-  // For the ORTHOGRAPHIC case the camera-ward target is at the viewer's z over
-  // the point (the ray is the constant -view direction); use a far point along
-  // -view from P. Freestyle uses the actual viewpoint for perspective and a
-  // point at the viewer's z for ortho; here sp.pos is the eye, and for ortho the
-  // ray direction is sp.dir so any far target along it suffices for the segment
-  // occlusion test the binding performs (it trims and excludes the self-faces).
-  for (std::size_t i = 0; i < chain.pts.size(); ++i) {
-    const Vec3& P = chain.pts[i];
-    Vec3 target;
-    if (sp.ortho) {
-      // Push the target far along the camera-ward (-view) axis so the segment
-      // P->target spans everything between P and the camera plane.
-      target = P + (sp.dir * -1.0f) * 1.0e4f;
-    } else {
-      target = sp.pos;  // the eye
-    }
-    // Exclude P's own incident mesh faces (the feature surface the edge sits on)
-    // so a self-occlusion hit is not counted -- Freestyle self/adjacent-face
-    // exclusion. The ray origin is P itself (no along-view nudge).
-    const int* faces = nullptr;
+  const std::size_t nSeg = nPts - 1;  // backbone has pts.size()-1 segments
+  const bool havePerSeg = chain.segFaces.size() == nSeg;
+  const bool haveVertFaces = chain.incidentFaces.size() == nPts;
+
+  // (A) Per-SEGMENT QI: cast from the segment center (and interior samples for
+  // long segments -- Freestyle FEdge::center3d) with that segment's OWN two
+  // incident faces excluded. A segment is hidden iff ANY interior sample is
+  // occluded by a non-excluded surface.
+  std::vector<char> segVisible(nSeg, 1);
+  for (std::size_t k = 0; k < nSeg; ++k) {
+    const Vec3& A = chain.pts[k];
+    const Vec3& B = chain.pts[k + 1];
+
+    // Exact per-segment exclude set: prefer the segment's two faces; fall back to
+    // the union of the endpoints' incident-face hubs (used by unit tests that set
+    // only `incidentFaces`).
+    std::array<int, 4> buf{-1, -1, -1, -1};
     int nFaces = 0;
-    std::array<int, EdgeChain::kMaxIncidentFaces> buf{-1, -1, -1, -1};
-    if (haveFaces) {
-      for (int f : chain.incidentFaces[i])
-        if (f >= 0) buf[static_cast<std::size_t>(nFaces++)] = f;
-      faces = buf.data();
+    auto pushFace = [&](int f) {
+      if (f < 0) return;
+      for (int j = 0; j < nFaces; ++j)
+        if (buf[static_cast<std::size_t>(j)] == f) return;
+      if (nFaces < 4) buf[static_cast<std::size_t>(nFaces++)] = f;
+    };
+    if (havePerSeg) {
+      pushFace(chain.segFaces[k][0]);
+      pushFace(chain.segFaces[k][1]);
+    } else if (haveVertFaces) {
+      for (int f : chain.incidentFaces[k]) pushFace(f);
+      for (int f : chain.incidentFaces[k + 1]) pushFace(f);
     }
-    visible[i] = occluded(P, target, faces, nFaces) ? 0 : 1;
+    const int* faces = nFaces > 0 ? buf.data() : nullptr;
+
+    // Number of interior samples scaled by the segment's screen footprint is not
+    // available here cheaply; subdivide by a fixed small count so a mid-segment
+    // dip behind a body is caught. Samples at the center and at 1/4, 3/4.
+    bool hidden = false;
+    const int samples = kQiMaxInteriorSamples;
+    for (int sIdx = 0; sIdx < samples && !hidden; ++sIdx) {
+      // t in (0,1), centered: 0.5 for 1 sample; {0.25,0.5,0.75} for 3.
+      const float t = (static_cast<float>(sIdx) + 0.5f) /
+                      static_cast<float>(samples);
+      const Vec3 Pm = {A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t,
+                       A.z + (B.z - A.z) * t};
+      if (qiOccludedAt(Pm, sp, occluded, faces, nFaces)) hidden = true;
+    }
+    segVisible[k] = hidden ? 0 : 1;
+  }
+
+  // Derive per-backbone-vertex QI visibility: vertex k is visible iff its
+  // adjacent segments (k-1 and k) are visible. Endpoints depend on their single
+  // adjacent segment (the closed-loop seam wraps).
+  for (std::size_t i = 0; i < nPts; ++i) {
+    bool v = true;
+    if (i > 0) v = v && segVisible[i - 1] != 0;
+    if (i < nSeg) v = v && segVisible[i] != 0;
+    if (chain.closed) {
+      // Seam vertices border both the first and last segment.
+      if (i == 0) v = v && segVisible[nSeg - 1] != 0;
+      if (i == nPts - 1) v = v && segVisible[0] != 0;
+    }
+    visible[i] = v ? 1 : 0;
   }
   return visible;
+}
+
+namespace {
+
+// One backbone segment projected to screen for the crossing pass: 2D endpoints,
+// their linear view-z, the owning chain/segment, the per-endpoint projection-OK
+// flag, and the nature (for silhouette_binary_rule).
+struct ProjSeg {
+  Vec2 a, b;
+  float za = 0.0f, zb = 0.0f;
+  int chainIdx = 0, segIdx = 0;
+  bool aOk = false, bOk = false;
+  bool silhouetteOrBorder = false;  // SILHOUETTE or BORDER nature
+};
+
+inline float lerpf(float x, float y, float t) { return x + (y - x) * t; }
+
+}  // namespace
+
+std::vector<EdgeCrossing> computeEdgeCrossings(
+    const std::vector<EdgeChain>& chains, const ScreenProj& sp, float zTol) {
+  std::vector<EdgeCrossing> out;
+
+  // (B.1) Project every backbone segment of every chain to 2D once.
+  std::vector<ProjSeg> segs;
+  for (std::size_t ci = 0; ci < chains.size(); ++ci) {
+    const EdgeChain& ch = chains[ci];
+    if (ch.pts.size() < 2) continue;
+    const std::size_t nSeg = ch.pts.size() - 1;
+    const bool haveNat = ch.segNature.size() == nSeg;
+    for (std::size_t k = 0; k < nSeg; ++k) {
+      ProjSeg ps;
+      ps.chainIdx = static_cast<int>(ci);
+      ps.segIdx = static_cast<int>(k);
+      float ax, ay, av, bx, by, bv;
+      ps.aOk = worldToScreen(sp, ch.pts[k], ax, ay, av);
+      ps.bOk = worldToScreen(sp, ch.pts[k + 1], bx, by, bv);
+      ps.a = {ax, ay};
+      ps.b = {bx, by};
+      ps.za = av;
+      ps.zb = bv;
+      const EdgeNature nat = haveNat ? ch.segNature[k] : EdgeNature::Silhouette;
+      ps.silhouetteOrBorder =
+          (nat == EdgeNature::Silhouette) || (nat == EdgeNature::Border);
+      segs.push_back(ps);
+    }
+  }
+
+  // (B.2) Pairwise crossings (brute force O(N^2); correctness first). A uniform
+  // screen-grid bucketing is the Freestyle-sweep-line-equivalent speedup.
+  const std::size_t N = segs.size();
+  for (std::size_t i = 0; i < N; ++i) {
+    const ProjSeg& s1 = segs[i];
+    if (!s1.aOk || !s1.bOk) continue;  // partially behind the eye: no crossing
+    for (std::size_t j = i + 1; j < N; ++j) {
+      const ProjSeg& s2 = segs[j];
+      if (!s2.aOk || !s2.bOk) continue;
+
+      // silhouette_binary_rule: at least one SILHOUETTE/BORDER edge.
+      if (!s1.silhouetteOrBorder && !s2.silhouetteOrBorder) continue;
+
+      // Skip chain-adjacent / shared-node pairs within the same chain (a chain's
+      // consecutive segments meet by construction; they must not self-hide). Two
+      // segments of the SAME chain that share a backbone vertex are adjacent.
+      if (s1.chainIdx == s2.chainIdx) {
+        const int d = s1.segIdx - s2.segIdx;
+        if (d == 1 || d == -1) continue;  // consecutive: shared node
+      }
+
+      // 2D intersection of the infinite lines; reject if outside either segment.
+      Vec2 X;
+      if (!intersect2dLine2dLine(s1.a, s1.b, s2.a, s2.b, X)) continue;
+      // Parameter of X along each segment (project onto the segment direction).
+      auto paramOf = [](const Vec2& a, const Vec2& b, const Vec2& x) -> float {
+        const Vec2 d = b - a;
+        const float l2 = dot2(d, d);
+        if (l2 <= kZero) return -1.0f;
+        return dot2(x - a, d) / l2;
+      };
+      const float t1 = paramOf(s1.a, s1.b, X);
+      const float t2 = paramOf(s2.a, s2.b, X);
+      if (t1 <= 0.0f || t1 >= 1.0f || t2 <= 0.0f || t2 >= 1.0f) continue;
+
+      // Depth order at the crossing pixel: interpolate each segment's view-z.
+      const float z1 = lerpf(s1.za, s1.zb, t1);
+      const float z2 = lerpf(s2.za, s2.zb, t2);
+      if (std::fabs(z1 - z2) <= zTol) continue;  // true junction: hide neither
+
+      // Hide the FARTHER (larger view-z) segment at its crossing parameter.
+      if (z1 > z2)
+        out.push_back({s1.chainIdx, s1.segIdx, t1});
+      else
+        out.push_back({s2.chainIdx, s2.segIdx, t2});
+    }
+  }
+  return out;
 }
 
 std::vector<std::vector<Vec2f>> buildRibbonStrips(
@@ -706,9 +849,34 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     return true;
   };
 
+  // Stage B (image-space crossings) runs ONCE across ALL chains, BEFORE per-chain
+  // visibility is finalized (Freestyle ComputeIntersections precedes
+  // ComputeEdgesVisibility). zTol is a small view-z slack: a near-equal-depth
+  // crossing is a true junction and hides neither side. Derived off the mean
+  // triangle edge so it scales with the model; floored so a flat scene still has
+  // a usable tolerance.
+  const float zTol = std::max(1.0e-4f, 0.02f * fm.meanEdge);
+  const std::vector<EdgeCrossing> crossings = computeEdgeCrossings(chains, sp, zTol);
+  // Group crossings by chain -> per backbone-segment list of crossing params.
+  std::vector<std::vector<std::vector<float>>> chainSegCross(chains.size());
+  for (std::size_t ci = 0; ci < chains.size(); ++ci) {
+    const std::size_t nSeg =
+        chains[ci].pts.size() >= 2 ? chains[ci].pts.size() - 1 : 0;
+    chainSegCross[ci].assign(nSeg, {});
+  }
+  for (const EdgeCrossing& c : crossings) {
+    if (c.chainIdx < 0 || static_cast<std::size_t>(c.chainIdx) >= chains.size())
+      continue;
+    std::vector<std::vector<float>>& segList = chainSegCross[c.chainIdx];
+    if (c.segIdx < 0 || static_cast<std::size_t>(c.segIdx) >= segList.size())
+      continue;
+    segList[c.segIdx].push_back(c.t);
+  }
+
   // Build all ribbon strips for the frame up front; rasterize them tiled.
   std::vector<StyledStrip> strips;
-  for (const EdgeChain& ch : chains) {
+  for (std::size_t ci = 0; ci < chains.size(); ++ci) {
+    const EdgeChain& ch = chains[ci];
     if (ch.segs.empty()) continue;
     // The chain is single-nature (chaining never crosses natures); gate/style on
     // the first segment's nature and group.
@@ -717,15 +885,60 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     float halfThick = globalHalf, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
     if (!resolveStyle(nat, s0.group, halfThick, col, opacity)) continue;
 
-    // Ray-cast Quantitative Invisibility per backbone vertex, with the vertex's
-    // OWN incident mesh faces excluded as self-occluders (Freestyle self-face
-    // exclusion). With true exclusion in place the prior heuristic patch stack
-    // (along-view origin nudge + morphological close of the mask + short-run
-    // drop) is no longer needed: visibility is decided by incident-face
-    // exclusion, not by offset+bridging.
+    // Stage A: per-segment Quantitative Invisibility (QI) ray cast from the
+    // segment CENTER toward the eye, EXCLUDING that segment's own incident faces
+    // (Freestyle self/adjacent-face skip, now live via the Embree argument
+    // filter). Produces per-backbone-vertex body/surface visibility.
     const std::vector<char> visible = computeChainVisibility(ch, sp, occluded);
-    // Project + resample (visibility-aware) into a 2D polyline.
-    const std::vector<Pt2> proj = projectChain(sp, ch.pts, visible);
+
+    // Project the backbone to 2D (QI visibility carried per vertex), then inject
+    // the stage-B crossing T-vertices: each crossing splits its segment at t and
+    // hides a small gap so the NEARER line breaks the farther one in image space
+    // (Freestyle CreateTVertex). The gap half-width is the resample step in the
+    // segment's own parameter units, so a crossing punches one resample cell.
+    const std::vector<std::vector<float>>& segCross = chainSegCross[ci];
+    std::vector<Pt2> proj;
+    proj.reserve(ch.pts.size() + crossings.size());
+    // projectChain may DROP unprojectable vertices, so it is not 1:1 with the
+    // backbone segment index. Re-project per original segment here to keep the
+    // crossing param mapping exact; an unprojectable endpoint breaks the run.
+    // resampleChain assigns each sub-span the visibility of its START vertex, so
+    // to hide the notch [t0,t1] the t0 vertex carries visible=false and the t1
+    // vertex carries visible=true (resume).
+    for (std::size_t k = 0; k + 1 < ch.pts.size(); ++k) {
+      float ax, ay, av, bx, by, bv;
+      const bool aOk = worldToScreen(sp, ch.pts[k], ax, ay, av);
+      const bool bOk = worldToScreen(sp, ch.pts[k + 1], bx, by, bv);
+      const bool aVis = visible.empty() || visible[k] != 0;
+      const bool bVis = visible.empty() || visible[k + 1] != 0;
+      if (k == 0 && aOk) proj.push_back({{ax, ay}, av, aVis});
+      if (!aOk || !bOk) continue;  // segment partially behind eye: leave a break
+      // Crossings on this segment, sorted; emit a hidden notch around each.
+      std::vector<float> ts =
+          (k < segCross.size()) ? segCross[k] : std::vector<float>{};
+      std::sort(ts.begin(), ts.end());
+      const Vec2 A{ax, ay}, B{bx, by};
+      const float segLen2d = norm2(B - A);
+      const float gapT = segLen2d > kZero
+                             ? std::min(0.45f, stepPx / segLen2d)
+                             : 0.0f;
+      bool prevVis = aVis;  // visibility carried into the next sub-span start
+      for (float tc : ts) {
+        const float t0 = std::max(0.0f, tc - gapT);
+        const float t1 = std::min(1.0f, tc + gapT);
+        Pt2 h0;  // starts the HIDDEN notch
+        h0.p = {lerpf(ax, bx, t0), lerpf(ay, by, t0)};
+        h0.vz = lerpf(av, bv, t0);
+        h0.visible = false;
+        Pt2 h1;  // resumes the VISIBLE span after the notch
+        h1.p = {lerpf(ax, bx, t1), lerpf(ay, by, t1)};
+        h1.vz = lerpf(av, bv, t1);
+        h1.visible = prevVis;  // resume whatever QI said for this segment
+        proj.push_back(h0);
+        proj.push_back(h1);
+      }
+      proj.push_back({{bx, by}, bv, bVis});
+    }
     const std::vector<Pt2> rs = resampleChain(proj, stepPx);
 
     // Emit a strip per maximal run of consecutive VISIBLE vertices

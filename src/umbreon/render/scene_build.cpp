@@ -65,6 +65,13 @@ void buildTriangleMesh(RTCDevice device, RTCScene rscene, const Mesh& m,
     idx[t * 3 + 2] = static_cast<unsigned int>(3 * t + 2);
   }
 
+  // Enable the per-geometry argument filter so EmbreeRenderer::occluded's
+  // self/adjacent-face exclusion (excludeFaceFilter, invoked via
+  // RTC_RAY_QUERY_FLAG_INVOKE_ARGUMENT_FILTER) is actually honored on the mesh.
+  // Without this, the flag is silently ignored in Embree4 and a silhouette's own
+  // grazing faces falsely self-occlude the QI ray. Narrowest scope: only the
+  // mesh geometry (excludeFaceFilter early-outs on non-mesh geomID anyway).
+  rtcSetGeometryEnableFilterFunctionFromArguments(g, true);
   rtcCommitGeometry(g);
   unsigned int id = rtcAttachGeometry(rscene, g);
   if (id >= out.records.size()) out.records.resize(id + 1);

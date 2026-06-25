@@ -72,6 +72,12 @@ struct FeatureMesh {
   std::vector<Vec3> vpos;       // welded vertex positions, indexed by welded id
   std::vector<FeatureSeg> segs;
   int nodeCount = 0;            // total chain node ids (welded + synthetic)
+  // Mean triangle edge length (elsum / (3*nTri)) of the welded mesh. Surfaced so
+  // the stroke pass can reproduce the obj-edges silhouette camBias
+  // (max(0.5*w, 0.15*meanEdge), mesh_feature_edges.cpp) for its screen-space
+  // depth test -- the same camera-ward bias that lifts obj-edges silhouettes off
+  // the grazing tangent shell. 0 for an empty mesh.
+  float meanEdge = 0.0f;
 };
 
 // Extraction parameters. Mirrors the mesh-edge knobs ObjectSpaceEdgeOptions

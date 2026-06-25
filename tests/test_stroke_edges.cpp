@@ -201,37 +201,112 @@ int main() {
       return std::fabs(x) <= 2.0f && std::fabs(y) <= 2.0f;
     };
 
-    // A chain with two points: one BEHIND the quad (z=0 < 1) and one in FRONT
-    // (z=2 > 1, so the camera-ward ray never crosses the plane). No incident
-    // faces carried (the quad is a foreign occluder), so neither is excluded.
-    EdgeChain ch;
-    ch.pts = {Vec3{0, 0, 0}, Vec3{0, 0, 2}};
-    const std::vector<char> vis =
-        umbreon::computeChainVisibility(ch, sp, occluded);
-    s.check_eq("visibility: two flags", vis.size(),
-               static_cast<std::size_t>(2));
-    s.check("visibility: point behind the quad is hidden", vis.size() == 2 && !vis[0]);
-    s.check("visibility: point in front of the quad is visible",
-            vis.size() == 2 && vis[1]);
+    // QI samples each segment's INTERIOR (Freestyle center3d), so visibility is
+    // decided per SEGMENT then propagated to the two backbone vertices it borders.
+    // A segment fully BEHIND the quad (both endpoints z<1, center z<1): the
+    // center->camera ray crosses z=1 -> hidden; a segment fully in FRONT (z>1):
+    // the ray never crosses -> visible. No incident faces carried (the quad is a
+    // foreign occluder), so neither is excluded.
+    EdgeChain behind;
+    behind.pts = {Vec3{0, 0, 0}, Vec3{0, 0, 0.5f}};  // center z=0.25 < 1
+    const std::vector<char> visB =
+        umbreon::computeChainVisibility(behind, sp, occluded);
+    s.check("visibility: a segment behind the quad hides both its vertices",
+            visB.size() == 2 && !visB[0] && !visB[1]);
 
-    // Self-occlusion guard: a vertex sitting EXACTLY on its OWN surface (face 7,
-    // the quad plane) must NOT count that surface as an occluder. The chain
-    // carries face 7 as the vertex's incident face, so computeChainVisibility
-    // passes it to the query, which skips it (Freestyle self-face exclusion).
-    // Without exclusion this on-surface vertex would dash a continuous stroke.
+    EdgeChain front;
+    front.pts = {Vec3{0, 0, 2}, Vec3{0, 0, 3}};  // center z=2.5 > 1
+    const std::vector<char> visF =
+        umbreon::computeChainVisibility(front, sp, occluded);
+    s.check("visibility: a segment in front of the quad is visible",
+            visF.size() == 2 && visF[0] && visF[1]);
+
+    // FILTER-EXCLUSION (the mandatory QI fix): a segment lying ON its OWN surface
+    // (face 7, the quad plane) must NOT count that surface as an occluder. The
+    // segment carries face 7 as its incident face (segFaces), so
+    // computeChainVisibility passes it to the query, which skips it (Freestyle
+    // self/adjacent-face exclusion, now live via the Embree argument filter).
+    // Without exclusion this grazing segment would self-occlude and dash the
+    // stroke. The segment center is just behind the plane so the ray WOULD be
+    // occluded by face 7 if it were not excluded.
     EdgeChain onPlane;
-    onPlane.pts = {Vec3{0, 0, 1.0f}};
-    onPlane.incidentFaces = {{kQuadFace, -1, -1, -1}};
+    onPlane.pts = {Vec3{0, 0, 0.9f}, Vec3{0, 0, 0.95f}};  // center z=0.925 < 1
+    onPlane.segFaces = {{kQuadFace, -1}};
     const std::vector<char> visOn =
         umbreon::computeChainVisibility(onPlane, sp, occluded);
-    s.check("visibility: a vertex on its own surface is not self-occluded",
-            visOn.size() == 1 && visOn[0]);
+    s.check("visibility: a segment on its own surface is not self-occluded",
+            visOn.size() == 2 && visOn[0] && visOn[1]);
+
+    // Control: the SAME segment WITHOUT the self-face exclude set IS occluded by
+    // the quad (confirms the exclusion above is load-bearing, not a no-op).
+    EdgeChain onPlaneNoExcl;
+    onPlaneNoExcl.pts = onPlane.pts;
+    const std::vector<char> visNoExcl =
+        umbreon::computeChainVisibility(onPlaneNoExcl, sp, occluded);
+    s.check("visibility: without exclusion the grazing segment self-occludes",
+            visNoExcl.size() == 2 && !visNoExcl[0] && !visNoExcl[1]);
 
     // Null query (no live BVH) => everything visible.
     const std::vector<char> visNone =
-        umbreon::computeChainVisibility(ch, sp, OcclusionQuery{});
+        umbreon::computeChainVisibility(behind, sp, OcclusionQuery{});
     s.check("visibility: empty query marks all visible",
             visNone.size() == 2 && visNone[0] && visNone[1]);
+  }
+
+  // ---- (7b) 2D image-space crossing depth-order (Freestyle CreateTVertex) ----
+  // Two silhouette segments that CROSS in screen space at different eye-space
+  // depths: the FARTHER one is hidden at the crossing; the nearer is untouched.
+  {
+    // Ortho camera at z=+10 looking down -Z; view-z == (10 - world z), so a
+    // SMALLER world z is FARTHER (larger view-z).
+    umbreon::Camera cam;
+    cam.position = {0, 0, 10};
+    cam.direction = {0, 0, -1};
+    cam.up = {0, 1, 0};
+    cam.orthographic = true;
+    cam.height = 4.0f;
+    const ScreenProj sp = umbreon::makeScreenProj(cam, 64, 64);
+
+    // Chain 0: a horizontal silhouette segment at world z=5 (NEAR).
+    // Chain 1: a vertical silhouette segment at world z=2 (FAR), crossing it at
+    // screen center. They share no node, are different chains -> a real crossing.
+    EdgeChain near;
+    near.pts = {Vec3{-1, 0, 5}, Vec3{1, 0, 5}};
+    near.segNature = {EdgeNature::Silhouette};
+    EdgeChain far;
+    far.pts = {Vec3{0, -1, 2}, Vec3{0, 1, 2}};
+    far.segNature = {EdgeNature::Silhouette};
+    std::vector<EdgeChain> chains = {near, far};
+
+    const auto cross = umbreon::computeEdgeCrossings(chains, sp, /*zTol=*/0.1f);
+    s.check_eq("crossing: exactly one T-vertex", cross.size(),
+               static_cast<std::size_t>(1));
+    // The FAR chain (index 1, world z=2 => larger view-z) must be the hidden one.
+    bool farHidden = cross.size() == 1 && cross[0].chainIdx == 1 &&
+                     cross[0].segIdx == 0 && cross[0].t > 0.4f && cross[0].t < 0.6f;
+    s.check("crossing: the farther segment is the one hidden at the crossing",
+            farHidden);
+
+    // Coincident depth (|z1-z2| <= zTol): a true junction hides NEITHER.
+    EdgeChain sameZ;
+    sameZ.pts = {Vec3{0, -1, 5}, Vec3{0, 1, 5}};  // same z=5 as `near`
+    sameZ.segNature = {EdgeNature::Silhouette};
+    std::vector<EdgeChain> chains2 = {near, sameZ};
+    const auto cross2 = umbreon::computeEdgeCrossings(chains2, sp, /*zTol=*/0.1f);
+    s.check("crossing: coincident-depth junction hides neither",
+            cross2.empty());
+
+    // Crease-vs-crease crossing is skipped (silhouette_binary_rule).
+    EdgeChain crA;
+    crA.pts = {Vec3{-1, 0, 5}, Vec3{1, 0, 5}};
+    crA.segNature = {EdgeNature::Crease};
+    EdgeChain crB;
+    crB.pts = {Vec3{0, -1, 2}, Vec3{0, 1, 2}};
+    crB.segNature = {EdgeNature::Crease};
+    std::vector<EdgeChain> chains3 = {crA, crB};
+    const auto cross3 = umbreon::computeEdgeCrossings(chains3, sp, /*zTol=*/0.1f);
+    s.check("crossing: crease-vs-crease crossing is not a T-vertex",
+            cross3.empty());
   }
 
   // ---- (8) ribbon geometry: straight stroke -> ~2*halfThick rectangle; a

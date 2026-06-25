@@ -19,6 +19,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -58,6 +59,19 @@ struct EdgeChain {
   // exclusion). Sized to pts; empty when no incident faces were carried.
   static constexpr int kMaxIncidentFaces = 4;
   std::vector<std::array<int, kMaxIncidentFaces>> incidentFaces;
+  // Per-SEGMENT incident mesh-triangle ids (one entry per `segs`, oriented to the
+  // backbone): the two faces of that feature segment (FeatureSeg::face0/face1),
+  // used as the EXACT, per-segment exclude set for the QI ray cast at the
+  // segment center (Freestyle self/adjacent-face skip). -1 = unused slot. This is
+  // narrower (and correct) versus the per-vertex hub union `incidentFaces`, which
+  // over-excludes by unioning every face meeting at a hub. Sized to segs; empty
+  // when no faces were carried.
+  std::vector<std::array<int, 2>> segFaces;
+  // Per-SEGMENT nature, oriented to the backbone (one per `segs`). Carried so the
+  // global crossing pass can apply Freestyle's silhouette_binary_rule (at least
+  // one SILHOUETTE/BORDER edge per occlusion T-vertex) without re-fetching the
+  // FeatureSeg array.
+  std::vector<EdgeNature> segNature;
 };
 
 // Bidirectional chaining ported from Freestyle Operators::bidirectionalChain +
@@ -70,19 +84,49 @@ struct EdgeChain {
 std::vector<EdgeChain> chainFeatureSegs(const std::vector<FeatureSeg>& segs,
                                         int nodeCount);
 
-// Per-vertex ray-cast Quantitative Invisibility for one chain. For each backbone
-// point P (in `chain.pts`) cast a ray from P toward the camera (`sp.pos`); QI==0
-// (no occluder) => visible. The ray origin is P itself: P's OWN incident mesh
-// faces (chain.incidentFaces[i]) are passed to `occluded` and excluded there, so
-// the feature surface the edge sits on is not counted as a self-occluder. This
-// is Freestyle's self/adjacent-face exclusion (ViewMapBuilder.cpp:2152-2195) --
-// faithful and robust on grazing / self-occluding geometry, replacing the prior
-// uniform along-view nudge. A point that fails to project (perspective at/behind
-// the eye) is marked hidden. Returns one flag per chain.pts entry; a null
-// `occluded` (no live BVH) => all visible.
+// Per-backbone-vertex Quantitative-Invisibility (QI) visibility for one chain by
+// the FREESTYLE-FAITHFUL image-space ray cast (stage A). For each SEGMENT a QI
+// ray is cast from the segment's 3D center (and interior samples for long
+// segments -- Freestyle FEdge::center3d) toward the eye, EXCLUDING that
+// segment's own two incident mesh faces (FeatureSeg::face0/face1) so a grazing
+// silhouette does not self-occlude (Freestyle ViewMapBuilder self/adjacent-face
+// skip, enabled by the now-live Embree argument filter). A segment is QI-visible
+// iff every sample is un-occluded; a backbone vertex is QI-visible iff BOTH its
+// adjacent segments are. `target` is the eye for perspective and a far
+// camera-ward point for ortho. No primary z-buffer / G-buffer is read -- this is
+// a pure BVH-occlusion count, keeping method B distinct from --obj-edges (A).
+// A null `occluded` (no live BVH) => all visible. Returns one flag per
+// chain.pts entry.
 std::vector<char> computeChainVisibility(const EdgeChain& chain,
                                          const ScreenProj& sp,
                                          const OcclusionQuery& occluded);
+
+// One backbone segment hidden by a 2D image-space crossing (stage B): the
+// chain/segment that is OCCLUDED at a screen crossing, plus the crossing
+// parameter `t` in [0,1] along that segment (Freestyle CreateTVertex). The
+// stroke builder turns these into per-segment hidden intervals so the visible
+// run ends exactly at the T-vertex.
+struct EdgeCrossing {
+  int chainIdx = 0;  // chain whose segment is hidden
+  int segIdx = 0;    // backbone-segment index within that chain (0..pts.size()-2)
+  float t = 0.0f;    // crossing parameter along the segment [0,1]
+};
+
+// FREESTYLE-FAITHFUL 2D image-space crossing pass (stage B). Projects every
+// backbone segment of every chain to screen (worldToScreen -> 2D endpoints +
+// linear view-z), finds pairwise 2D crossings (intersect2dLine2dLine) and, at
+// each crossing, hides the FARTHER segment (larger interpolated view-z) by
+// emitting an EdgeCrossing on it (Freestyle CreateTVertex depth order). This is
+// the silhouette-vs-silhouette / self-occlusion-at-folds robustness QI cannot
+// resolve (two grazing rays give unstable counts; the view-z compare at the
+// crossing pixel is exact). Filtered like silhouette_binary_rule: a crossing is
+// recorded only if at least one segment is SILHOUETTE or BORDER (crease-vs-crease
+// skipped); chain-adjacent / shared-node pairs are skipped (a chain never
+// self-hides at its own joints); a near-equal view-z crossing (|z1-z2| <= zTol)
+// is a true junction and hides NEITHER. No 3D geometry and no primary z-buffer is
+// used. Returns one EdgeCrossing per hidden side per qualifying crossing.
+std::vector<EdgeCrossing> computeEdgeCrossings(
+    const std::vector<EdgeChain>& chains, const ScreenProj& sp, float zTol);
 
 // Morphological CLOSE of a per-vertex visible(1)/hidden(0) mask along a chain:
 // any maximal HIDDEN run no longer than `maxBridge`, bracketed on BOTH sides by

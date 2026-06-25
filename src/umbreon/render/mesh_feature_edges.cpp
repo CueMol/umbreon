@@ -102,6 +102,24 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
 
   result.vpos = vpos;
 
+  // Mean triangle edge length, computed unconditionally (independent of which
+  // natures are enabled) so the stroke pass can derive the obj-edges silhouette
+  // camBias even when extracting with opt.silhouette off. This is the SAME
+  // elsum/(3*nTri) the silhouette block computes locally (kept there to preserve
+  // --obj-edges byte-identity); both produce the identical value.
+  {
+    double elsum = 0.0;
+    for (std::size_t f = 0; f < nTri; ++f) {
+      const std::size_t a = static_cast<std::size_t>(fa[f]);
+      const std::size_t b = static_cast<std::size_t>(fb[f]);
+      const std::size_t c = static_cast<std::size_t>(fc[f]);
+      elsum += length(vpos[b] - vpos[a]) + length(vpos[c] - vpos[b]) +
+               length(vpos[a] - vpos[c]);
+    }
+    result.meanEdge =
+        nTri ? static_cast<float>(elsum / (3.0 * nTri)) : 0.0f;
+  }
+
   // Edge adjacency (welded-position topology), SHARED by the hard-edge
   // silhouette and the crease/border pass.
   struct EAdj {
