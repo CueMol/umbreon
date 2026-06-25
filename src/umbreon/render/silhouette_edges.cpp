@@ -411,7 +411,22 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
   if (opt.meshSilhouette) {
     const float w = opt.width > 0.0f ? opt.width : 0.0f;
     const float silOff = opt.raise;     // outward offset (0 => hug the surface)
-    const float camBias = 0.5f * w;     // toward-camera depth bias (z-fight win)
+    // The depth bias needed to clear the grazing surface depends on the local
+    // SURFACE scale, not the edge width: a thin line at width*0.5 alone is too
+    // small a bias and breaks up. Use the mean mesh edge length (the tessellation
+    // / feature scale) so the bias is robust to the edge width AND to the scene's
+    // unit of length (no hard-coded world constant). 0.15 covers the molecular
+    // ribbon/tube meshes here; width*0.5 still wins for unusually fat edges.
+    double elsum = 0.0;
+    for (std::size_t f = 0; f < nTri; ++f) {
+      const std::size_t a = static_cast<std::size_t>(fa[f]);
+      const std::size_t b = static_cast<std::size_t>(fb[f]);
+      const std::size_t c = static_cast<std::size_t>(fc[f]);
+      elsum += length(vpos[b] - vpos[a]) + length(vpos[c] - vpos[b]) +
+               length(vpos[a] - vpos[c]);
+    }
+    const float meanEdge = nTri ? static_cast<float>(elsum / (3.0 * nTri)) : 0.0f;
+    const float camBias = std::fmax(0.5f * w, 0.15f * meanEdge);
     for (std::size_t f = 0; f < nTri; ++f) {
       const int idx[3] = {fa[f], fb[f], fc[f]};
       const float d[3] = {dotp[static_cast<std::size_t>(idx[0])],
