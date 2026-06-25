@@ -339,6 +339,8 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--obj-edge-border-coplanar-deg") {
       o.objEdgeBorderCoplanarDeg = static_cast<float>(
           std::atof(value("--obj-edge-border-coplanar-deg").c_str()));
+    } else if (a == "--obj-edge-crease-max-deg") {
+      o.objEdgeCreaseMaxDeg = std::atoi(value("--obj-edge-crease-max-deg").c_str());
     } else if (a == "--obj-edge-mesh-sil") {
       std::string v = value("--obj-edge-mesh-sil");
       if (o.ok && !parseBool(v, o.objEdgeMeshSil))
@@ -436,10 +438,11 @@ void printUsage(const char* prog) {
       "  --obj-edge-segments <int> sphere/cap ring tessellation           [48]\n"
       "  --obj-edge-color <#RRGGBB> object-edge color              [#000000]\n"
       "  --obj-edge-clip <on|off> trim object edges at primitive joins    [on]\n"
-      "  --obj-edge-crease-deg <float> mesh crease dihedral threshold     [50]\n"
+      "  --obj-edge-crease-deg <float> mesh crease dihedral threshold     [75]\n"
       "  --obj-edge-crease-smooth-deg <f> veto smooth-facet creases (0=off) [25]\n"
       "  --obj-edge-crease-convex-only <on|off> drop concave-valley creases [on]\n"
       "  --obj-edge-border-coplanar-deg <f> veto strip-seam borders (0=off) [35]\n"
+      "  --obj-edge-crease-max-deg <int> drop crease-cluster cap hubs (0=off)  [4]\n"
       "  --obj-edge-mesh-sil <on|off> mesh smooth n.v==0 silhouette        [on]\n"
       "  --obj-edge-mesh-crease <on|off> mesh crease (sharp-fold) edges    [on]\n"
       "  --obj-edge-mesh-border <on|off> mesh open-boundary edges          [on]\n"

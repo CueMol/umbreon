@@ -396,7 +396,18 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
   };
 
   // 3) SMOOTH SILHOUETTE: per face, connect the two n.v==0 zero-crossings.
+  //
+  // The contour lies ON the surface exactly where it grazes the view (n.v==0), so
+  // a thin edge tube placed there is half-buried in the surface and z-fights /
+  // gets occluded by the grazing body, breaking the line into dashes. Offsetting
+  // the contour OUTWARD along its (view-perpendicular) normal by at least the edge
+  // radius lifts the whole tube clear of the surface, so the ray tracer draws a
+  // continuous outline. ~1.3x the radius covers the surface curvature near the
+  // contour; an explicit larger opt.raise still wins. (Crease/border edges are not
+  // on the grazing locus, so they keep the plain opt.raise.)
   if (opt.meshSilhouette) {
+    const float w = opt.width > 0.0f ? opt.width : 0.0f;
+    const float silOff = std::fmax(opt.raise, 1.3f * w);
     for (std::size_t f = 0; f < nTri; ++f) {
       const int idx[3] = {fa[f], fb[f], fc[f]};
       const float d[3] = {dotp[static_cast<std::size_t>(idx[0])],
@@ -404,18 +415,46 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
                           dotp[static_cast<std::size_t>(idx[2])]};
       Vec3 cp[2], cn[2];
       int nc = 0;
-      for (int e = 0; e < 3 && nc < 2; ++e) {
-        const std::size_t i = static_cast<std::size_t>(idx[e]);
-        const std::size_t j = static_cast<std::size_t>(idx[(e + 1) % 3]);
-        const float di = d[e], dj = d[(e + 1) % 3];
-        if (di * dj < 0.0f) {
-          const float t = di / (di - dj);
-          cp[nc] = vpos[i] + (vpos[j] - vpos[i]) * t;
-          cn[nc] = normalize(vN[i] + (vN[j] - vN[i]) * t);
-          ++nc;
+      auto addCross = [&](int i, int j) {
+        const std::size_t vi = static_cast<std::size_t>(idx[i]);
+        const std::size_t vj = static_cast<std::size_t>(idx[j]);
+        const float t = d[i] / (d[i] - d[j]);
+        cp[nc] = vpos[vi] + (vpos[vj] - vpos[vi]) * t;
+        cn[nc] = normalize(vN[vi] + (vN[vj] - vN[vi]) * t);
+        ++nc;
+      };
+      auto addVert = [&](int i) {
+        const std::size_t vi = static_cast<std::size_t>(idx[i]);
+        cp[nc] = vpos[vi];
+        cn[nc] = vN[vi];
+        ++nc;
+      };
+      // Extract the n.v==0 iso-contour segment of this face. Following Freestyle
+      // WXFaceLayer::BuildSmoothEdge, a vertex lying EXACTLY on the contour
+      // (DotP==0) is handled explicitly so an on-contour face is never skipped
+      // (which would nick the outline): the contour runs vertex->opposite-edge
+      // crossing (one null vertex) or along the mesh edge between two null
+      // vertices. The common no-null case is the plain two-sign-change crossing.
+      int nullIdx[3] = {-1, -1, -1};
+      int nnull = 0;
+      for (int k = 0; k < 3; ++k)
+        if (d[k] == 0.0f) nullIdx[nnull++] = k;
+      if (nnull == 0) {
+        for (int e = 0; e < 3 && nc < 2; ++e)
+          if (d[e] * d[(e + 1) % 3] < 0.0f) addCross(e, (e + 1) % 3);
+      } else if (nnull == 1) {
+        const int o0 = (nullIdx[0] + 1) % 3, o1 = (nullIdx[0] + 2) % 3;
+        if (d[o0] * d[o1] < 0.0f) {  // contour crosses the face (not just a touch)
+          addVert(nullIdx[0]);
+          addCross(o0, o1);
         }
+      } else if (nnull == 2) {
+        addVert(nullIdx[0]);
+        addVert(nullIdx[1]);
       }
-      if (nc == 2) push(cp[0], cn[0], cp[1], cn[1], mesh.groupForTri(f));
+      if (nc == 2)
+        out.push_back(RawSeg{cp[0] + cn[0] * silOff, cp[1] + cn[1] * silOff,
+                             mesh.groupForTri(f)});
     }
   }
 
@@ -493,6 +532,20 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
       return false;
     };
 
+    // Crease candidates are collected first so a per-vertex CREASE-DEGREE filter
+    // can drop dense crease CLUSTERS -- the tube/chain-terminus CAP blobs, where
+    // many short creases radiate from one vertex -- while keeping clean fold LINES
+    // (a line's vertices have crease degree <=2) and simple junctions. Borders are
+    // emitted inline. meshCreaseMaxDegree==0 disables the filter (emit inline).
+    struct CreaseCand {
+      std::size_t a, b;
+      std::uint16_t grp;
+    };
+    std::vector<CreaseCand> creaseCand;
+    std::vector<int> creaseDeg;
+    const int maxDeg = opt.meshCreaseMaxDegree;
+    if (maxDeg > 0) creaseDeg.assign(nV, 0);
+
     for (const auto& kv : emap) {
       const std::size_t a = static_cast<std::size_t>(kv.first & 0xffffffffu);
       const std::size_t b = static_cast<std::size_t>(kv.first >> 32);
@@ -539,9 +592,20 @@ void emitMeshEdges(const Mesh& mesh, const Camera& cam, const SilEdgeOptions& op
         if (dot(nAvg, apexMid - edgeMid) > 0.0f) continue;  // concave valley
       }
 
-      push(vpos[a], vN[a], vpos[b], vN[b],
-           mesh.groupForTri(static_cast<std::size_t>(adj.f1)));
+      const std::uint16_t grp = mesh.groupForTri(static_cast<std::size_t>(adj.f1));
+      if (maxDeg > 0) {
+        creaseDeg[a]++;
+        creaseDeg[b]++;
+        creaseCand.push_back({a, b, grp});
+      } else {
+        push(vpos[a], vN[a], vpos[b], vN[b], grp);
+      }
     }
+    // Degree filter: emit a candidate crease only where NEITHER endpoint is a
+    // crease-cluster hub (cap/terminus blob).
+    for (const CreaseCand& c : creaseCand)
+      if (creaseDeg[c.a] <= maxDeg && creaseDeg[c.b] <= maxDeg)
+        push(vpos[c.a], vN[c.a], vpos[c.b], vN[c.b], c.grp);
   }
 }
 

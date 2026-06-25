@@ -540,5 +540,66 @@ int main() {
             borderN(35.0f) == b0 - 1);
   }
 
+  // ---- (10) Freestyle on-contour vertex + crease-cluster degree filter -------
+  {
+    const float kPiT = 3.14159265358979f;
+    Camera cam;
+    cam.orthographic = true;
+    cam.direction = {0, 0, -1};  // viewer toward +z
+
+    // FREESTYLE on-contour vertex: a vertex whose normal is exactly perpendicular
+    // to the view (DotP==0) lies ON the silhouette. The face must still emit one
+    // segment (vertex -> opposite-edge crossing) instead of being skipped, which
+    // the plain two-sign-change extraction would do (nicking the outline).
+    {
+      Scene sc;
+      sc.camera = cam;
+      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+      sc.mesh.normals = {{1, 0, 0}, {0, 0, 1}, {0, 0, -1}};  // DotP = 0, +1, -1
+      SilEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = true;
+      o.meshCrease = false;
+      o.meshBorder = false;
+      umbreon::generateSilhouetteEdges(sc, o);
+      s.check("mesh silhouette: an on-contour vertex (DotP==0) still emits a segment",
+              sc.cylinders.size() == 1);
+    }
+
+    // CREASE-CLUSTER DEGREE FILTER: a hexagonal cone's six lateral creases all meet
+    // at the apex (crease degree 6). A high limit keeps them; a low limit drops the
+    // whole cluster -- the geometric stand-in for a tube/terminus cap blob.
+    auto coneCreases = [&](int maxDeg) {
+      Scene sc;
+      sc.camera = cam;
+      Vec3 r[6];
+      for (int i = 0; i < 6; ++i) {
+        const float a = static_cast<float>(i) * (kPiT / 3.0f);
+        r[i] = Vec3{std::cos(a), std::sin(a), 0.0f};
+      }
+      const Vec3 c{0, 0, 1};
+      for (int i = 0; i < 6; ++i) {
+        sc.mesh.positions.push_back(c);
+        sc.mesh.positions.push_back(r[i]);
+        sc.mesh.positions.push_back(r[(i + 1) % 6]);
+      }
+      SilEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = false;
+      o.meshCrease = true;
+      o.meshBorder = false;
+      o.creaseAngleDeg = 20.0f;
+      o.meshCreaseConvexOnly = false;
+      o.meshCreaseSmoothVetoDeg = 0.0f;
+      o.meshCreaseMaxDegree = maxDeg;
+      umbreon::generateSilhouetteEdges(sc, o);
+      return sc.cylinders.size();
+    };
+    s.check("cone apex: the six lateral creases are present (filter off)",
+            coneCreases(0) == 6);
+    s.check("cone apex: the crease cluster is dropped at a low degree limit",
+            coneCreases(4) == 0);
+  }
+
   return s.report();
 }

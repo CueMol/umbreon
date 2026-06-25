@@ -132,7 +132,7 @@ struct Options {
   bool objEdgeMeshSil = true;
   bool objEdgeMeshCrease = true;
   bool objEdgeMeshBorder = true;
-  float objEdgeCreaseDeg = 50.0f;
+  float objEdgeCreaseDeg = 75.0f;
   // Geometric crease/border gates (no color). Mirror SilEdgeOptions defaults so
   // the out-of-the-box look reproduces the clean CueMol OpenGL outline:
   //   - smooth-facet veto (deg): drop creases that are smooth-shaded tessellation
@@ -143,6 +143,7 @@ struct Options {
   float objEdgeCreaseSmoothDeg = 25.0f;
   bool objEdgeCreaseConvexOnly = true;
   float objEdgeBorderCoplanarDeg = 35.0f;
+  int objEdgeCreaseMaxDeg = 4;   // drop crease-cluster (cap/terminus) hubs; 0=off
 
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;

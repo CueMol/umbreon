@@ -81,6 +81,12 @@ struct SilEdgeOptions {
   // bend (in degrees) of the border chain that still counts as "smoothly
   // continuing". 0 disables the veto.
   float meshBorderCoplanarVetoDeg = 0.0f;
+  // Crease-cluster degree filter: drop a crease edge incident to a vertex where
+  // MORE than this many crease edges meet. A clean fold LINE has crease degree
+  // <=2 along it (<=~4 at a junction); a CAP/terminus blob radiates many creases
+  // from one hub vertex. Removes the tube/chain-end cap scribbles geometrically
+  // while keeping fold lines. 0 disables (emit every gated crease).
+  int meshCreaseMaxDegree = 0;
 };
 
 // Append analytic object-space silhouette edges for every original Sphere and
