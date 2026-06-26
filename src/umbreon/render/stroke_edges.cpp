@@ -138,7 +138,8 @@ struct StyledStrip {
   Strip strip;
   float color[3] = {0.0f, 0.0f, 0.0f};
   float opacity = 1.0f;
-  int precedence = 0;  // composite order key (lower paints first)
+  int precedence = 0;     // nature tie-break key (lower paints first)
+  float depthKey = 0.0f;  // min view-z over the run (FARTHER = larger); primary sort
 };
 
 // Map an EdgeNature onto the EdgeStyle::cls[] styling slot it draws with. The
@@ -461,6 +462,7 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
   std::vector<Vec2> pos;
   std::vector<float> lw, rw;
   float col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
+  float depthMin = 0.0f;  // min view-z over the current run
   auto flush = [&]() {
     if (pos.size() >= minRun) {
       StyledStrip ss;
@@ -470,6 +472,7 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
       ss.color[2] = col[2];
       ss.opacity = opacity;
       ss.precedence = precedence;
+      ss.depthKey = depthMin;
       out.push_back(std::move(ss));
     }
     pos.clear();
@@ -481,11 +484,14 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
       flush();
       continue;
     }
-    if (pos.empty()) {  // run start: capture its color/opacity
+    if (pos.empty()) {  // run start: capture color/opacity, seed the depth min
       col[0] = v.attr.color[0];
       col[1] = v.attr.color[1];
       col[2] = v.attr.color[2];
       opacity = v.attr.alpha;
+      depthMin = v.vz;
+    } else if (v.vz < depthMin) {
+      depthMin = v.vz;
     }
     pos.push_back(v.p);
     lw.push_back(v.attr.leftThick);
@@ -1244,11 +1250,16 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
 
   if (strips.empty()) return;
 
-  // Stable-sort strips by nature PRECEDENCE (Crease < Border < Silhouette) so a
-  // higher-precedence stroke inks OVER a lower one where they overlap. Stable so
-  // strips of equal precedence keep their build (chain) order -> deterministic.
+  // Stable-sort strips for compositing. compositeOver paints in array order, so the
+  // LAST strip is on top (painter's algorithm). Primary key = DEPTH: sort FARTHER
+  // first (descending depthKey = view-z) so the NEARER stroke is last == on top
+  // (Freestyle Operators::sort + pyZBP1D, resolved to umbreon's `over` blend
+  // direction). Tie-break by nature PRECEDENCE (Crease < Border < Silhouette).
+  // Stable so full ties keep build (chain) order -> deterministic; depthKey is
+  // computed single-threaded, so the result is independent of TBB scheduling.
   std::stable_sort(strips.begin(), strips.end(),
                    [](const StyledStrip& a, const StyledStrip& b) {
+                     if (a.depthKey != b.depthKey) return a.depthKey > b.depthKey;
                      return a.precedence < b.precedence;
                    });
 
