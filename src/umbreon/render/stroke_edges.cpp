@@ -664,22 +664,24 @@ std::vector<SubSpan> splitChainAtCrossings(
   return spans;
 }
 
-// Per-sub-span visibility by the FREESTYLE per-PIECE majority vote. Sub-spans are
-// grouped into PIECES -- maximal backbone runs between 2D crossings (a segment
-// joint stays within a piece; a within-segment crossing starts a new one), the
-// analogue of a Freestyle ViewEdge between two TVertices. Each piece is given ONE
-// visibility by a MAJORITY vote of its sub-span centers' QI ray casts (Freestyle
-// ComputeRayCastingVisibility assigns one QI per ViewEdge by majority of its FEdge
-// centers, ViewMapBuilder.cpp:1670): a QI ray is cast from each sub-span's 3D
-// midpoint toward the eye, excluding that segment's own 1-ring of faces
-// (buildSegmentExclude). The boundary between a visible and a hidden piece is thus
-// the crossing (the occluder's silhouette) -- not a per-sample ray flip, which
-// overshoots a grazing silhouette. Voting per PIECE (not per segment) keeps a
-// background silhouette (no crossings => one piece spanning many segments) SOLID
-// even when a few centers graze-self-occlude, while a piece that genuinely passes
-// behind a body (its centers mostly occluded) is hidden as a whole and terminates
-// at the crossing. Returns one flag per sub-span (= its piece's vote). Empty
-// `occluded` (no live BVH) => all visible.
+// Per-sub-span Quantitative-Invisibility: each sub-span is HIDDEN iff its 3D
+// MIDPOINT's QI ray to the eye is occluded (Freestyle FEdge::center3d, cast raw,
+// counting any non-excluded surface hit), excluding the sub-span segment's own
+// 1-ring of faces (buildSegmentExclude -- Freestyle's identity self/adjacent-face
+// skip). Sub-spans are split at the 2D crossings, so the visible/hidden boundary
+// falls exactly at the occluder's silhouette; consecutive same-state sub-spans
+// merge into one ribbon run downstream.
+//
+// Visibility is decided PER SUB-SPAN, NOT by a per-piece majority vote. A majority
+// vote over a whole inter-crossing piece WRONGLY MASKED a minority-occluded run:
+// where a tube folds back on itself the inner silhouette goes behind the front of
+// the bend without a clean 2D crossing, so the fold + its two visible limbs are one
+// piece; the visible limbs outvoted the hidden fold and the occluded back silhouette
+// leaked over the front. Per-sub-span hides the fold on its own QI. Dashing (the
+// reason the vote was introduced) does not return: a convex silhouette does not
+// self-occlude (the un-lifted ray lies in the tangent plane, and the 1-ring is
+// excluded), and the single-emit projection no longer makes degenerate strips.
+// Returns one flag per sub-span. Empty `occluded` (no live BVH) => all visible.
 std::vector<char> subSpanHidden(const EdgeChain& chain,
                                 const std::vector<SubSpan>& spans,
                                 const ScreenProj& sp,
@@ -689,7 +691,9 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
   if (!occluded || nPts < 2 || spans.empty()) return hidden;
   const std::size_t nSeg = nPts - 1;
 
-  auto centerOccluded = [&](const SubSpan& s) -> bool {
+  for (std::size_t i = 0; i < spans.size(); ++i) {
+    const SubSpan& s = spans[i];
+    if (s.b - s.a <= kZero) continue;  // degenerate sub-span: leave visible
     const std::size_t k = static_cast<std::size_t>(s.seg);
     const Vec3& A = chain.pts[k];
     const Vec3& B = chain.pts[k + 1];
@@ -698,33 +702,9 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
                     A.z + (B.z - A.z) * tm};
     const std::vector<int> buf = buildSegmentExclude(chain, k, nSeg, nPts);
     const int nF = static_cast<int>(buf.size());
-    return qiOccludedAt(P, sp, occluded, nF > 0 ? buf.data() : nullptr, nF);
-  };
-
-  // First pass: assign each sub-span a piece id (a new piece begins at a
-  // within-segment crossing -- spans[i] shares its segment with spans[i-1]) and
-  // tally occluded/total centers per piece.
-  std::vector<int> pieceOf(spans.size(), 0);
-  std::vector<int> pOcc, pTot;
-  int piece = 0;
-  for (std::size_t i = 0; i < spans.size(); ++i) {
-    if (i > 0 && spans[i].seg == spans[i - 1].seg) ++piece;  // crossing boundary
-    pieceOf[i] = piece;
-    if (static_cast<int>(pOcc.size()) <= piece) {
-      pOcc.push_back(0);
-      pTot.push_back(0);
-    }
-    if (spans[i].b - spans[i].a > kZero) {
-      if (centerOccluded(spans[i])) ++pOcc[piece];
-      ++pTot[piece];
-    }
-  }
-
-  // Second pass: a piece is HIDDEN iff a strict majority of its centers are
-  // occluded; ties / empty default to visible (do not over-hide a silhouette).
-  for (std::size_t i = 0; i < spans.size(); ++i) {
-    const int p = pieceOf[i];
-    hidden[i] = (pTot[p] > 0 && 2 * pOcc[p] > pTot[p]) ? 1 : 0;
+    hidden[i] = qiOccludedAt(P, sp, occluded, nF > 0 ? buf.data() : nullptr, nF)
+                    ? 1
+                    : 0;
   }
   return hidden;
 }
