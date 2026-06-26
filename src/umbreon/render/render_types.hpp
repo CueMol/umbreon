@@ -104,6 +104,11 @@ struct StrokeEdgeOptions {
   // function of the curvilinear abscissa u (a "spindle"/calligraphic look). Off by
   // default so the stroke pass stays byte-identical; --stroke-taper on enables it.
   bool taper = false;
+  // Demo GEOMETRY shader: Laplacian-smooth the backbone to remove tessellation-
+  // induced jaggedness, while PRESERVING endpoints and sharp corners (turn angle
+  // above a threshold) so genuine angular features are not rounded. Off by default
+  // (byte-identical); --stroke-smooth on enables it.
+  bool smooth = false;
 
   // Per-section styling: a section without an override uses defaultStyle. The
   // stroke pipeline maps each EdgeNature onto a styling slot in EdgeStyle (see

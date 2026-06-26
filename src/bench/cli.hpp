@@ -156,6 +156,8 @@ struct Options {
   bool strokeBorder = true;
   // Demo stylization shader (--stroke-taper): taper width toward stroke ends.
   bool strokeTaper = false;
+  // Demo geometry shader (--stroke-smooth): corner-preserving backbone smoothing.
+  bool strokeSmooth = false;
 
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;

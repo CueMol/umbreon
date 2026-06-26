@@ -435,6 +435,54 @@ struct TaperShader : StrokeShader {
   }
 };
 
+// GEOMETRY shader: Laplacian-smooth the backbone to remove tessellation-induced
+// jaggedness (Freestyle SmoothingShader, AdvancedStrokeShaders). Each interior
+// vertex moves a fraction `lambda` toward its neighbours' midpoint, for `iters`
+// passes. CORNER-PRESERVING: a vertex whose turn cosine is below `cornerCos` (a
+// sharp angle -- e.g. a ribbon box edge) is held fixed, as are the two endpoints, so
+// genuine angular features are not rounded (the crude analogue of Freestyle's
+// anisotropic edge-stopping). Runs BEFORE the width/color shaders; visibility was
+// already resolved upstream, so moving the drawn line a little is safe. Recomputes
+// the curvilinear abscissa afterward so later f(u) shaders stay consistent.
+struct SmoothShader : StrokeShader {
+  int iters;
+  float cornerCos;  // protect a vertex if turn cosine < cornerCos (sharper corner)
+  float lambda;
+  SmoothShader(int it, float cc, float lam)
+      : iters(it), cornerCos(cc), lambda(lam) {}
+  int shade(Stroke& s) const override {
+    const std::size_t n = s.verts.size();
+    if (n < 3) return 0;
+    std::vector<Vec2> p(n);
+    for (std::size_t i = 0; i < n; ++i) p[i] = s.verts[i].p;
+    for (int it = 0; it < iters; ++it) {
+      std::vector<Vec2> np = p;  // endpoints (and skipped corners) preserved
+      for (std::size_t i = 1; i + 1 < n; ++i) {
+        const Vec2 d0 = p[i] - p[i - 1];
+        const Vec2 d1 = p[i + 1] - p[i];
+        const float l0 = norm2(d0), l1 = norm2(d1);
+        if (l0 <= kZero || l1 <= kZero) continue;
+        if (dot2(d0, d1) / (l0 * l1) < cornerCos) continue;  // sharp corner: protect
+        const Vec2 mid = (p[i - 1] + p[i + 1]) * 0.5f;
+        np[i] = p[i] + (mid - p[i]) * lambda;
+      }
+      p.swap(np);
+    }
+    for (std::size_t i = 0; i < n; ++i) s.verts[i].p = p[i];
+    // Positions moved -> recompute curvilinear abscissa / u (vz left as the original
+    // view depth; the 2D smoothing does not change a vertex's scene depth).
+    float ca = 0.0f;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (i > 0) ca += norm2(s.verts[i].p - s.verts[i - 1].p);
+      s.verts[i].ca = ca;
+    }
+    s.length2d = ca;
+    if (ca > 0.0f)
+      for (StrokeVertex& v : s.verts) v.u = v.ca / ca;
+    return 0;
+  }
+};
+
 // Build a parametric Stroke from a visibility-tagged projected polyline, stamping
 // the resolved per-chain default attribute into every vertex (Freestyle
 // Operators::createStroke, Operators.cpp:1082-1155). Accumulates 2D arc length to
@@ -1311,6 +1359,8 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     // attribute, so output is byte-identical; a real calligraphic/depth-cue/taper/
     // noise shader plugs in here to make L != R or color vary along u.
     std::vector<std::unique_ptr<StrokeShader>> shaders;
+    if (se.smooth)  // demo GEOMETRY shader: corner-preserving backbone smoothing
+      shaders.push_back(std::make_unique<SmoothShader>(8, 0.707f, 0.5f));
     shaders.push_back(std::make_unique<ConstantThicknessShader>(halfThick));
     shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
     if (se.taper)  // demo f(u) shader: taper width toward stroke ends
