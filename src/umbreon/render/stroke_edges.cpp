@@ -897,6 +897,18 @@ constexpr float kOrthoQiReach = 1.0e4f;
 // off the segment so the count stays small.
 constexpr int kQiMaxInteriorSamples = 3;
 
+// QI interior sampling for a crossing-sub-span (subSpanHidden): one ray per this
+// many hi-res px of the sub-span's screen-space length, hidden iff ANY sample is
+// occluded. A sub-span that crosses no 2D feature edge is a single piece that can
+// still pass FULLY behind a SMOOTH (featureless) occluder -- e.g. a helix back-rim
+// behind the tube's front wall -- with no crossing to split it; a lone midpoint
+// ray grazes past such an occluder and leaks the hidden line. Real partial-
+// occlusion boundaries coincide with the occluder's silhouette, itself a drawn
+// feature edge that already split the span, so ANY-hidden never over-hides a span
+// that genuinely straddles a visible/hidden boundary.
+constexpr float kQiSubSpanSampleStepPx = 4.0f;  // hi-res px between QI samples
+constexpr int kQiSubSpanMaxSamples = 64;        // cost cap for a long sub-span
+
 // QI occlusion of one 3D point P with the given per-segment exclude faces. Casts
 // a ray P->eye (persp) or P->far-camera-ward (ortho); true == an un-excluded
 // solid surface lies strictly between P and the eye (qi > 0 => hidden).
@@ -1059,14 +1071,33 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
     const std::size_t k = static_cast<std::size_t>(s.seg);
     const Vec3& A = chain.pts[k];
     const Vec3& B = chain.pts[k + 1];
-    const float tm = 0.5f * (s.a + s.b);
-    const Vec3 P = {A.x + (B.x - A.x) * tm, A.y + (B.y - A.y) * tm,
-                    A.z + (B.z - A.z) * tm};
     const std::vector<int> buf = buildSegmentExclude(chain, k, nSeg, nPts);
     const int nF = static_cast<int>(buf.size());
-    hidden[i] = qiOccludedAt(P, sp, occluded, nF > 0 ? buf.data() : nullptr, nF)
-                    ? 1
-                    : 0;
+    const int* fp = nF > 0 ? buf.data() : nullptr;
+    // Sample count scales with the sub-span's SCREEN length so a tiny sub-span
+    // (e.g. the dense beta-sheet crossing fragments) stays a single midpoint test
+    // while a long featureless-occlusion span gets enough rays to catch the dip.
+    float ax, ay, avz, bx, by, bvz;
+    const bool aok = worldToScreen(sp, A, ax, ay, avz);
+    const bool bok = worldToScreen(sp, B, bx, by, bvz);
+    int samples = 1;
+    if (aok && bok) {
+      const float dx = (bx - ax) * (s.b - s.a), dy = (by - ay) * (s.b - s.a);
+      const float spanPx = std::sqrt(dx * dx + dy * dy);
+      samples = static_cast<int>(spanPx / kQiSubSpanSampleStepPx) + 1;
+      if (samples < 1) samples = 1;
+      if (samples > kQiSubSpanMaxSamples) samples = kQiSubSpanMaxSamples;
+    }
+    bool occ = false;
+    for (int sIdx = 0; sIdx < samples && !occ; ++sIdx) {
+      const float frac =
+          (static_cast<float>(sIdx) + 0.5f) / static_cast<float>(samples);
+      const float tt = s.a + (s.b - s.a) * frac;
+      const Vec3 P = {A.x + (B.x - A.x) * tt, A.y + (B.y - A.y) * tt,
+                      A.z + (B.z - A.z) * tt};
+      if (qiOccludedAt(P, sp, occluded, fp, nF)) occ = true;
+    }
+    hidden[i] = occ ? 1 : 0;
   }
   return hidden;
 }
