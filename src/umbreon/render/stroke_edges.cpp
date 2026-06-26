@@ -1049,45 +1049,127 @@ std::vector<SubSpan> splitChainAtCrossings(
   return spans;
 }
 
-// Per-sub-span Quantitative-Invisibility: each sub-span is HIDDEN iff its 3D
-// MIDPOINT's QI ray to the eye is occluded (Freestyle FEdge::center3d, cast raw,
-// counting any non-excluded surface hit), excluding the sub-span segment's own
-// 1-ring of faces (buildSegmentExclude -- Freestyle's identity self/adjacent-face
-// skip). Sub-spans are split at the 2D crossings, so the visible/hidden boundary
-// falls exactly at the occluder's silhouette; consecutive same-state sub-spans
-// merge into one ribbon run downstream.
+// Freestyle CUSP detection (ViewMapBuilder::computeCusps). Along a SMOOTH
+// SILHOUETTE the orientation o = normalize(edgeTangent x surfaceNormal) . viewDir
+// flips sign where the contour folds from front-facing to back-facing. Freestyle
+// splits the ViewEdge at those points (Nature::CUSP) so the hidden back-fold is a
+// ViewEdge of its OWN and is voted hidden -- WITHOUT a cusp split a fold that hides
+// without crossing any drawn line shares one ViewEdge with its two visible limbs,
+// the limbs out-vote it and the occluded back silhouette leaks over the front.
+// Returns one flag per backbone vertex (size nPts); a set flag marks a cusp vertex
+// (a ViewEdge boundary). The deadband 0.1 is Freestyle's literal hysteresis.
+std::vector<char> computeCuspVerts(const EdgeChain& chain, const FeatureMesh& fm,
+                                   const Mesh& mesh, const ScreenProj& sp) {
+  const std::size_t nPts = chain.pts.size();
+  std::vector<char> cusp(nPts, 0);
+  const std::size_t nSeg = nPts >= 1 ? nPts - 1 : 0;
+  if (nSeg < 2 || chain.segs.size() != nSeg) return cusp;
+
+  // Average shading normal of the FeatureSeg's incident face0 triangle (the mesh is
+  // de-indexed: normals[3*tri + {0,1,2}]). The smooth silhouette was extracted from
+  // these shading normals, so they define the same n.v==0 contour.
+  auto faceNormal = [&](int segIdx) -> Vec3 {
+    if (segIdx < 0 || static_cast<std::size_t>(segIdx) >= fm.segs.size())
+      return {0.0f, 0.0f, 0.0f};
+    const int f = fm.segs[static_cast<std::size_t>(segIdx)].face0;
+    if (f < 0) return {0.0f, 0.0f, 0.0f};
+    const std::size_t b = static_cast<std::size_t>(f) * 3;
+    if (b + 2 >= mesh.normals.size()) return {0.0f, 0.0f, 0.0f};
+    return {mesh.normals[b].x + mesh.normals[b + 1].x + mesh.normals[b + 2].x,
+            mesh.normals[b].y + mesh.normals[b + 1].y + mesh.normals[b + 2].y,
+            mesh.normals[b].z + mesh.normals[b + 1].z + mesh.normals[b + 2].z};
+  };
+  auto orient = [&](std::size_t k) -> float {
+    const Vec3& A = chain.pts[k];
+    const Vec3& B = chain.pts[k + 1];
+    Vec3 AB = {B.x - A.x, B.y - A.y, B.z - A.z};
+    const float abl = std::sqrt(AB.x * AB.x + AB.y * AB.y + AB.z * AB.z);
+    if (abl <= kZero) return 0.0f;
+    AB = {AB.x / abl, AB.y / abl, AB.z / abl};
+    const Vec3 N = faceNormal(chain.segs[k]);
+    Vec3 cP = {AB.y * N.z - AB.z * N.y, AB.z * N.x - AB.x * N.z,
+               AB.x * N.y - AB.y * N.x};
+    const float cl = std::sqrt(cP.x * cP.x + cP.y * cP.y + cP.z * cP.z);
+    if (cl <= kZero) return 0.0f;
+    cP = {cP.x / cl, cP.y / cl, cP.z / cl};
+    Vec3 vv;
+    if (sp.ortho) {
+      vv = sp.dir;  // eye->scene view axis (constant for ortho)
+    } else {
+      const Vec3 m = {0.5f * (A.x + B.x), 0.5f * (A.y + B.y), 0.5f * (A.z + B.z)};
+      vv = {m.x - sp.pos.x, m.y - sp.pos.y, m.z - sp.pos.z};
+      const float vl = std::sqrt(vv.x * vv.x + vv.y * vv.y + vv.z * vv.z);
+      if (vl <= kZero) return 0.0f;
+      vv = {vv.x / vl, vv.y / vl, vv.z / vl};
+    }
+    return cP.x * vv.x + cP.y * vv.y + cP.z * vv.z;
+  };
+
+  bool haveState = false, positive = true;
+  for (std::size_t k = 0; k < nSeg; ++k) {
+    const float o = orient(k);
+    if (o == 0.0f) continue;  // degenerate (no normal/tangent): hold state
+    if (!haveState) {
+      positive = (o > 0.0f);
+      haveState = true;
+      continue;
+    }
+    if (positive && o < -0.1f) {
+      positive = false;
+      cusp[k] = 1;  // vertex k (between seg k-1 and seg k) is a cusp
+    } else if (!positive && o > 0.1f) {
+      positive = true;
+      cusp[k] = 1;
+    }
+  }
+  return cusp;
+}
+
+// VIEW-EDGE Quantitative-Invisibility (Freestyle ComputeRayCastingVisibility): a
+// single visibility value is decided per VIEW EDGE -- a maximal run of sub-spans
+// NOT separated by a 2D crossing (Freestyle TVertex) or a CUSP -- by MAJORITY over
+// QI rays sampled along the whole run, then applied uniformly to every sub-span.
 //
-// Visibility is decided PER SUB-SPAN, NOT by a per-piece majority vote. A majority
-// vote over a whole inter-crossing piece WRONGLY MASKED a minority-occluded run:
-// where a tube folds back on itself the inner silhouette goes behind the front of
-// the bend without a clean 2D crossing, so the fold + its two visible limbs are one
-// piece; the visible limbs outvoted the hidden fold and the occluded back silhouette
-// leaked over the front. Per-sub-span hides the fold on its own QI. Dashing (the
-// reason the vote was introduced) does not return: a convex silhouette does not
-// self-occlude (the un-lifted ray lies in the tangent plane, and the 1-ring is
-// excluded), and the single-emit projection no longer makes degenerate strips.
-// Returns one flag per sub-span. Empty `occluded` (no live BVH) => all visible.
+// Why per-ViewEdge, not per-sub-span: Freestyle does NOT ray-cast each fragment
+// independently. It samples several points along one ViewEdge, takes the MAJORITY
+// QI, and assigns it to the entire ViewEdge -- because the true visibility is
+// uniform between two TVertices, so the multiple samples only DENOISE one
+// uniform-truth signal. umbreon's old per-sub-span single test treated every
+// fragment as independently variable, so one unreliable grazing ray flipped one
+// fragment and punched a HOLE in a continuous object outline. The majority makes a
+// minority of spurious self-occlusion samples lose, so the outline stays solid;
+// a genuinely occluded run still votes hidden as a whole because it is bounded by
+// crossings at its emergence points (where the occluder's silhouette crosses it)
+// and so forms its OWN ViewEdge. (A fold that hides WITHOUT any 2D crossing needs
+// a Freestyle CUSP split to bound it; that is a separate step -- computeCusps.)
+//
+// ViewEdge boundaries: splitChainAtCrossings splits a segment at each crossing, so
+// a boundary between consecutive sub-spans is a crossing iff the earlier ends
+// before its segment end (b<1) or the later starts after its segment start (a>0);
+// a clean seg->seg transition (b==1, a==0) stays in the SAME ViewEdge UNLESS the
+// shared backbone vertex is a CUSP (`cuspVert`, computeCuspVerts). Returns one flag
+// per sub-span. Empty `occluded` (no live BVH) => all visible.
 std::vector<char> subSpanHidden(const EdgeChain& chain,
                                 const std::vector<SubSpan>& spans,
                                 const ScreenProj& sp,
-                                const OcclusionQuery& occluded) {
+                                const OcclusionQuery& occluded,
+                                const std::vector<char>& cuspVert) {
   std::vector<char> hidden(spans.size(), 0);
   const std::size_t nPts = chain.pts.size();
   if (!occluded || nPts < 2 || spans.empty()) return hidden;
   const std::size_t nSeg = nPts - 1;
 
-  for (std::size_t i = 0; i < spans.size(); ++i) {
-    const SubSpan& s = spans[i];
-    if (s.b - s.a <= kZero) continue;  // degenerate sub-span: leave visible
+  // Pool one sub-span's QI samples (length-weighted along its screen extent) into a
+  // running occluded/total tally -- Freestyle samples ~one ray per tessellation
+  // edge, i.e. proportional to length.
+  auto tallySpan = [&](const SubSpan& s, int& occ, int& tot) {
+    if (s.b - s.a <= kZero) return;  // degenerate sub-span: no vote
     const std::size_t k = static_cast<std::size_t>(s.seg);
     const Vec3& A = chain.pts[k];
     const Vec3& B = chain.pts[k + 1];
     const std::vector<int> buf = buildSegmentExclude(chain, k, nSeg, nPts);
     const int nF = static_cast<int>(buf.size());
     const int* fp = nF > 0 ? buf.data() : nullptr;
-    // Sample count scales with the sub-span's SCREEN length so a tiny sub-span
-    // (e.g. the dense beta-sheet crossing fragments) stays a single midpoint test
-    // while a long featureless-occlusion span gets enough rays to catch the dip.
     float ax, ay, avz, bx, by, bvz;
     const bool aok = worldToScreen(sp, A, ax, ay, avz);
     const bool bok = worldToScreen(sp, B, bx, by, bvz);
@@ -1099,16 +1181,70 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
       if (samples < 1) samples = 1;
       if (samples > kQiSubSpanMaxSamples) samples = kQiSubSpanMaxSamples;
     }
-    bool occ = false;
-    for (int sIdx = 0; sIdx < samples && !occ; ++sIdx) {
+    for (int sIdx = 0; sIdx < samples; ++sIdx) {
       const float frac =
           (static_cast<float>(sIdx) + 0.5f) / static_cast<float>(samples);
       const float tt = s.a + (s.b - s.a) * frac;
       const Vec3 P = {A.x + (B.x - A.x) * tt, A.y + (B.y - A.y) * tt,
                       A.z + (B.z - A.z) * tt};
-      if (qiOccludedAt(P, sp, occluded, fp, nF)) occ = true;
+      if (qiOccludedAt(P, sp, occluded, fp, nF)) ++occ;
+      ++tot;
     }
-    hidden[i] = occ ? 1 : 0;
+  };
+
+  // Group sub-spans into ViewEdges: a new group starts after each crossing OR cusp.
+  auto isCusp = [&](std::size_t vert) -> bool {
+    return vert < cuspVert.size() && cuspVert[vert] != 0;
+  };
+  std::vector<std::size_t> gstart;
+  gstart.push_back(0);
+  for (std::size_t i = 0; i + 1 < spans.size(); ++i) {
+    const bool crossing =
+        (spans[i].b < 1.0f - kZero) || (spans[i + 1].a > kZero);
+    // A clean seg->seg transition still breaks the ViewEdge at a cusp vertex (the
+    // vertex ending sub-span i, i.e. spans[i].seg + 1).
+    const bool cuspBreak = (spans[i].b >= 1.0f - kZero) &&
+                           isCusp(static_cast<std::size_t>(spans[i].seg) + 1);
+    if (crossing || cuspBreak) gstart.push_back(i + 1);
+  }
+  const std::size_t nG = gstart.size();
+  auto groupEnd = [&](std::size_t g) -> std::size_t {
+    return (g + 1 < nG) ? gstart[g + 1] - 1 : spans.size() - 1;
+  };
+  auto assignRange = [&](std::size_t a, std::size_t b, char h) {
+    for (std::size_t i = a; i <= b; ++i) hidden[i] = h;
+  };
+
+  // A CLOSED loop whose seam (last span end <-> first span start) is not a crossing
+  // makes the first and last groups one ViewEdge; vote them together so the seam is
+  // not an artificial split.
+  bool mergeSeam = false;
+  if (chain.closed && nG >= 2) {
+    const bool seamCrossing =
+        (spans.back().b < 1.0f - kZero) || (spans.front().a > kZero);
+    mergeSeam = !seamCrossing && !isCusp(0);  // seam vertex is index 0
+  }
+
+  std::size_t gBegin = 0, gStop = nG;
+  if (mergeSeam) {
+    int occ = 0, tot = 0;
+    const std::size_t firstEnd = groupEnd(0);
+    const std::size_t lastBeg = gstart[nG - 1];
+    for (std::size_t i = 0; i <= firstEnd; ++i) tallySpan(spans[i], occ, tot);
+    for (std::size_t i = lastBeg; i < spans.size(); ++i)
+      tallySpan(spans[i], occ, tot);
+    const char h = (tot > 0 && occ * 2 > tot) ? 1 : 0;
+    assignRange(0, firstEnd, h);
+    assignRange(lastBeg, spans.size() - 1, h);
+    gBegin = 1;       // first group already voted (merged with last)
+    gStop = nG - 1;   // last group already voted
+  }
+  for (std::size_t g = gBegin; g < gStop; ++g) {
+    const std::size_t a = gstart[g], b = groupEnd(g);
+    int occ = 0, tot = 0;
+    for (std::size_t i = a; i <= b; ++i) tallySpan(spans[i], occ, tot);
+    const char h = (tot > 0 && occ * 2 > tot) ? 1 : 0;  // majority occluded
+    assignRange(a, b, h);
   }
   return hidden;
 }
@@ -1449,7 +1585,15 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     const std::size_t nSegChain = ch.pts.size() - 1;
     const std::vector<SubSpan> spans =
         splitChainAtCrossings(nSegChain, chainSegCross[ci]);
-    const std::vector<char> spanHide = subSpanHidden(ch, spans, sp, occluded);
+    // Freestyle cusp split (smooth silhouettes only): bounds a hidden back-fold
+    // that crosses no drawn line into its own ViewEdge so the majority vote hides
+    // it instead of being out-voted by its visible limbs.
+    const std::vector<char> cuspVert =
+        (nat == EdgeNature::Silhouette)
+            ? computeCuspVerts(ch, fm, scene.mesh, sp)
+            : std::vector<char>();
+    const std::vector<char> spanHide =
+        subSpanHidden(ch, spans, sp, occluded, cuspVert);
     const std::vector<Pt2> proj = projectChainSubSpans(ch, spans, spanHide, sp);
     // STROKE LAYER: wrap the visibility-tagged polyline as a parametric Stroke
     // (buildStroke), arc-length resample it (resampleStroke), then emit one ribbon
