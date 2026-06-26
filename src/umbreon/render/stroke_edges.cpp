@@ -1460,6 +1460,7 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
   ExtractParams ep;
   ep.raise = se.raise;
   ep.width = 0.0f;
+  ep.silhouetteCamBias = false;  // QI from the true n.v==0 surface, no eye-ward bias (fix B)
   ep.silhouette = se.silhouette;
   ep.crease = se.crease;
   ep.border = se.border;

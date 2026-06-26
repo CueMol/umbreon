@@ -98,6 +98,15 @@ struct ExtractParams {
   float raise = 0.0f;   // outward contour offset, world units
   float width = 0.0f;   // edge radius: drives the silhouette lift + cam bias (A)
 
+  // When false, the silhouette camera-ward camBias (max(0.5*w, 0.15*meanEdge)) is
+  // zeroed so each silhouette emit lands on the TRUE n.v==0 crossing / hard-edge
+  // vertex (Freestyle casts QI from the FEdge center3d with no eye-ward offset).
+  // --obj-edges leaves this true to keep its grazing-shell lift (byte-identical);
+  // the stroke/--edges pass sets it false so the ray-cast QI starts on the real
+  // surface. silOff (the raise+width OUTWARD-normal lift) is NOT affected -- only
+  // the eye-ward component is removed.
+  bool silhouetteCamBias = true;
+
   bool silhouette = true;  // smooth n.v==0 contour + hard-edge straddle
   bool crease = true;      // interior fold edges
   bool border = true;      // open boundary edges

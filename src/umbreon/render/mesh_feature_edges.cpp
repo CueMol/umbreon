@@ -268,7 +268,13 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
                length(vpos[a] - vpos[c]);
     }
     const float meanEdge = nTri ? static_cast<float>(elsum / (3.0 * nTri)) : 0.0f;
-    const float camBias = std::fmax(0.5f * w, 0.15f * meanEdge);
+    // Eye-ward bias that lifts a silhouette off its grazing tangent shell. Kept for
+    // --obj-edges (3D cylinder visibility); zeroed for the stroke/--edges pass
+    // (opt.silhouetteCamBias==false) so its ray-cast QI starts on the TRUE surface
+    // point (Freestyle center3d), not a point pulled toward the eye that floats in
+    // front of its own occluder and wrongly votes visible.
+    const float camBias =
+        opt.silhouetteCamBias ? std::fmax(0.5f * w, 0.15f * meanEdge) : 0.0f;
 
     // 3a) SMOOTH silhouette: per face, connect the two n.v==0 zero-crossings.
     for (std::size_t f = 0; f < nTri; ++f) {
