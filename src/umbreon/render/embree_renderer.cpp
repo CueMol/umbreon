@@ -38,6 +38,13 @@ struct ExcludeFaceContext {
   unsigned int baseTriCount;      // de-indexed base tri count (for baked copies)
   const int* faces;               // excluded base triangle ids
   int nFaces;                     // count
+  // Freestyle TANGENTIAL-occluder rejection (ViewMapBuilder.cpp: fabs(u*normal) >
+  // 0.0001): a hit whose face is grazed nearly edge-on by the QI ray -- |dir . n|
+  // <= this cosine -- is NOT a real occluder (it is the silhouette's own grazing
+  // surface or a tessellation neighbour the ray skims), so the filter rejects it.
+  // This is the SCALE-INVARIANT self-occlusion discriminator that replaces the old
+  // distance dead-zone. <= 0 disables it (shadows/AO, which never set it).
+  float grazeCosEps;              // reject hit if |dir . normalize(Ng)| <= this
 };
 
 // Argument intersection filter: reject (do not count) a hit that lands on one of
@@ -47,19 +54,46 @@ struct ExcludeFaceContext {
 // edge's own/adjacent faces" (ViewMapBuilder.cpp:2152-2195). N==1 here.
 void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
   const auto* ctx = reinterpret_cast<const ExcludeFaceContext*>(args->context);
-  if (ctx == nullptr || ctx->nFaces == 0) return;  // nothing to exclude
+  if (ctx == nullptr) return;
+  const bool doExclude = ctx->nFaces > 0;
+  const bool doGraze = ctx->grazeCosEps > 0.0f;
+  if (!doExclude && !doGraze) return;  // nothing to filter
   int* valid = args->valid;
+  RTCHitN* hit = args->hit;
+  RTCRayN* ray = args->ray;
   for (unsigned int i = 0; i < args->N; ++i) {
     if (valid[i] == 0) continue;  // already invalid
-    RTCHitN* hit = args->hit;
     const unsigned int geomID = RTCHitN_geomID(hit, args->N, i);
-    if (geomID != ctx->meshGeomID) continue;  // only the mesh self-occludes here
-    unsigned int primID = RTCHitN_primID(hit, args->N, i);
-    if (ctx->baseTriCount > 0) primID %= ctx->baseTriCount;  // undo baked copies
-    for (int k = 0; k < ctx->nFaces; ++k) {
-      if (static_cast<unsigned int>(ctx->faces[k]) == primID) {
-        valid[i] = 0;  // reject this self-face hit (not an occluder)
-        break;
+    // (1) Self/adjacent FACE exclusion (the edge's own incident mesh triangles).
+    if (doExclude && geomID == ctx->meshGeomID) {
+      unsigned int primID = RTCHitN_primID(hit, args->N, i);
+      if (ctx->baseTriCount > 0) primID %= ctx->baseTriCount;  // undo baked copies
+      bool rejected = false;
+      for (int k = 0; k < ctx->nFaces; ++k) {
+        if (static_cast<unsigned int>(ctx->faces[k]) == primID) {
+          valid[i] = 0;  // reject this self-face hit (not an occluder)
+          rejected = true;
+          break;
+        }
+      }
+      if (rejected) continue;
+    }
+    // (2) TANGENTIAL (grazing) rejection -- Freestyle fabs(u*normal) > 0.0001: a
+    // face the ray hits nearly edge-on (its geometric normal almost perpendicular
+    // to the ray) is the silhouette's OWN grazing surface, not a real occluder.
+    // Scale-invariant (a cosine), so it needs no scene-unit dead zone.
+    if (doGraze) {
+      const float nx = RTCHitN_Ng_x(hit, args->N, i);
+      const float ny = RTCHitN_Ng_y(hit, args->N, i);
+      const float nz = RTCHitN_Ng_z(hit, args->N, i);
+      const float dx = RTCRayN_dir_x(ray, args->N, i);
+      const float dy = RTCRayN_dir_y(ray, args->N, i);
+      const float dz = RTCRayN_dir_z(ray, args->N, i);
+      const float nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
+      const float dlen = std::sqrt(dx * dx + dy * dy + dz * dz);
+      if (nlen > 0.0f && dlen > 0.0f) {
+        const float c = std::fabs(nx * dx + ny * dy + nz * dz) / (nlen * dlen);
+        if (c <= ctx->grazeCosEps) valid[i] = 0;  // grazed face: not an occluder
       }
     }
   }
@@ -81,8 +115,8 @@ void EmbreeRenderer::releaseEmbree() {
 }
 
 bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
-                              const int* excludeFaces, int nExclude,
-                              float eps) const {
+                              const int* excludeFaces, int nExclude, float eps,
+                              float grazeCosEps) const {
   if (!scene_) return false;  // no live BVH (edges/visibility not built)
   const Vec3 d = q - p;
   const float len = length(d);
@@ -90,21 +124,25 @@ bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
   const Vec3 dir = {d.x / len, d.y / len, d.z / len};
   // Trim both ends to the OPEN interval (0, raylength): a tiny absolute+relative
   // epsilon clears the surface the ray leaves and excludes the target itself.
-  // With true self-face exclusion below, this is only a numerical guard against
-  // a ray grazing its own (non-excluded) neighbour edge, not the load-bearing
-  // self-occlusion handling.
+  // Self-occlusion is handled by the FACE exclusion + TANGENTIAL rejection in the
+  // filter (Freestyle), so this is only a small numerical guard -- it must NOT be
+  // sized to swallow a nearby occluder (the ortho QI ray therefore uses a physical,
+  // not fixed-huge, length so eps*len stays small; see qiOccludedAt).
   const float tnear = std::max(eps * len, eps);
   const float tfar = len * (1.0f - eps);
   if (tnear >= tfar) return false;
 
-  // No faces to exclude: the plain any-hit test (no filter) suffices.
-  if (excludeFaces == nullptr || nExclude == 0 ||
-      meshGeomID_ == static_cast<unsigned int>(-1))
+  // Plain any-hit test only when neither filter stage is needed (no self-faces to
+  // exclude AND no tangential rejection requested -- e.g. a non-QI caller).
+  if ((excludeFaces == nullptr || nExclude == 0 ||
+       meshGeomID_ == static_cast<unsigned int>(-1)) &&
+      grazeCosEps <= 0.0f)
     return detail::occluded(scene_, p, dir, tnear, tfar);
 
-  // Self-face-excluding any-hit test: attach the argument filter that rejects
-  // hits on the edge's own incident mesh faces, so they are not counted as
-  // occluders (Freestyle self/adjacent-face exclusion).
+  // Filtered any-hit test: the argument filter rejects (a) hits on the edge's own
+  // incident mesh faces and (b) faces grazed nearly edge-on (Freestyle self-face
+  // exclusion + tangential-occluder rejection), so neither is counted as an
+  // occluder.
   RTCRay r;
   r.org_x = p.x;
   r.org_y = p.y;
@@ -123,7 +161,11 @@ bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
   ctx.meshGeomID = meshGeomID_;
   ctx.baseTriCount = meshBaseTriCount_;
   ctx.faces = excludeFaces;
-  ctx.nFaces = nExclude;
+  ctx.nFaces = (excludeFaces != nullptr &&
+                meshGeomID_ != static_cast<unsigned int>(-1))
+                   ? nExclude
+                   : 0;
+  ctx.grazeCosEps = grazeCosEps;
 
   RTCOccludedArguments oargs;
   rtcInitOccludedArguments(&oargs);

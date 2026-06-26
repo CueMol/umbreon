@@ -103,10 +103,22 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     // `renderer` (see EmbreeRenderer): occluded(P, target, selfFaces) is the QI
     // test, excluding the edge's own incident mesh faces (Freestyle self-face
     // exclusion). The renderer holds the mesh geomID needed to match those faces.
+    // Freestyle TANGENTIAL-occluder rejection threshold (ViewMapBuilder.cpp:
+    // fabs(u*normal) > 0.0001): a QI ray hit whose face is grazed nearly edge-on
+    // (|dir . normalize(Ng)| <= this cosine) is the silhouette's OWN grazing
+    // surface, not a real occluder, so occluded() does not count it. This is the
+    // SCALE-INVARIANT self-occlusion discriminator (it replaces the old, fragile
+    // distance dead zone). 0.1 sits in the safe window for the molecular mesh:
+    // above the beta-sheet's grazing self-faces (~0.05, which would otherwise
+    // self-hide flat strands) and well below a genuine front-facing occluder (a
+    // helix front wall is >0.2), with the QI ray length kept physical so a nearby
+    // occluder is reachable (see qiOccludedAt).
+    constexpr float kQiGrazeCosEps = 0.1f;
     const OcclusionQuery occluded = [&renderer](const Vec3& p, const Vec3& q,
                                                 const int* excludeFaces,
                                                 int nExclude) {
-      return renderer.occluded(p, q, excludeFaces, nExclude);
+      return renderer.occluded(p, q, excludeFaces, nExclude, 1.0e-4f,
+                               kQiGrazeCosEps);
     };
     applyStrokeEdges(frame, scene, opt, occluded);
   }

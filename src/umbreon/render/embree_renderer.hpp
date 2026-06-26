@@ -39,9 +39,14 @@ class EmbreeRenderer {
   // `excludeFaces`/`nExclude` (the edge's OWN incident faces) are NOT counted as
   // occluders -- Freestyle self/adjacent-face exclusion -- implemented with an
   // Embree argument intersection filter that rejects hits on the excluded
-  // (meshGeomID, primID). Returns false if no scene is currently built.
+  // (meshGeomID, primID). When `grazeCosEps` > 0 the same filter ALSO rejects a
+  // hit whose face is grazed nearly edge-on (|dir . normalize(Ng)| <= grazeCosEps,
+  // Freestyle's fabs(u*normal) > 0.0001): the scale-invariant discriminator that
+  // stops a silhouette's own grazing surface from self-occluding without a
+  // distance dead zone. Returns false if no scene is currently built.
   bool occluded(const Vec3& p, const Vec3& q, const int* excludeFaces,
-                int nExclude, float eps = 1.0e-4f) const;
+                int nExclude, float eps = 1.0e-4f,
+                float grazeCosEps = 0.0f) const;
 
  private:
   // Release the currently held device/scene (if any). Idempotent.
