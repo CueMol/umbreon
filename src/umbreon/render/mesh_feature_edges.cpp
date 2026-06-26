@@ -213,7 +213,16 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   // face skip the stroke pass carries to the visibility ray-cast (Freestyle
   // ViewMapBuilder.cpp:2152-2196) so a silhouette grazing its own nearby surface
   // near a T-junction is not wrongly counted as self-occluded.
-  auto expandExclude = [&](int f0, int f1) {
+  // Build segment k's QI self-face exclude set (Freestyle ViewMapBuilder self-skip).
+  // SMOOTH silhouette: the vertex-1-RING of the SINGLE feature face f0 (Freestyle
+  // anchors the skip on the one face the smooth FEdge lives in, and only under
+  // if(fe->isSmooth())); f0's ring already contains f1=adj plus the second across-
+  // edge neighbour, so the smooth self-grazing band stays suppressed. SHARP edge
+  // (hard silhouette / crease / border): just the literal incident faces {f0,f1}
+  // (f1<0 border = no-op). The broad both-face 1-ring previously applied to ALL
+  // natures whitelisted any occluder merely sharing a weld vertex with an incident
+  // face near a junction -> under-occlusion -> the edge wrongly voted visible.
+  auto buildExclude = [&](int f0, int f1, bool smooth) {
     std::vector<int> ex;
     ex.reserve(16);
     auto addF = [&](int f) {
@@ -222,27 +231,27 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
         if (g == f) return;
       ex.push_back(f);
     };
-    auto addRing = [&](int f) {
-      if (f < 0) return;
-      addF(f);
-      const int v[3] = {fa[static_cast<std::size_t>(f)],
-                        fb[static_cast<std::size_t>(f)],
-                        fc[static_cast<std::size_t>(f)]};
+    addF(f0);  // always: the edge's primary feature face
+    if (smooth && f0 >= 0) {
+      const int v[3] = {fa[static_cast<std::size_t>(f0)],
+                        fb[static_cast<std::size_t>(f0)],
+                        fc[static_cast<std::size_t>(f0)]};
       for (int vi : v)
         for (int g : vFaces[static_cast<std::size_t>(vi)]) addF(g);
-    };
-    addRing(f0);
-    addRing(f1);
+    } else {
+      addF(f1);  // sharp edge: the second fold face (border f1<0 = no-op)
+    }
     return ex;
   };
 
   // Emit a feature segment, carrying its incident mesh-triangle ids (f0,f1; -1
-  // when absent) for Freestyle self-face exclusion, plus the EXPANDED 1-ring
-  // exclude set used by the stroke pass's visibility ray-cast.
+  // when absent) for Freestyle self-face exclusion, plus the narrowed self-face
+  // exclude set used by the stroke pass's visibility ray-cast (smooth => f0 ring;
+  // sharp => {f0,f1}).
   auto emit = [&](int n0, const Vec3& A, int n1, const Vec3& B, EdgeNature nat,
-                  std::uint16_t grp, int f0, int f1) {
+                  std::uint16_t grp, int f0, int f1, bool smooth = false) {
     FeatureSeg s{n0, n1, A, B, nat, grp, f0, f1, {}};
-    s.excludeFaces = expandExclude(f0, f1);
+    s.excludeFaces = buildExclude(f0, f1, smooth);
     result.segs.push_back(std::move(s));
   };
 
@@ -345,7 +354,7 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
         const int adj = cnb[0] >= 0 ? cnb[0] : cnb[1];
         emit(cid[0], cp[0] + cn[0] * silOff + v0, cid[1],
              cp[1] + cn[1] * silOff + v1, EdgeNature::Silhouette,
-             mesh.groupForTri(f), static_cast<int>(f), adj);
+             mesh.groupForTri(f), static_cast<int>(f), adj, /*smooth=*/true);
       }
     }
 
