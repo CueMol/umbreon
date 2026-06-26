@@ -888,9 +888,6 @@ void closeVisibilityMask(std::vector<char>& vis, int maxBridge, bool closed) {
 
 namespace {
 
-// QI ray length for the ortho camera-ward target push (world units).
-constexpr float kOrthoQiReach = 1.0e4f;
-
 // Maximum 3D length a QI segment may span before it is subdivided into interior
 // samples (Freestyle samples the FEdge center; a long segment whose MIDDLE dips
 // behind a body would leak if tested at its center alone). World units, scaled
@@ -912,9 +909,23 @@ constexpr int kQiSubSpanMaxSamples = 64;        // cost cap for a long sub-span
 // QI occlusion of one 3D point P with the given per-segment exclude faces. Casts
 // a ray P->eye (persp) or P->far-camera-ward (ortho); true == an un-excluded
 // solid surface lies strictly between P and the eye (qi > 0 => hidden).
+//
+// For ORTHO the eye is at infinity, so the ray travels along the reverse view axis
+// to a far camera-ward target. That target's distance MUST stay physical (scaled
+// to the camera distance), NOT a fixed huge constant: occluded() trims its near
+// end by eps*rayLength as a self-leave guard, so a 1e4 reach turned that into a
+// ~1 world-unit dead zone that swallowed a genuine nearby occluder -- a back fold
+// only ~0.5 in front of its own grazing silhouette read as VISIBLE and leaked onto
+// the front surface (persp never hit this: its ray length is the real ~camera
+// distance). Push to twice the camera distance so the ray still clears every
+// occluder between P and the eye while keeping the near-trim a sane ~0.04.
 bool qiOccludedAt(const Vec3& P, const ScreenProj& sp,
                   const OcclusionQuery& occluded, const int* faces, int nFaces) {
-  const Vec3 target = sp.ortho ? P + (sp.dir * -1.0f) * kOrthoQiReach : sp.pos;
+  Vec3 target = sp.pos;
+  if (sp.ortho) {
+    const float reach = 2.0f * length(sp.pos - P);
+    target = P + (sp.dir * -1.0f) * reach;
+  }
   return occluded(P, target, faces, nFaces);
 }
 
