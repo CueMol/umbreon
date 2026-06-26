@@ -173,16 +173,20 @@ inline int naturePrecedence(EdgeNature nat) {
 }
 
 // Build a miter-joined ribbon strip for a backbone polyline `bb` (>= 2 points)
-// with constant half-thickness `halfThick`. Ports Freestyle Strip::createStrip
-// (StrokeRep.cpp:105-293): per vertex emit p +/- halfThick*n with n the segment
-// normal; interior vertices MITER-join by intersecting the prev/next offset
-// lines, SPIKE-CLAMPED to the averaged normal when the miter overruns
-// MAX_RATIO_LENGTH_SINGU*halfThick (or the join is near-degenerate). Returns
-// 2*bb.size() vertices: [2k]=left(+), [2k+1]=right(-).
-Strip buildStrip(const std::vector<Vec2>& bb, float halfThick) {
+// with PER-VERTEX left/right half-widths `L[k]`/`R[k]` (Freestyle Strip::createStrip,
+// StrokeRep.cpp:105-293, asymmetric thickness[1]=L on +normal, [0]=R on -normal):
+// per vertex emit p + L*n (left) and p - R*n (right) with n the segment normal;
+// interior vertices MITER-join by intersecting the prev/next offset lines (each side
+// offset by the CURRENT vertex width), SPIKE-CLAMPED per side to the averaged normal
+// when the miter overruns MAX_RATIO_LENGTH_SINGU*(L|R) or the join is near-degenerate.
+// Returns 2*bb.size() vertices: [2k]=left(+), [2k+1]=right(-). A symmetric stroke
+// passes L[k]==R[k]==halfThick (scalar overload below), reducing this to the
+// constant-width path expression-for-expression (byte-identical).
+Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
+                 const std::vector<float>& R) {
   Strip out;
   const std::size_t n = bb.size();
-  if (n < 2) return out;
+  if (n < 2 || L.size() != n || R.size() != n) return out;
   out.resize(2 * n);
 
   auto orth = [](const Vec2& d) { return Vec2{-d.y, d.x}; };
@@ -195,11 +199,11 @@ Strip buildStrip(const std::vector<Vec2>& bb, float halfThick) {
   {
     const Vec2 dir = unit(bb[1] - bb[0]);
     const Vec2 sd = orth(dir);
-    out[0] = bb[0] + sd * halfThick;   // left (+)
-    out[1] = bb[0] - sd * halfThick;   // right (-)
+    out[0] = bb[0] + sd * L[0];   // left (+)
+    out[1] = bb[0] - sd * R[0];   // right (-)
   }
 
-  // Interior vertices: miter join.
+  // Interior vertices: miter join (each side offset by the CURRENT vertex width).
   for (std::size_t k = 1; k + 1 < n; ++k) {
     const Vec2& p = bb[k];
     const Vec2& pPrev = bb[k - 1];
@@ -212,23 +216,22 @@ Strip buildStrip(const std::vector<Vec2>& bb, float halfThick) {
     const Vec2 udirP = unit(dirP);
     const Vec2 sdN = orth(udirN);       // normal of next segment
     const Vec2 sdP = orth(udirP);       // normal of prev segment
+    const float lw = L[k], rw = R[k];
 
     // Left (+) miter: intersect the two offset lines.
     Vec2 inter;
-    if (intersect2dLine2dLine(pPrev + sdP * halfThick, p + sdP * halfThick,
-                              p + sdN * halfThick, pNext + sdN * halfThick,
-                              inter))
+    if (intersect2dLine2dLine(pPrev + sdP * lw, p + sdP * lw,
+                              p + sdN * lw, pNext + sdN * lw, inter))
       out[2 * k] = inter;
     else
-      out[2 * k] = p + sdN * halfThick;
+      out[2 * k] = p + sdN * lw;
 
     // Right (-) miter.
-    if (intersect2dLine2dLine(pPrev - sdP * halfThick, p - sdP * halfThick,
-                              p - sdN * halfThick, pNext - sdN * halfThick,
-                              inter))
+    if (intersect2dLine2dLine(pPrev - sdP * rw, p - sdP * rw,
+                              p - sdN * rw, pNext - sdN * rw, inter))
       out[2 * k + 1] = inter;
     else
-      out[2 * k + 1] = p - sdN * halfThick;
+      out[2 * k + 1] = p - sdN * rw;
 
     // Averaged (bevel) normal for the spike clamp.
     Vec2 sdAvg = sdN + sdP;
@@ -239,28 +242,37 @@ Strip buildStrip(const std::vector<Vec2>& bb, float halfThick) {
     else
       sdAvg = unit(sdAvg);
 
-    // SPIKE-CLAMP: if the miter overruns MAX_RATIO_LENGTH_SINGU*halfThick from p,
-    // or the join is near-degenerate / a near-180 fold, fall back to the averaged
+    // SPIKE-CLAMP per side: if the miter overruns MAX_RATIO_LENGTH_SINGU*(L|R) from
+    // p, or the join is near-degenerate / a near-180 fold, fall back to the averaged
     // normal offset (StrokeRep.cpp:278-292).
-    const float spikeLimit = halfThick * kMaxRatioLengthSingu;
     const float foldDot = std::fabs(dot2(sdAvg, udirN));
-    auto overruns = [&](const Vec2& v) {
+    auto overruns = [&](const Vec2& v, float limit) {
       const Vec2 t = v - p;
-      return (norm2(t) > spikeLimit) || degenerate || notValid(v) ||
+      return (norm2(t) > limit) || degenerate || notValid(v) ||
              (foldDot < kEpsSingularity);
     };
-    if (overruns(out[2 * k])) out[2 * k] = p + sdAvg * halfThick;
-    if (overruns(out[2 * k + 1])) out[2 * k + 1] = p - sdAvg * halfThick;
+    if (overruns(out[2 * k], lw * kMaxRatioLengthSingu))
+      out[2 * k] = p + sdAvg * lw;
+    if (overruns(out[2 * k + 1], rw * kMaxRatioLengthSingu))
+      out[2 * k + 1] = p - sdAvg * rw;
   }
 
   // Last vertex: normal of the last segment.
   {
     const Vec2 dir = unit(bb[n - 1] - bb[n - 2]);
     const Vec2 sd = orth(dir);
-    out[2 * (n - 1)] = bb[n - 1] + sd * halfThick;
-    out[2 * (n - 1) + 1] = bb[n - 1] - sd * halfThick;
+    out[2 * (n - 1)] = bb[n - 1] + sd * L[n - 1];
+    out[2 * (n - 1) + 1] = bb[n - 1] - sd * R[n - 1];
   }
   return out;
+}
+
+// Constant symmetric-width overload (compat for buildRibbonStrips + its unit tests):
+// fills L==R==halfThick and calls the array form, which reduces to the old
+// constant-width expressions exactly.
+Strip buildStrip(const std::vector<Vec2>& bb, float halfThick) {
+  return buildStrip(bb, std::vector<float>(bb.size(), halfThick),
+                    std::vector<float>(bb.size(), halfThick));
 }
 
 // Hard-fill one 2D triangle into the framebuffer with a linear over-composite
@@ -435,6 +447,51 @@ void resampleStroke(Stroke& s, float stepPx) {
     out.push_back(b);
   }
   s.verts.swap(out);
+}
+
+// Split a (shaded) Stroke into renderable ribbon strips: one StyledStrip per maximal
+// run of consecutive VISIBLE vertices (Freestyle StrokeRep::create, StrokeRep.cpp:
+// 837-867), each built from the per-vertex left/right thickness via the array
+// buildStrip. Color/opacity are taken per run from its first vertex's attribute
+// (constant per chain today; a future color shader makes them per-vertex in the
+// rasterizer). precedence keys the nature for the overlap sort.
+void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
+  const int precedence = naturePrecedence(s.nature);
+  const std::size_t minRun = 2;
+  std::vector<Vec2> pos;
+  std::vector<float> lw, rw;
+  float col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
+  auto flush = [&]() {
+    if (pos.size() >= minRun) {
+      StyledStrip ss;
+      ss.strip = buildStrip(pos, lw, rw);
+      ss.color[0] = col[0];
+      ss.color[1] = col[1];
+      ss.color[2] = col[2];
+      ss.opacity = opacity;
+      ss.precedence = precedence;
+      out.push_back(std::move(ss));
+    }
+    pos.clear();
+    lw.clear();
+    rw.clear();
+  };
+  for (const StrokeVertex& v : s.verts) {
+    if (!v.visible) {
+      flush();
+      continue;
+    }
+    if (pos.empty()) {  // run start: capture its color/opacity
+      col[0] = v.attr.color[0];
+      col[1] = v.attr.color[1];
+      col[2] = v.attr.color[2];
+      opacity = v.attr.alpha;
+    }
+    pos.push_back(v.p);
+    lw.push_back(v.attr.leftThick);
+    rw.push_back(v.attr.rightThick);
+  }
+  flush();
 }
 
 }  // namespace
@@ -1179,31 +1236,10 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     Stroke stroke = buildStroke(proj, defAttr, static_cast<int>(ci), nat);
     resampleStroke(stroke, stepPx);
 
-    // Emit a strip per maximal run of consecutive VISIBLE vertices
-    // (StrokeRep.cpp:837-867: hidden vertices break the strip). A strip needs at
-    // least 2 vertices.
-    const std::size_t minRun = 2;
-    std::vector<Vec2> run;
-    auto flush = [&]() {
-      if (run.size() >= minRun) {
-        StyledStrip ss;
-        ss.strip = buildStrip(run, halfThick);
-        ss.color[0] = col[0];
-        ss.color[1] = col[1];
-        ss.color[2] = col[2];
-        ss.opacity = opacity;
-        ss.precedence = naturePrecedence(nat);
-        strips.push_back(std::move(ss));
-      }
-      run.clear();
-    };
-    for (const StrokeVertex& q : stroke.verts) {
-      if (q.visible)
-        run.push_back(q.p);
-      else
-        flush();
-    }
-    flush();
+    // Build the variable-width ribbon strips (one per maximal visible run). With
+    // the constant default attribute (leftThick==rightThick==halfThick) this is
+    // byte-identical to the old scalar buildStrip path.
+    buildStrokeReps(stroke, strips);
   }
 
   if (strips.empty()) return;
