@@ -151,8 +151,10 @@ struct Options {
   bool strokeResampleSet = false;
   bool strokeCreaseDegSet = false;
   // Per-nature toggles (--stroke-silhouette / --stroke-crease / --stroke-border).
+  // Crease defaults OFF (CueMol2 creaseLimit -1): a dihedral crease over-inks the
+  // degenerate-vertex sharp edges of a rectangular ribbon sheet body.
   bool strokeSilhouette = true;
-  bool strokeCrease = true;
+  bool strokeCrease = false;
   bool strokeBorder = true;
   // Demo stylization shader (--stroke-taper): taper width toward stroke ends.
   bool strokeTaper = false;

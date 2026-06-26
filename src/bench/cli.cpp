@@ -418,7 +418,7 @@ void printUsage(const char* prog) {
       "  --stroke-resample <float> stroke arc-length resample step, px      [2]\n"
       "  --edge-crease-deg <float> stroke crease dihedral threshold (deg)  [30]\n"
       "  --stroke-silhouette <on|off> stroke silhouette nature             [on]\n"
-      "  --stroke-crease <on|off> stroke crease nature                     [on]\n"
+      "  --stroke-crease <on|off> stroke crease nature                    [off]\n"
       "  --stroke-border <on|off> stroke border nature                     [on]\n"
       "  --stroke-taper <on|off>  taper stroke width toward its ends (demo) [off]\n"
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"

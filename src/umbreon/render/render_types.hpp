@@ -63,7 +63,12 @@ struct StrokeEdgeOptions {
 
   // --- which natures to extract/draw ---
   bool silhouette = true;  // smooth n.v==0 contour + hard-edge straddle
-  bool crease = true;      // interior fold edges (dihedral test)
+  // Interior fold (dihedral) creases. DEFAULT OFF to match CueMol2, whose crease
+  // line is gated on creaseLimit > 0 and defaults to -1 (off): a crease would
+  // over-ink the deliberate degenerate-vertex sharp edges of a rectangular ribbon
+  // sheet body (the n.v silhouette already outlines it). Enable with
+  // --stroke-crease on when a faceted crease look is wanted.
+  bool crease = false;
   bool border = true;      // open boundary edges (one incident face)
 
   // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
