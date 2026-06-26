@@ -320,6 +320,123 @@ void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
   }
 }
 
+// ---------------------------------------------------------------------------
+// Freestyle STROKE layer (parametric curve + per-vertex attribute). Sits between
+// the visibility-tagged 2D polyline (projectChainSubSpans -> vector<Pt2>) and the
+// ribbon rasterizer, mirroring Freestyle Stroke / StrokeVertex / StrokeAttribute
+// (Stroke.h) + Operators::createStroke + Stroke::Resample. It makes per-vertex
+// stylization (variable width / color / taper / noise) expressible. The DEFAULT
+// path writes one constant attribute per chain, so the rasterized result is
+// byte-identical until a real shader runs.
+
+// Per-vertex stylization payload (Freestyle StrokeAttribute, Stroke.h:44-302).
+// leftThick/rightThick are the +normal / -normal half-widths (Freestyle
+// _thickness[1]=L, [0]=R); a symmetric stroke has leftThick==rightThick==halfThick.
+struct StrokeAttribute {
+  float leftThick = 0.0f, rightThick = 0.0f;
+  float color[3] = {0.0f, 0.0f, 0.0f};
+  float alpha = 1.0f;
+};
+
+// One backbone vertex = 2D geometry + curvilinear abscissa + attribute (Freestyle
+// StrokeVertex, Stroke.h:310-458). p/vz/visible mirror Pt2; `ca` is the 2D arc
+// length from the stroke start and `u = ca/length2d` in [0,1] is the shader
+// parameter. `visible` stays on the vertex (not in attr) to match the run-split.
+struct StrokeVertex {
+  Vec2 p;
+  float vz = 0.0f;
+  bool visible = true;
+  float u = 0.0f, ca = 0.0f;
+  StrokeAttribute attr;
+};
+
+// A chained, parametric stroke (Freestyle Stroke, Stroke.h:483-858).
+struct Stroke {
+  std::vector<StrokeVertex> verts;
+  float length2d = 0.0f;
+  int chainIdx = 0;
+  EdgeNature nature = EdgeNature::Silhouette;
+};
+
+// Build a parametric Stroke from a visibility-tagged projected polyline, stamping
+// the resolved per-chain default attribute into every vertex (Freestyle
+// Operators::createStroke, Operators.cpp:1082-1155). Accumulates 2D arc length to
+// set `ca` and the normalized abscissa `u`.
+Stroke buildStroke(const std::vector<Pt2>& proj, const StrokeAttribute& def,
+                   int chainIdx, EdgeNature nat) {
+  Stroke s;
+  s.chainIdx = chainIdx;
+  s.nature = nat;
+  s.verts.reserve(proj.size());
+  float ca = 0.0f;
+  for (std::size_t i = 0; i < proj.size(); ++i) {
+    if (i > 0) ca += norm2(proj[i].p - proj[i - 1].p);
+    StrokeVertex v;
+    v.p = proj[i].p;
+    v.vz = proj[i].vz;
+    v.visible = proj[i].visible;
+    v.ca = ca;
+    v.attr = def;
+    s.verts.push_back(v);
+  }
+  s.length2d = ca;
+  if (ca > 0.0f)
+    for (StrokeVertex& v : s.verts) v.u = v.ca / ca;
+  return s;
+}
+
+// Interpolate a StrokeVertex at parameter t in [0,1] (Freestyle StrokeVertex(A,B,t),
+// Stroke.cpp:358-364): geometry + abscissa + ALL attributes are LERPed, but
+// `visible` is COPIED from the segment START (never lerped) so a visible<->hidden
+// boundary is realized only at a true node -- keeping the run-split identical to
+// resampleChain.
+StrokeVertex lerpStrokeVertex(const StrokeVertex& a, const StrokeVertex& b,
+                              float t) {
+  StrokeVertex q;
+  q.p = a.p + (b.p - a.p) * t;
+  q.vz = a.vz + (b.vz - a.vz) * t;
+  q.u = a.u + (b.u - a.u) * t;
+  q.ca = a.ca + (b.ca - a.ca) * t;
+  q.visible = a.visible;
+  q.attr.leftThick = a.attr.leftThick + (b.attr.leftThick - a.attr.leftThick) * t;
+  q.attr.rightThick =
+      a.attr.rightThick + (b.attr.rightThick - a.attr.rightThick) * t;
+  for (int c = 0; c < 3; ++c)
+    q.attr.color[c] = a.attr.color[c] + (b.attr.color[c] - a.attr.color[c]) * t;
+  q.attr.alpha = a.attr.alpha + (b.attr.alpha - a.attr.alpha) * t;
+  return q;
+}
+
+// Arc-length resample the stroke backbone every `stepPx` pixels, attribute-
+// preserving (Freestyle Stroke::Resample, Stroke.cpp:636-691). Uses the SAME
+// stepping arithmetic as resampleChain so the densified positions are bit-
+// identical; inserted vertices interpolate geometry + attributes via
+// lerpStrokeVertex.
+void resampleStroke(Stroke& s, float stepPx) {
+  if (s.verts.size() < 2 || stepPx <= 0.0f) return;
+  std::vector<StrokeVertex> out;
+  out.reserve(s.verts.size() * 2);
+  out.push_back(s.verts.front());
+  for (std::size_t i = 1; i < s.verts.size(); ++i) {
+    const StrokeVertex& a = s.verts[i - 1];
+    const StrokeVertex& b = s.verts[i];
+    const Vec2 d = b.p - a.p;
+    const float len = norm2(d);
+    if (len <= kZero) {
+      out.push_back(b);
+      continue;
+    }
+    const int n = static_cast<int>(std::floor(len / stepPx));
+    for (int k = 1; k <= n; ++k) {
+      const float t = (stepPx * static_cast<float>(k)) / len;
+      if (t >= 1.0f) break;
+      out.push_back(lerpStrokeVertex(a, b, t));
+    }
+    out.push_back(b);
+  }
+  s.verts.swap(out);
+}
+
 }  // namespace
 
 std::vector<EdgeChain> chainFeatureSegs(const std::vector<FeatureSeg>& segs,
@@ -1047,7 +1164,20 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
         splitChainAtCrossings(nSegChain, chainSegCross[ci]);
     const std::vector<char> spanHide = subSpanHidden(ch, spans, sp, occluded);
     const std::vector<Pt2> proj = projectChainSubSpans(ch, spans, spanHide, sp);
-    const std::vector<Pt2> rs = resampleChain(proj, stepPx);
+    // STROKE LAYER: wrap the visibility-tagged polyline as a parametric Stroke
+    // (buildStroke), arc-length resample it (resampleStroke), then emit one ribbon
+    // per maximal VISIBLE run. Stage-a keeps the SCALAR buildStrip (constant
+    // halfThick), so the rasterized result is byte-identical; the per-vertex
+    // StrokeAttribute is the substrate for later width/color shaders.
+    StrokeAttribute defAttr;
+    defAttr.leftThick = halfThick;
+    defAttr.rightThick = halfThick;
+    defAttr.color[0] = col[0];
+    defAttr.color[1] = col[1];
+    defAttr.color[2] = col[2];
+    defAttr.alpha = opacity;
+    Stroke stroke = buildStroke(proj, defAttr, static_cast<int>(ci), nat);
+    resampleStroke(stroke, stepPx);
 
     // Emit a strip per maximal run of consecutive VISIBLE vertices
     // (StrokeRep.cpp:837-867: hidden vertices break the strip). A strip needs at
@@ -1067,7 +1197,7 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
       }
       run.clear();
     };
-    for (const Pt2& q : rs) {
+    for (const StrokeVertex& q : stroke.verts) {
       if (q.visible)
         run.push_back(q.p);
       else
