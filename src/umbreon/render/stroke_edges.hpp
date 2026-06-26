@@ -94,10 +94,11 @@ struct EdgeChain {
 std::vector<EdgeChain> chainFeatureSegs(const std::vector<FeatureSeg>& segs,
                                         int nodeCount);
 
-// Per-backbone-vertex Quantitative-Invisibility (QI) visibility for one chain by
-// the FREESTYLE-FAITHFUL image-space ray cast (stage A). For each SEGMENT a QI
-// ray is cast from the segment's 3D center (and interior samples for long
-// segments -- Freestyle FEdge::center3d) toward the eye, EXCLUDING that
+// Per-backbone-vertex Quantitative-Invisibility (QI) visibility for one chain
+// (LEGACY per-vertex variant; retained for unit tests -- the live applyStrokeEdges
+// path uses the sub-span split + per-sub-span QI in stroke_edges.cpp). For each
+// SEGMENT a QI ray is cast from the segment's 3D center (and interior samples for
+// long segments -- Freestyle FEdge::center3d) toward the eye, EXCLUDING that
 // segment's own two incident mesh faces (FeatureSeg::face0/face1) so a grazing
 // silhouette does not self-occlude (Freestyle ViewMapBuilder self/adjacent-face
 // skip, enabled by the now-live Embree argument filter). A segment is QI-visible
@@ -147,7 +148,7 @@ std::vector<EdgeCrossing> computeEdgeCrossings(
 // occlusion still splits the stroke. Runs touching an OPEN polyline end are not
 // bridged (no visible bracket); for a `closed` loop index 0 and n-1 wrap so a
 // run straddling the seam is bracketed. maxBridge<=0 is a no-op. Exposed for
-// unit testing; applyStrokeEdges applies it before the run splitter.
+// unit testing only; the live applyStrokeEdges path no longer calls it.
 void closeVisibilityMask(std::vector<char>& vis, int maxBridge, bool closed);
 
 // 2D screen-space point (hi-res pixel coordinates) used by the ribbon API.

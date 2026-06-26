@@ -630,104 +630,156 @@ std::vector<char> computeChainVisibility(const EdgeChain& chain,
 
 namespace {
 
-// Number of equal sub-intervals each backbone segment is initially sampled into
-// for the SUB-SEGMENT occlusion-boundary resolution (computeChainVisibleSpans).
-// Boundaries between a visible and an occluded sub-interval are then refined by
-// bisection, so this only sets the coarse resolution at which a visible/hidden
-// transition (or a short mid-segment dip) is first detected.
-constexpr int kSpanSamples = 8;
-// Bisection iterations to refine an occlusion boundary parameter (2^-7 ~ 0.8% of
-// the segment -> sub-pixel on a multi-px backbone segment).
-constexpr int kSpanBisect = 7;
+// A backbone SUB-SPAN of a chain: backbone segment `seg`, parameter range [a,b] in
+// [0,1]. The 2D image-space crossings (Freestyle TVertices, computeEdgeCrossings)
+// split each segment at their parameters; the sub-spans are the units whose
+// visibility is constant, so an occluded line terminates EXACTLY at a crossing
+// (the occluder's silhouette) rather than at a per-sample ray-flip boundary.
+struct SubSpan {
+  int seg = 0;
+  float a = 0.0f, b = 1.0f;
+};
 
-// Sub-segment QI occlusion-boundary resolution for one chain. For each backbone
-// segment, returns the list of VISIBLE parameter intervals [lo,hi] in [0,1],
-// resolved at sub-segment precision: the segment is sampled at kSpanSamples
-// points and each visible<->occluded transition is bisection-refined. This lets
-// the stroke pass END a visible run at the TRUE occlusion boundary instead of
-// retracting it by a whole backbone segment when only that segment's FAR portion
-// is occluded -- the per-segment-QI quantization that left a ~6px gap where a
-// silhouette meets an occluding body (obj-edges, a continuous cylinder, has no
-// such quantization). A fully visible segment yields {[0,1]}; a fully hidden one
-// yields {} (empty); a boundary segment yields a single clipped interval; a
-// mid-segment dip yields two intervals. Same exclude set / ray as
-// computeChainVisibility. Empty `occluded` (no live BVH) => every segment {[0,1]}.
-std::vector<std::vector<std::array<float, 2>>> computeChainVisibleSpansImpl(
-    const EdgeChain& chain, const ScreenProj& sp,
-    const OcclusionQuery& occluded) {
-  const std::size_t nPts = chain.pts.size();
-  std::vector<std::vector<std::array<float, 2>>> spans;
-  if (nPts < 2) return spans;
-  const std::size_t nSeg = nPts - 1;
-  spans.assign(nSeg, {});
-  const std::array<float, 2> full{0.0f, 1.0f};
-  if (!occluded) {  // no live BVH: every segment fully visible
-    for (auto& s : spans) s.push_back(full);
-    return spans;
-  }
-
+// Split one chain (nSeg backbone segments) into sub-spans at its 2D crossings.
+// `segCross[k]` is the (unsorted) list of crossing parameters on segment k; each
+// in (0,1) becomes a split point. A segment with no crossing yields one full
+// sub-span [0,1]. Sub-spans are returned in backbone order (segment-major).
+std::vector<SubSpan> splitChainAtCrossings(
+    std::size_t nSeg, const std::vector<std::vector<float>>& segCross) {
+  std::vector<SubSpan> spans;
   for (std::size_t k = 0; k < nSeg; ++k) {
-    const Vec3& A = chain.pts[k];
-    const Vec3& B = chain.pts[k + 1];
-    const std::vector<int> buf = buildSegmentExclude(chain, k, nSeg, nPts);
-    const int nFaces = static_cast<int>(buf.size());
-    const int* faces = nFaces > 0 ? buf.data() : nullptr;
-    auto occAt = [&](float t) {
-      const Vec3 P = {A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t,
-                      A.z + (B.z - A.z) * t};
-      return qiOccludedAt(P, sp, occluded, faces, nFaces);
-    };
-
-    // Sample occlusion at kSpanSamples+1 evenly spaced parameters (endpoints
-    // included). Sampling the endpoints (t=0,1) -- not the cell centers -- is what
-    // lets a boundary be tracked right up to the segment's end.
-    bool occ[kSpanSamples + 1];
-    bool anyOcc = false, allOcc = true;
-    for (int i = 0; i <= kSpanSamples; ++i) {
-      const float t = static_cast<float>(i) / static_cast<float>(kSpanSamples);
-      occ[i] = occAt(t);
-      anyOcc = anyOcc || occ[i];
-      allOcc = allOcc && occ[i];
+    std::vector<float> ts;
+    if (k < segCross.size()) {
+      for (float t : segCross[k])
+        if (t > 0.0f && t < 1.0f) ts.push_back(t);
+      std::sort(ts.begin(), ts.end());
     }
-    if (!anyOcc) {  // fully visible (the common case): no ray refinement
-      spans[k].push_back(full);
-      continue;
+    float a = 0.0f;
+    for (float t : ts) {
+      if (t - a > kZero) spans.push_back({static_cast<int>(k), a, t});
+      a = t;
     }
-    if (allOcc) continue;  // fully occluded: no visible span
-
-    // Bisection: refine the parameter where occlusion flips between sample i and
-    // i+1 to the boundary (returns the parameter, clamped to the sampled cell).
-    auto refine = [&](int i) -> float {
-      float lo = static_cast<float>(i) / static_cast<float>(kSpanSamples);
-      float hi = static_cast<float>(i + 1) / static_cast<float>(kSpanSamples);
-      bool loOcc = occ[i];  // occ[i] != occ[i+1] by construction
-      for (int it = 0; it < kSpanBisect; ++it) {
-        const float mid = 0.5f * (lo + hi);
-        if (occAt(mid) == loOcc)
-          lo = mid;
-        else
-          hi = mid;
-      }
-      return 0.5f * (lo + hi);  // boundary parameter
-    };
-
-    // Walk the sample cells, accumulating VISIBLE intervals. A cell [i,i+1] that
-    // starts visible opens (or continues) an interval; a flip to occluded closes
-    // it at the refined boundary; a flip back to visible reopens at the boundary.
-    float curLo = occ[0] ? -1.0f : 0.0f;  // -1 == no open interval
-    for (int i = 0; i < kSpanSamples; ++i) {
-      if (occ[i] == occ[i + 1]) continue;  // no transition in this cell
-      const float bnd = refine(i);
-      if (!occ[i]) {           // visible -> occluded: close the open interval
-        if (curLo >= 0.0f) spans[k].push_back({curLo, bnd});
-        curLo = -1.0f;
-      } else {                 // occluded -> visible: open a new interval
-        curLo = bnd;
-      }
-    }
-    if (curLo >= 0.0f) spans[k].push_back({curLo, 1.0f});  // ends visible
+    spans.push_back({static_cast<int>(k), a, 1.0f});
   }
   return spans;
+}
+
+// Per-sub-span visibility by the FREESTYLE per-PIECE majority vote. Sub-spans are
+// grouped into PIECES -- maximal backbone runs between 2D crossings (a segment
+// joint stays within a piece; a within-segment crossing starts a new one), the
+// analogue of a Freestyle ViewEdge between two TVertices. Each piece is given ONE
+// visibility by a MAJORITY vote of its sub-span centers' QI ray casts (Freestyle
+// ComputeRayCastingVisibility assigns one QI per ViewEdge by majority of its FEdge
+// centers, ViewMapBuilder.cpp:1670): a QI ray is cast from each sub-span's 3D
+// midpoint toward the eye, excluding that segment's own 1-ring of faces
+// (buildSegmentExclude). The boundary between a visible and a hidden piece is thus
+// the crossing (the occluder's silhouette) -- not a per-sample ray flip, which
+// overshoots a grazing silhouette. Voting per PIECE (not per segment) keeps a
+// background silhouette (no crossings => one piece spanning many segments) SOLID
+// even when a few centers graze-self-occlude, while a piece that genuinely passes
+// behind a body (its centers mostly occluded) is hidden as a whole and terminates
+// at the crossing. Returns one flag per sub-span (= its piece's vote). Empty
+// `occluded` (no live BVH) => all visible.
+std::vector<char> subSpanHidden(const EdgeChain& chain,
+                                const std::vector<SubSpan>& spans,
+                                const ScreenProj& sp,
+                                const OcclusionQuery& occluded) {
+  std::vector<char> hidden(spans.size(), 0);
+  const std::size_t nPts = chain.pts.size();
+  if (!occluded || nPts < 2 || spans.empty()) return hidden;
+  const std::size_t nSeg = nPts - 1;
+
+  auto centerOccluded = [&](const SubSpan& s) -> bool {
+    const std::size_t k = static_cast<std::size_t>(s.seg);
+    const Vec3& A = chain.pts[k];
+    const Vec3& B = chain.pts[k + 1];
+    const float tm = 0.5f * (s.a + s.b);
+    const Vec3 P = {A.x + (B.x - A.x) * tm, A.y + (B.y - A.y) * tm,
+                    A.z + (B.z - A.z) * tm};
+    const std::vector<int> buf = buildSegmentExclude(chain, k, nSeg, nPts);
+    const int nF = static_cast<int>(buf.size());
+    return qiOccludedAt(P, sp, occluded, nF > 0 ? buf.data() : nullptr, nF);
+  };
+
+  // First pass: assign each sub-span a piece id (a new piece begins at a
+  // within-segment crossing -- spans[i] shares its segment with spans[i-1]) and
+  // tally occluded/total centers per piece.
+  std::vector<int> pieceOf(spans.size(), 0);
+  std::vector<int> pOcc, pTot;
+  int piece = 0;
+  for (std::size_t i = 0; i < spans.size(); ++i) {
+    if (i > 0 && spans[i].seg == spans[i - 1].seg) ++piece;  // crossing boundary
+    pieceOf[i] = piece;
+    if (static_cast<int>(pOcc.size()) <= piece) {
+      pOcc.push_back(0);
+      pTot.push_back(0);
+    }
+    if (spans[i].b - spans[i].a > kZero) {
+      if (centerOccluded(spans[i])) ++pOcc[piece];
+      ++pTot[piece];
+    }
+  }
+
+  // Second pass: a piece is HIDDEN iff a strict majority of its centers are
+  // occluded; ties / empty default to visible (do not over-hide a silhouette).
+  for (std::size_t i = 0; i < spans.size(); ++i) {
+    const int p = pieceOf[i];
+    hidden[i] = (pTot[p] > 0 && 2 * pOcc[p] > pTot[p]) ? 1 : 0;
+  }
+  return hidden;
+}
+
+// Project a chain's sub-spans to the screen as a visibility-tagged Pt2 polyline.
+// Each NODE (backbone vertex or crossing point) is emitted EXACTLY ONCE -- the
+// start of each sub-span carrying that sub-span's visibility, plus the final end
+// node. resampleChain then assigns each sub-span the visibility of its start node,
+// so a visible->hidden transition ends the visible run at the crossing's node and
+// a hidden->visible transition resumes the run at the crossing's node. Emitting
+// each node once (rather than doubling sub-span endpoints) is essential: a
+// coincident pair would give buildStrip a zero-length segment -> a degenerate
+// (NaN-normal) strip quad that drops out as a gap, dashing the line. A vertex
+// behind the eye breaks the run (emitted hidden at the last good position).
+std::vector<Pt2> projectChainSubSpans(const EdgeChain& chain,
+                                      const std::vector<SubSpan>& spans,
+                                      const std::vector<char>& hidden,
+                                      const ScreenProj& sp) {
+  std::vector<Pt2> proj;
+  const std::size_t nPts = chain.pts.size();
+  if (nPts < 2) return proj;
+  // Project every backbone vertex once; sub-span endpoints interpolate these.
+  struct PV {
+    float x = 0.0f, y = 0.0f, vz = 0.0f;
+    bool ok = false;
+  };
+  std::vector<PV> pv(nPts);
+  for (std::size_t i = 0; i < nPts; ++i)
+    pv[i].ok = worldToScreen(sp, chain.pts[i], pv[i].x, pv[i].y, pv[i].vz);
+
+  proj.reserve(spans.size() * 2);
+  Vec2 prev{0.0f, 0.0f};
+  bool havePrev = false;
+  auto emit = [&](int seg, float t, bool vis) {
+    const PV& a = pv[static_cast<std::size_t>(seg)];
+    const PV& b = pv[static_cast<std::size_t>(seg) + 1];
+    Pt2 q;
+    if (a.ok && b.ok) {
+      q.p = {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+      q.vz = a.vz + (b.vz - a.vz) * t;
+      q.visible = vis;
+      prev = q.p;
+      havePrev = true;
+    } else {
+      // Behind the eye: break the run without drawing toward an invalid point.
+      q.p = havePrev ? prev : Vec2{0.0f, 0.0f};
+      q.visible = false;
+    }
+    proj.push_back(q);
+  };
+
+  for (std::size_t i = 0; i < spans.size(); ++i)
+    emit(spans[i].seg, spans[i].a, hidden[i] == 0);
+  emit(spans.back().seg, spans.back().b, hidden.back() == 0);
+  return proj;
 }
 
 }  // namespace
@@ -1001,102 +1053,20 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     float halfThick = globalHalf, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
     if (!resolveStyle(nat, s0.group, halfThick, col, opacity)) continue;
 
-    // Stage A: per-segment Quantitative Invisibility (QI) ray cast from the
-    // segment toward the eye, EXCLUDING that segment's own incident faces
-    // (Freestyle self/adjacent-face skip, live via the Embree argument filter).
-    // Resolved at SUB-SEGMENT precision (computeChainVisibleSpans): each backbone
-    // segment carries its VISIBLE parameter intervals, so a run ends at the TRUE
-    // occlusion boundary rather than retracting by a whole segment when only the
-    // segment's far portion is occluded (the per-segment-QI quantization that
-    // gapped a silhouette where it meets an occluding body).
-    const std::vector<std::vector<std::array<float, 2>>> spans =
-        computeChainVisibleSpansImpl(ch, sp, occluded);
-
-    // Project the backbone to 2D, then break each segment into its visible
-    // sub-spans by combining (a) the QI occlusion intervals (the complement of
-    // `spans`) with (b) the stage-B crossing T-vertices: each crossing hides a
-    // small gap so the NEARER line breaks the farther one (Freestyle
-    // CreateTVertex). Both are emitted as HIDDEN sub-intervals; resampleChain
-    // assigns each sub-span the visibility of its START vertex, so a hidden
-    // interval [t0,t1] carries visible=false at t0 and the resume vertex at t1
-    // carries visible=true.
-    const std::vector<std::vector<float>>& segCross = chainSegCross[ci];
-    std::vector<Pt2> proj;
-    proj.reserve(ch.pts.size() + crossings.size());
-    for (std::size_t k = 0; k + 1 < ch.pts.size(); ++k) {
-      float ax, ay, av, bx, by, bv;
-      const bool aOk = worldToScreen(sp, ch.pts[k], ax, ay, av);
-      const bool bOk = worldToScreen(sp, ch.pts[k + 1], bx, by, bv);
-      // Segment-start visibility: visible iff t=0 is inside a visible span.
-      const std::vector<std::array<float, 2>>& vis =
-          k < spans.size() ? spans[k] : std::vector<std::array<float, 2>>{};
-      auto visibleAt = [&](float t) {
-        if (spans.empty()) return true;  // no QI: all visible
-        for (const std::array<float, 2>& iv : vis)
-          if (t >= iv[0] && t <= iv[1]) return true;
-        return false;
-      };
-      const bool aVis = visibleAt(0.0f);
-      const bool bVis = visibleAt(1.0f);
-      if (k == 0 && aOk) proj.push_back({{ax, ay}, av, aVis});
-      if (!aOk || !bOk) continue;  // segment partially behind eye: leave a break
-
-      const Vec2 A{ax, ay}, B{bx, by};
-      const float segLen2d = norm2(B - A);
-      const float gapT = segLen2d > kZero
-                             ? std::min(0.45f, stepPx / segLen2d)
-                             : 0.0f;
-      auto emitAt = [&](float t, bool v) {
-        Pt2 q;
-        q.p = {lerpf(ax, bx, t), lerpf(ay, by, t)};
-        q.vz = lerpf(av, bv, t);
-        q.visible = v;
-        proj.push_back(q);
-      };
-
-      // Build the HIDDEN sub-intervals of this segment: the complement of the
-      // visible spans, plus a notch [tc-gapT, tc+gapT] around each crossing.
-      std::vector<std::array<float, 2>> hidden;
-      {
-        float cursor = 0.0f;
-        for (const std::array<float, 2>& iv : vis) {  // vis sorted by construction
-          if (iv[0] > cursor) hidden.push_back({cursor, iv[0]});
-          cursor = std::max(cursor, iv[1]);
-        }
-        if (cursor < 1.0f) hidden.push_back({cursor, 1.0f});
-      }
-      if (k < segCross.size()) {
-        for (float tc : segCross[k])
-          hidden.push_back(
-              {std::max(0.0f, tc - gapT), std::min(1.0f, tc + gapT)});
-      }
-      std::sort(hidden.begin(), hidden.end(),
-                [](const std::array<float, 2>& x, const std::array<float, 2>& y) {
-                  return x[0] < y[0];
-                });
-      // Merge overlapping / touching hidden intervals so each maximal hidden run
-      // emits exactly one notch (no spurious 1-vertex visible sliver between two
-      // overlapping runs).
-      std::vector<std::array<float, 2>> merged;
-      for (const std::array<float, 2>& h : hidden) {
-        const float t0 = std::max(0.0f, h[0]), t1 = std::min(1.0f, h[1]);
-        if (t1 <= t0) continue;
-        if (!merged.empty() && t0 <= merged.back()[1])
-          merged.back()[1] = std::max(merged.back()[1], t1);
-        else
-          merged.push_back({t0, t1});
-      }
-
-      // Emit each maximal hidden run as a notch: a hidden vertex at t0 ends the
-      // preceding visible span, a visible vertex at t1 resumes it. A run touching
-      // an endpoint (t0==0 or t1==1) needs no extra vertex there -- the segment
-      // endpoint vertices (aVis at t=0, bVis at t=1) already carry that state.
-      for (const std::array<float, 2>& h : merged) {
-        if (h[0] > 0.0f) emitAt(h[0], false);  // start hidden notch
-        if (h[1] < 1.0f) emitAt(h[1], true);   // resume visible
-      }
-      proj.push_back({{bx, by}, bv, bVis});
-    }
+    // Freestyle-faithful visibility (split-at-crossing, then per-sub-span QI):
+    // the 2D image-space crossings (TVertices, computeEdgeCrossings) split this
+    // chain into sub-spans; each is labelled visible/hidden by a midpoint QI ray
+    // cast (subSpanHidden) excluding its own 1-ring of faces. The visible run then
+    // ends/starts EXACTLY at a crossing (the occluder's silhouette) instead of at
+    // the camBias-lifted ray-flip boundary, which overshot a grazing silhouette
+    // (a back tube's line was drawn past the front tube's outline). A segment with
+    // no crossing is one sub-span, recovering the coarse per-segment occlusion for
+    // edges that pass behind a body without a feature-edge crossing.
+    const std::size_t nSegChain = ch.pts.size() - 1;
+    const std::vector<SubSpan> spans =
+        splitChainAtCrossings(nSegChain, chainSegCross[ci]);
+    const std::vector<char> spanHide = subSpanHidden(ch, spans, sp, occluded);
+    const std::vector<Pt2> proj = projectChainSubSpans(ch, spans, spanHide, sp);
     const std::vector<Pt2> rs = resampleChain(proj, stepPx);
 
     // Emit a strip per maximal run of consecutive VISIBLE vertices
