@@ -103,17 +103,19 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     // `renderer` (see EmbreeRenderer): occluded(P, target, selfFaces) is the QI
     // test, excluding the edge's own incident mesh faces (Freestyle self-face
     // exclusion). The renderer holds the mesh geomID needed to match those faces.
-    // Freestyle TANGENTIAL-occluder rejection threshold (ViewMapBuilder.cpp:
-    // fabs(u*normal) > 0.0001): a QI ray hit whose face is grazed nearly edge-on
-    // (|dir . normalize(Ng)| <= this cosine) is the silhouette's OWN grazing
-    // surface, not a real occluder, so occluded() does not count it. This is the
-    // SCALE-INVARIANT self-occlusion discriminator (it replaces the old, fragile
-    // distance dead zone). 0.1 sits in the safe window for the molecular mesh:
-    // above the beta-sheet's grazing self-faces (~0.05, which would otherwise
-    // self-hide flat strands) and well below a genuine front-facing occluder (a
-    // helix front wall is >0.2), with the QI ray length kept physical so a nearby
-    // occluder is reachable (see qiOccludedAt).
-    constexpr float kQiGrazeCosEps = 0.1f;
+    // Freestyle TANGENTIAL-occluder rejection threshold: a QI ray hit on a face
+    // grazed nearly edge-on (|dir . normalize(Ng)| <= this cosine) is a numerical
+    // degeneracy, not a real occluder. Match Freestyle's literal value -- its
+    // ComputeRayCastingVisibility counts a hit only when fabs(u*normal) > 0.0001
+    // (already cited in embree_renderer.cpp). This is a pure DEGENERACY GUARD, NOT
+    // an angular cull: the silhouette's OWN faces are dropped by face-ID
+    // (excludeFaceFilter step 1) plus the unbiased true-surface QI origin (fix B,
+    // camBias=0), NOT by an angle. The former 0.1 (~5.7deg) discarded a REAL front
+    // occluder seen near its OWN silhouette (|dir.Ng|->0), so a back line just
+    // inside that silhouette wrongly voted VISIBLE -- the hidden band. Relies on
+    // fix B (true-surface origin) + fix D (face-ID self-exclude keeps each strand's
+    // own grazing faces) so flat strands self-hide by id, not by this angle.
+    constexpr float kQiGrazeCosEps = 1.0e-4f;
     const OcclusionQuery occluded = [&renderer](const Vec3& p, const Vec3& q,
                                                 const int* excludeFaces,
                                                 int nExclude) {
