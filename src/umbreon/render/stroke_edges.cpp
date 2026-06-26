@@ -435,46 +435,116 @@ struct TaperShader : StrokeShader {
   }
 };
 
-// GEOMETRY shader: Laplacian-smooth the backbone to remove tessellation-induced
-// jaggedness (Freestyle SmoothingShader, AdvancedStrokeShaders). Each interior
-// vertex moves a fraction `lambda` toward its neighbours' midpoint, for `iters`
-// passes. CORNER-PRESERVING: a vertex whose turn cosine is below `cornerCos` (a
-// sharp angle -- e.g. a ribbon box edge) is held fixed, as are the two endpoints, so
-// genuine angular features are not rounded (the crude analogue of Freestyle's
-// anisotropic edge-stopping). Runs BEFORE the width/color shaders; visibility was
-// already resolved upstream, so moving the drawn line a little is safe. Recomputes
-// the curvilinear abscissa afterward so later f(u) shaders stay consistent.
-struct SmoothShader : StrokeShader {
-  int iters;
-  float cornerCos;  // protect a vertex if turn cosine < cornerCos (sharper corner)
-  float lambda;
-  SmoothShader(int it, float cc, float lam)
-      : iters(it), cornerCos(cc), lambda(lam) {}
+// GEOMETRY shader: Freestyle's ANISOTROPIC CURVATURE FLOW (a faithful port of
+// Smoother in AdvancedStrokeShaders.cpp:190-354). Converges the backbone toward a
+// curve of constant curvature (NOT a straight line -- so shape is preserved better
+// than Laplacian), driven by two terms whose strength is gated by a Perona-Malik
+// edge-stopping function exp(-x^2/sigma^2):
+//   * motionNormal      = factorCurvature * curvature * es(curvature, anisoNormal)
+//   * motionCurvature   = factorCurvatureDiff * sum es(dCurv, anisoCurvature)*dCurv
+// each applied along the per-vertex normal; plus an optional Laplacian point term
+// (factorPoint / anisoPoint). The aniso* sigmas are the CORNER-PROTECTION knobs:
+// at a high-curvature vertex (a real angular feature, e.g. a ribbon box edge) the
+// edge-stopping factor -> 0 so it is barely moved, while gentle tessellation
+// jaggedness (low curvature) is smoothed away. Endpoints are fixed (interior loop
+// only); closed curves diffuse the seam. carricature blends original->smoothed
+// (1 = full, >1 exaggerates). Runs before the width/color shaders; visibility was
+// resolved upstream, so moving the drawn line is safe. Recomputes the curvilinear
+// abscissa afterward so later f(u) shaders stay consistent.
+struct AnisoSmoothingShader : StrokeShader {
+  int nbIter;
+  float factorPoint, factorCurvature, factorCurvatureDiff;
+  float anisoPoint, anisoNormal, anisoCurvature;
+  float carricature;
+  AnisoSmoothingShader(int it, float fP, float fC, float fCD, float aP, float aN,
+                       float aC, float carr)
+      : nbIter(it),
+        factorPoint(fP),
+        factorCurvature(fC),
+        factorCurvatureDiff(fCD),
+        anisoPoint(aP),
+        anisoNormal(aN),
+        anisoCurvature(aC),
+        carricature(carr) {}
+
   int shade(Stroke& s) const override {
-    const std::size_t n = s.verts.size();
+    const int n = static_cast<int>(s.verts.size());
     if (n < 3) return 0;
-    std::vector<Vec2> p(n);
-    for (std::size_t i = 0; i < n; ++i) p[i] = s.verts[i].p;
-    for (int it = 0; it < iters; ++it) {
-      std::vector<Vec2> np = p;  // endpoints (and skipped corners) preserved
-      for (std::size_t i = 1; i + 1 < n; ++i) {
-        const Vec2 d0 = p[i] - p[i - 1];
-        const Vec2 d1 = p[i + 1] - p[i];
-        const float l0 = norm2(d0), l1 = norm2(d1);
-        if (l0 <= kZero || l1 <= kZero) continue;
-        if (dot2(d0, d1) / (l0 * l1) < cornerCos) continue;  // sharp corner: protect
-        const Vec2 mid = (p[i - 1] + p[i + 1]) * 0.5f;
-        np[i] = p[i] + (mid - p[i]) * lambda;
-      }
-      p.swap(np);
+    std::vector<Vec2> X(n), orig(n), normal(n);
+    std::vector<float> curv(n, 0.0f);
+    for (int i = 0; i < n; ++i) {
+      X[i] = s.verts[i].p;
+      orig[i] = X[i];
     }
-    for (std::size_t i = 0; i < n; ++i) s.verts[i].p = p[i];
+    const bool closed = norm2(X[0] - X[n - 1]) < kZero;
+    const bool safeTest = (n > 4);  // Smoother::Smoother
+
+    auto es = [](float x, float sigma) -> float {
+      return sigma == 0.0f ? 1.0f : std::exp(-(x * x) / (sigma * sigma));
+    };
+    auto usafe = [](const Vec2& d) -> Vec2 {
+      const float l = norm2(d);
+      return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
+    };
+
+    auto computeCurvature = [&]() {  // Smoother::computeCurvature
+      for (int i = 1; i < n - 1; ++i) {
+        Vec2 BA = X[i - 1] - X[i], BC = X[i + 1] - X[i];
+        const float lba = norm2(BA), lbc = norm2(BC);
+        BA = usafe(BA);
+        BC = usafe(BC);
+        const Vec2 nc = BA + BC, dCB = BC - BA;
+        normal[i] = usafe(Vec2{-dCB.y, dCB.x});
+        curv[i] = dot2(nc, normal[i]);
+        if (lba + lbc > kZero) curv[i] /= (0.5f * lba + lbc);
+      }
+      curv[0] = curv[1];
+      curv[n - 1] = curv[n - 2];
+      normal[0] = usafe(Vec2{-(X[1] - X[0]).y, (X[1] - X[0]).x});
+      normal[n - 1] =
+          usafe(Vec2{-(X[n - 1] - X[n - 2]).y, (X[n - 1] - X[n - 2]).x});
+      if (closed) {  // seam: diffuse from vertex[0]'s wrap-around neighbours
+        normal[n - 1] = normal[0];
+        curv[n - 1] = curv[0];
+      }
+    };
+
+    auto iteration = [&]() {  // Smoother::iteration
+      computeCurvature();
+      for (int i = 1; i < n - 1; ++i) {
+        const float mN = factorCurvature * curv[i] * es(curv[i], anisoNormal);
+        const float dC1 = curv[i] - curv[i - 1], dC2 = curv[i] - curv[i + 1];
+        const float mC = (es(dC1, anisoCurvature) * dC1 +
+                          es(dC2, anisoCurvature) * dC2) *
+                         factorCurvatureDiff;
+        if (safeTest) X[i] = X[i] + normal[i] * (mN + mC);
+        const Vec2 v1 = X[i - 1] - X[i], v2 = X[i + 1] - X[i];
+        const float d1 = norm2(v1), d2 = norm2(v2);
+        X[i] = X[i] + v1 * (factorPoint * es(d2, anisoPoint)) +
+               v2 * (factorPoint * es(d1, anisoPoint));
+      }
+      if (closed) {
+        const float mN = factorCurvature * curv[0] * es(curv[0], anisoNormal);
+        const float dC1 = curv[0] - curv[n - 2], dC2 = curv[0] - curv[1];
+        const float mC = (es(dC1, anisoCurvature) * dC1 +
+                          es(dC2, anisoCurvature) * dC2) *
+                         factorCurvatureDiff;
+        X[0] = X[0] + normal[0] * (mN + mC);
+        X[n - 1] = X[0];
+      }
+    };
+
+    for (int it = 0; it < nbIter; ++it) iteration();
+
+    for (int i = 0; i < n; ++i)  // Smoother::copyVertices (carricature blend)
+      s.verts[i].p = orig[i] + (X[i] - orig[i]) * carricature;
+
     // Positions moved -> recompute curvilinear abscissa / u (vz left as the original
-    // view depth; the 2D smoothing does not change a vertex's scene depth).
+    // scene depth; 2D smoothing does not change a vertex's view-z).
     float ca = 0.0f;
-    for (std::size_t i = 0; i < n; ++i) {
-      if (i > 0) ca += norm2(s.verts[i].p - s.verts[i - 1].p);
-      s.verts[i].ca = ca;
+    for (int i = 0; i < n; ++i) {
+      if (i > 0) ca += norm2(s.verts[i].p - s.verts[static_cast<std::size_t>(i) - 1].p);
+      s.verts[static_cast<std::size_t>(i)].ca = ca;
     }
     s.length2d = ca;
     if (ca > 0.0f)
@@ -1359,8 +1429,11 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     // attribute, so output is byte-identical; a real calligraphic/depth-cue/taper/
     // noise shader plugs in here to make L != R or color vary along u.
     std::vector<std::unique_ptr<StrokeShader>> shaders;
-    if (se.smooth)  // demo GEOMETRY shader: corner-preserving backbone smoothing
-      shaders.push_back(std::make_unique<SmoothShader>(8, 0.707f, 0.5f));
+    if (se.smooth)  // Freestyle anisotropic curvature-flow smoothing (corner-aware)
+      shaders.push_back(std::make_unique<AnisoSmoothingShader>(
+          /*nbIter=*/200, /*factorPoint=*/0.0f, /*factorCurvature=*/0.4f,
+          /*factorCurvatureDiff=*/0.3f, /*anisoPoint=*/0.0f, /*anisoNormal=*/0.08f,
+          /*anisoCurvature=*/0.08f, /*carricature=*/1.0f));
     shaders.push_back(std::make_unique<ConstantThicknessShader>(halfThick));
     shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
     if (se.taper)  // demo f(u) shader: taper width toward stroke ends
