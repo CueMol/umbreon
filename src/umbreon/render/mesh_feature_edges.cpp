@@ -100,6 +100,18 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
       if (length(vN[v]) < 0.5f) vN[v] = fNg[f];
     }
 
+  // Welded vertex -> incident triangle ids (for the EXPANDED QI self/adjacent-
+  // face exclusion). For each triangle, append it to the table of each of its 3
+  // welded vertices. Drives the 1-ring exclude set below (Freestyle's "skip an
+  // occluder that shares any vertex with the edge's face", ViewMapBuilder.cpp
+  // :2152-2196).
+  std::vector<std::vector<int>> vFaces(nV);
+  for (std::size_t f = 0; f < nTri; ++f) {
+    vFaces[static_cast<std::size_t>(fa[f])].push_back(static_cast<int>(f));
+    vFaces[static_cast<std::size_t>(fb[f])].push_back(static_cast<int>(f));
+    vFaces[static_cast<std::size_t>(fc[f])].push_back(static_cast<int>(f));
+  }
+
   result.vpos = vpos;
 
   // Mean triangle edge length, computed unconditionally (independent of which
@@ -195,11 +207,43 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
     }
   }
 
+  // Build the EXPANDED 1-ring exclude set for an edge with incident faces f0,f1:
+  // {f0, f1} UNION every triangle that shares a welded VERTEX with f0 or with f1
+  // (f1 < 0 contributes nothing). Deduplicated. This is the QI self/adjacent-
+  // face skip the stroke pass carries to the visibility ray-cast (Freestyle
+  // ViewMapBuilder.cpp:2152-2196) so a silhouette grazing its own nearby surface
+  // near a T-junction is not wrongly counted as self-occluded.
+  auto expandExclude = [&](int f0, int f1) {
+    std::vector<int> ex;
+    ex.reserve(16);
+    auto addF = [&](int f) {
+      if (f < 0) return;
+      for (int g : ex)
+        if (g == f) return;
+      ex.push_back(f);
+    };
+    auto addRing = [&](int f) {
+      if (f < 0) return;
+      addF(f);
+      const int v[3] = {fa[static_cast<std::size_t>(f)],
+                        fb[static_cast<std::size_t>(f)],
+                        fc[static_cast<std::size_t>(f)]};
+      for (int vi : v)
+        for (int g : vFaces[static_cast<std::size_t>(vi)]) addF(g);
+    };
+    addRing(f0);
+    addRing(f1);
+    return ex;
+  };
+
   // Emit a feature segment, carrying its incident mesh-triangle ids (f0,f1; -1
-  // when absent) for Freestyle self-face exclusion in the visibility ray-cast.
+  // when absent) for Freestyle self-face exclusion, plus the EXPANDED 1-ring
+  // exclude set used by the stroke pass's visibility ray-cast.
   auto emit = [&](int n0, const Vec3& A, int n1, const Vec3& B, EdgeNature nat,
                   std::uint16_t grp, int f0, int f1) {
-    result.segs.push_back(FeatureSeg{n0, n1, A, B, nat, grp, f0, f1});
+    FeatureSeg s{n0, n1, A, B, nat, grp, f0, f1, {}};
+    s.excludeFaces = expandExclude(f0, f1);
+    result.segs.push_back(std::move(s));
   };
 
   // Border/crease emit helper: lift endpoints outward along the vertex normal by

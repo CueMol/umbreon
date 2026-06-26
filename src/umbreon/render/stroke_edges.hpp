@@ -67,6 +67,16 @@ struct EdgeChain {
   // over-excludes by unioning every face meeting at a hub. Sized to segs; empty
   // when no faces were carried.
   std::vector<std::array<int, 2>> segFaces;
+  // Per-SEGMENT EXPANDED exclude set for the QI ray cast (one entry per `segs`,
+  // oriented to the backbone): the edge's 1-RING of mesh faces
+  // (FeatureSeg::excludeFaces -- {face0,face1} plus every triangle sharing a
+  // vertex with them). This is the Freestyle-faithful occluder skip
+  // (ViewMapBuilder.cpp:2152-2196) that prevents a silhouette grazing its OWN
+  // nearby surface near a T-junction from being wrongly self-hidden. Preferred by
+  // computeChainVisibility over the narrow per-segment `segFaces`; empty when not
+  // populated (then `segFaces` / `incidentFaces` are the fallback, keeping the
+  // unit tests' synthetic chains working).
+  std::vector<std::vector<int>> segExclude;
   // Per-SEGMENT nature, oriented to the backbone (one per `segs`). Carried so the
   // global crossing pass can apply Freestyle's silhouette_binary_rule (at least
   // one SILHOUETTE/BORDER edge per occlusion T-vertex) without re-fetching the

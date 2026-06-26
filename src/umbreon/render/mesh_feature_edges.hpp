@@ -64,6 +64,16 @@ struct FeatureSeg {
   EdgeNature nature = EdgeNature::Silhouette;
   std::uint16_t group = 0;  // CueMol section (mesh.groupForTri source)
   int face0 = -1, face1 = -1;  // incident mesh-triangle ids (== Embree primID)
+  // EXPANDED self/adjacent-face exclude set for the QI ray cast: the 1-RING of
+  // mesh triangles around this edge -- {face0, face1} UNION every triangle that
+  // shares a VERTEX with face0 or face1 (deduplicated; face1 < 0 contributes
+  // nothing). This is Freestyle's ViewMapBuilder occluder skip
+  // (ViewMapBuilder.cpp:2152-2196): an occluder that shares ANY vertex with the
+  // edge's face is not counted, so a silhouette that grazes its OWN nearby
+  // surface near a T-junction is not wrongly self-hidden. The stroke pass
+  // (render/stroke_edges.cpp) carries this to computeChainVisibility; --obj-edges
+  // ignores it (so that path stays byte-identical).
+  std::vector<int> excludeFaces;
 };
 
 // Extracted feature edges of a mesh. `vpos` is the welded vertex table (for
