@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include <tbb/blocked_range.h>
@@ -369,6 +370,47 @@ struct Stroke {
   float length2d = 0.0f;
   int chainIdx = 0;
   EdgeNature nature = EdgeNature::Silhouette;
+};
+
+// Stylization shader contract (Freestyle StrokeShader, StrokeShader.h:50-77): a
+// shader iterates the stroke vertices and writes each one's attribute, optionally
+// as a function of v.u()/v.ca. Concrete width/color/taper/noise shaders plug in
+// here later; the two constant shaders below just reproduce the resolved per-section
+// default attribute, exercising the read/write contract without changing output.
+struct StrokeShader {
+  virtual ~StrokeShader() = default;
+  virtual int shade(Stroke& s) const = 0;
+};
+
+// Constant symmetric half-width (Freestyle ConstantThicknessShader,
+// BasicStrokeShaders.cpp:40-58).
+struct ConstantThicknessShader : StrokeShader {
+  float halfThick;
+  explicit ConstantThicknessShader(float h) : halfThick(h) {}
+  int shade(Stroke& s) const override {
+    for (StrokeVertex& v : s.verts) {
+      v.attr.leftThick = halfThick;
+      v.attr.rightThick = halfThick;
+    }
+    return 0;
+  }
+};
+
+// Constant color + alpha (Freestyle ConstantColorShader, BasicStrokeShaders.cpp:204-212).
+struct ConstantColorShader : StrokeShader {
+  float color[3];
+  float alpha;
+  ConstantColorShader(const float c[3], float a)
+      : color{c[0], c[1], c[2]}, alpha(a) {}
+  int shade(Stroke& s) const override {
+    for (StrokeVertex& v : s.verts) {
+      v.attr.color[0] = color[0];
+      v.attr.color[1] = color[1];
+      v.attr.color[2] = color[2];
+      v.attr.alpha = alpha;
+    }
+    return 0;
+  }
 };
 
 // Build a parametric Stroke from a visibility-tagged projected polyline, stamping
@@ -1241,6 +1283,15 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     defAttr.alpha = opacity;
     Stroke stroke = buildStroke(proj, defAttr, static_cast<int>(ci), nat);
     resampleStroke(stroke, stepPx);
+
+    // STYLIZATION: run the per-vertex stroke shaders (Freestyle StrokeShader::shade).
+    // The constant width/color shaders reproduce the resolved per-section default
+    // attribute, so output is byte-identical; a real calligraphic/depth-cue/taper/
+    // noise shader plugs in here to make L != R or color vary along u.
+    std::vector<std::unique_ptr<StrokeShader>> shaders;
+    shaders.push_back(std::make_unique<ConstantThicknessShader>(halfThick));
+    shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
+    for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
 
     // Build the variable-width ribbon strips (one per maximal visible run). With
     // the constant default attribute (leftThick==rightThick==halfThick) this is
