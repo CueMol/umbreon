@@ -351,7 +351,8 @@ int main(int argc, char** argv) {
       // suppresses the filter entirely (A/B). Runs only with --edges on; with
       // edges off this block does not execute, so nothing is filtered
       // (byte-identical default).
-      if (!opt.keepBakedEdges && !scene.cylinders.empty()) {
+      if (!opt.keepBakedEdges &&
+          (!scene.cylinders.empty() || !scene.spheres.empty())) {
         const std::size_t ng = scene.groupEdgeStyle.size();
         const int kSil = static_cast<int>(umbreon::EdgeClass::Silhouette);
         const int kObj = static_cast<int>(umbreon::EdgeClass::Object);
@@ -372,11 +373,25 @@ int main(int argc, char** argv) {
                            }),
             scene.cylinders.end());
         const std::size_t removed = before - scene.cylinders.size();
-        if (removed > 0)
+        // Also drop the baked silhouette JOINT-DOT spheres (writePoint, tagged
+        // fromEdgeMacro) under the SAME per-section policy: CueMol rounds each
+        // edge polyline joint with a small black sphere, so removing only the
+        // cylinders leaves those spheres as black beads sitting on top of the
+        // stroke edges. Atom balls are not fromEdgeMacro and are never touched.
+        const std::size_t beforeS = scene.spheres.size();
+        scene.spheres.erase(
+            std::remove_if(scene.spheres.begin(), scene.spheres.end(),
+                           [&](const umbreon::Sphere& s) {
+                             return s.fromEdgeMacro &&
+                                    sectionRemovesBaked(s.group);
+                           }),
+            scene.spheres.end());
+        const std::size_t removedS = beforeS - scene.spheres.size();
+        if (removed > 0 || removedS > 0)
           std::printf(
-              "  baked POV edges removed: %zu cylinders (sections with a "
-              "stroke nature enabled)\n",
-              removed);
+              "  baked POV edges removed: %zu cylinders, %zu joint dots "
+              "(sections with a stroke nature enabled)\n",
+              removed, removedS);
       }
     }
 
