@@ -116,11 +116,32 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     // fix B (true-surface origin) + fix D (face-ID self-exclude keeps each strand's
     // own grazing faces) so flat strands self-hide by id, not by this angle.
     constexpr float kQiGrazeCosEps = 1.0e-4f;
-    const OcclusionQuery occluded = [&renderer](const Vec3& p, const Vec3& q,
-                                                const int* excludeFaces,
-                                                int nExclude) {
+    // Coincident-plane self-surface epsilon (Freestyle GeomUtils::COINCIDENT),
+    // scaled to the mesh tessellation so it is unit-robust: a hit whose plane sits
+    // within this perpendicular distance of the silhouette point is the point's
+    // own surface (skip); a real occluder a fold-gap away (>= ~one face) is
+    // counted. Derived from the mean triangle edge.
+    double elsum = 0.0;
+    const std::size_t nTri = scene.mesh.triangleCount();
+    for (std::size_t t = 0; t < nTri; ++t) {
+      const Vec3& a = scene.mesh.positions[t * 3 + 0];
+      const Vec3& b = scene.mesh.positions[t * 3 + 1];
+      const Vec3& c = scene.mesh.positions[t * 3 + 2];
+      elsum += length(b - a) + length(c - b) + length(a - c);
+    }
+    const float meanEdge =
+        nTri ? static_cast<float>(elsum / (3.0 * nTri)) : 0.0f;
+    // 0.2*meanEdge: the silhouette point's OWN surface deviates from its tangent
+    // plane by only curvature*O(meanEdge^2) (perp distance ~0), so a small fraction
+    // catches it; a real occluder a fold-gap away (>= ~one face) stays well above
+    // it and is counted. Verified to protect the outer outline (no self-occlusion)
+    // on both tube and ribbon while removing the self-fold leak.
+    const float coplanarEps = 0.2f * meanEdge;
+    const OcclusionQuery occluded = [&renderer, coplanarEps](
+                                        const Vec3& p, const Vec3& q,
+                                        const int* excludeFaces, int nExclude) {
       return renderer.occluded(p, q, excludeFaces, nExclude, 1.0e-4f,
-                               kQiGrazeCosEps);
+                               kQiGrazeCosEps, coplanarEps);
     };
     applyStrokeEdges(frame, scene, opt, occluded);
   }

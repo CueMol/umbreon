@@ -45,6 +45,14 @@ struct ExcludeFaceContext {
   // This is the SCALE-INVARIANT self-occlusion discriminator that replaces the old
   // distance dead-zone. <= 0 disables it (shadows/AO, which never set it).
   float grazeCosEps;              // reject hit if |dir . normalize(Ng)| <= this
+  // Freestyle COINCIDENT-plane skip (GeomUtils::intersectRayPlane == COINCIDENT):
+  // a hit whose face PLANE passes through the silhouette point (the QI ray origin)
+  // is that point's OWN surface, not a real occluder. The perpendicular distance
+  // from the origin to the hit plane is tHit * |dir . normalize(Ng)| (the origin
+  // is on the ray, the hit is on its own plane), so a hit with that distance <=
+  // this epsilon is coincident (skip). A genuine front occluder a fold-gap away
+  // has a large perpendicular distance (count). World units; <= 0 disables.
+  float coplanarEps;
 };
 
 // Argument intersection filter: reject (do not count) a hit that lands on one of
@@ -57,7 +65,8 @@ void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
   if (ctx == nullptr) return;
   const bool doExclude = ctx->nFaces > 0;
   const bool doGraze = ctx->grazeCosEps > 0.0f;
-  if (!doExclude && !doGraze) return;  // nothing to filter
+  const bool doCoplanar = ctx->coplanarEps > 0.0f;
+  if (!doExclude && !doGraze && !doCoplanar) return;  // nothing to filter
   int* valid = args->valid;
   RTCHitN* hit = args->hit;
   RTCRayN* ray = args->ray;
@@ -78,11 +87,10 @@ void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
       }
       if (rejected) continue;
     }
-    // (2) TANGENTIAL (grazing) rejection -- Freestyle fabs(u*normal) > 0.0001: a
-    // face the ray hits nearly edge-on (its geometric normal almost perpendicular
-    // to the ray) is the silhouette's OWN grazing surface, not a real occluder.
-    // Scale-invariant (a cosine), so it needs no scene-unit dead zone.
-    if (doGraze) {
+    // (2) TANGENTIAL (grazing) + (3) COINCIDENT-plane rejection. A face the QI ray
+    // hits nearly edge-on (grazing) OR whose plane passes through the silhouette
+    // point (coincident) is the silhouette's OWN surface, not a real occluder.
+    if (doGraze || doCoplanar) {
       const float nx = RTCHitN_Ng_x(hit, args->N, i);
       const float ny = RTCHitN_Ng_y(hit, args->N, i);
       const float nz = RTCHitN_Ng_z(hit, args->N, i);
@@ -92,8 +100,20 @@ void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
       const float nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
       const float dlen = std::sqrt(dx * dx + dy * dy + dz * dz);
       if (nlen > 0.0f && dlen > 0.0f) {
-        const float c = std::fabs(nx * dx + ny * dy + nz * dz) / (nlen * dlen);
-        if (c <= ctx->grazeCosEps) valid[i] = 0;  // grazed face: not an occluder
+        // |dir . n| / (|dir||n|): the cosine; and tHit*that-unnormalized-by-|n| is
+        // the perpendicular distance from the ray origin to the hit's plane.
+        const float dDotN = nx * dx + ny * dy + nz * dz;
+        const float c = std::fabs(dDotN) / (nlen * dlen);
+        if (doGraze && c <= ctx->grazeCosEps) {
+          valid[i] = 0;  // (2) grazed face: not an occluder
+          continue;
+        }
+        if (doCoplanar) {
+          // perp dist(origin, plane) = tHit * |dir . n| / |n| (dir already unit).
+          const float tHit = RTCRayN_tfar(ray, args->N, i);
+          const float perp = tHit * std::fabs(dDotN) / nlen;
+          if (perp <= ctx->coplanarEps) valid[i] = 0;  // (3) coincident self-surface
+        }
       }
     }
   }
@@ -116,7 +136,7 @@ void EmbreeRenderer::releaseEmbree() {
 
 bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
                               const int* excludeFaces, int nExclude, float eps,
-                              float grazeCosEps) const {
+                              float grazeCosEps, float coplanarEps) const {
   if (!scene_) return false;  // no live BVH (edges/visibility not built)
   const Vec3 d = q - p;
   const float len = length(d);
@@ -132,11 +152,12 @@ bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
   const float tfar = len * (1.0f - eps);
   if (tnear >= tfar) return false;
 
-  // Plain any-hit test only when neither filter stage is needed (no self-faces to
-  // exclude AND no tangential rejection requested -- e.g. a non-QI caller).
+  // Plain any-hit test only when NO filter stage is needed (no self-faces to
+  // exclude AND no tangential AND no coincident-plane rejection -- e.g. a non-QI
+  // caller like shadows/AO).
   if ((excludeFaces == nullptr || nExclude == 0 ||
        meshGeomID_ == static_cast<unsigned int>(-1)) &&
-      grazeCosEps <= 0.0f)
+      grazeCosEps <= 0.0f && coplanarEps <= 0.0f)
     return detail::occluded(scene_, p, dir, tnear, tfar);
 
   // Filtered any-hit test: the argument filter rejects (a) hits on the edge's own
@@ -166,6 +187,7 @@ bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
                    ? nExclude
                    : 0;
   ctx.grazeCosEps = grazeCosEps;
+  ctx.coplanarEps = coplanarEps;
 
   RTCOccludedArguments oargs;
   rtcInitOccludedArguments(&oargs);

@@ -213,34 +213,30 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   // face skip the stroke pass carries to the visibility ray-cast (Freestyle
   // ViewMapBuilder.cpp:2152-2196) so a silhouette grazing its own nearby surface
   // near a T-junction is not wrongly counted as self-occluded.
-  // Build segment k's QI self-face exclude set (Freestyle ViewMapBuilder self-skip).
-  // SMOOTH silhouette: the vertex-1-RING of the SINGLE feature face f0 (Freestyle
-  // anchors the skip on the one face the smooth FEdge lives in, and only under
-  // if(fe->isSmooth())); f0's ring already contains f1=adj plus the second across-
-  // edge neighbour, so the smooth self-grazing band stays suppressed. SHARP edge
-  // (hard silhouette / crease / border): just the literal incident faces {f0,f1}
-  // (f1<0 border = no-op). The broad both-face 1-ring previously applied to ALL
-  // natures whitelisted any occluder merely sharing a weld vertex with an incident
-  // face near a junction -> under-occlusion -> the edge wrongly voted visible.
+  // Build segment k's QI self-face exclude set: just the LITERAL incident faces
+  // {f0,f1} (f1<0 border = no-op). The edge's own surface is then suppressed by
+  // these ids PLUS the geometric COINCIDENT-PLANE skip in the QI ray cast
+  // (EmbreeRenderer::occluded coplanarEps -- Freestyle GeomUtils::COINCIDENT): a
+  // hit whose plane passes through the silhouette point is the point's OWN surface
+  // and is not counted. That geometric test REPLACES the old topological vertex-
+  // 1-ring, which could not distinguish a continuous self-surface (must skip, to
+  // keep the outer outline solid) from a real front occluder that merely shares a
+  // weld vertex on a tightly self-folded ribbon (must count, or the back fold
+  // leaks over the front). The plane test handles both: the self-surface is
+  // coplanar with the point (skip); the front occluder is a fold-gap away (count).
+  // `smooth` is no longer consulted (kept for call-site stability).
   auto buildExclude = [&](int f0, int f1, bool smooth) {
+    (void)smooth;
     std::vector<int> ex;
-    ex.reserve(16);
+    ex.reserve(4);
     auto addF = [&](int f) {
       if (f < 0) return;
       for (int g : ex)
         if (g == f) return;
       ex.push_back(f);
     };
-    addF(f0);  // always: the edge's primary feature face
-    if (smooth && f0 >= 0) {
-      const int v[3] = {fa[static_cast<std::size_t>(f0)],
-                        fb[static_cast<std::size_t>(f0)],
-                        fc[static_cast<std::size_t>(f0)]};
-      for (int vi : v)
-        for (int g : vFaces[static_cast<std::size_t>(vi)]) addF(g);
-    } else {
-      addF(f1);  // sharp edge: the second fold face (border f1<0 = no-op)
-    }
+    addF(f0);  // the edge's primary feature face
+    addF(f1);  // the second fold/adjacent face (border f1<0 = no-op)
     return ex;
   };
 

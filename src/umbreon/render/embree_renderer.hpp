@@ -43,10 +43,15 @@ class EmbreeRenderer {
   // hit whose face is grazed nearly edge-on (|dir . normalize(Ng)| <= grazeCosEps,
   // Freestyle's fabs(u*normal) > 0.0001): the scale-invariant discriminator that
   // stops a silhouette's own grazing surface from self-occluding without a
-  // distance dead zone. Returns false if no scene is currently built.
+  // distance dead zone. When `coplanarEps` (world units) > 0 the filter ALSO
+  // rejects a hit whose face PLANE passes through the ray origin (perpendicular
+  // distance <= coplanarEps) -- the silhouette point's OWN surface, Freestyle's
+  // GeomUtils::COINCIDENT skip -- while counting a real occluder a fold-gap away;
+  // this geometric self-surface test lets the topological exclude be just the
+  // literal incident faces. Returns false if no scene is currently built.
   bool occluded(const Vec3& p, const Vec3& q, const int* excludeFaces,
-                int nExclude, float eps = 1.0e-4f,
-                float grazeCosEps = 0.0f) const;
+                int nExclude, float eps = 1.0e-4f, float grazeCosEps = 0.0f,
+                float coplanarEps = 0.0f) const;
 
  private:
   // Release the currently held device/scene (if any). Idempotent.
