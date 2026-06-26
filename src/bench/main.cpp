@@ -281,6 +281,7 @@ int main(int argc, char** argv) {
       ropt.strokeEdges.silhouette = opt.strokeSilhouette;
       ropt.strokeEdges.crease = opt.strokeCrease;
       ropt.strokeEdges.border = opt.strokeBorder;
+      ropt.strokeEdges.taper = opt.strokeTaper;
       if (opt.strokeThicknessSet)
         ropt.strokeEdges.thickness =
             static_cast<int>(opt.strokeThickness + 0.5f);

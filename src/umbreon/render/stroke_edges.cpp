@@ -413,6 +413,28 @@ struct ConstantColorShader : StrokeShader {
   }
 };
 
+// Taper the width toward both stroke ends as a function of the curvilinear abscissa
+// u -- a "spindle"/calligraphic look (Freestyle tip handling, the IncreasingThickness
+// family). width *= `endScale` at the very ends (u=0,1), ramping (smoothstep) up to
+// full by `tipFrac` of u in from each end. A real f(u) stylization that exercises
+// the parametric substrate (not byte-identical: this is the demo effect).
+struct TaperShader : StrokeShader {
+  float tipFrac;
+  float endScale;
+  TaperShader(float frac, float end) : tipFrac(frac), endScale(end) {}
+  int shade(Stroke& s) const override {
+    for (StrokeVertex& v : s.verts) {
+      const float e = std::min(v.u, 1.0f - v.u);  // distance to nearest end in u
+      float k = (tipFrac > 0.0f) ? std::min(1.0f, e / tipFrac) : 1.0f;
+      k = k * k * (3.0f - 2.0f * k);  // smoothstep
+      const float scale = endScale + (1.0f - endScale) * k;
+      v.attr.leftThick *= scale;
+      v.attr.rightThick *= scale;
+    }
+    return 0;
+  }
+};
+
 // Build a parametric Stroke from a visibility-tagged projected polyline, stamping
 // the resolved per-chain default attribute into every vertex (Freestyle
 // Operators::createStroke, Operators.cpp:1082-1155). Accumulates 2D arc length to
@@ -1291,6 +1313,8 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     std::vector<std::unique_ptr<StrokeShader>> shaders;
     shaders.push_back(std::make_unique<ConstantThicknessShader>(halfThick));
     shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
+    if (se.taper)  // demo f(u) shader: taper width toward stroke ends
+      shaders.push_back(std::make_unique<TaperShader>(0.5f, 0.15f));
     for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
 
     // Build the variable-width ribbon strips (one per maximal visible run). With

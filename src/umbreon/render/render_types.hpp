@@ -100,6 +100,10 @@ struct StrokeEdgeOptions {
   int resampleStepPx = 2;   // arc-length resample step, final px
   float color[3] = {0.0f, 0.0f, 0.0f};  // default linear RGB
   float opacity = 1.0f;                 // 0..1
+  // Demo stylization shader: taper each stroke's width toward its two ends as a
+  // function of the curvilinear abscissa u (a "spindle"/calligraphic look). Off by
+  // default so the stroke pass stays byte-identical; --stroke-taper on enables it.
+  bool taper = false;
 
   // Per-section styling: a section without an override uses defaultStyle. The
   // stroke pipeline maps each EdgeNature onto a styling slot in EdgeStyle (see

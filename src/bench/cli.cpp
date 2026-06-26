@@ -318,6 +318,10 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--stroke-border");
       if (o.ok && !parseBool(v, o.strokeBorder))
         fail("--stroke-border expects on/off");
+    } else if (a == "--stroke-taper") {
+      std::string v = value("--stroke-taper");
+      if (o.ok && !parseBool(v, o.strokeTaper))
+        fail("--stroke-taper expects on/off");
     } else if (a == "--dump-aov") {
       o.dumpAovPrefix = value("--dump-aov");
     } else if (a == "--keep-baked-edges") {
@@ -412,6 +416,7 @@ void printUsage(const char* prog) {
       "  --stroke-silhouette <on|off> stroke silhouette nature             [on]\n"
       "  --stroke-crease <on|off> stroke crease nature                     [on]\n"
       "  --stroke-border <on|off> stroke border nature                     [on]\n"
+      "  --stroke-taper <on|off>  taper stroke width toward its ends (demo) [off]\n"
       "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

@@ -154,6 +154,8 @@ struct Options {
   bool strokeSilhouette = true;
   bool strokeCrease = true;
   bool strokeBorder = true;
+  // Demo stylization shader (--stroke-taper): taper width toward stroke ends.
+  bool strokeTaper = false;
 
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;
