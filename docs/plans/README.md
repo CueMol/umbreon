@@ -8,3 +8,9 @@
 - [edge-extraction-embree.md](edge-extraction-embree.md) — silhouette/crease エッジ抽出を CueMol(CGAL) から
   umbreon(Embree) へ移管する実装プラン。production は直接 `umbreon::Scene` 渡し、umbreon が検出＋可視性＋
   クリッピングを所有。fp32/fp64 精度エスカレーションと PoC ファースト方針を含む。
+- [mesh-indexed-refactor.md](mesh-indexed-refactor.md) — `Mesh` を三角形スープ → indexed 化する refactoring。
+  load 時に 1 回溶接して属性分割つき indexed mesh を作り Embree 直結（ribbon1 で頂点 157200→約27000）。
+  描画用(位置+法線+色)とトポロジー用(位置のみ)の二系統併合が要点。**提案・未着手**。cusp バグとは無関係。
+- [fog-opengl-linear.md](fog-opengl-linear.md) — fog を POV 指数近似 → CueMol の OpenGL 線形 fog
+  （`fog_inc.glsl`）相当へ置換し、画面表示と一致させる。POV `distance` と `_distance` から `fogStart/fogEnd`
+  を復元。透過背景時は fog 色を焼き込まず alpha フェード（後段の背景差し替えが破綻しない）。**提案・未着手**。

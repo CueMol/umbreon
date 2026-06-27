@@ -204,6 +204,16 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 | `materials` / `triMaterialId` | `vector<Material>` / `vector<uint8_t>` | 三角形ごとに異なる finish を使う場合（空＝`material`） |
 | `triGroupId` | `vector<uint16_t>` | 三角形ごとの透過グループ（CueMol section）。空＝全て group 0 |
 
+> **`Mesh` のトポロジーと溶接**: `Mesh` は **de-indexed（三角形スープ）** — 共有頂点インデックスを持たず、
+> 三角形 i の3頂点を `positions[3i], [3i+1], [3i+2]` に直接並べる（同じ位置が複数三角形で重複格納される）。
+> `normals` / `colors` も同じ並びで **コーナー単位**（＝三角形ごとの各頂点）に持つので、同一位置でも属する
+> 三角形が違えば別の法線・色を持てる（ハードエッジや色の境界に必要。逆にこれがインデックスをそのまま
+> 保持できない理由でもある）。POV mesh2 の `face_indices` は接続性を完全には符号化しない（CueMol はリボンを巻きごとの
+> triangle strip で出力し、巻き境界の頂点・法線が重複しているため、隣接巻きとの接続は座標一致として
+> しか存在しない）。エッジ抽出（`--edges` / `--obj-edges`）は **座標量子化（既定 1e-4）による位置溶接で
+> 本来の water-tight トポロジーを復元**してから silhouette/crease/border を判定する。溶接は冗長な重複頂点を
+> 畳むだけで真のトポロジーを失わない。詳細・限界は `render/mesh_feature_edges.cpp` の step 1 を参照。
+
 **`Sphere`**: `center`, `radius`, `color`(rgb+opacity), `material`（既定 `Material::flatOutline()`）, `group`。
 
 **`Cylinder`**: `p0`, `p1`, `radius`, `color`, `material`, `group`,
