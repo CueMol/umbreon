@@ -987,6 +987,63 @@ int main() {
             upMinus < upPerp && upPerp < upPlus);
   }
 
+  // ===== AO quality: albedo-aware multibounce =====
+  // Multibounce lifts the AO term per albedo channel, so a light cavity recovers
+  // more than a dark one. Floor (variable gray) + black slab. The occluded/open
+  // ratio (which cancels the floor color) must be higher for a white floor than a
+  // gray one, and multibounce must actually brighten the occluded white floor vs
+  // plain AO.
+  {
+    using umbreon::Vec3;
+    auto floorSlab = [](float gray, bool withSlab) {
+      umbreon::Mesh m;
+      const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                          {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({gray, gray, gray, 1});
+      }
+      if (withSlab) {
+        const float z = 0.4f;
+        const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                            {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(sl[i]);
+          m.normals.push_back({0, 0, -1});
+          m.colors.push_back({0, 0, 0, 1});
+        }
+      }
+      m.material.ambient = 1.0f;
+      m.material.diffuse = 0.0f;
+      return m;
+    };
+    auto centerR = [&](float gray, bool slab, bool mb) {
+      umbreon::Scene sc;
+      sc.mesh = floorSlab(gray, slab);
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.aoSamples = 256;
+      o.aoDistance = 10.0f;
+      o.aoMultibounce = mb;
+      return umbreon::render(sc, o).color[kCenterRgba + 0];
+    };
+    const float openWhite = centerR(1.0f, false, true);
+    const float occWhite = centerR(1.0f, true, true);
+    const float openGray = centerR(0.5f, false, true);
+    const float occGray = centerR(0.5f, true, true);
+    const float occWhiteNoMb = centerR(1.0f, true, false);
+    const float ratioWhite = occWhite / openWhite;
+    const float ratioGray = occGray / openGray;
+    s.check("AO multibounce: white recovers more than gray (ratio)",
+            ratioWhite > ratioGray + 0.02f);
+    s.check("AO multibounce: lifts occluded white vs plain AO",
+            occWhite > occWhiteNoMb + 0.01f);
+  }
+
   // ===== Hard shadows (per-light visibility; off by default) =====
   // A floor lit by an angled light, with a slab between the floor center and the
   // light (offset in +x so it clears the straight-down camera ray). Shadows on

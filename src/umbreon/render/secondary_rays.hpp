@@ -195,6 +195,19 @@ inline void aoSample2d(bool lowDiscrepancy, uint32_t base, int i, int nSamples,
   }
 }
 
+// GTAO multi-bounce approximation (Jimenez et al. 2016, "Practical Realtime
+// Strategies for Accurate Indirect Occlusion"): a per-channel cubic that lifts
+// the AO term toward 1 as albedo rises. Single-bounce AO implicitly assumes a
+// black surface, so light-colored cavities over-darken; this restores the energy
+// a real surface would bounce back. ao in [0,1] (1 = open), albedo the channel's
+// pigment value. The result is >= ao (max guard), so it only ever brightens.
+inline float aoMultibounce(float ao, float albedo) {
+  const float a = 2.0404f * albedo - 0.3324f;
+  const float b = -4.7951f * albedo + 0.6417f;
+  const float c = 2.7552f * albedo + 0.6903f;
+  return std::fmax(ao, ((ao * a + b) * ao + c) * ao);
+}
+
 // Knobs for computeAOQuality (the enhanced estimator).
 struct AOParams {
   int nSamples = 0;          // rays per hit (<=0 => fully open)

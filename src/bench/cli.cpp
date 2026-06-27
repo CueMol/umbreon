@@ -208,6 +208,10 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--ao-up") {
       std::string v = value("--ao-up");
       if (o.ok && !parseVec3(v, o.aoUp)) fail("--ao-up expects x,y,z");
+    } else if (a == "--ao-multibounce") {
+      std::string v = value("--ao-multibounce");
+      if (o.ok && !parseBool(v, o.aoMultibounce))
+        fail("--ao-multibounce expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -470,6 +474,7 @@ void printUsage(const char* prog) {
       "  --ao-ground #RRGGBB      bent-normal down-hemisphere tint[#ffffff]\n"
       "  --ao-camera-up <on|off>  gradient axis = camera up          [on]\n"
       "  --ao-up x,y,z            explicit gradient axis (camera-up off)\n"
+      "  --ao-multibounce <on|off> albedo-aware AO (anti over-dark)   [off]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"

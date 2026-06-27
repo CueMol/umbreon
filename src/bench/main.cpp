@@ -397,6 +397,7 @@ int main(int argc, char** argv) {
       ropt.aoUp[i] = opt.aoUp[i];
     }
     ropt.aoUseCameraUp = opt.aoUseCameraUp;
+    ropt.aoMultibounce = opt.aoMultibounce;
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;

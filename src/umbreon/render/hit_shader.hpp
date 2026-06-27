@@ -122,8 +122,19 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
         openness = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
                              c.opt.aoDistance, px, py, c.opt.width);
       }
-      const float s = 1.0f - c.opt.aoIntensity * (1.0f - openness);
-      aoFactor = Vec3{s, s, s};
+      if (c.opt.aoMultibounce) {
+        // Lift each channel by its pigment albedo so light cavities don't crush
+        // to black (single-bounce AO assumes a black surface).
+        const float ox = aoMultibounce(openness, C.x);
+        const float oy = aoMultibounce(openness, C.y);
+        const float oz = aoMultibounce(openness, C.z);
+        aoFactor = Vec3{1.0f - c.opt.aoIntensity * (1.0f - ox),
+                        1.0f - c.opt.aoIntensity * (1.0f - oy),
+                        1.0f - c.opt.aoIntensity * (1.0f - oz)};
+      } else {
+        const float s = 1.0f - c.opt.aoIntensity * (1.0f - openness);
+        aoFactor = Vec3{s, s, s};
+      }
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, P, Ng, secEps, rscene,
