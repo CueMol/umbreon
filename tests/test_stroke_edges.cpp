@@ -187,8 +187,10 @@ int main() {
     // face 7 is in the exclude set (then the self-face is skipped, as Freestyle
     // does). The camera (q) is at z=10.
     constexpr int kQuadFace = 7;
-    const OcclusionQuery occluded = [](const Vec3& p, const Vec3& q,
-                                       const int* excl, int n) {
+    // Capture kQuadFace explicitly: MSVC will not implicitly capture a local
+    // constexpr in a lambda (C3493), unlike GCC/Clang.
+    const OcclusionQuery occluded = [kQuadFace](const Vec3& p, const Vec3& q,
+                                                const int* excl, int n) {
       for (int i = 0; i < n; ++i)
         if (excl[i] == kQuadFace) return false;  // self-face: not an occluder
       const float zPlane = 1.0f;
