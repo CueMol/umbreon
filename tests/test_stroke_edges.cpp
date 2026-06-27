@@ -279,22 +279,28 @@ int main() {
     std::vector<EdgeChain> chains = {near, far};
 
     const auto cross = umbreon::computeEdgeCrossings(chains, sp, /*zTol=*/0.1f);
-    s.check_eq("crossing: exactly one T-vertex", cross.size(),
-               static_cast<std::size_t>(1));
-    // The FAR chain (index 1, world z=2 => larger view-z) must be the hidden one.
-    bool farHidden = cross.size() == 1 && cross[0].chainIdx == 1 &&
-                     cross[0].segIdx == 0 && cross[0].t > 0.4f && cross[0].t < 0.6f;
-    s.check("crossing: the farther segment is the one hidden at the crossing",
-            farHidden);
+    // Freestyle ComputeIntersections splits BOTH edges at the crossing (a pure
+    // ViewEdge boundary; the QI majority, not the crossing, decides visibility).
+    s.check_eq("crossing: both edges split (Freestyle SplitEdge-on-both)",
+               cross.size(), static_cast<std::size_t>(2));
+    bool gotNear = false, gotFar = false;
+    for (const auto& c : cross) {
+      const bool mid = c.segIdx == 0 && c.t > 0.4f && c.t < 0.6f;
+      if (c.chainIdx == 0 && mid) gotNear = true;
+      if (c.chainIdx == 1 && mid) gotFar = true;
+    }
+    s.check("crossing: both the near and far chain are split at the crossing",
+            gotNear && gotFar);
 
-    // Coincident depth (|z1-z2| <= zTol): a true junction hides NEITHER.
+    // Coincident depth is NOT a special case: the crossing still splits BOTH
+    // edges (Freestyle splits unconditionally; the QI decides nothing is hidden).
     EdgeChain sameZ;
     sameZ.pts = {Vec3{0, -1, 5}, Vec3{0, 1, 5}};  // same z=5 as `near`
     sameZ.segNature = {EdgeNature::Silhouette};
     std::vector<EdgeChain> chains2 = {near, sameZ};
     const auto cross2 = umbreon::computeEdgeCrossings(chains2, sp, /*zTol=*/0.1f);
-    s.check("crossing: coincident-depth junction hides neither",
-            cross2.empty());
+    s.check_eq("crossing: coincident-depth crossing still splits both edges",
+               cross2.size(), static_cast<std::size_t>(2));
 
     // Crease-vs-crease crossing is skipped (silhouette_binary_rule).
     EdgeChain crA;
