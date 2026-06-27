@@ -425,5 +425,50 @@ int main() {
     }
   }
 
+  // ---- (10) geodesic self-exclude rings: the QI self-occlusion exclude grows
+  //          over the TRUE (edge-adjacent) surface, so a twisted ribbon does not
+  //          over-hide its own silhouette behind its across-width fold. -------
+  {
+    // A flat strip (row of quads facing the camera) -> only BORDER edges, whose QI
+    // exclude is the N-ring of edge-adjacent faces. Growing selfExcludeRings must
+    // expand that set (geodesic self-surface), and the default must be the
+    // twist-fix value (>0) so the fix is on out of the box.
+    umbreon::Camera cam;
+    cam.orthographic = true;
+    cam.direction = {0, 0, -1};
+    cam.up = {0, 1, 0};
+    cam.position = {0, 0, 10};
+    umbreon::Mesh m;
+    const int NQ = 8;  // 8 quads along x, 2 rows (y 0..1), z=0; de-indexed soup
+    for (int i = 0; i < NQ; ++i) {
+      const Vec3 a{static_cast<float>(i), 0, 0}, b{static_cast<float>(i + 1), 0, 0},
+          c{static_cast<float>(i + 1), 1, 0}, d{static_cast<float>(i), 1, 0};
+      for (const Vec3& p : {a, b, c, a, c, d}) {
+        m.positions.push_back(p);
+        m.normals.push_back(Vec3{0, 0, 1});
+      }
+    }
+    auto maxExclude = [&](int rings) {
+      umbreon::ExtractParams ep;
+      ep.silhouette = false;
+      ep.crease = false;
+      ep.border = true;
+      ep.selfExcludeRings = rings;
+      const umbreon::FeatureMesh fm = umbreon::extractMeshFeatureEdges(m, cam, ep);
+      std::size_t mx = 0;
+      for (const umbreon::FeatureSeg& sg : fm.segs)
+        if (sg.excludeFaces.size() > mx) mx = sg.excludeFaces.size();
+      return mx;
+    };
+    const std::size_t e0 = maxExclude(0);
+    const std::size_t e3 = maxExclude(3);
+    s.check("self-exclude rings=0: exclude is only the incident faces (<=2)",
+            e0 <= 2);
+    s.check("self-exclude rings=3: exclude grows over the edge-adjacent surface",
+            e3 > e0);
+    s.check("stroke default self-exclude rings is the twist-fix value (>0)",
+            umbreon::StrokeEdgeOptions{}.selfExcludeRings > 0);
+  }
+
   return s.report();
 }

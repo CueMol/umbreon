@@ -5,8 +5,8 @@
 An offline molecular renderer backend built directly on Intel Embree 4 + TBB,
 intended for static linking into CueMol (libcuemol2). It reproduces CueMol's
 POV-Ray look (without radiosity) using primary rays plus direct local shading.
-The renderer (the `umbreon` library) is fully decoupled from the `.pov`/`.inc`
-SDL parser, which is used only by the benchmark harness.
+The renderer (the `umbreon` library) is fully decoupled from the `.pov` SDL
+parser, which is used only by the benchmark harness.
 
 ## Layout
 
@@ -31,9 +31,9 @@ links), **`src/bench/`** is the CLI harness. The dependency is one-way —
 - **`bench_core`** (static library, pure C++17, `src/bench/`) — the `.pov`/`.inc`
   SDL parser (`pov/`, `geom/`), image IO (`image/`, PNG/PPM + PSNR/SSIM) and CLI
   option parsing (`cli.*`). No rendering-library dependency.
-- **`umbreon_cli`** (executable, `src/bench/main.cpp`) — parses a `.pov`/`.inc`
-  scene, renders it through Umbreon and writes the image; also offers
-  `--compare` / `--convert`. Quality-tuning guide:
+- **`umbreon_cli`** (executable, `src/bench/main.cpp`) — parses a `.pov` scene
+  (which may `#include` `.inc` geometry), renders it through Umbreon and writes
+  the image; also offers `--compare` / `--convert`. Quality-tuning guide:
   [docs/umbreon_cli.md](docs/umbreon_cli.md).
 - **`examples/`** — a standalone `find_package(umbreon)` consumer
   (`minimal_render.cpp`) demonstrating the library API end to end.

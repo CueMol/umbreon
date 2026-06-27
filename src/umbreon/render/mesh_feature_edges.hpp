@@ -125,6 +125,16 @@ struct ExtractParams {
   bool meshCreaseConvexOnly = false;
   float meshBorderCoplanarVetoDeg = 0.0f;
   int meshCreaseMaxDegree = 0;
+
+  // QI self-occlusion exclude radius, in EDGE-adjacency rings over the TRUE surface
+  // (faceNbr), grown beyond the edge's incident faces {f0,f1}. The stroke QI then
+  // ignores occluders on the geodesically-NEAR self-surface (a twisted ribbon's own
+  // across-width fold) so its silhouette is not over-hidden, WITHOUT skipping a
+  // geodesically-FAR occluder (a tube's opposite wall / another strand -- not
+  // edge-reachable within a few rings). 0 => the {f0,f1}-only default (byte-
+  // identical; --obj-edges leaves it 0). Uses edge (not vertex) adjacency so it
+  // never jumps a fold the way the retired vertex 1-ring did.
+  int selfExcludeRings = 0;
 };
 
 // Detect topology-tagged feature edges of `mesh` for camera `cam`. Reproduces

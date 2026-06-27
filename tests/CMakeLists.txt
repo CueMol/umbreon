@@ -51,6 +51,10 @@ if(TARGET umbreon)
   target_link_libraries(test_stroke_edges PRIVATE umbreon)
   add_test(NAME stroke_edges COMMAND test_stroke_edges)
 
+  add_executable(test_stroke_analytic test_stroke_analytic.cpp)
+  target_link_libraries(test_stroke_analytic PRIVATE umbreon)
+  add_test(NAME stroke_analytic COMMAND test_stroke_analytic)
+
   # Real-data edge-pass equivalence: indexed vs de-indexed mesh must render the
   # same with stroke edges on. Loads .pov scenes via bench_core, renders via
   # umbreon. Screen-space tube/ribbon edge-validation scenes + a ribbon scene.

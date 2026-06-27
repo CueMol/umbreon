@@ -8,13 +8,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include "render/analytic_silhouette.hpp"
 #include "render/mesh_feature_edges.hpp"
 #include "scene.hpp"
 
 namespace umbreon {
 namespace {
-
-constexpr float kPi = 3.14159265358979323846f;
 
 // A raw silhouette segment (pre-clip): the two endpoints plus the source
 // primitive's transparency group. Collected first so the union-boundary clip can
@@ -52,156 +51,20 @@ Cylinder makeEdge(const Vec3& a, const Vec3& b, const ObjectSpaceEdgeOptions& op
   return c;
 }
 
-// Emit the analytic silhouette ring of a sphere as a CLOSED loop of `segments`
-// raw segments. The ring is the n.v == 0 contour:
-//   ortho: the great circle in the plane through the center perpendicular to the
-//          view direction (radius = sphere radius).
-//   persp: the horizon (tangent) circle as seen from the camera; every point is
-//          exactly on the sphere surface.
-// Each ring vertex is offset OUTWARD along its surface normal by opt.raise.
-void emitSphereRing(const Sphere& s, const Camera& cam,
-                    const ObjectSpaceEdgeOptions& opt, std::vector<RawSeg>& out) {
-  const Vec3 O = s.center;
-  const float r = s.radius;
-  if (r <= 0.0f) return;
-
-  Vec3 axis;  // ring plane normal
-  Vec3 Q;     // ring center
-  float rho;  // ring radius
-
-  if (cam.orthographic) {
-    axis = normalize(cam.direction);
-    Q = O;
-    rho = r;
-  } else {
-    const Vec3 d = O - cam.position;
-    const float L = length(d);
-    // Camera on or inside the sphere: no silhouette horizon circle exists.
-    if (L <= r * 1.0001f) return;
-    axis = d * (1.0f / L);
-    Q = O - axis * (r * r / L);
-    const float disc = L * L - r * r;
-    rho = r * std::sqrt(disc > 0.0f ? disc : 0.0f) / L;
+// Flatten one analytic silhouette loop into the RawSeg chord sequence the clip
+// consumes: a CLOSED loop of N vertices -> N chords (wrapping); an OPEN loop of N
+// vertices -> N-1 chords. Carries the loop's group + source provenance onto every
+// chord. Reproduces the order/values the former inline emitSphereRing /
+// emitCylinderEdges produced (byte-identical --obj-edges).
+void flattenLoop(const AnalyticLoop& loop, std::vector<RawSeg>& raw) {
+  const std::size_t n = loop.pts.size();
+  if (n < 2) return;
+  const std::size_t last = loop.closed ? n : n - 1;
+  for (std::size_t i = 0; i < last; ++i) {
+    const std::size_t j = (i + 1) % n;
+    raw.push_back(RawSeg{loop.pts[i], loop.pts[j], loop.group, loop.srcSphere,
+                         loop.srcCyl});
   }
-  if (rho <= 0.0f) return;
-
-  const Frame fr = frameFromNormal(axis);  // fr.t, fr.b span the ring plane
-  const int N = opt.segments < 3 ? 3 : opt.segments;
-
-  std::vector<Vec3> ring(static_cast<std::size_t>(N));
-  for (int i = 0; i < N; ++i) {
-    const float theta = 2.0f * kPi * static_cast<float>(i) / static_cast<float>(N);
-    const Vec3 dir = fr.t * std::cos(theta) + fr.b * std::sin(theta);
-    Vec3 P = Q + dir * rho;
-    // Outward surface normal at P, then raise the contour off the surface.
-    const Vec3 nrm = normalize(P - O);
-    P = P + nrm * opt.raise;
-    ring[static_cast<std::size_t>(i)] = P;
-  }
-
-  for (int i = 0; i < N; ++i)
-    out.push_back(RawSeg{ring[static_cast<std::size_t>(i)],
-                         ring[static_cast<std::size_t>((i + 1) % N)], s.group});
-}
-
-// Emit a cap-rim circle (a ring of raw segments) of radius `r` centered at
-// `center`, lying in the plane perpendicular to `axis`. Used for end-on
-// cylinders whose silhouette degenerates to the visible cap circle. The raise
-// is applied radially outward in the cap plane.
-void emitCapCircle(const Vec3& center, const Vec3& axis, float r,
-                   const ObjectSpaceEdgeOptions& opt, uint16_t group,
-                   std::vector<RawSeg>& out) {
-  if (r <= 0.0f) return;
-  const Frame fr = frameFromNormal(normalize(axis));
-  const int N = opt.segments < 3 ? 3 : opt.segments;
-  const float rr = r + opt.raise;
-  std::vector<Vec3> ring(static_cast<std::size_t>(N));
-  for (int i = 0; i < N; ++i) {
-    const float theta = 2.0f * kPi * static_cast<float>(i) / static_cast<float>(N);
-    const Vec3 dir = fr.t * std::cos(theta) + fr.b * std::sin(theta);
-    ring[static_cast<std::size_t>(i)] = center + dir * rr;
-  }
-  for (int i = 0; i < N; ++i)
-    out.push_back(RawSeg{ring[static_cast<std::size_t>(i)],
-                         ring[static_cast<std::size_t>((i + 1) % N)], group});
-}
-
-// The two silhouette contact directions (unit surface normals at the two grazing
-// generators) on the cross-section circle of radius r at axis point P, for a
-// cylinder with unit axis u viewed by `cam`. The tangents from the eye to that
-// circle touch at angle alpha = acos(r / Lp) either side of the in-plane eye
-// direction, where Lp is the perpendicular eye-to-axis distance. Orthographic
-// (eye at infinity) collapses to alpha = 90deg, i.e. exactly +/- the
-// axis-and-view perpendicular, recovering the simple side generators. Returns
-// false when degenerate (end-on, or the eye is within the cylinder radius of the
-// axis), so the caller emits the cap rim instead.
-bool cylinderContactDirs(const Vec3& P, const Vec3& u, float r, const Camera& cam,
-                         Vec3& dPlus, Vec3& dMinus) {
-  constexpr float kEps = 1.0e-4f;
-  if (cam.orthographic) {
-    const Vec3 w = normalize(cam.direction) * -1.0f;  // toward the camera
-    Vec3 eT = cross(u, w);
-    const float l = length(eT);
-    if (l < kEps) return false;  // end-on: axis ~parallel to the view
-    eT = eT * (1.0f / l);
-    dPlus = eT;
-    dMinus = eT * -1.0f;
-    return true;
-  }
-  // Perspective: project the eye onto the cross-section plane (perpendicular to
-  // u); the silhouette contacts are the tangents from that projected eye.
-  const Vec3 cp = cam.position - P;
-  const Vec3 cpPerp = cp - u * dot(u, cp);
-  const float Lp = length(cpPerp);
-  if (Lp <= r * 1.0001f) return false;  // eye on/inside the cylinder radius
-  const Vec3 eR = cpPerp * (1.0f / Lp);  // in-plane, toward the eye
-  Vec3 eT = cross(u, eR);
-  const float lt = length(eT);
-  if (lt < kEps) return false;
-  eT = eT * (1.0f / lt);
-  const float cosA = r / Lp;  // in [0,1); -> 0 (alpha -> 90deg) as Lp -> inf
-  const float sinA = std::sqrt(std::fmax(0.0f, 1.0f - cosA * cosA));
-  dPlus = eR * cosA + eT * sinA;   // contact tilted toward the eye (exact)
-  dMinus = eR * cosA - eT * sinA;
-  return true;
-}
-
-// Emit the two side silhouette generators of a cylinder, connecting the per-
-// endpoint grazing-contact points (exact for both orthographic and perspective
-// projection). Near end-on the contacts degenerate and the outline is the cap
-// circle, so emit the nearer cap rim instead.
-void emitCylinderEdges(const Cylinder& cyl, const Camera& cam,
-                       const ObjectSpaceEdgeOptions& opt, std::vector<RawSeg>& out) {
-  const Vec3 A = cyl.p0;
-  const Vec3 B = cyl.p1;
-  const float r = cyl.radius;
-  if (r <= 0.0f) return;
-
-  const Vec3 ab = B - A;
-  const float axisLen = length(ab);
-  if (axisLen <= 0.0f) return;  // degenerate zero-length cylinder
-  const Vec3 u = ab * (1.0f / axisLen);
-
-  Vec3 dAp, dAm, dBp, dBm;
-  if (!cylinderContactDirs(A, u, r, cam, dAp, dAm) ||
-      !cylinderContactDirs(B, u, r, cam, dBp, dBm)) {
-    // End-on: the outline is the cap circle, not side lines. Emit the cap rim of
-    // the cap nearer the camera (whose rim is the visible silhouette).
-    const Vec3 dir = normalize(cam.direction);
-    Vec3 nearCap;
-    if (cam.orthographic)
-      nearCap = (dot(A, dir) < dot(B, dir)) ? A : B;  // smaller view-depth = nearer
-    else
-      nearCap = (length(cam.position - A) < length(cam.position - B)) ? A : B;
-    emitCapCircle(nearCap, u, r, opt, cyl.group, out);
-    return;
-  }
-
-  const float off = r + opt.raise;
-  // The +contact and -contact directions are computed with the SAME axis u, so
-  // line1 stays on one consistent side and line2 on the other.
-  out.push_back(RawSeg{A + dAp * off, B + dBp * off, cyl.group});
-  out.push_back(RawSeg{A + dAm * off, B + dBm * off, cyl.group});
 }
 
 // --- union-boundary clip --------------------------------------------------
@@ -311,25 +174,17 @@ void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt) {
   const std::size_t cylinderCount = scene.cylinders.size();
 
   // 1) Collect the raw (unclipped) ANALYTIC silhouette segments from spheres and
-  //    cylinders. Baked POV outline primitives (fromEdgeMacro) are skipped: they
-  //    are themselves edges, not surfaces to silhouette.
-  std::vector<RawSeg> raw;
+  //    cylinders via the shared analytic-silhouette core (no circumscription, so
+  //    the chords match the former inline emitters bit-for-bit). Baked POV outline
+  //    primitives (fromEdgeMacro) are skipped inside the core. Spheres are emitted
+  //    before cylinders, preserving the previous RawSeg order.
   const int seg = opt.segments < 3 ? 3 : opt.segments;
+  std::vector<AnalyticLoop> loops;
+  emitAnalyticSilhouettes(scene, scene.camera, seg, opt.raise,
+                          /*circumscribe=*/false, loops);
+  std::vector<RawSeg> raw;
   raw.reserve(sphereCount * static_cast<std::size_t>(seg) + cylinderCount * 2);
-  for (std::size_t i = 0; i < sphereCount; ++i) {
-    if (scene.spheres[i].fromEdgeMacro) continue;
-    const std::size_t before = raw.size();
-    emitSphereRing(scene.spheres[i], scene.camera, opt, raw);
-    for (std::size_t k = before; k < raw.size(); ++k)
-      raw[k].srcSphere = static_cast<int>(i);
-  }
-  for (std::size_t i = 0; i < cylinderCount; ++i) {
-    if (scene.cylinders[i].fromEdgeMacro) continue;
-    const std::size_t before = raw.size();
-    emitCylinderEdges(scene.cylinders[i], scene.camera, opt, raw);
-    for (std::size_t k = before; k < raw.size(); ++k)
-      raw[k].srcCyl = static_cast<int>(i);
-  }
+  for (const AnalyticLoop& loop : loops) flattenLoop(loop, raw);
 
   // 2) Convert to edge cylinders, clipping each against the union of the
   //    original solids (or emitting verbatim when the clip is disabled).
