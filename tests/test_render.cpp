@@ -939,6 +939,54 @@ int main() {
     s.check("AO multiscale: near contact stays darker than far", msNear < msFar);
   }
 
+  // ===== AO quality: bent normal directional ambient =====
+  // A lone ambient-only white floor (normal +z, bent normal ~ +z, no occluder).
+  // sky=white / ground=black so the ambient is the hemisphere gradient value
+  // lerp(0, 1, 0.5*(dot(bent,up)+1)). up=+z -> w=1 -> full ambient (~1); up=-z ->
+  // w=0 -> ground (~0); up=+x (perpendicular) -> w=0.5 -> mid. Proves the bent
+  // normal steers the directional ambient and the gradient is monotonic in
+  // dot(bent, up).
+  {
+    auto floorOnly = []() {
+      umbreon::Mesh m;
+      const umbreon::Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                                   {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({1, 1, 1, 1});
+      }
+      m.material.ambient = 1.0f;
+      m.material.diffuse = 0.0f;
+      return m;
+    };
+    auto centerWithUp = [&](float ux, float uy, float uz) {
+      umbreon::Scene sc;
+      sc.mesh = floorOnly();
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.aoSamples = 64;
+      o.aoDistance = 10.0f;
+      o.aoBentNormal = true;
+      o.aoSkyColor[0] = o.aoSkyColor[1] = o.aoSkyColor[2] = 1.0f;
+      o.aoGroundColor[0] = o.aoGroundColor[1] = o.aoGroundColor[2] = 0.0f;
+      o.aoUseCameraUp = false;
+      o.aoUp[0] = ux; o.aoUp[1] = uy; o.aoUp[2] = uz;
+      return umbreon::render(sc, o).color[kCenterRgba + 0];
+    };
+    const float upPlus = centerWithUp(0, 0, 1);
+    const float upMinus = centerWithUp(0, 0, -1);
+    const float upPerp = centerWithUp(1, 0, 0);
+    s.check("AO bent: up=+z -> sky ambient (bright)", upPlus > 0.9f);
+    s.check("AO bent: up=-z -> ground ambient (dark)", upMinus < 0.1f);
+    s.check("AO bent: up=+x -> mid gradient", approx(upPerp, 0.5f, 0.1f));
+    s.check("AO bent: gradient monotonic in dot(bent,up)",
+            upMinus < upPerp && upPerp < upPlus);
+  }
+
   // ===== Hard shadows (per-light visibility; off by default) =====
   // A floor lit by an angled light, with a slab between the floor center and the
   // light (offset in +x so it clears the straight-down camera ray). Shadows on

@@ -19,6 +19,11 @@ struct Options {
   // AO quality enhancements (default = legacy binary single-scale AO).
   float aoFalloffPower = 0.0f;  // 0 = binary; >0 => distance falloff (max(0,1-t/R))^p
   bool aoMultiScale = false;    // false = single radius; true = 3 nested scales
+  bool aoBentNormal = false;    // directional sky/ground ambient along the bent normal
+  float aoSkyColor[3] = {1.0f, 1.0f, 1.0f};     // up-hemisphere ambient tint
+  float aoGroundColor[3] = {1.0f, 1.0f, 1.0f};  // down-hemisphere ambient tint
+  bool aoUseCameraUp = true;    // gradient axis = camera up (view-stable)
+  float aoUp[3] = {0.0f, 1.0f, 0.0f};  // explicit gradient axis when !aoUseCameraUp
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows

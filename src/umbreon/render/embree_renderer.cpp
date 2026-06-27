@@ -274,8 +274,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   }
   res.effectiveTriangles = scene.effectiveTriangles();
 
+  // Resolve the bent-normal ambient gradient axis once: the camera true-up
+  // (view-stable soft-box, the default) or an explicit world axis. Only read
+  // when aoBentNormal is on; harmless otherwise.
+  const Vec3 aoUpAxis =
+      opt.aoUseCameraUp
+          ? trueUp
+          : safeNormalize(Vec3{opt.aoUp[0], opt.aoUp[1], opt.aoUp[2]}, trueUp);
+
   // Everything the per-hit shader reads, gathered once.
-  const ShadeContext sc{built, m, lights, ambLight, bg, opt};
+  const ShadeContext sc{built, m, lights, ambLight, bg, opt, aoUpAxis};
 
   // Veil lookup: groups rendered as additive single-layer (group alpha). Every
   // other transparency uses front-to-back "over" (fragment alpha). Empty =>

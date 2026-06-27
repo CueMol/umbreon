@@ -390,6 +390,13 @@ int main(int argc, char** argv) {
     ropt.aoDistance = (opt.aoDistance > 0.0f) ? opt.aoDistance : scene.aoDistance;
     ropt.aoFalloffPower = opt.aoFalloffPower;
     ropt.aoMultiScale = opt.aoMultiScale;
+    ropt.aoBentNormal = opt.aoBentNormal;
+    for (int i = 0; i < 3; ++i) {
+      ropt.aoSkyColor[i] = opt.aoSkyColor[i];
+      ropt.aoGroundColor[i] = opt.aoGroundColor[i];
+      ropt.aoUp[i] = opt.aoUp[i];
+    }
+    ropt.aoUseCameraUp = opt.aoUseCameraUp;
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;

@@ -45,6 +45,9 @@ struct ShadeContext {
   Vec3 ambLight;
   Vec3 bg;
   const RenderOptions& opt;
+  // Resolved up axis for the bent-normal sky/ground ambient gradient: the camera
+  // true-up (view-stable) or an explicit world axis. Computed once per frame.
+  Vec3 aoUp{0.0f, 1.0f, 0.0f};
 };
 
 // Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
@@ -88,6 +91,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // legacy binary computeAO runs verbatim, keeping --ao-samples-only renders
     // bit-identical too.
     Vec3 aoFactor{1.0f, 1.0f, 1.0f};
+    Vec3 ambLight = c.ambLight;
     if (c.opt.aoSamples > 0) {
       float openness;
       if (c.opt.aoEnhanced()) {
@@ -100,6 +104,20 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
         const AOResult ao =
             computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, c.opt.width);
         openness = ao.openness;
+        // Directional ambient: a 2-color sky/ground hemisphere gradient sampled
+        // along the bent normal (the average unoccluded direction). A point that
+        // opens toward `aoUp` sees the sky tint, one facing away sees the ground
+        // tint. With the default white sky == ground this collapses to the plain
+        // scene ambient, so enabling only bent normal still looks neutral.
+        if (c.opt.aoBentNormal) {
+          const float w = 0.5f * (dot(ao.bent, c.aoUp) + 1.0f);
+          const float gx = c.opt.aoGroundColor[0], sx = c.opt.aoSkyColor[0];
+          const float gy = c.opt.aoGroundColor[1], sy = c.opt.aoSkyColor[1];
+          const float gz = c.opt.aoGroundColor[2], sz = c.opt.aoSkyColor[2];
+          ambLight = Vec3{c.ambLight.x * (gx + (sx - gx) * w),
+                          c.ambLight.y * (gy + (sy - gy) * w),
+                          c.ambLight.z * (gz + (sz - gz) * w)};
+        }
       } else {
         openness = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
                              c.opt.aoDistance, px, py, c.opt.width);
@@ -107,7 +125,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       const float s = 1.0f - c.opt.aoIntensity * (1.0f - openness);
       aoFactor = Vec3{s, s, s};
     }
-    hs.color = shadeLocal(triMat, C, N, V, c.lights, c.ambLight, c.bg,
+    hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, P, Ng, secEps, rscene,
                           c.opt.shadows, c.opt.shadowSamples, px, py);
     hs.opacity = cbuf[3];
