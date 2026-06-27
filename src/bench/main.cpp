@@ -388,6 +388,8 @@ int main(int argc, char** argv) {
     ropt.aoSamples = opt.aoSamples;
     ropt.aoIntensity = opt.aoIntensity;
     ropt.aoDistance = (opt.aoDistance > 0.0f) ? opt.aoDistance : scene.aoDistance;
+    ropt.aoFalloffPower = opt.aoFalloffPower;
+    ropt.aoMultiScale = opt.aoMultiScale;
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;

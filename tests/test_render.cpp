@@ -875,6 +875,70 @@ int main() {
     s.check("AO determinism: two renders bit-identical", identical);
   }
 
+  // ===== AO quality: distance falloff + multi-scale (computeAOQuality) =====
+  // Shared rig: an ambient-only white floor with a black slab offset in +x (so
+  // it clears the center camera ray at x=0 but blocks the +x half of the floor
+  // point's hemisphere). Raising the slab moves the occluder farther away.
+  {
+    using umbreon::Vec3;
+    auto floorSlab = [](float z) {
+      umbreon::Mesh m;
+      const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                          {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({1, 1, 1, 1});
+      }
+      const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                          {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(sl[i]);
+        m.normals.push_back({0, 0, -1});
+        m.colors.push_back({0, 0, 0, 1});
+      }
+      m.material.ambient = 1.0f;  // ambient-only: isolate AO's effect
+      m.material.diffuse = 0.0f;
+      return m;
+    };
+    auto centerR = [&](float z, float falloff, bool multiscale) {
+      umbreon::Scene sc;
+      sc.mesh = floorSlab(z);
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.aoSamples = 256;
+      o.aoDistance = 10.0f;
+      o.aoFalloffPower = falloff;
+      o.aoMultiScale = multiscale;
+      return umbreon::render(sc, o).color[kCenterRgba + 0];
+    };
+
+    // Distance falloff: power-2 falloff never darkens MORE than binary (falloff
+    // <= 1 => openness >= binary), and it releases a FAR occluder much more than
+    // a NEAR one -- so contact stays dark while distant geometry stops counting.
+    const float binNear = centerR(0.4f, 0.0f, false);
+    const float binFar = centerR(3.0f, 0.0f, false);
+    const float foNear = centerR(0.4f, 2.0f, false);
+    const float foFar = centerR(3.0f, 2.0f, false);
+    s.check("AO falloff: near never darker than binary", foNear >= binNear - 1e-4f);
+    s.check("AO falloff: far never darker than binary", foFar >= binFar - 1e-4f);
+    s.check("AO falloff: releases far occlusion more than near",
+            (foFar - binFar) > (foNear - binNear) + 0.05f);
+
+    // Multi-scale: vs single-scale binary at the SAME radius, the nested radii
+    // down-weight a far occluder (only the 0.10-weight large scale reaches it)
+    // yet keep a near contact dark (it falls in the heavy small scale).
+    const float msFar = centerR(4.0f, 0.0f, true);
+    const float msNear = centerR(0.4f, 0.0f, true);
+    const float binFar4 = centerR(4.0f, 0.0f, false);
+    s.check("AO multiscale: far occluder released vs binary",
+            msFar > binFar4 + 0.05f);
+    s.check("AO multiscale: near contact stays darker than far", msNear < msFar);
+  }
+
   // ===== Hard shadows (per-light visibility; off by default) =====
   // A floor lit by an angled light, with a slab between the floor center and the
   // light (offset in +x so it clears the straight-down camera ray). Shadows on

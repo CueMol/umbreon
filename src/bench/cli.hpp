@@ -16,6 +16,9 @@ struct Options {
   float aoDistance = -1.0f;     // AO occluder radius; < 0 => auto from scene size
   int aoSamples = 0;            // AO rays per mesh hit; 0 = AO off
   float aoIntensity = 1.0f;     // AO strength multiplier (0..1+)
+  // AO quality enhancements (default = legacy binary single-scale AO).
+  float aoFalloffPower = 0.0f;  // 0 = binary; >0 => distance falloff (max(0,1-t/R))^p
+  bool aoMultiScale = false;    // false = single radius; true = 3 nested scales
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows

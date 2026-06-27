@@ -162,6 +162,29 @@ struct RenderOptions {
   float aoDistance = 1.0e20f;  // AO occluder search radius (ray tfar / world units)
   float aoIntensity = 1.0f;    // AO strength: aoFactor = 1 - aoIntensity*(1-rawAO)
 
+  // --- AO quality enhancements (all default to the legacy binary single-scale
+  // behavior). When aoEnhanced() is false the legacy computeAO runs and the
+  // output is bit-identical to the pre-enhancement renderer; any non-default
+  // flag below switches the hit shader to the computeAOQuality estimator.
+  float aoFalloffPower = 0.0f;   // 0 = binary (legacy); >0 => (max(0,1-t/R))^power
+  bool aoMultiScale = false;     // false = single radius (aoDistance); true = 3-scale
+  bool aoBentNormal = false;     // directional ambient from the avg unoccluded dir
+  float aoSkyColor[3] = {1.0f, 1.0f, 1.0f};     // up-hemisphere tint (x ambient)
+  float aoGroundColor[3] = {1.0f, 1.0f, 1.0f};  // down-hemisphere tint
+  bool aoUseCameraUp = true;     // gradient axis = camera up (view-stable)
+  float aoUp[3] = {0.0f, 1.0f, 0.0f};  // explicit gradient axis when !aoUseCameraUp
+  bool aoMultibounce = false;    // albedo-aware GTAO cubic (anti over-darkening)
+  bool aoLowDiscrepancy = false; // Hammersley + per-pixel Cranley-Patterson rotation
+  float aoDiffuseFactor = 0.0f;  // 0 = ambient-only; >0 also darkens direct diffuse
+  bool aoWriteAov = false;       // emit AO/G-buffer AOVs into FrameResult (phase 5)
+
+  // True when any AO enhancement is requested. Drives the hit shader's
+  // enhanced-vs-legacy branch: false => bit-exact legacy computeAO path.
+  bool aoEnhanced() const {
+    return aoFalloffPower > 0.0f || aoMultiScale || aoBentNormal ||
+           aoMultibounce || aoLowDiscrepancy || aoDiffuseFactor > 0.0f;
+  }
+
   // --- shadows (per-light visibility; never applied to outline primitives) ---
   bool shadows = false;        // cast shadows from the lights; false = off
   int shadowSamples = 1;       // shadow rays per light (>1 = soft area light)

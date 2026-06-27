@@ -83,12 +83,28 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // AO darkens ONLY the ambient term; gated off by default (aoSamples == 0)
     // so the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x).
     // aoFactor is per-channel (Vec3); the legacy path fills {s,s,s} so the
-    // ambient float ops are unchanged.
+    // ambient float ops are unchanged. With any enhancement requested
+    // (aoEnhanced) the multi-scale/falloff estimator runs instead; otherwise the
+    // legacy binary computeAO runs verbatim, keeping --ao-samples-only renders
+    // bit-identical too.
     Vec3 aoFactor{1.0f, 1.0f, 1.0f};
     if (c.opt.aoSamples > 0) {
-      const float rawAO = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
-                                    c.opt.aoDistance, px, py, c.opt.width);
-      const float s = 1.0f - c.opt.aoIntensity * (1.0f - rawAO);
+      float openness;
+      if (c.opt.aoEnhanced()) {
+        AOParams ap;
+        ap.nSamples = c.opt.aoSamples;
+        ap.radius = c.opt.aoDistance;
+        ap.falloffPower = c.opt.aoFalloffPower;
+        ap.multiScale = c.opt.aoMultiScale;
+        ap.lowDiscrepancy = c.opt.aoLowDiscrepancy;
+        const AOResult ao =
+            computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, c.opt.width);
+        openness = ao.openness;
+      } else {
+        openness = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
+                             c.opt.aoDistance, px, py, c.opt.width);
+      }
+      const float s = 1.0f - c.opt.aoIntensity * (1.0f - openness);
       aoFactor = Vec3{s, s, s};
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, c.ambLight, c.bg,

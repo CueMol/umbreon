@@ -172,6 +172,13 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--ao-intensity") {
       o.aoIntensity =
           static_cast<float>(std::atof(value("--ao-intensity").c_str()));
+    } else if (a == "--ao-falloff") {
+      o.aoFalloffPower =
+          static_cast<float>(std::atof(value("--ao-falloff").c_str()));
+    } else if (a == "--ao-multiscale") {
+      std::string v = value("--ao-multiscale");
+      if (o.ok && !parseBool(v, o.aoMultiScale))
+        fail("--ao-multiscale expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -427,6 +434,8 @@ void printUsage(const char* prog) {
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
+      "  --ao-falloff <power>     AO distance falloff exponent  [0 = binary]\n"
+      "  --ao-multiscale <on|off> 3 nested AO radii (contact+shape)   [off]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"
