@@ -70,6 +70,25 @@ class SceneReader {
       }
     }
 
+    // Restore OpenGL linear-fog start/end from CueMol's POV ground-fog hack.
+    // CueMol writes POV `distance = slabDepth/3`, and its GL fog uses
+    // start = view distance (`_distance`), end = start + slabDepth/2. So
+    // end = start + 1.5 * fog.distance. fognear is clamped to >= 1 like CueMol.
+    if (fog_.enabled) {
+      double dist;
+      auto it = sym_.find("_distance");
+      if (it != sym_.end()) {
+        dist = comp(it->second, 0);
+      } else if (haveLoc_ && haveLookAt_) {
+        dist = length(toVec3(camLookAt_) - toVec3(camLoc_));
+      } else {
+        dist = 200.0;  // matches the lights' _distance default
+      }
+      if (dist < 1.0) dist = 1.0;
+      fog_.start = static_cast<float>(dist);
+      fog_.end = static_cast<float>(dist + 1.5 * fog_.distance);
+    }
+
     PovSceneResult r;
     r.camera = camera_;
     r.lights = lights_;

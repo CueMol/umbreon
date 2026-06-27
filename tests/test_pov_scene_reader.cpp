@@ -129,6 +129,12 @@ void testSynthetic(umbreon::test::Suite& s) {
           dirApprox(r.fog.color, umbreon::Vec3{0.1f, 0.2f, 0.3f}, 1e-4f));
   s.check("synthetic: fog up = +Z",
           dirApprox(r.fog.up, umbreon::Vec3{0, 0, 1}, 1e-4f));
+  // OpenGL linear-fog restoration: start = _distance (100); end = start +
+  // 1.5*distance = 100 + 22.5 = 122.5.
+  s.check("synthetic: fog start = _distance (100)",
+          approx(r.fog.start, 100.0f, 1e-4f));
+  s.check("synthetic: fog end = start + 1.5*distance (122.5)",
+          approx(r.fog.end, 122.5f, 1e-3f));
   s.check("synthetic: assumed_gamma = 2.2",
           approx(r.assumedGamma, 2.2f, 1e-4f));
 }
@@ -173,6 +179,12 @@ void testReal(umbreon::test::Suite& s, const std::string& path, const char* tag,
           dirApprox(r.fog.up, umbreon::Vec3{0, 0, 1}, 1e-4f));
   s.check(std::string(tag) + ": fog color matches background",
           dirApprox(r.fog.color, expectBg, 1e-3f));
+  // OpenGL linear-fog restoration: start = _distance (200); end = start +
+  // 1.5*distance = 200 + 1.5*(50/3) = 225.
+  s.check(std::string(tag) + ": fog start = _distance (200)",
+          approx(r.fog.start, 200.0f, 1e-2f));
+  s.check(std::string(tag) + ": fog end = 200 + 1.5*(50/3) = 225",
+          approx(r.fog.end, 225.0f, 1e-1f));
 
   // The current CueMol scenes use assumed_gamma 2.2.
   s.check(std::string(tag) + ": assumed_gamma 2.2",

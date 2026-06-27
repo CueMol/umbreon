@@ -1,30 +1,30 @@
-// POV-Ray fog reproduced as a depth-based post-process.
+// OpenGL linear fog reproduced as a depth-based post-process.
 //
-// POV applies fog by blending each surface color toward the fog color by the
-// transmittance along the view ray. Because the renderer has no built-in ground-fog
-// primitive, we replay the same model using the rendered depth buffer: this
-// keeps the shading untouched and lets the fog match POV exactly.
+// CueMol's interactive display uses OpenGL linear fog; its POV-Ray export only
+// APPROXIMATED that with an exponential ground-fog hack. We reproduce the GL
+// model directly from the plane eye-z (the `viewZ` AOV), so the output matches
+// what the user actually sees and tunes in CueMol. Shading is untouched.
 #pragma once
 
 #include "scene.hpp"
 
 namespace umbreon {
 
-// Transmittance (fraction of the surface color retained) for a ray that starts
-// at `camPos`, travels along unit vector `camDir`, and hits a surface at
-// distance `depth`. 1.0 = no fog, 0.0 = fully the fog color.
-//
-// Ground fog (type 2) uses CueMol's regime: a hard density step at `offset`
-// along `up` (fog_alt -> 0), so the optical depth is the ray length below the
-// offset plane divided by `distance`. Constant fog (type 1) fogs the whole ray.
-float fogTransmittance(const Fog& fog, const Vec3& camPos, const Vec3& camDir,
-                       float depth);
+// Linear fog factor for a surface at PLANE eye-z `z` (= |eye-space z|, the
+// slant-corrected view depth, NOT the radial ray length). f = 1 keeps the
+// surface color (z <= start), f = 0 is fully the fog color (z >= end).
+float fogFactor(const Fog& fog, float z);
 
-// Blend a linear color buffer toward the fog color in place. `channels` is 3 or
-// 4 (alpha is left untouched). `depth` holds one value per pixel; pixels whose
-// depth is non-finite or beyond `maxDepth` (i.e. the background) are skipped.
-void applyFog(const Fog& fog, const Camera& camera, int width, int height,
-              int channels, float* color, const float* depth,
-              float maxDepth = 1.0e19f);
+// Apply fog to a linear color buffer in place. `viewZ` holds one plane eye-z per
+// pixel; pixels with viewZ <= 0 are the background (no geometry) and are
+// skipped. `channels` is 3 or 4.
+//   - opaque background (transparentBackground == false): mix RGB toward the
+//     fog color by (1 - f); alpha is left untouched -- matches CueMol GL, whose
+//     background is cleared to the fog color so distant geometry melts into it.
+//   - transparent background (true): fade coverage (alpha *= f) and DO NOT bake
+//     the fog color, so the straight-alpha output can be composited over ANY
+//     backdrop later while the distance fade stays physically correct.
+void applyFog(const Fog& fog, int width, int height, int channels, float* color,
+              const float* viewZ, bool transparentBackground);
 
 }  // namespace umbreon

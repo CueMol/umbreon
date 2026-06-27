@@ -260,13 +260,17 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   res.depth.assign(static_cast<std::size_t>(W) * H, 0.0f);
   // Edge G-buffer AOVs: allocated ONLY when edges are enabled. With edges off
   // these stay empty, so no extra memory is touched and the output path is
-  // byte-identical to the no-edge render.
-  if (opt.strokeEdges.enable) {
+  // byte-identical to the no-edge render. The plane eye-z (`viewZ`) is also the
+  // depth that linear fog needs, so it is additionally allocated when fog is on.
+  {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
-    res.viewZ.assign(npix, 0.0f);
-    res.normal.assign(npix * 3, 0.0f);
-    res.objectId.assign(npix, 0xFFFFFFFFu);
-    res.materialId.assign(npix, 0xFFFFFFFFu);
+    if (opt.strokeEdges.enable || scene.fog.enabled)
+      res.viewZ.assign(npix, 0.0f);
+    if (opt.strokeEdges.enable) {
+      res.normal.assign(npix * 3, 0.0f);
+      res.objectId.assign(npix, 0xFFFFFFFFu);
+      res.materialId.assign(npix, 0xFFFFFFFFu);
+    }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
 
@@ -320,9 +324,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.color[pix * 4 + 2] = pr.b;
       res.color[pix * 4 + 3] = pr.a;
       res.depth[pix] = pr.depth;
-      // Edge G-buffer store: gated so the default path writes nothing extra.
+      // Plane eye-z store: written whenever allocated (edges or fog).
+      if (!res.viewZ.empty()) res.viewZ[pix] = pr.viewZ;
+      // Remaining edge G-buffer: gated so the default path writes nothing extra.
       if (opt.strokeEdges.enable) {
-        res.viewZ[pix] = pr.viewZ;
         res.normal[pix * 3 + 0] = pr.worldNormal.x;
         res.normal[pix * 3 + 1] = pr.worldNormal.y;
         res.normal[pix * 3 + 2] = pr.worldNormal.z;

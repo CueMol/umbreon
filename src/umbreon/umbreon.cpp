@@ -91,11 +91,12 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   EmbreeRenderer renderer;
   FrameResult frame = renderer.render(scene, hi);
 
-  // POV ground fog at full (supersampled) resolution, before downsampling, so
-  // the box-average mirrors POV-Ray averaging antialiased, fogged samples.
-  if (scene.fog.enabled && !frame.depth.empty()) {
-    applyFog(scene.fog, scene.camera, frame.width, frame.height, 4,
-             frame.color.data(), frame.depth.data());
+  // OpenGL linear fog at full (supersampled) resolution, before downsampling, so
+  // the box-average mirrors antialiased, fogged samples. Uses the plane eye-z
+  // AOV (viewZ); transparent backgrounds fade coverage instead of baking fog.
+  if (scene.fog.enabled && !frame.viewZ.empty()) {
+    applyFog(scene.fog, frame.width, frame.height, 4, frame.color.data(),
+             frame.viewZ.data(), opt.transparentBackground);
   }
 
   // Freestyle-style stroke edges (--edges, NEW): extract/chain/visibility/ribbon
