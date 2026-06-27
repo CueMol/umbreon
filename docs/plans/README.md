@@ -17,6 +17,11 @@
 - [edge-extraction-embree.md](edge-extraction-embree.md) — silhouette/crease エッジ抽出を CueMol(CGAL) から
   umbreon(Embree) へ移管する実装プラン。production は直接 `umbreon::Scene` 渡し、umbreon が検出＋可視性＋
   クリッピングを所有。fp32/fp64 精度エスカレーションと PoC ファースト方針を含む。
+- [edge-analytic-silhouette.md](edge-analytic-silhouette.md) — `--edges`（stroke パス）で sphere/cylinder の
+  解析 n·v シルエットも輪郭化し、ball-and-stick を mesh と同じ chain/QI/ribbon で描く。共有コア
+  `render/analytic_silhouette` へ obj-edges の emitter を移設（byte-identical）、リング circumscription で
+  自己遮蔽=破線を回避。解析シルエットは常に遮蔽境界として使い `--stroke-analytic` は描画のみゲート（off でも
+  ribbon 隠線は正しい）。**実装完了**。
 - [mesh-indexed-refactor.md](mesh-indexed-refactor.md) — `Mesh` を三角形スープ → indexed 化する refactoring。
   load 時に 1 回溶接して属性分割つき indexed mesh を作り Embree 直結（ribbon1 で頂点 157200→約27000）。
   描画用(位置+法線+色)とトポロジー用(位置のみ)の二系統併合が要点。**提案・未着手**。cusp バグとは無関係。

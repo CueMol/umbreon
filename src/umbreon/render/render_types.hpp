@@ -74,6 +74,23 @@ struct StrokeEdgeOptions {
   // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
   // Ray-cast visibility is analytic, so no 3D lift is needed (raise == 0).
   float raise = 0.0f;                      // outward contour offset, world units
+  // DRAW the analytic silhouettes of the analytic primitives (spheres/cylinders):
+  // their n.v==0 contour is emitted as Silhouette feature segments and MERGED into
+  // the same chain/visibility/ribbon pipeline as the mesh edges, so ball-and-stick
+  // geometry is outlined by --edges too (with true cross-primitive QI hidden-line
+  // against the live BVH). ON by default so a bare "--edges on" outlines mesh +
+  // spheres + cylinders alike.
+  //
+  // NOTE this flag gates only RASTERIZATION. The analytic silhouettes are ALWAYS
+  // extracted (when `silhouette` is on) and ALWAYS participate in the visibility
+  // pass, because an analytic primitive's silhouette is a real occluder boundary:
+  // it splits the mesh ViewEdges at the occlusion boundary so the QI per-span vote
+  // hides the part of a ribbon edge passing BEHIND a ball/stick. So `analytic =
+  // false` (--stroke-analytic off) gives a MESH-ONLY outline whose hidden-line is
+  // still correct behind ball-and-stick (the ball-stick simply gets no outline) --
+  // it does NOT reintroduce the leak a naive mesh-only pass would have.
+  bool analytic = true;
+  int analyticSegments = 48;               // sphere ring / cap circle tessellation
   float meshHardEdgeDeg = 40.0f;           // hard-edge straddle / cluster split
   float creaseAngleDeg = 30.0f;            // crease dihedral threshold (degrees)
   float meshCreaseSmoothVetoDeg = 35.0f;   // smooth-facet crease veto (0 = off)

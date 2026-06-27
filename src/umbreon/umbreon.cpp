@@ -143,7 +143,26 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     // catches it; a real occluder a fold-gap away (>= ~one face) stays well above
     // it and is counted. Verified to protect the outer outline (no self-occlusion)
     // on both tube and ribbon while removing the self-fold leak.
-    const float coplanarEps = 0.2f * meanEdge;
+    float coplanarEps = 0.2f * meanEdge;
+    // Mesh-free (pure ball-and-stick) scene: meanEdge == 0 disables the mesh-
+    // derived coplanar self-surface skip. Derive it instead from the analytic
+    // primitive scale so an analytic silhouette point's OWN sphere/cylinder
+    // surface (which the QI ray grazes tangentially) is still treated as self,
+    // not as a real occluder -- belt-and-suspenders with the ring circumscription
+    // in appendAnalyticFeatureSegs. A small fraction of the mean primitive radius:
+    // far above the circumscribed chord's sub-sagitta deviation, far below the gap
+    // to any genuine occluder (>= ~one radius away). A scene WITH a mesh keeps the
+    // mesh-derived value unchanged (byte-identical).
+    if (meanEdge == 0.0f) {
+      double rsum = 0.0;
+      std::size_t rn = 0;
+      for (const Sphere& sp : scene.spheres)
+        if (!sp.fromEdgeMacro) { rsum += sp.radius; ++rn; }
+      for (const Cylinder& cy : scene.cylinders)
+        if (!cy.fromEdgeMacro) { rsum += cy.radius; ++rn; }
+      if (rn > 0)
+        coplanarEps = 0.05f * static_cast<float>(rsum / static_cast<double>(rn));
+    }
     const OcclusionQuery occluded = [&renderer, coplanarEps](
                                         const Vec3& p, const Vec3& q,
                                         const int* excludeFaces, int nExclude) {

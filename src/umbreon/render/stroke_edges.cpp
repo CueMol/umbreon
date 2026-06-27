@@ -12,6 +12,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
+#include "render/analytic_silhouette.hpp"
 #include "render/mesh_feature_edges.hpp"
 
 namespace umbreon {
@@ -1447,8 +1448,29 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
   ep.meshCreaseMaxDegree = se.meshCreaseMaxDegree;
   const FeatureMesh fm = extractMeshFeatureEdges(scene.mesh, scene.camera, ep);
 
+  // Merge the ANALYTIC silhouettes of the analytic primitives (spheres/cylinders)
+  // into the same seg list, so ball-and-stick geometry is outlined by --edges too
+  // and shares the mesh edges' chaining + QI hidden-line + ribbon styling. The
+  // analytic segs get fresh chain node ids starting at fm.nodeCount (no collision
+  // with the mesh's [0, fm.nodeCount) ids); they self-reject in the QI ray via the
+  // grazing/coplanar filter (empty excludeFaces).
+  //
+  // Gated on the silhouette master nature ONLY, NOT on se.analytic: an analytic
+  // primitive's silhouette is a real OCCLUDER BOUNDARY, so even when its stroke is
+  // not drawn (--stroke-analytic off) it must still split the mesh ViewEdges at the
+  // occlusion boundary (the 2D crossing pass below) -- otherwise the per-ViewEdge
+  // QI MAJORITY vote leaks the part of a ribbon edge that passes BEHIND a ball/
+  // stick (it cannot split a ViewEdge that has no T-vertex there). se.analytic
+  // instead gates only RASTERIZATION, per chain, in the draw loop. (spheres/
+  // cylinders have no crease/border nature, so the silhouette gate is sufficient.)
+  std::vector<FeatureSeg> segs = fm.segs;
+  int nodeCount = fm.nodeCount;
+  if (se.silhouette)
+    nodeCount = appendAnalyticFeatureSegs(scene, scene.camera, se.analyticSegments,
+                                          se.raise, fm.nodeCount, segs);
+
   // Chain per nature into continuous polylines (each segment used once).
-  const std::vector<EdgeChain> chains = chainFeatureSegs(fm.segs, fm.nodeCount);
+  const std::vector<EdgeChain> chains = chainFeatureSegs(segs, nodeCount);
 
   // Supersample-aware stroke geometry. The stroke pass runs on the HI-RES frame
   // (frame.width == final*ss, pre-downsample), but thickness/resample are
@@ -1544,8 +1566,13 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     if (ch.segs.empty()) continue;
     // The chain is single-nature (chaining never crosses natures); gate/style on
     // the first segment's nature and group.
-    const FeatureSeg& s0 = fm.segs[static_cast<std::size_t>(ch.segs[0])];
+    const FeatureSeg& s0 = segs[static_cast<std::size_t>(ch.segs[0])];
     const EdgeNature nat = s0.nature;
+    // Analytic-sourced chains (node ids >= fm.nodeCount) already contributed their
+    // occluder crossings above, so mesh edges hide correctly behind ball/stick;
+    // only RASTERIZE them when --stroke-analytic is on. With it off the ball-stick
+    // gets no outline, yet the ribbon's hidden-line stays correct (no leak).
+    if (!se.analytic && s0.v0 >= fm.nodeCount) continue;
     float halfThick = globalHalf, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
     if (!resolveStyle(nat, s0.group, halfThick, col, opacity)) continue;
 

@@ -108,13 +108,14 @@ target_link_libraries(cuemol_render PRIVATE umbreon::umbreon)
 
 umbreon::Scene scene;
 
-// 1) ジオメトリ: de-indexed の三角形メッシュ（三角形 i は頂点 [3i, 3i+1, 3i+2]）
+// 1) ジオメトリ: 三角形メッシュ。`index` を省略すると corner==vertex の自明
+//    マッピング（= de-indexed: 三角形 i は頂点 [3i, 3i+1, 3i+2]）になる。§4.3
 umbreon::Mesh& mesh = scene.mesh;
 for (const umbreon::Vec3& c : corners) {            // 6 頂点 = 2 三角形 (quad)
   mesh.positions.push_back(c);
   mesh.normals.push_back({0, 0, 1});                // 頂点法線
   mesh.colors.push_back({0.2f, 0.4f, 0.8f, 1.0f});  // rgb + opacity(=alpha)
-}
+}                                                   // mesh.index は空のまま
 mesh.material.ambient = 0.2f;                        // POV finish
 mesh.material.diffuse = 0.8f;
 
@@ -193,26 +194,38 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 
 ### 4.3 ジオメトリ
 
-**`Mesh`**（de-indexed: 三角形 i は頂点 `[3i, 3i+1, 3i+2]`）
+**`Mesh`**（任意 index 付き三角形メッシュ。`index` 空＝de-indexed: 三角形 i は頂点 `[3i, 3i+1, 3i+2]`）
 
 | フィールド | 型 | 意味 |
 |---|---|---|
-| `positions` | `vector<Vec3>` | 頂点位置（サイズ = 3 × 三角形数） |
-| `normals` | `vector<Vec3>` | 頂点法線（補間してシェーディング法線に使用） |
+| `positions` | `vector<Vec3>` | **頂点ごと**の位置（サイズ = `vertexCount()`） |
+| `normals` | `vector<Vec3>` | 頂点ごとの法線（補間してシェーディング法線に使用） |
 | `colors` | `vector<Vec4>` | 頂点ごとの `rgb + opacity`（w = 不透明度, 1 = 不透明）。linear |
+| `index` | `vector<uint32_t>` | 三角形コーナー → 頂点（サイズ = `3 × 三角形数`）。**空＝自明マッピング**（corner c → vertex c = 旧来の三角形スープ） |
+| `posClass` / `posClassCount` | `vector<int32_t>` / `int32_t` | 頂点 → 位置クラス id（**位置のみ**で溶接した ~1e-4 トポロジ。エッジ抽出が使う）。空＝抽出器が自前で溶接 |
 | `material` | `Material` | 単一マテリアル時に使用 |
 | `materials` / `triMaterialId` | `vector<Material>` / `vector<uint8_t>` | 三角形ごとに異なる finish を使う場合（空＝`material`） |
 | `triGroupId` | `vector<uint16_t>` | 三角形ごとの透過グループ（CueMol section）。空＝全て group 0 |
 
-> **`Mesh` のトポロジーと溶接**: `Mesh` は **de-indexed（三角形スープ）** — 共有頂点インデックスを持たず、
-> 三角形 i の3頂点を `positions[3i], [3i+1], [3i+2]` に直接並べる（同じ位置が複数三角形で重複格納される）。
-> `normals` / `colors` も同じ並びで **コーナー単位**（＝三角形ごとの各頂点）に持つので、同一位置でも属する
-> 三角形が違えば別の法線・色を持てる（ハードエッジや色の境界に必要。逆にこれがインデックスをそのまま
-> 保持できない理由でもある）。POV mesh2 の `face_indices` は接続性を完全には符号化しない（CueMol はリボンを巻きごとの
-> triangle strip で出力し、巻き境界の頂点・法線が重複しているため、隣接巻きとの接続は座標一致として
-> しか存在しない）。エッジ抽出（`--edges` / `--obj-edges`）は **座標量子化（既定 1e-4）による位置溶接で
-> 本来の water-tight トポロジーを復元**してから silhouette/crease/border を判定する。溶接は冗長な重複頂点を
-> 畳むだけで真のトポロジーを失わない。詳細・限界は `render/mesh_feature_edges.cpp` の step 1 を参照。
+アクセサ: `vertexCount()` / `cornerCount()`（= `index.size()`、空なら `positions.size()`）/ `triangleCount()`
+（= `cornerCount()/3`）/ `cornerVertex(corner)`（コーナー → 頂点スロット。`index` を尊重する唯一の継ぎ目）/
+`toDeindexed()`（index/posClass を捨てた三角形スープ複製。値はコピーで bit-exact）。consumer は頂点配列を
+`positions[3i+k]` と直接仮定せず **必ず `cornerVertex()` 経由**で参照する。
+
+> **`Mesh` のトポロジーと溶接**: `Mesh` は **任意 index 付き**。`index` が空なら de-indexed（三角形スープ）
+> = 三角形 i の3頂点を `positions[3i], [3i+1], [3i+2]` に並べる退化ケースで、手組みメッシュや `toDeindexed()`
+> がこれ。`.pov` を読む通常パスでは **load 時に 1 回だけ溶接して indexed mesh を構築する**
+> （`mesh2_reader.cpp::buildIndexedBlock`、頂点 ~6 倍削減）。溶接基準はレンダリングとトポロジで異なる:
+> - **描画用 `index`** … `(位置, 法線, 色)` の**ビット一致**で頂点を併合。ハードエッジや色境界は別頂点のまま
+>   残るので**座標を一切動かさず描画は bit-identical** を維持する。
+> - **`posClass`（トポロジ用）** … **位置のみ**で溶接した位置クラス（既定 ~1e-4）。ハードエッジでも両面が
+>   同一クラスを共有しないと crease が border に誤判定されるため、法線・色の分割を無視する別基準が要る。
+>
+> POV mesh2 の `face_indices` は接続性を完全には符号化しない（CueMol はリボンを巻きごとの triangle strip で
+> 出力し、巻き境界の頂点・法線が重複するため、隣接巻きとの接続は座標一致としてしか存在しない）。
+> エッジ抽出（`--edges` / `--obj-edges`）は `posClass` で隣接を見て water-tight トポロジーを判定する
+> （`posClass` 不在なら抽出器が同じ位置溶接を自前で再現する fallback）。溶接の単一定義は
+> `render/mesh_weld.hpp`、詳細・限界は `render/mesh_feature_edges.cpp` の step 1 を参照。
 
 **`Sphere`**: `center`, `radius`, `color`(rgb+opacity), `material`（既定 `Material::flatOutline()`）, `group`。
 
@@ -346,7 +359,8 @@ std::vector<float> boxDownsample(const std::vector<float>& src, int w, int h,
 ## 7. CueMol 統合の指針
 
 - CueMol の内部シーンから **`umbreon::Scene` を直接構築**する（`.pov` を経由しない）。
-  - 分子サーフェス／density map surface → `Scene::mesh`（de-indexed 三角形 + 頂点法線 + rgb+opacity）。
+  - 分子サーフェス／density map surface → `Scene::mesh`（頂点法線 + rgb+opacity 付き三角形メッシュ。
+    `index` 省略で de-indexed スープも可）。
   - ball-and-stick / VdW → `Scene::spheres` / `Scene::cylinders`。
   - シルエットエッジ → `Cylinder{open=true}`（連結される）。bond/wireframe → `Cylinder{open=false}`。
   - section ごとの透過 → `triGroupId` / `Sphere::group` / `Cylinder::group` ＋ `veilGroups`。

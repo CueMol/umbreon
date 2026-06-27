@@ -117,6 +117,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/stroke_edges.cpp
     src/umbreon/render/mesh_feature_edges.cpp
     src/umbreon/render/object_space_edges.cpp
+    src/umbreon/render/analytic_silhouette.cpp
     src/umbreon/umbreon.cpp
   )
   # Namespaced alias so in-tree (add_subdirectory) consumers link the same

@@ -154,6 +154,14 @@ struct Options {
   bool strokeTaper = false;
   // Demo geometry shader (--stroke-smooth): corner-preserving backbone smoothing.
   bool strokeSmooth = false;
+  // DRAW analytic silhouettes of the analytic primitives (spheres/cylinders) in
+  // the stroke pass, so --edges outlines ball-and-stick too (default ON).
+  // --stroke-analytic off draws a mesh-only outline, but the ball-stick is still
+  // used as an occluder so the ribbon's hidden-line stays correct behind it (no
+  // leak). --stroke-analytic-segments sets the sphere ring / cap-circle tessellation.
+  bool strokeAnalytic = true;
+  int strokeAnalyticSegments = 48;
+  bool strokeAnalyticSegmentsSet = false;
 
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;

@@ -322,6 +322,14 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--stroke-smooth");
       if (o.ok && !parseBool(v, o.strokeSmooth))
         fail("--stroke-smooth expects on/off");
+    } else if (a == "--stroke-analytic") {
+      std::string v = value("--stroke-analytic");
+      if (o.ok && !parseBool(v, o.strokeAnalytic))
+        fail("--stroke-analytic expects on/off");
+    } else if (a == "--stroke-analytic-segments") {
+      o.strokeAnalyticSegments =
+          std::atoi(value("--stroke-analytic-segments").c_str());
+      o.strokeAnalyticSegmentsSet = true;
     } else if (a == "--dump-aov") {
       o.dumpAovPrefix = value("--dump-aov");
     } else if (a == "--keep-baked-edges") {
@@ -405,6 +413,8 @@ void printUsage(const char* prog) {
       "  --stroke-border <on|off> stroke border nature                     [on]\n"
       "  --stroke-taper <on|off>  taper stroke width toward its ends (demo) [off]\n"
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"
+      "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
+      "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
       "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

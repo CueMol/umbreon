@@ -1,6 +1,6 @@
-// umbreon CLI: read a CueMol .pov scene (or a legacy .inc mesh), render it with
-// the umbreon Embree backend, and write the image. Also provides PPM compare
-// and PPM->PNG convert utility modes.
+// umbreon CLI: read a CueMol .pov scene (which may #include .inc geometry),
+// render it with the umbreon Embree backend, and write the image. Also provides
+// PPM compare and PPM->PNG convert utility modes.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -265,6 +265,9 @@ int main(int argc, char** argv) {
       ropt.strokeEdges.border = opt.strokeBorder;
       ropt.strokeEdges.taper = opt.strokeTaper;
       ropt.strokeEdges.smooth = opt.strokeSmooth;
+      ropt.strokeEdges.analytic = opt.strokeAnalytic;
+      if (opt.strokeAnalyticSegmentsSet)
+        ropt.strokeEdges.analyticSegments = opt.strokeAnalyticSegments;
       if (opt.strokeThicknessSet)
         ropt.strokeEdges.thickness =
             static_cast<int>(opt.strokeThickness + 0.5f);
