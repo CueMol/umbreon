@@ -5,6 +5,15 @@
 - [ao-soft-shadow.md](ao-soft-shadow.md) — Ambient Occlusion + ハード影 + ソフト影（エリアライト）の実装プラン。
   OSPRay `scivis`/`ao` を C++17 へ移植、`rtcOccluded1` ベース、single-bounce。既定 OFF で現行出力と bit-exact。
   **実装完了**（branch `ao_impl_0620`、AO=`8b8de83` / ハード影=`5b879f5` / ソフト影=`c9d0f2f`）。
+- [ao-quality.md](ao-quality.md) — AO 立体感向上の実装プラン。距離減衰+マルチスケール ambient obscurance、
+  bent normal+半球グラデーション ambient、albedo-aware multibounce 補正、低食い違いサンプリング、任意 diffuse 減衰
+  レバー。単一レイセット共有でレイ増ゼロ、二重ゲートで既定 OFF/bit-exact。将来の surface irradiance cache + OIDN
+  へ再利用できる first-hit/AOV・contact/shape 分離・bent normal infra も整備。**提案・未着手**。
+- [surface-irradiance-cache.md](surface-irradiance-cache.md) — Adaptive Surface Irradiance Cache(one-bounce
+  diffuse GI)+ ray-traced contact/shape AO + denoiser(自前 edge-aware à-trous 既定 / OIDN を optional backend）の
+  実装プラン。Ward–Heckbert/Křivánek の irradiance caching を「決定的 placement → 並列 fill → read-only 補間」の
+  3分割でスレッド数非依存・bit-exact 化(lazy 挿入を排除)。ao-quality.md を土台に積む。master gate `--gi` 既定 OFF。
+  OIDN は CMake option で optional 依存。**提案・未着手**。
 - [edge-extraction-embree.md](edge-extraction-embree.md) — silhouette/crease エッジ抽出を CueMol(CGAL) から
   umbreon(Embree) へ移管する実装プラン。production は直接 `umbreon::Scene` 渡し、umbreon が検出＋可視性＋
   クリッピングを所有。fp32/fp64 精度エスカレーションと PoC ファースト方針を含む。
