@@ -165,10 +165,6 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "-H" || a == "--height") {
       o.height = std::atoi(value("-H").c_str());
       o.heightSet = true;
-    } else if (a == "--grid") {
-      o.gridN = std::atoi(value("--grid").c_str());
-    } else if (a == "--spacing") {
-      o.spacing = static_cast<float>(std::atof(value("--spacing").c_str()));
     } else if (a == "--ao-distance") {
       o.aoDistance = static_cast<float>(std::atof(value("--ao-distance").c_str()));
     } else if (a == "--ao-samples") {
@@ -340,12 +336,6 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--transparency");
       if (o.ok && !parseBool(v, o.transparency))
         fail("--transparency expects on/off");
-    } else if (a == "--emit-pov") {
-      o.emitPov = value("--emit-pov");
-    } else if (a == "--pov-radiosity") {
-      std::string v = value("--pov-radiosity");
-      if (o.ok && !parseBool(v, o.povRadiosity))
-        fail("--pov-radiosity expects on/off");
     } else if (a == "--compare") {
       o.compareMode = true;
       o.compareA = value("--compare");
@@ -354,12 +344,6 @@ Options parseCli(int argc, char** argv) {
       o.convertMode = true;
       o.convertIn = value("--convert");
       o.convertOut = value("--convert");
-    } else if (a == "--light-intensity") {
-      o.lightIntensity =
-          static_cast<float>(std::atof(value("--light-intensity").c_str()));
-    } else if (a == "--ambient") {
-      o.ambientIntensity =
-          static_cast<float>(std::atof(value("--ambient").c_str()));
     } else if (!a.empty() && a[0] == '-') {
       fail("unknown option: " + a);
     } else if (o.input.empty()) {
@@ -370,9 +354,8 @@ Options parseCli(int argc, char** argv) {
   }
 
   if (o.ok && !o.showHelp && !o.compareMode && !o.convertMode) {
-    if (o.input.empty()) fail("no input .inc file given");
+    if (o.input.empty()) fail("no input .pov file given");
     else if (o.width <= 0 || o.height <= 0) fail("width/height must be positive");
-    else if (o.gridN < 1) fail("--grid must be >= 1");
   }
   return o;
 }
@@ -426,18 +409,12 @@ void printUsage(const char* prog) {
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
-      "  --grid <int>             N for an N^3 instance grid    [1]\n"
-      "  --spacing <float>        grid pitch (x mesh size)      [1.15]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"
-      "  --light-intensity <f>    distant 'sun' intensity       [1.5]\n"
-      "  --ambient <f>            ambient 'sky' intensity        [0.6]\n"
-      "  --emit-pov <path>        also write an equivalent .pov scene\n"
-      "  --pov-radiosity <on|off> radiosity in the emitted .pov       [on]\n"
       "  --compare <a> <b>        print PSNR/SSIM between two PPM files\n"
       "  --convert <in> <out>     convert a PPM to PNG/PPM\n"
       "  -h, --help               show this help\n",

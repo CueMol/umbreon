@@ -8,10 +8,6 @@ add_test(
   NAME mesh2_reader
   COMMAND test_mesh2_reader ${CMAKE_SOURCE_DIR}/data/test1.inc)
 
-add_executable(test_scene_builder test_scene_builder.cpp)
-target_link_libraries(test_scene_builder PRIVATE bench_core)
-add_test(NAME scene_builder COMMAND test_scene_builder)
-
 add_executable(test_math test_math.cpp)
 target_link_libraries(test_math PRIVATE bench_core)
 add_test(NAME math COMMAND test_math)

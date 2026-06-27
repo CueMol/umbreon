@@ -9,22 +9,16 @@
 namespace umbreon {
 
 struct Options {
-  std::string input;            // input .pov scene or .inc geometry (positional)
+  std::string input;            // input .pov scene file (positional)
   std::string output = "out.png";
   int width = 1024;
   int height = 768;
-  int gridN = 1;                // N^3 instance grid
-  float spacing = 1.15f;        // grid pitch as a multiple of mesh size
   float aoDistance = -1.0f;     // AO occluder radius; < 0 => auto from scene size
   int aoSamples = 0;            // AO rays per mesh hit; 0 = AO off
   float aoIntensity = 1.0f;     // AO strength multiplier (0..1+)
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows
-  std::string emitPov;          // empty => do not emit a POV-Ray scene
-  bool povRadiosity = true;     // emit a radiosity setup in the .pov
-  float lightIntensity = 1.5f;  // distant "sun"
-  float ambientIntensity = 0.6f;  // uniform "sky"
 
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults
