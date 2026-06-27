@@ -9,6 +9,12 @@
 
 namespace umbreon {
 
+// Freestyle TANGENTIAL-occluder rejection cosine for the stroke QI ray (detailed
+// rationale at the binding site in render()). Defined at namespace scope -- and so
+// with internal linkage, no capture -- because MSVC rejects an implicitly-captured
+// local constexpr in the QI lambda (C3493), which GCC/Clang treat as not-odr-used.
+constexpr float kQiGrazeCosEps = 1.0e-4f;
+
 std::vector<float> boxDownsample(const std::vector<float>& src, int w, int h,
                                  int channels, int ss) {
   const int ow = w / ss, oh = h / ss;
@@ -115,7 +121,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     // inside that silhouette wrongly voted VISIBLE -- the hidden band. Relies on
     // fix B (true-surface origin) + fix D (face-ID self-exclude keeps each strand's
     // own grazing faces) so flat strands self-hide by id, not by this angle.
-    constexpr float kQiGrazeCosEps = 1.0e-4f;
+    // (kQiGrazeCosEps is defined at namespace scope; see the note there.)
     // Coincident-plane self-surface epsilon (Freestyle GeomUtils::COINCIDENT),
     // scaled to the mesh tessellation so it is unit-robust: a hit whose plane sits
     // within this perpendicular distance of the silhouette point is the point's
