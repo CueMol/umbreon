@@ -105,10 +105,10 @@ void writePovScene(const std::string& path, const Scene& scene,
     f << "\n}\n\n";
   }
 
-  // --- deduplicate per-corner colors into a palette ---
+  // --- deduplicate per-vertex colors into a palette ---
   std::vector<Vec4> palette;
   std::map<std::uint32_t, int> colorIndex;
-  std::vector<int> cornerTex(m.colors.size());
+  std::vector<int> vertTex(m.colors.size());  // vertex -> palette index
   for (std::size_t i = 0; i < m.colors.size(); ++i) {
     std::uint32_t k = colorKey(m.colors[i]);
     auto it = colorIndex.find(k);
@@ -116,9 +116,9 @@ void writePovScene(const std::string& path, const Scene& scene,
       int idx = static_cast<int>(palette.size());
       colorIndex[k] = idx;
       palette.push_back(m.colors[i]);
-      cornerTex[i] = idx;
+      vertTex[i] = idx;
     } else {
-      cornerTex[i] = it->second;
+      vertTex[i] = it->second;
     }
   }
 
@@ -160,9 +160,11 @@ void writePovScene(const std::string& path, const Scene& scene,
 
   f << "  face_indices {\n    " << m.triangleCount() << ",\n    ";
   for (std::size_t t = 0; t < m.triangleCount(); ++t) {
-    int a = static_cast<int>(3 * t);
-    int ta = cornerTex[a], tb = cornerTex[a + 1], tc = cornerTex[a + 2];
-    f << '<' << a << ',' << a + 1 << ',' << a + 2 << ">,";
+    const int va = static_cast<int>(m.cornerVertex(3 * t));
+    const int vb = static_cast<int>(m.cornerVertex(3 * t + 1));
+    const int vc = static_cast<int>(m.cornerVertex(3 * t + 2));
+    const int ta = vertTex[va], tb = vertTex[vb], tc = vertTex[vc];
+    f << '<' << va << ',' << vb << ',' << vc << ">,";
     if (ta == tb && tb == tc) {
       f << ta;
     } else {

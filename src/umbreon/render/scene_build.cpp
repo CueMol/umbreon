@@ -15,12 +15,13 @@ namespace {
 // --- triangle mesh (de-indexed, replicated per instance offset) ---
 void buildTriangleMesh(RTCDevice device, RTCScene rscene, const Mesh& m,
                        const std::vector<Vec3>& bakeOffsets, BuiltScene& out) {
-  if (m.vertexCount() < 3) return;
+  if (m.vertexCount() < 3 || m.triangleCount() == 0) return;
 
-  const std::size_t baseV = m.positions.size();
+  const std::size_t baseV = m.vertexCount();
+  const std::size_t baseT = m.triangleCount();
   const std::size_t copies = bakeOffsets.size();
   const std::size_t nV = baseV * copies;
-  const std::size_t nT = nV / 3;
+  const std::size_t nT = baseT * copies;
 
   RTCGeometry g = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_TRIANGLE);
 
@@ -59,10 +60,17 @@ void buildTriangleMesh(RTCDevice device, RTCScene rscene, const Mesh& m,
       col[d * 4 + 3] = cc.w;
     }
   }
-  for (std::size_t t = 0; t < nT; ++t) {
-    idx[t * 3 + 0] = static_cast<unsigned int>(3 * t + 0);
-    idx[t * 3 + 1] = static_cast<unsigned int>(3 * t + 1);
-    idx[t * 3 + 2] = static_cast<unsigned int>(3 * t + 2);
+  // Real triangle indices: corner -> vertex via m.cornerVertex (trivial 3t+k
+  // when the mesh has no index buffer). primID stays c*baseT + t so the QI
+  // face-exclude filter's `primID %= baseTriCount` recovers the base triangle.
+  for (std::size_t c = 0; c < copies; ++c) {
+    for (std::size_t t = 0; t < baseT; ++t) {
+      const std::size_t d = c * baseT + t;
+      for (int k = 0; k < 3; ++k) {
+        idx[d * 3 + k] = static_cast<unsigned int>(
+            c * baseV + m.cornerVertex(t * 3 + static_cast<std::size_t>(k)));
+      }
+    }
   }
 
   // Enable the per-geometry argument filter so EmbreeRenderer::occluded's

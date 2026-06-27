@@ -178,9 +178,20 @@ int main(int argc, char** argv) {
           // Group alpha MULTIPLIES the intrinsic (fragment) opacity, so the two
           // are orthogonal: group 0.5 x fragment 0.5 = 0.25. A fully opaque
           // fragment (1.0) just becomes the group alpha (no change vs before).
+          // Apply ONCE per vertex: with an indexed mesh a vertex is shared by
+          // several triangles of the group, and multiplying per corner would
+          // over-apply `a`. The per-block weld keeps each vertex in one group.
+          std::vector<uint8_t> alphaTouched(scene.mesh.vertexCount(), 0);
           for (std::size_t t = 0; t < scene.mesh.triangleCount(); ++t)
             if (scene.mesh.groupForTri(t) == g)
-              for (int k = 0; k < 3; ++k) scene.mesh.colors[3 * t + k].w *= a;
+              for (int k = 0; k < 3; ++k) {
+                const uint32_t v =
+                    scene.mesh.cornerVertex(t * 3 + static_cast<std::size_t>(k));
+                if (!alphaTouched[v]) {
+                  scene.mesh.colors[v].w *= a;
+                  alphaTouched[v] = 1;
+                }
+              }
           for (umbreon::Sphere& s : scene.spheres)
             if (s.group == g) s.color.w *= a;
           for (umbreon::Cylinder& c : scene.cylinders)
@@ -240,7 +251,7 @@ int main(int argc, char** argv) {
       // ---- .inc path: legacy auto-framed scene with the instance grid. ----
       std::printf("reading mesh2 from %s\n", opt.input.c_str());
       umbreon::Mesh mesh = umbreon::readMesh2FromFile(opt.input);
-      std::printf("  %zu triangles, %zu vertices (de-indexed)\n",
+      std::printf("  %zu triangles, %zu vertices (welded/indexed)\n",
                   mesh.triangleCount(), mesh.vertexCount());
 
       umbreon::BuildOptions bopt;

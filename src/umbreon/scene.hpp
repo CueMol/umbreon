@@ -131,13 +131,31 @@ struct Material {
   }
 };
 
-// De-indexed triangle mesh: triangle i uses vertices [3i, 3i+1, 3i+2].
-// Each corner carries its own position, normal and color so that per-face-corner
-// POV "texture_list" indices are reproduced exactly.
+// Indexed triangle mesh. Vertices carry their own position, normal and color;
+// triangle corners reference vertices through `index` (3 indices per triangle).
+// A vertex is shared only when its position, normal AND color bit-match, so a
+// per-face-corner POV "texture_list" index or a hard-edge normal split keeps its
+// own vertex -- the rendered image is unchanged from the legacy triangle soup.
+//
+// `index` is OPTIONAL: when empty the mesh is de-indexed (triangle soup), i.e.
+// corner c uses vertex c and triangle i uses vertices [3i, 3i+1, 3i+2]. All the
+// hand-built meshes (tests, examples) rely on this fallback and need no index.
 struct Mesh {
-  std::vector<Vec3> positions;  // size == 3 * triangleCount
-  std::vector<Vec3> normals;    // size == 3 * triangleCount
-  std::vector<Vec4> colors;     // size == 3 * triangleCount (rgb + opacity)
+  std::vector<Vec3> positions;  // per vertex
+  std::vector<Vec3> normals;    // per vertex
+  std::vector<Vec4> colors;     // per vertex (rgb + opacity)
+
+  // Triangle corner -> vertex. size == 3 * triangleCount, or EMPTY for the
+  // trivial de-indexed mapping (corner c -> vertex c).
+  std::vector<uint32_t> index;
+
+  // Vertex -> position-class id: vertices welded by POSITION ALONE (the ~1e-4
+  // topological weld used for feature-edge extraction, which must ignore the
+  // normal/color splits that keep render vertices apart). size == vertexCount(),
+  // or EMPTY when no class map was built (extractor then welds on its own).
+  std::vector<int32_t> posClass;
+  int32_t posClassCount = 0;
+
   Material material;
 
   // Per-triangle material: when a file has multiple mesh2 blocks with distinct
@@ -155,7 +173,16 @@ struct Mesh {
   std::vector<uint16_t> triGroupId;
 
   std::size_t vertexCount() const { return positions.size(); }
-  std::size_t triangleCount() const { return positions.size() / 3; }
+  std::size_t cornerCount() const {
+    return index.empty() ? positions.size() : index.size();
+  }
+  std::size_t triangleCount() const { return cornerCount() / 3; }
+
+  // Triangle corner -> vertex slot. The single seam every consumer routes
+  // through; honors the optional `index` (trivial corner==vertex when empty).
+  uint32_t cornerVertex(std::size_t corner) const {
+    return index.empty() ? static_cast<uint32_t>(corner) : index[corner];
+  }
 
   const Material& materialForTri(std::size_t triIdx) const {
     if (triMaterialId.empty()) return material;
@@ -170,6 +197,34 @@ struct Mesh {
     Aabb b;
     for (const Vec3& p : positions) b.extend(p);
     return b;
+  }
+
+  // Expand to a de-indexed (triangle-soup) copy: every corner gets its own
+  // vertex and `index`/`posClass` are dropped, so the feature-edge extractor
+  // falls back to its own positional weld. Per-triangle material/group are kept.
+  // Used by the regression test to compare the indexed path against the legacy
+  // soup path within a single process. Bit-exact: corner values are copied, not
+  // recomputed.
+  Mesh toDeindexed() const {
+    if (index.empty()) return *this;
+    Mesh m;
+    const std::size_t nCorner = index.size();
+    m.positions.reserve(nCorner);
+    m.normals.reserve(nCorner);
+    m.colors.reserve(nCorner);
+    const bool haveNrm = normals.size() == positions.size();
+    const bool haveCol = colors.size() == positions.size();
+    for (std::size_t c = 0; c < nCorner; ++c) {
+      const uint32_t v = index[c];
+      m.positions.push_back(positions[v]);
+      if (haveNrm) m.normals.push_back(normals[v]);
+      if (haveCol) m.colors.push_back(colors[v]);
+    }
+    m.material = material;
+    m.materials = materials;
+    m.triMaterialId = triMaterialId;
+    m.triGroupId = triGroupId;
+    return m;
   }
 };
 

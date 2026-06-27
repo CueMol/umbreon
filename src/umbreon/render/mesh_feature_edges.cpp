@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "render/mesh_weld.hpp"
+
 namespace umbreon {
 namespace {
 
@@ -33,10 +35,18 @@ Vec3 viewerDirAt(const Vec3& P, const Camera& cam) {
 FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
                                     const ExtractParams& opt) {
   FeatureMesh result;
-  const std::size_t nCorner = mesh.positions.size();
+  const std::size_t nCorner = mesh.cornerCount();
   const std::size_t nTri = nCorner / 3;
   if (nTri == 0) return result;
-  const bool haveNrm = mesh.normals.size() == nCorner;
+  const bool haveNrm = mesh.normals.size() == mesh.vertexCount();
+  // Per-corner attribute reads routed through the optional index. With a
+  // de-indexed mesh cornerVertex(c)==c, so this is the legacy access.
+  auto cornerPos = [&](std::size_t c) -> const Vec3& {
+    return mesh.positions[mesh.cornerVertex(c)];
+  };
+  auto cornerNrm = [&](std::size_t c) -> const Vec3& {
+    return mesh.normals[mesh.cornerVertex(c)];
+  };
 
   // 1) POSITIONAL WELD of the de-indexed corners into shared vertices
   //    (quantized-position hash), accumulating an averaged vertex normal.
@@ -71,44 +81,55 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   // smooth winding seams. NOTE: this weld is unrelated to the smooth-silhouette
   // CUSP visibility gap (the missing outline at grazing twists); that is a contour
   // fold-back handled by Freestyle's computeCusps, independent of topology.
-  struct VKey {
-    int x, y, z;
-    bool operator==(const VKey& o) const { return x == o.x && y == o.y && z == o.z; }
-  };
-  struct VKeyHash {
-    std::size_t operator()(const VKey& k) const {
-      return (static_cast<std::size_t>(k.x) * 73856093u) ^
-             (static_cast<std::size_t>(k.y) * 19349663u) ^
-             (static_cast<std::size_t>(k.z) * 83492791u);
-    }
-  };
-  const float kQuant = 1.0e4f;  // weld within ~1e-4 world units
-  auto keyOf = [&](const Vec3& p) {
-    return VKey{static_cast<int>(std::lround(p.x * kQuant)),
-                static_cast<int>(std::lround(p.y * kQuant)),
-                static_cast<int>(std::lround(p.z * kQuant))};
-  };
-  std::unordered_map<VKey, int, VKeyHash> vmap;
-  vmap.reserve(nCorner);
+  // The weld key (WeldKey/weldKey, render/mesh_weld.hpp) and ~1e-4 tolerance are
+  // shared with the mesh2 reader, which bakes the very same partition into
+  // mesh.posClass at load time. When that map is present we CONSUME it (the fast
+  // path) instead of rehashing; otherwise (hand-built meshes) we weld here.
   std::vector<Vec3> vpos, vacc;
   std::vector<int> corner2v(nCorner);
-  for (std::size_t c = 0; c < nCorner; ++c) {
-    const VKey k = keyOf(mesh.positions[c]);
-    auto it = vmap.find(k);
-    if (it == vmap.end()) {
-      const int vi = static_cast<int>(vpos.size());
-      vmap.emplace(k, vi);
-      vpos.push_back(mesh.positions[c]);
-      vacc.push_back(haveNrm ? mesh.normals[c] : Vec3{0.0f, 0.0f, 0.0f});
-      corner2v[c] = vi;
-    } else {
-      corner2v[c] = it->second;
-      if (haveNrm)
-        vacc[static_cast<std::size_t>(it->second)] =
-            vacc[static_cast<std::size_t>(it->second)] + mesh.normals[c];
+  std::size_t nV;
+  const bool usePosClass =
+      mesh.posClass.size() == mesh.vertexCount() && mesh.posClassCount > 0;
+  if (usePosClass) {
+    // The reader assigned class ids in first-seen corner order with the same
+    // weldKey, and we visit corners in that same order, so the representative
+    // position (first corner of each class) and the per-class normal sum
+    // (accumulated in corner order) are bit-for-bit identical to the weld below.
+    nV = static_cast<std::size_t>(mesh.posClassCount);
+    vpos.assign(nV, Vec3{0.0f, 0.0f, 0.0f});
+    vacc.assign(nV, Vec3{0.0f, 0.0f, 0.0f});
+    std::vector<char> seen(nV, 0);
+    for (std::size_t c = 0; c < nCorner; ++c) {
+      const std::size_t v =
+          static_cast<std::size_t>(mesh.posClass[mesh.cornerVertex(c)]);
+      corner2v[c] = static_cast<int>(v);
+      if (!seen[v]) {
+        vpos[v] = cornerPos(c);
+        seen[v] = 1;
+      }
+      if (haveNrm) vacc[v] = vacc[v] + cornerNrm(c);
     }
+  } else {
+    std::unordered_map<WeldKey, int, WeldKeyHash> vmap;
+    vmap.reserve(nCorner);
+    for (std::size_t c = 0; c < nCorner; ++c) {
+      const WeldKey k = weldKey(cornerPos(c));
+      auto it = vmap.find(k);
+      if (it == vmap.end()) {
+        const int vi = static_cast<int>(vpos.size());
+        vmap.emplace(k, vi);
+        vpos.push_back(cornerPos(c));
+        vacc.push_back(haveNrm ? cornerNrm(c) : Vec3{0.0f, 0.0f, 0.0f});
+        corner2v[c] = vi;
+      } else {
+        corner2v[c] = it->second;
+        if (haveNrm)
+          vacc[static_cast<std::size_t>(it->second)] =
+              vacc[static_cast<std::size_t>(it->second)] + cornerNrm(c);
+      }
+    }
+    nV = vpos.size();
   }
-  const std::size_t nV = vpos.size();
 
   // 2) Face welded indices and geometric face normals.
   std::vector<int> fa(nTri), fb(nTri), fc(nTri);
@@ -213,7 +234,7 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
       std::vector<int> cl(cs.size());
       for (std::size_t k = 0; k < cs.size(); ++k) {
         const std::size_t c = static_cast<std::size_t>(cs[k]);
-        Vec3 n = haveNrm ? mesh.normals[c] : fNg[c / 3];
+        Vec3 n = haveNrm ? cornerNrm(c) : fNg[c / 3];
         const float ln = length(n);
         n = ln > 1.0e-12f ? n * (1.0f / ln) : fNg[c / 3];
         int found = -1;
@@ -448,7 +469,7 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
       else if (static_cast<std::size_t>(corner2v[static_cast<std::size_t>(c0 + 2)]) == v)
         c = c0 + 2;
       if (!haveNrm) return fNg[static_cast<std::size_t>(f)];
-      const Vec3 n = mesh.normals[static_cast<std::size_t>(c)];
+      const Vec3 n = cornerNrm(static_cast<std::size_t>(c));
       const float l = length(n);
       return l > 1.0e-12f ? n * (1.0f / l) : fNg[static_cast<std::size_t>(f)];
     };
