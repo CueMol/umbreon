@@ -7,6 +7,7 @@
 // tracking node ids for chaining.
 #include "render/mesh_feature_edges.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -207,6 +208,28 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
     }
   }
 
+  // Face -> up to 3 EDGE-adjacent neighbour faces (TRUE surface adjacency via the
+  // welded edge map). A BFS over this follows the actual surface and does NOT jump
+  // across a fold/gap the way the vertex 1-ring (vFaces) does: a fold's two sides
+  // share at most a welded VERTEX, not a welded EDGE. So an N-ring exclude reaches
+  // a geodesically-NEAR self-occluder (a ribbon's own surface a few faces across
+  // its width) yet not a geodesically-FAR one (a tube's opposite wall / another
+  // strand, many faces away) -- the discriminator the vertex 1-ring lacked.
+  std::vector<std::array<int, 3>> faceNbr(nTri, std::array<int, 3>{-1, -1, -1});
+  for (std::size_t f = 0; f < nTri; ++f) {
+    const int v[3] = {fa[f], fb[f], fc[f]};
+    for (int e = 0; e < 3; ++e) {
+      auto it = emap.find(ekey(v[e], v[(e + 1) % 3]));
+      if (it == emap.end()) continue;
+      const EAdj& adj = it->second;
+      faceNbr[f][static_cast<std::size_t>(e)] =
+          (adj.f1 == static_cast<int>(f)) ? adj.f2 : adj.f1;
+    }
+  }
+  // Self-exclude geodesic radius (edge-adjacency rings beyond the incident faces);
+  // 0 => the byte-identical default ({f0,f1} only). See ExtractParams::selfExcludeRings.
+  const int kSelfRings = opt.selfExcludeRings > 0 ? opt.selfExcludeRings : 0;
+
   // Synthetic node ids for smooth-contour crossings interior to a face. A
   // crossing on the welded edge (a,b) gets the SAME id from both incident faces,
   // so the contour chains across the shared edge. Ids start at nV.
@@ -280,7 +303,7 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   auto buildExclude = [&](int f0, int f1, bool smooth) {
     (void)smooth;
     std::vector<int> ex;
-    ex.reserve(4);
+    ex.reserve(kSelfRings > 0 ? 16 : 4);
     auto addF = [&](int f) {
       if (f < 0) return;
       for (int g : ex)
@@ -289,6 +312,16 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
     };
     addF(f0);  // the edge's primary feature face
     addF(f1);  // the second fold/adjacent face (border f1<0 = no-op)
+    // Grow kSelfRings edge-adjacency rings over the TRUE surface (faceNbr) so the
+    // geodesically-near self-surface is skipped without jumping a fold (see above).
+    std::size_t frontier = 0;
+    for (int ring = 0; ring < kSelfRings; ++ring) {
+      const std::size_t end = ex.size();
+      for (std::size_t i = frontier; i < end; ++i)
+        for (int nb : faceNbr[static_cast<std::size_t>(ex[i])]) addF(nb);
+      frontier = end;
+      if (ex.size() == end) break;  // ring did not grow: whole component covered
+    }
     return ex;
   };
 

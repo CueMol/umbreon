@@ -162,6 +162,10 @@ struct Options {
   bool strokeAnalytic = true;
   int strokeAnalyticSegments = 48;
   bool strokeAnalyticSegmentsSet = false;
+  // QI self-occlusion exclude radius (edge-adjacency rings; --stroke-self-exclude-rings).
+  // Default 6 stops a twisted ribbon over-hiding its own silhouette; 0 = legacy.
+  int strokeSelfExcludeRings = 6;
+  bool strokeSelfExcludeRingsSet = false;
 
   // Emit a transparent background (output alpha = accumulated coverage).
   bool transparentBackground = false;

@@ -330,6 +330,10 @@ Options parseCli(int argc, char** argv) {
       o.strokeAnalyticSegments =
           std::atoi(value("--stroke-analytic-segments").c_str());
       o.strokeAnalyticSegmentsSet = true;
+    } else if (a == "--stroke-self-exclude-rings") {
+      o.strokeSelfExcludeRings =
+          std::atoi(value("--stroke-self-exclude-rings").c_str());
+      o.strokeSelfExcludeRingsSet = true;
     } else if (a == "--dump-aov") {
       o.dumpAovPrefix = value("--dump-aov");
     } else if (a == "--keep-baked-edges") {
@@ -415,6 +419,7 @@ void printUsage(const char* prog) {
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
       "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
+      "  --stroke-self-exclude-rings <int> QI self-occlusion exclude radius  [6]\n"
       "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

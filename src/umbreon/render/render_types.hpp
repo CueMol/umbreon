@@ -97,6 +97,12 @@ struct StrokeEdgeOptions {
   bool meshCreaseConvexOnly = true;        // keep convex creases, drop valleys
   float meshBorderCoplanarVetoDeg = 35.0f; // coplanar-continuation border veto
   int meshCreaseMaxDegree = 4;             // drop crease hubs above this degree
+  // QI self-occlusion exclude radius (edge-adjacency rings over the true surface;
+  // see ExtractParams::selfExcludeRings). >0 stops a twisted ribbon over-hiding its
+  // own silhouette where its across-width fold self-occludes it, without leaking a
+  // genuine (geodesically-far) occluder. Default 6 ≈ a ribbon's width in faces;
+  // 0 restores the former {f0,f1}-only self-exclude.
+  int selfExcludeRings = 6;
 
   // --- visibility (FREESTYLE-FAITHFUL image-space hidden-line) ---
   // Visibility is decided in two complementary image-space stages, run per chain

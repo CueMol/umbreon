@@ -268,6 +268,8 @@ int main(int argc, char** argv) {
       ropt.strokeEdges.analytic = opt.strokeAnalytic;
       if (opt.strokeAnalyticSegmentsSet)
         ropt.strokeEdges.analyticSegments = opt.strokeAnalyticSegments;
+      if (opt.strokeSelfExcludeRingsSet)
+        ropt.strokeEdges.selfExcludeRings = opt.strokeSelfExcludeRings;
       if (opt.strokeThicknessSet)
         ropt.strokeEdges.thickness =
             static_cast<int>(opt.strokeThickness + 0.5f);

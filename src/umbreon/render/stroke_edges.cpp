@@ -1446,6 +1446,7 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
   ep.meshCreaseConvexOnly = se.meshCreaseConvexOnly;
   ep.meshBorderCoplanarVetoDeg = se.meshBorderCoplanarVetoDeg;
   ep.meshCreaseMaxDegree = se.meshCreaseMaxDegree;
+  ep.selfExcludeRings = se.selfExcludeRings;  // geodesic self-occlusion exclude
   const FeatureMesh fm = extractMeshFeatureEdges(scene.mesh, scene.camera, ep);
 
   // Merge the ANALYTIC silhouettes of the analytic primitives (spheres/cylinders)
