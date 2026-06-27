@@ -836,7 +836,15 @@ class Reader {
   // ----- finalize ---------------------------------------------------------
   // De-index the current mesh2 block's faces and append the triangles to the
   // accumulated mesh, then clear the block buffers (a file may hold several
-  // mesh2 blocks, each with its own 0-based vertex indices).
+  // mesh2 blocks, each with its own 0-based vertex indices). De-indexing is
+  // required because mesh2 carries per-CORNER normals and per-corner texture/
+  // color indices that can differ across a shared vertex (e.g. at a hard edge).
+  // The mesh2 face_indices do NOT encode the full surface connectivity anyway:
+  // CueMol emits the ribbon as per-winding triangle strips with duplicated seam
+  // vertices, so adjacency between windings exists only as coincident positions.
+  // Feature-edge extraction RECONSTRUCTS the true (water-tight) topology by
+  // positional welding -- see extractMeshFeatureEdges() in
+  // render/mesh_feature_edges.cpp (step 1) for the full rationale.
   void deindexBlock() {
     const std::size_t firstTri = mesh_.triangleCount();
     mesh_.positions.reserve(mesh_.positions.size() + faces_.size() * 3);
