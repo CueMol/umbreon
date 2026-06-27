@@ -27,7 +27,7 @@ primary ray + **POV 忠実なローカルシェーディング**（per-geometry 
 | Ambient Occlusion（メッシュのみ） | あり（既定 OFF） | `RenderOptions::aoSamples` ほか |
 | 影（ハード／ソフト＝エリアライト） | あり（既定 OFF） | `RenderOptions::shadows` ほか |
 | 透過（front-to-back over ＋ group veil） | あり | `RenderOptions::transparency`, `Scene::veilGroups` |
-| POV fog（深度ベース post-process） | あり | `Scene::fog` |
+| OpenGL 線形 fog（深度ベース post-process／透過時 alpha フェード） | あり | `Scene::fog` |
 | Phong / Blinn / metallic ハイライト | あり | `Material` |
 | 安価な反射（`reflection * background`） | あり | `Material::reflection` |
 | 大域照明（GI / radiosity）、屈折、二次反射 | **なし**（設計上スコープ外） | — |
@@ -156,7 +156,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 
 パイプライン（内部順序）:
 `supersample（opt.width*ss × opt.height*ss で描画）` → `Embree primary-ray シェーディング
-(+AO +影)` → `POV fog（scene.fog）` → `linear box-downsample` → `assumed_gamma（scene.assumedGamma）`。
+(+AO +影)` → `OpenGL 線形 fog（scene.fog, 平面 eye-z）` → `linear box-downsample` → `assumed_gamma（scene.assumedGamma）`。
 
 - `opt.width` / `opt.height` は **最終出力**サイズ（supersample 前ではない）。
 - 戻り値は **linear HDR** のフレームバッファ（後段で sRGB エンコードする）。
@@ -253,8 +253,16 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 `color`, `intensity`, `castsHighlight`（false = POV の `shadowless`/fill light = 拡散のみ、
 ハイライト無し）。
 
-**`Fog`**: `enabled`, `color`, `distance`（1/e 透過距離）, `type`（1=一様, 2=ground fog）,
-`offset` / `alt` / `up`（ground fog 用）。深度バッファに対する post-process として適用。
+**`Fog`**: **OpenGL 線形 fog**（CueMol のインタラクティブ表示に一致）。`enabled`, `color`（= 背景色）,
+`start` / `end`（平面 eye-z）。係数 `f = clamp((end - z)/(end - start), 0, 1)`（`f=1` で `start` 以近＝素色、
+`f=0` で `end` 以遠＝fog 色）を平面 eye-z（`FrameResult::viewZ`）に対する post-process として適用する。
+- **不透明背景**（`transparentBackground=false`）: RGB を `mix(color, objRGB, f)`、alpha 不変（GL 完全一致）。
+- **透過背景**（`true`）: fog 色を焼き込まず**被覆を `alpha *= f` でフェード** → ストレート alpha 出力を
+  任意背景へ "over" 合成でき、遠方は合成先の色へ正しく溶ける（`B=color` で不透明描画と厳密一致）。
+
+POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）から `start=_distance`,
+`end=start+1.5*distance` を復元して格納する。レガシー `distance`/`type`/`offset`/`alt`/`up` は互換のため
+残置（`distance` のみ復元に使用、ground-fog 経路は廃止）。
 
 ### 4.6 `RenderOptions`
 
@@ -272,7 +280,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 | `lightRadius` | 0.0 | ライトの角半径（度）。> 0 でソフト影（penumbra） |
 | `specularScale` | 1.0 | 各マテリアルの specular 量に乗算 |
 | `transparency` | true | front-to-back 透過 walk。false = 不透明のみ（最前面で停止） |
-| `transparentBackground` | false | 背景の被覆 0 → 出力 alpha = 累積被覆（POV `_transpbg`） |
+| `transparentBackground` | false | 背景の被覆 0 → 出力 alpha = 累積被覆（POV `_transpbg`）。fog 有効時は fog 色を焼かず `alpha *= f` でフェード（§4.5） |
 | `maxTransparentLayers` | 256 | 1レイあたり透過ヒット数の安全上限（通常は alpha 早期終了で停止） |
 
 > AO/影は既定 OFF なので、`RenderOptions` を既定構築すると現行の POV マッチ出力（bit-exact）に
@@ -285,6 +293,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 | `width` / `height` | `int` | 出力サイズ |
 | `color` | `vector<float>` | `width*height*4` の **linear HDR RGBA**、**左上原点** |
 | `depth` | `vector<float>` | `width*height`、カメラからのレイ距離（背景は 0） |
+| `viewZ` | `vector<float>` | 平面 eye-z（背景は 0）。**stroke edges 有効時 or fog 有効時のみ充填**（線形 fog が参照）。それ以外は空 |
 | `albedo` / `normal` | `vector<float>` | AOV スロット（**現状 `render()` では未充填＝空**） |
 | `renderSeconds` | `double` | レンダ時間 |
 | `effectiveTriangles` | `size_t` | 実効三角形数（instance 込み） |

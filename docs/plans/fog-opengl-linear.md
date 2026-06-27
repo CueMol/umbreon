@@ -1,6 +1,10 @@
 # umbreon: Fog を POV exp 近似 → OpenGL 線形 fog へ置換 ＋ 透過背景対応 実装プラン
 
-ステータス: **提案・未着手**。本ドキュメントは設計合意の記録。実装は別ツリーの作業完了後に着手すること（今は実装しない）。
+ステータス: **実装済み（2026-06-27, branch `feat/fog-opengl-linear`）**。fog モデルを OpenGL 線形 fog へ置換
+（`Fog.start/end` を POV reader で復元、`fog.cpp` の `fogFactor`/`applyFog` を線形化、平面 eye-z は既存 `viewZ`
+AOV を fog 有効時も確保して再利用）し、透過背景時は fog 色を焼かず alpha フェード（§4c）。旧 POV exp/ground-fog
+経路は撤去（`--fog-model=pov` レガシーは未実装）。検証は `tests/test_fog.cpp`（線形係数・不透明 mix・透過往復一致）と
+`tests/test_pov_scene_reader.cpp`（start/end 復元）。fog 無し経路は無変更。
 
 調査時点: 2026-06-27。行番号は目安。実装時に各ファイルを再読し、構造的アンカー（関数名/ブロック）を優先すること。
 

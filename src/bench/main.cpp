@@ -235,11 +235,9 @@ int main(int argc, char** argv) {
       }
       if (scene.fog.enabled) {
         std::printf(
-            "    fog: type %d  distance %.3f  color <%.3f,%.3f,%.3f>  "
-            "offset %.3f  up <%.2f,%.2f,%.2f>\n",
-            scene.fog.type, scene.fog.distance, scene.fog.color.x,
-            scene.fog.color.y, scene.fog.color.z, scene.fog.offset,
-            scene.fog.up.x, scene.fog.up.y, scene.fog.up.z);
+            "    fog (linear): start %.3f  end %.3f  color <%.3f,%.3f,%.3f>\n",
+            scene.fog.start, scene.fog.end, scene.fog.color.x,
+            scene.fog.color.y, scene.fog.color.z);
       }
       std::printf("    assumed_gamma %.3f\n", scene.assumedGamma);
 
@@ -489,8 +487,8 @@ int main(int argc, char** argv) {
     umbreon::FrameResult frame = umbreon::render(scene, ropt);
     std::printf("  render time:  %.3f s\n", frame.renderSeconds);
     if (scene.fog.enabled)
-      std::printf("  applied fog (type %d, distance %.3f)\n", scene.fog.type,
-                  scene.fog.distance);
+      std::printf("  applied linear fog (start %.3f, end %.3f)\n",
+                  scene.fog.start, scene.fog.end);
     if (std::fabs(scene.assumedGamma - 1.0f) > 1.0e-4f)
       std::printf("  applied assumed_gamma %.3f\n", scene.assumedGamma);
 

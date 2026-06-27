@@ -296,16 +296,28 @@ struct DistantLight {
   bool castsHighlight = true;
 };
 
-// POV-Ray fog (applied as a depth-based post-process). The visible surface
-// color is blended toward `color` by the transmittance along the view ray.
+// OpenGL linear fog (applied as a depth-based post-process), matching CueMol's
+// interactive display. The fog factor is f = clamp((end - z)/(end - start), 0,1)
+// over the PLANE eye-z `z`: f=1 at/before `start` (near, unfogged), f=0 at/after
+// `end` (far). For an opaque background the visible RGB is mixed toward `color`
+// by (1-f); for a transparent background the coverage (alpha) is faded by f
+// instead, so no fog color is baked and a different backdrop can be composited
+// later. The POV reader restores start/end from CueMol's POV ground-fog hack.
 struct Fog {
   bool enabled = false;
-  Vec3 color{0.0f, 0.0f, 0.0f};  // fog color (linear)
-  float distance = 1.0e30f;      // POV `distance`: 1/e transmittance distance
-  int type = 1;                  // 1 = constant, 2 = ground fog
-  float offset = 0.0f;           // ground fog: full density at/below this alt
-  float alt = 0.0f;              // ground fog: falloff scale above the offset
-  Vec3 up{0.0f, 1.0f, 0.0f};     // ground fog: altitude axis (world space)
+  Vec3 color{0.0f, 0.0f, 0.0f};  // fog color (linear) = background color
+  float start = 0.0f;            // plane eye-z where fogging begins (unfogged)
+  float end = 0.0f;              // plane eye-z where fully the fog color
+
+  // Legacy POV fog fields: still parsed for compatibility. `distance` feeds the
+  // start/end restoration in the POV reader; type/offset/alt/up (the POV
+  // ground-fog hack that approximated the linear GL fog) are no longer used by
+  // the renderer.
+  float distance = 1.0e30f;      // POV `distance` = slabDepth / 3
+  int type = 1;
+  float offset = 0.0f;
+  float alt = 0.0f;
+  Vec3 up{0.0f, 1.0f, 0.0f};
 };
 
 struct Scene {
