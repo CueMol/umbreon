@@ -212,6 +212,13 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--ao-multibounce");
       if (o.ok && !parseBool(v, o.aoMultibounce))
         fail("--ao-multibounce expects on/off");
+    } else if (a == "--ao-ld") {
+      std::string v = value("--ao-ld");
+      if (o.ok && !parseBool(v, o.aoLowDiscrepancy))
+        fail("--ao-ld expects on/off");
+    } else if (a == "--ao-diffuse") {
+      o.aoDiffuseFactor =
+          static_cast<float>(std::atof(value("--ao-diffuse").c_str()));
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -475,6 +482,8 @@ void printUsage(const char* prog) {
       "  --ao-camera-up <on|off>  gradient axis = camera up          [on]\n"
       "  --ao-up x,y,z            explicit gradient axis (camera-up off)\n"
       "  --ao-multibounce <on|off> albedo-aware AO (anti over-dark)   [off]\n"
+      "  --ao-ld <on|off>         low-discrepancy AO sampling        [off]\n"
+      "  --ao-diffuse <frac>      also darken direct diffuse in cavities [0]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"

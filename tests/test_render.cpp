@@ -1044,6 +1044,106 @@ int main() {
             occWhite > occWhiteNoMb + 0.01f);
   }
 
+  // ===== AO quality: aoDiffuseFactor (also darken direct diffuse) =====
+  // A diffuse-lit white floor (head-on key light) + black slab. aoDiffuseFactor>0
+  // scales the DIRECT diffuse term down where the floor is occluded; 0 leaves it
+  // (POV ambient-only contract). So the occluded floor is darker with it on.
+  {
+    using umbreon::Vec3;
+    auto floorSlab = []() {
+      umbreon::Mesh m;
+      const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                          {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({1, 1, 1, 1});
+      }
+      const float z = 0.4f;
+      const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                          {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(sl[i]);
+        m.normals.push_back({0, 0, -1});
+        m.colors.push_back({0, 0, 0, 1});
+      }
+      m.material.ambient = 0.2f;
+      m.material.diffuse = 0.8f;  // a lit direct-diffuse term to scale
+      return m;
+    };
+    auto centerR = [&](float df) {
+      umbreon::Scene sc;
+      sc.mesh = floorSlab();
+      sc.camera = makeOrthoCam();
+      sc.lights.push_back(makeKeyLight());
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.aoSamples = 256;
+      o.aoDistance = 10.0f;
+      o.aoDiffuseFactor = df;
+      return umbreon::render(sc, o).color[kCenterRgba + 0];
+    };
+    s.check("AO diffuse factor: darkens occluded direct diffuse",
+            centerR(0.7f) + 0.01f < centerR(0.0f));
+  }
+
+  // ===== AO quality: low-discrepancy sampling reduces variance =====
+  // Vs white-noise tea2 at the same low sample count, Hammersley + per-pixel
+  // Cranley-Patterson sampling sits closer to the converged AO. Aggregate the abs
+  // error over the floor pixels against a high-sample reference; LD must be the
+  // smaller total. (Multi-scale on so the LD path -- aoEnhanced -- runs for all.)
+  {
+    using umbreon::Vec3;
+    auto scene = []() {
+      umbreon::Scene sc;
+      umbreon::Mesh m;
+      const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                          {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({1, 1, 1, 1});
+      }
+      const float z = 0.6f;
+      const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                          {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(sl[i]);
+        m.normals.push_back({0, 0, -1});
+        m.colors.push_back({0, 0, 0, 1});
+      }
+      m.material.ambient = 1.0f;
+      m.material.diffuse = 0.0f;
+      sc.mesh = std::move(m);
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      return sc;
+    };
+    auto frame = [&](int samples, bool ld) {
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.aoSamples = samples;
+      o.aoDistance = 10.0f;
+      o.aoMultiScale = true;       // keep all three runs on the enhanced path
+      o.aoLowDiscrepancy = ld;
+      return umbreon::render(scene(), o);
+    };
+    const umbreon::FrameResult ref = frame(2048, false);
+    const umbreon::FrameResult noi = frame(32, false);
+    const umbreon::FrameResult ldr = frame(32, true);
+    float errNoise = 0.0f, errLd = 0.0f;
+    for (int p = 0; p < 5 * 5; ++p) {
+      const float r = ref.color[p * 4 + 0];
+      errNoise += std::fabs(noi.color[p * 4 + 0] - r);
+      errLd += std::fabs(ldr.color[p * 4 + 0] - r);
+    }
+    s.check("AO low-discrepancy: lower aggregate error than white noise",
+            errLd < errNoise);
+  }
+
   // ===== Hard shadows (per-light visibility; off by default) =====
   // A floor lit by an angled light, with a slab between the floor center and the
   // light (offset in +x so it clears the straight-down camera ray). Shadows on

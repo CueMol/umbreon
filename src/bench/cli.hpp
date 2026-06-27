@@ -25,6 +25,8 @@ struct Options {
   bool aoUseCameraUp = true;    // gradient axis = camera up (view-stable)
   float aoUp[3] = {0.0f, 1.0f, 0.0f};  // explicit gradient axis when !aoUseCameraUp
   bool aoMultibounce = false;   // albedo-aware GTAO cubic (anti over-darkening)
+  bool aoLowDiscrepancy = false; // Hammersley + per-pixel Cranley-Patterson rotation
+  float aoDiffuseFactor = 0.0f; // 0 = ambient-only; >0 also darkens direct diffuse
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows

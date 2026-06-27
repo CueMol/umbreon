@@ -92,6 +92,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // bit-identical too.
     Vec3 aoFactor{1.0f, 1.0f, 1.0f};
     Vec3 ambLight = c.ambLight;
+    float diffuseAo = 1.0f;  // direct-diffuse AO scale (1 = POV ambient-only)
     if (c.opt.aoSamples > 0) {
       float openness;
       if (c.opt.aoEnhanced()) {
@@ -135,10 +136,14 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
         const float s = 1.0f - c.opt.aoIntensity * (1.0f - openness);
         aoFactor = Vec3{s, s, s};
       }
+      // Optional indirect-shadowing approximation: also darken direct diffuse in
+      // cavities (off by default => diffuseAo == 1 => bit-exact).
+      if (c.opt.aoDiffuseFactor > 0.0f)
+        diffuseAo = 1.0f - c.opt.aoDiffuseFactor * (1.0f - openness);
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
-                          c.opt.specularScale, aoFactor, P, Ng, secEps, rscene,
-                          c.opt.shadows, c.opt.shadowSamples, px, py);
+                          c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
+                          rscene, c.opt.shadows, c.opt.shadowSamples, px, py);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
     // Edge G-buffer (only when the stroke edge pass is on; otherwise the
@@ -190,8 +195,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
     const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
     hs.color = shadeLocal(pm, C, N, V, c.lights, c.ambLight, c.bg,
-                          c.opt.specularScale, Vec3{1.0f, 1.0f, 1.0f}, P, Ng,
-                          secEps, rscene, false, 1, px, py);
+                          c.opt.specularScale, Vec3{1.0f, 1.0f, 1.0f}, 1.0f, P,
+                          Ng, secEps, rscene, false, 1, px, py);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]
