@@ -207,10 +207,27 @@ diffuse_term *= (1 - aoDiffuseFactor*(1 - openness))
 6. 低食い違いサンプリング + aoDiffuseFactor → test。
 7. **フェーズ5: first-hit/AOV 出力 + `--dump-aov` 一般化**(`aoWriteAov` ゲート、albedo/normal 主経路化、contact/shape/bent/avgHitDist スロット) → AOV ゲート byte-identical test + contact/shape 分離 test → docs(本ファイル + `ao-soft-shadow.md` に追補)。cache/OIDN 互換の土台はここで完了。
 
+## プリセット指針(立体感の2系統)
+
+「立体感」には2系統あり、シーン種で効くものが違う:
+- **(a) 広域の窪み暗化**: 大半径の一様 AO + 凹部の直接 diffuse 減光。**density surface のような
+  滑らかな塊で支配的**。レバー: 大半径 AO(falloff/multiscale を使わない)+ `--ao-diffuse` +
+  過暗化防止の `--ao-multibounce`。
+- **(b) 接触影 + 方向性**: 近接の締まった影と bent normal の方向性。レバー: `--ao-multiscale` /
+  `--ao-falloff` / `--ao-bent-normal`。ボール&スティックや密な接触のあるモデルで効く。
+
+注意: `--ao-falloff` と `--ao-multiscale` は**広域 (a) を弱める**(遠方遮蔽を割り引く)。
+滑らかな density surface ではこれらを足すと逆に平坦化するため、(a) 目的では使わない。
+検証比較は `~/tmp/ao_compare_densurf/`(`comparison_depth.png`)を参照。
+
+**推奨プリセット(density surface、影をしっかり)**: `--ao-multibounce on --ao-diffuse 0.6`
+(= legacy の広域 AO を残し凹部を直接 diffuse で深く落とす。過暗化は multibounce が防ぐ)。
+
 ## 検証(end-to-end)
 
 1. `task build && task test` — 全 ctest green。特に既存 AO 回帰(test_render.cpp:754-876)が無改変で通過すること(bit-exact 担保)。
-2. 視覚確認: `task render -- --ao-samples 48 --ao-multiscale on --ao-falloff 2 --ao-bent-normal on --ao-sky #ffffff --ao-ground #707070 --supersample 3` を `data/1ab0_scene6_densurf.pov`(density surface、AO検証の定番)に対して実行し、`out.png` で接触影・ポケット陰影・開口方向の明るさを確認。
+2. 視覚確認(影を強く=系統(a)): `task render -- --ao-samples 48 --ao-multibounce on --ao-diffuse 0.6 --supersample 3` を `data/1ab0_scene6_densurf.pov`(density surface、AO検証の定番)に対して実行し、`out.png` で窪み暗化・凹部の彫りの深さを確認。接触影・方向性(系統(b))を見たい場合は `--ao-multiscale on --ao-falloff 2 --ao-bent-normal on --ao-sky #ffffff --ao-ground #808080` を使う(ただし滑らかな表面では暗化は弱まる)。
 3. bit-exact 回帰: enhancement 全 OFF + `--ao-samples 16` の出力が改修前と byte 一致(`--compare` PPM or ハッシュ)。
-4. 立体感の段階確認: `--ao-diffuse 0.5` 追加で凹部の陰影が強まることを目視。
+4. 立体感の段階確認: `--ao-diffuse` の値を上げるほど凹部の陰影が強まることを目視。
+5. AOV/cache 互換確認: `--ao-write-aov on --dump-aov out_aov` で `out_aov_{albedo,normal,contactAo,shapeAo,avgHitDist,bentNormal}.png` を出力し、albedo=pigment・normal=面向き・contact が溝で暗く・avgHitDist が「近接接触(暗・小距離)」と「遠方遮蔽(暗・大距離)」を弁別できることを目視。これらが将来の cache lookup / OIDN guide / edge-aware upsample の入力になる。
 5. AOV/cache 互換確認: `--ao-write-aov on --dump-aov out_aov` で `out_aov_{albedo,normal,contactAo,shapeAo,avgHitDist,bentNormal}.png` を出力し、albedo=pigment・normal=面向き・contact が溝で暗く・avgHitDist が「近接接触(暗・小距離)」と「遠方遮蔽(暗・大距離)」を弁別できることを目視。これらが将来の cache lookup / OIDN guide / edge-aware upsample の入力になる。

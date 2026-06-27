@@ -307,6 +307,11 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 
 > AO/影は既定 OFF なので、`RenderOptions` を既定構築すると現行の POV マッチ出力（bit-exact）に
 > なる。AO/影を使う場合は該当フィールドを設定する。
+>
+> 立体感プリセット指針: 滑らかな density surface では「広域の窪み暗化」が立体感の主因なので
+> `aoMultibounce=true` + `aoDiffuseFactor≈0.6`（大半径 AO を残し凹部を深く落とす）が有効。
+> `aoFalloffPower`/`aoMultiScale` は遠方遮蔽を割り引くため、滑らかな面ではむしろ平坦化する点に注意
+> （接触影・方向性が要るモデルでは有効）。詳細は `docs/plans/ao-quality.md` の「プリセット指針」。
 
 ### 4.7 `FrameResult`
 
