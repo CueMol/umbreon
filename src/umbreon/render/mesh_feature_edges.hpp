@@ -74,6 +74,14 @@ struct FeatureSeg {
   // (render/stroke_edges.cpp) carries this to computeChainVisibility; --obj-edges
   // ignores it (so that path stays byte-identical).
   std::vector<int> excludeFaces;
+  // SMOOTH-contour surface normal at the segment (unit; the average of the two
+  // n.v==0 crossing-point interpolated normals). Set ONLY for the smooth n.v==0
+  // silhouette contour; ZERO for hard-edge straddle silhouettes, creases and
+  // borders. Drives Freestyle cusp detection (computeCusps, ViewMapBuilder.cpp
+  // :1296): crossP = normalize(edgeDir x nrm), and a sign flip of crossP.viewdir
+  // marks a contour fold-back (cusp). A zero nrm is the "not a smooth contour
+  // segment" discriminator, so cusp detection skips it.
+  Vec3 nrm{0.0f, 0.0f, 0.0f};
 };
 
 // Extracted feature edges of a mesh. `vpos` is the welded vertex table (for

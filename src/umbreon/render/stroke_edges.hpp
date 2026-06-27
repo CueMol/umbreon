@@ -82,6 +82,14 @@ struct EdgeChain {
   // one SILHOUETTE/BORDER edge per occlusion T-vertex) without re-fetching the
   // FeatureSeg array.
   std::vector<EdgeNature> segNature;
+  // Per-SEGMENT smooth-contour surface normal (one per `segs`; FeatureSeg::nrm).
+  // Nonzero only on the smooth n.v==0 silhouette contour; zero for hard-edge
+  // straddle silhouettes, creases and borders. Drives cusp detection
+  // (computeChainCusps, Freestyle computeCusps): a sign flip of
+  // (edgeDir x nrm).viewdir along the contour is a fold-back, splitting the
+  // ViewEdge so the per-ViewEdge QI majority does not average the visible
+  // front-branch with the hidden back-branch. Sized to segs; empty when unset.
+  std::vector<Vec3> segNrm;
 };
 
 // Bidirectional chaining ported from Freestyle Operators::bidirectionalChain +

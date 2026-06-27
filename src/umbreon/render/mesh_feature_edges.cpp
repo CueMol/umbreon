@@ -38,8 +38,39 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   if (nTri == 0) return result;
   const bool haveNrm = mesh.normals.size() == nCorner;
 
-  // 1) Weld de-indexed corners into shared vertices (quantized-position hash),
-  //    accumulating an averaged vertex normal.
+  // 1) POSITIONAL WELD of the de-indexed corners into shared vertices
+  //    (quantized-position hash), accumulating an averaged vertex normal.
+  //
+  // WHY THIS EXISTS (not a lossy shortcut -- it RECONSTRUCTS the true topology):
+  // CueMol exports each ribbon/cartoon surface as a stack of triangle STRIPS, one
+  // per sweep "winding", and the vertices (and normals) on the shared border
+  // between adjacent windings are DUPLICATED -- each winding repeats the seam ring
+  // with its own indices. So the POV mesh2 `face_indices` encode each strip's
+  // internal adjacency but carry NO connectivity BETWEEN strips: used as-is the
+  // surface is a soup of disconnected strips (measured on ribbon1: 1060 connected
+  // components, 54520 boundary/1-face edges, 0 non-manifold). The real surface
+  // connectivity is present ONLY as coincident vertex positions. Welding by
+  // quantized position folds those redundant duplicates back together and recovers
+  // the intended water-tight mesh (ribbon1 after weld: 1 component, ~1144 genuine
+  // boundary edges = caps/strand-ends). The welded mesh IS the true topology; the
+  // per-strip index is the redundant representation. (De-indexing upstream is also
+  // unavoidable: mesh2 carries per-CORNER normals and per-corner texture/color
+  // indices that differ across a shared position, e.g. at a hard edge.)
+  //
+  // WHAT IT DRIVES: the averaged vertex normal (vN), the edge adjacency map (emap,
+  // for hard-edge silhouette + crease/border), the smooth-contour chain node ids,
+  // and the QI self-face exclude set.
+  //
+  // LIMITATION: the merge is position-only, so it ALSO stitches genuinely-distinct
+  // sheets that happen to pass within kQuant of each other (e.g. a tight self-fold,
+  // or many strip ends converging at a cap), producing a few non-manifold edges
+  // (ribbon1: 72, max 16 faces on one edge). This is harmless to silhouette
+  // EXTRACTION; it only constrains a Freestyle-style TOPOLOGICAL QI self-skip
+  // (sharing a vertex no longer implies "same continuous sheet"). A normal/
+  // orientation-aware weld would separate those touches while still stitching the
+  // smooth winding seams. NOTE: this weld is unrelated to the smooth-silhouette
+  // CUSP visibility gap (the missing outline at grazing twists); that is a contour
+  // fold-back handled by Freestyle's computeCusps, independent of topology.
   struct VKey {
     int x, y, z;
     bool operator==(const VKey& o) const { return x == o.x && y == o.y && z == o.z; }
@@ -245,9 +276,11 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   // exclude set used by the stroke pass's visibility ray-cast (smooth => f0 ring;
   // sharp => {f0,f1}).
   auto emit = [&](int n0, const Vec3& A, int n1, const Vec3& B, EdgeNature nat,
-                  std::uint16_t grp, int f0, int f1, bool smooth = false) {
+                  std::uint16_t grp, int f0, int f1, bool smooth = false,
+                  const Vec3& nrm = Vec3{0.0f, 0.0f, 0.0f}) {
     FeatureSeg s{n0, n1, A, B, nat, grp, f0, f1, {}};
     s.excludeFaces = buildExclude(f0, f1, smooth);
+    s.nrm = nrm;  // nonzero only for the smooth n.v==0 contour (cusp detection)
     result.segs.push_back(std::move(s));
   };
 
@@ -348,9 +381,12 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
         // two faces across the welded edges its endpoints crossed are adjacent
         // self-faces on the smooth surface (face1 = the first available one).
         const int adj = cnb[0] >= 0 ? cnb[0] : cnb[1];
+        // Segment surface normal for cusp detection: the average of the two
+        // crossing-point interpolated normals (Freestyle FEdgeSmooth::normal()).
+        const Vec3 segN = normalize(cn[0] + cn[1]);
         emit(cid[0], cp[0] + cn[0] * silOff + v0, cid[1],
              cp[1] + cn[1] * silOff + v1, EdgeNature::Silhouette,
-             mesh.groupForTri(f), static_cast<int>(f), adj, /*smooth=*/true);
+             mesh.groupForTri(f), static_cast<int>(f), adj, /*smooth=*/true, segN);
       }
     }
 

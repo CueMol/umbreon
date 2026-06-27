@@ -836,11 +836,13 @@ std::vector<EdgeChain> chainFeatureSegs(const std::vector<FeatureSeg>& segs,
     ch.segFaces.assign(ch.segs.size(), std::array<int, 2>{-1, -1});
     ch.segExclude.assign(ch.segs.size(), {});
     ch.segNature.assign(ch.segs.size(), EdgeNature::Silhouette);
+    ch.segNrm.assign(ch.segs.size(), Vec3{0.0f, 0.0f, 0.0f});
     for (std::size_t k = 0; k < ch.segs.size(); ++k) {
       const FeatureSeg& s = segs[static_cast<std::size_t>(ch.segs[k])];
       ch.segFaces[k] = {s.face0, s.face1};
       ch.segExclude[k] = s.excludeFaces;
       ch.segNature[k] = s.nature;
+      ch.segNrm[k] = s.nrm;
     }
     chains.push_back(std::move(ch));
   }
@@ -1018,21 +1020,78 @@ namespace {
 
 // A backbone SUB-SPAN of a chain: backbone segment `seg`, parameter range [a,b] in
 // [0,1]. The 2D image-space crossings (Freestyle TVertices, computeEdgeCrossings)
-// split each segment at their parameters; the sub-spans are the units whose
-// visibility is constant, so an occluded line terminates EXACTLY at a crossing
-// (the occluder's silhouette) rather than at a per-sample ray-flip boundary.
+// and cusps split each segment at their parameters; consecutive sub-spans between
+// two junctions form ONE Freestyle ViewEdge whose visibility is constant.
+// `unitStart` marks a sub-span whose start is a real junction (a crossing, a cusp
+// node, or the chain start) -- i.e. the first sub-span of a new ViewEdge unit. A
+// sub-span that merely continues across an ordinary segment boundary has
+// unitStart == false and stays in the SAME unit, so the per-ViewEdge QI majority
+// pools all of its samples (Freestyle ComputeRayCastingVisibility per ViewEdge).
 struct SubSpan {
   int seg = 0;
   float a = 0.0f, b = 1.0f;
+  bool unitStart = false;  // begins a new ViewEdge (real junction or chain start)
 };
 
-// Split one chain (nSeg backbone segments) into sub-spans at its 2D crossings.
-// `segCross[k]` is the (unsorted) list of crossing parameters on segment k; each
-// in (0,1) becomes a split point. A segment with no crossing yields one full
-// sub-span [0,1]. Sub-spans are returned in backbone order (segment-major).
+// Detect CUSPS along a chain's smooth n.v==0 contour (Freestyle computeCusps,
+// ViewMapBuilder.cpp:1296). For each smooth backbone segment k (segNrm[k] nonzero)
+// compute crossP = normalize(edgeDir x nrm) and its dot with the eye->point view
+// vector; a sign flip (with the Freestyle +-0.1 hysteresis) marks a contour
+// fold-back. The cusp lands on node k (the segment's start vertex, == Freestyle's
+// fes->vertexA). Returns one flag per backbone VERTEX (size pts.size()); a true
+// entry is a ViewEdge split point. Non-smooth segments (hard-edge straddle, etc.)
+// reset the hysteresis so a smooth run is measured on its own baseline. Splitting
+// here is what lets the per-ViewEdge QI majority stay leak-free: the visible
+// front-branch and the hidden back-branch of a fold become SEPARATE ViewEdges
+// instead of one unit whose majority would drag one into the other.
+std::vector<char> computeChainCusps(const EdgeChain& chain, const ScreenProj& sp) {
+  const std::size_t nPts = chain.pts.size();
+  std::vector<char> cusp(nPts, 0);
+  if (nPts < 2 || chain.segNrm.size() != nPts - 1) return cusp;
+  const std::size_t nSeg = nPts - 1;
+  bool have = false;   // a baseline sign exists for the current smooth run
+  bool positive = true;
+  for (std::size_t k = 0; k < nSeg; ++k) {
+    const Vec3& N = chain.segNrm[k];
+    if (length(N) < 1.0e-6f) {  // non-smooth segment: break the smooth run
+      have = false;
+      continue;
+    }
+    const Vec3 AB = chain.pts[k + 1] - chain.pts[k];
+    if (length(AB) < 1.0e-12f) continue;  // degenerate: keep state, no cusp
+    const Vec3 crossP = normalize(cross(normalize(AB), N));
+    const Vec3 m = (chain.pts[k] + chain.pts[k + 1]) * 0.5f;
+    // eye -> point view vector (Freestyle: ortho = constant view axis).
+    const Vec3 viewv = sp.ortho ? sp.dir : normalize(m - sp.pos);
+    const float s = dot(crossP, viewv);
+    if (!have) {
+      positive = (s > 0.0f);
+      have = true;
+      continue;  // first smooth segment of the run sets the baseline (no cusp)
+    }
+    if (positive) {
+      if (s < -0.1f) { positive = false; cusp[k] = 1; }
+    } else {
+      if (s > 0.1f) { positive = true; cusp[k] = 1; }
+    }
+  }
+  return cusp;
+}
+
+// Split one chain (nSeg backbone segments) into sub-spans at its 2D crossings AND
+// cusp nodes. `segCross[k]` is the (unsorted) list of crossing parameters on
+// segment k (each in (0,1)); `cuspNode[v]` marks backbone vertex v as a cusp (a
+// junction at a segment boundary). A sub-span's `unitStart` is set iff its start
+// is a junction: an interior crossing (a>0), a cusp at the segment-start node, or
+// the chain start (k==0). A segment with no crossing yields one full sub-span
+// [0,1]. Sub-spans are returned in backbone order (segment-major).
 std::vector<SubSpan> splitChainAtCrossings(
-    std::size_t nSeg, const std::vector<std::vector<float>>& segCross) {
+    std::size_t nSeg, const std::vector<std::vector<float>>& segCross,
+    const std::vector<char>& cuspNode) {
   std::vector<SubSpan> spans;
+  auto nodeIsJunction = [&](std::size_t k) {
+    return k == 0 || (k < cuspNode.size() && cuspNode[k] != 0);
+  };
   for (std::size_t k = 0; k < nSeg; ++k) {
     std::vector<float> ts;
     if (k < segCross.size()) {
@@ -1042,31 +1101,39 @@ std::vector<SubSpan> splitChainAtCrossings(
     }
     float a = 0.0f;
     for (float t : ts) {
-      if (t - a > kZero) spans.push_back({static_cast<int>(k), a, t});
+      if (t - a > kZero) {
+        // a==0 starts at node k (junction iff cusp/chain-start); a>0 at a crossing.
+        const bool us = (a == 0.0f) ? nodeIsJunction(k) : true;
+        spans.push_back({static_cast<int>(k), a, t, us});
+      }
       a = t;
     }
-    spans.push_back({static_cast<int>(k), a, 1.0f});
+    const bool us = (a == 0.0f) ? nodeIsJunction(k) : true;
+    spans.push_back({static_cast<int>(k), a, 1.0f, us});
   }
   return spans;
 }
 
 
-// Per-sub-span Quantitative-Invisibility: each sub-span is hidden iff the MAJORITY
-// of its own QI rays (cast from interior 3D points toward the eye, excluding its
-// incident faces) are occluded, then a morphological CLOSE bridges single-sample
-// dashing. This is a deliberate departure from Freestyle's per-ViewEdge QI
-// majority: that is correct only over a ViewEdge already split at EVERY visibility
-// transition (Freestyle's sweep-line creates a TVertex at every 2D crossing,
-// guaranteeing uniform ViewEdges). umbreon's 2D crossing detection is not complete,
-// so a group majority can drag a hidden run visible where a silhouette dives behind
-// another body without a detected crossing on its backbone. Deciding each sub-span
-// on its own 3D ray-cast (the ground truth) is robust to incomplete splitting; the
-// dashing the majority suppressed is removed by the close instead. Returns one flag
-// per sub-span. Empty `occluded` (no live BVH) => all visible.
+// PER-VIEWEDGE Quantitative-Invisibility (Freestyle ComputeRayCastingVisibility,
+// ViewMapBuilder.cpp:1550-1704): consecutive sub-spans between two junctions form
+// one ViewEdge, whose visibility is decided by the MAJORITY of the QI rays pooled
+// over ALL its sub-spans (Freestyle votes qiClasses over a ViewEdge's FEdges and
+// assigns the modal class). This REPLACES the former per-sub-span decision, which
+// pooled only ~1-3 rays per single-segment piece and so faithfully reported the
+// inherent per-sample noise of a grazing-silhouette ray cast -- dashing every
+// outline. Pooling over the whole ViewEdge averages that noise away, exactly as
+// Freestyle does. The split is leak-free because the ViewEdge boundaries are the
+// real visibility transitions: 2D crossings (computeEdgeCrossings -> TVertices)
+// AND cusps (computeChainCusps), so no unit straddles a visible/hidden boundary.
+// `cuspNode` (per backbone vertex) lets the closed-loop seam merge correctly.
+// Returns one flag per sub-span (every sub-span of a unit shares the unit's
+// decision). Empty `occluded` (no live BVH) => all visible.
 std::vector<char> subSpanHidden(const EdgeChain& chain,
                                 const std::vector<SubSpan>& spans,
                                 const ScreenProj& sp,
-                                const OcclusionQuery& occluded) {
+                                const OcclusionQuery& occluded,
+                                const std::vector<char>& cuspNode) {
   std::vector<char> hidden(spans.size(), 0);
   const std::size_t nPts = chain.pts.size();
   if (!occluded || nPts < 2 || spans.empty()) return hidden;
@@ -1105,41 +1172,50 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
     }
   };
 
-  // PER-SUB-SPAN QI: decide each sub-span by its OWN occlusion (majority over ITS
-  // samples). A group majority over a ViewEdge would be correct ONLY if the ViewEdge
-  // were split at every visibility transition (Freestyle guarantees this via a
-  // complete sweep-line TVertex split); umbreon's 2D crossing detection is NOT
-  // complete (a silhouette can dive behind another body where the occluder's
-  // silhouette crossing on its backbone is missed), so a group can span a
-  // visible+hidden boundary and the majority then DRAGS the hidden run visible
-  // (a line drawn behind the surface it crosses). Deciding each sub-span on its own
-  // 3D QI -- the ray-cast ground truth -- avoids that; the single-sample dashing the
-  // group majority was meant to suppress is instead removed by the morphological
-  // close below.
+  // (1) Group sub-spans into ViewEdge units: a new unit begins at each sub-span
+  // whose `unitStart` is set (a real junction -- crossing, cusp node, or the chain
+  // start). Consecutive sub-spans that merely continue across an ordinary segment
+  // boundary stay in the same unit.
+  std::vector<int> spanUnit(spans.size(), 0);
+  int nUnits = 0;
   for (std::size_t i = 0; i < spans.size(); ++i) {
-    int occ = 0, tot = 0;
-    tallySpan(spans[i], occ, tot);
-    hidden[i] = (tot > 0 && occ * 2 > tot) ? 1 : 0;
+    if (i == 0 || spans[i].unitStart) ++nUnits;  // i==0 always opens unit 1
+    spanUnit[i] = nUnits - 1;
   }
-  // Morphological close: bridge a SHORT hidden run (<= kBridge sub-spans) bracketed
-  // on both sides by visible sub-spans -- the single-sample grazing-ray flips that
-  // would otherwise dash a continuous visible outline. A genuine (long) occlusion
-  // stays hidden.
-  {
-    const int kBridge = 2;
-    std::size_t i = 0;
-    while (i < spans.size()) {
-      if (hidden[i] == 0) { ++i; continue; }
-      std::size_t j = i;
-      while (j < spans.size() && hidden[j] == 1) ++j;  // [i,j) hidden run
-      const bool leftVis = i > 0 && hidden[i - 1] == 0;
-      const bool rightVis = j < spans.size() && hidden[j] == 0;
-      if (leftVis && rightVis &&
-          static_cast<int>(j - i) <= kBridge)
-        for (std::size_t k = i; k < j; ++k) hidden[k] = 0;  // bridge to visible
-      i = j;
-    }
+  if (nUnits <= 0) return hidden;
+
+  // (2) Pool each unit's QI samples over all its sub-spans (Freestyle pools a
+  // ViewEdge's FEdge votes).
+  std::vector<int> occ(static_cast<std::size_t>(nUnits), 0);
+  std::vector<int> tot(static_cast<std::size_t>(nUnits), 0);
+  for (std::size_t i = 0; i < spans.size(); ++i)
+    tallySpan(spans[i], occ[static_cast<std::size_t>(spanUnit[i])],
+              tot[static_cast<std::size_t>(spanUnit[i])]);
+
+  // (3) Closed-loop seam: if the chain wraps and node 0 is NOT a junction (no cusp
+  // there; crossings never land on a node), the last unit and unit 0 are the same
+  // ViewEdge across the seam -- pool them together so one decision covers both.
+  const bool seamJoin = chain.closed && nUnits > 1 &&
+                        !(cuspNode.size() > 0 && cuspNode[0] != 0);
+  if (seamJoin) {
+    const std::size_t last = static_cast<std::size_t>(nUnits - 1);
+    occ[0] += occ[last];
+    tot[0] += tot[last];
+    occ[last] = occ[0];
+    tot[last] = tot[0];
   }
+
+  // (4) Per-unit majority: hidden iff the majority of its pooled rays are occluded
+  // (Freestyle assigns the modal QI class; QI>0 == hidden). Tie => visible.
+  std::vector<char> unitHidden(static_cast<std::size_t>(nUnits), 0);
+  for (int u = 0; u < nUnits; ++u)
+    unitHidden[static_cast<std::size_t>(u)] =
+        (tot[static_cast<std::size_t>(u)] > 0 &&
+         occ[static_cast<std::size_t>(u)] * 2 > tot[static_cast<std::size_t>(u)])
+            ? 1
+            : 0;
+  for (std::size_t i = 0; i < spans.size(); ++i)
+    hidden[i] = unitHidden[static_cast<std::size_t>(spanUnit[i])];
   return hidden;
 }
 
@@ -1473,19 +1549,21 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     float halfThick = globalHalf, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
     if (!resolveStyle(nat, s0.group, halfThick, col, opacity)) continue;
 
-    // Freestyle-faithful visibility (split-at-crossing, then per-sub-span QI):
-    // the 2D image-space crossings (TVertices, computeEdgeCrossings) split this
-    // chain into sub-spans; each is labelled visible/hidden by a midpoint QI ray
-    // cast (subSpanHidden) excluding its own 1-ring of faces. The visible run then
-    // ends/starts EXACTLY at a crossing (the occluder's silhouette) instead of at
-    // the camBias-lifted ray-flip boundary, which overshot a grazing silhouette
-    // (a back tube's line was drawn past the front tube's outline). A segment with
-    // no crossing is one sub-span, recovering the coarse per-segment occlusion for
-    // edges that pass behind a body without a feature-edge crossing.
+    // Freestyle-faithful visibility (split-at-junction, then per-ViewEdge QI
+    // majority): the chain is split into ViewEdge units at its 2D image-space
+    // crossings (TVertices, computeEdgeCrossings) AND its cusps (computeChainCusps,
+    // contour fold-backs). Each unit's visibility is the MAJORITY of the QI rays
+    // pooled over the whole unit (subSpanHidden) -- exactly Freestyle's per-ViewEdge
+    // ComputeRayCastingVisibility. Pooling over the unit averages out the inherent
+    // per-sample noise of a grazing-silhouette ray cast (a single noisy ray no
+    // longer dashes the outline); the cusp + crossing split keeps it leak-free,
+    // since no unit straddles a real visible/hidden boundary.
     const std::size_t nSegChain = ch.pts.size() - 1;
+    const std::vector<char> cuspNode = computeChainCusps(ch, sp);
     const std::vector<SubSpan> spans =
-        splitChainAtCrossings(nSegChain, chainSegCross[ci]);
-    const std::vector<char> spanHide = subSpanHidden(ch, spans, sp, occluded);
+        splitChainAtCrossings(nSegChain, chainSegCross[ci], cuspNode);
+    const std::vector<char> spanHide =
+        subSpanHidden(ch, spans, sp, occluded, cuspNode);
     const std::vector<Pt2> proj = projectChainSubSpans(ch, spans, spanHide, sp);
     // STROKE LAYER: wrap the visibility-tagged polyline as a parametric Stroke
     // (buildStroke), arc-length resample it (resampleStroke), then emit one ribbon
