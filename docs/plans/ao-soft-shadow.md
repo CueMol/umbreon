@@ -2,6 +2,8 @@
 
 ステータス: **実装完了**（branch `ao_impl_0620`）。AO=`8b8de83`、ハード影=`5b879f5`、ソフト影=`c9d0f2f`。既定 OFF で現行出力と bit-exact（canonical と byte 一致を確認）、AO/影は `tests/test_render.cpp` の解析テスト（render 102 checks）と density surface (`data/1ab0_scene6_densurf.pov`) の視覚確認で検証済み。CLI: `--ao-samples` / `--ao-distance` / `--ao-intensity` / `--shadows` / `--shadow-samples` / `--light-radius`。本ドキュメントは設計合意の記録（§0 プレタスクに OSPRay 監査の反映）。実装上の差異: 本編の commit 1-4 は単一コミット（AO）に集約、ヘルパは `frameFromNormal`/`safeNormalize`（`scene.hpp`）を再利用、二次レイ origin は幾何法線 `rh.hit.Ng` 方向へ adaptive eps オフセット。
 
+> **続編**: 本プランの binary 単一半径 AO を立体感向上のため拡張した品質版（multi-scale / 距離減衰 / bent normal 方向性 ambient / albedo multibounce / low-discrepancy / diffuse 減衰 / AOV 出力）は `docs/plans/ao-quality.md`（実装済み）。`computeAO` は温存し、enhancement 要求時のみ `computeAOQuality` に分岐するため、本プランの CLI/出力は不変（既定で bit-exact）。
+
 ## Context（なぜこの変更を行うか）
 
 umbreon は CueMol の POV-Ray 出力を Embree 直結で再現する single-bounce レンダラ。
