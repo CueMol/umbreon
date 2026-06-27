@@ -1,5 +1,6 @@
 #include "render/embree_renderer.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -15,6 +16,7 @@
 
 #include "render/hit_shader.hpp"
 #include "render/scene_build.hpp"
+#include "render/secondary_rays.hpp"
 #include "render/transparency.hpp"
 
 namespace umbreon {
@@ -24,7 +26,184 @@ namespace umbreon {
 // the detail namespace; pull it in so the driver below uses them unqualified.
 using namespace detail;
 
+namespace {
+
+// Ray query context for the self-face-excluding occlusion test. Derives from
+// RTCRayQueryContext (first member, as Embree requires) and carries the set of
+// mesh (geomID, primID) hits to REJECT -- the feature edge's own incident faces.
+// Embree passes a pointer to this through to the argument filter below.
+struct ExcludeFaceContext {
+  RTCRayQueryContext base;        // MUST be first (Embree reinterpret_casts it)
+  unsigned int meshGeomID;        // the mesh geometry id (RTC_INVALID if none)
+  unsigned int baseTriCount;      // de-indexed base tri count (for baked copies)
+  const int* faces;               // excluded base triangle ids
+  int nFaces;                     // count
+  // Freestyle TANGENTIAL-occluder rejection (ViewMapBuilder.cpp: fabs(u*normal) >
+  // 0.0001): a hit whose face is grazed nearly edge-on by the QI ray -- |dir . n|
+  // <= this cosine -- is NOT a real occluder (it is the silhouette's own grazing
+  // surface or a tessellation neighbour the ray skims), so the filter rejects it.
+  // This is the SCALE-INVARIANT self-occlusion discriminator that replaces the old
+  // distance dead-zone. <= 0 disables it (shadows/AO, which never set it).
+  float grazeCosEps;              // reject hit if |dir . normalize(Ng)| <= this
+  // Freestyle COINCIDENT-plane skip (GeomUtils::intersectRayPlane == COINCIDENT):
+  // a hit whose face PLANE passes through the silhouette point (the QI ray origin)
+  // is that point's OWN surface, not a real occluder. The perpendicular distance
+  // from the origin to the hit plane is tHit * |dir . normalize(Ng)| (the origin
+  // is on the ray, the hit is on its own plane), so a hit with that distance <=
+  // this epsilon is coincident (skip). A genuine front occluder a fold-gap away
+  // has a large perpendicular distance (count). World units; <= 0 disables.
+  float coplanarEps;
+};
+
+// Argument intersection filter: reject (do not count) a hit that lands on one of
+// the excluded incident faces of the mesh. With rtcOccluded1 + this filter a
+// rejected hit leaves the ray un-occluded, so the ray is occluded only by a
+// NON-excluded primitive -- exactly Freestyle's "count occluders, skip the
+// edge's own/adjacent faces" (ViewMapBuilder.cpp:2152-2195). N==1 here.
+void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
+  const auto* ctx = reinterpret_cast<const ExcludeFaceContext*>(args->context);
+  if (ctx == nullptr) return;
+  const bool doExclude = ctx->nFaces > 0;
+  const bool doGraze = ctx->grazeCosEps > 0.0f;
+  const bool doCoplanar = ctx->coplanarEps > 0.0f;
+  if (!doExclude && !doGraze && !doCoplanar) return;  // nothing to filter
+  int* valid = args->valid;
+  RTCHitN* hit = args->hit;
+  RTCRayN* ray = args->ray;
+  for (unsigned int i = 0; i < args->N; ++i) {
+    if (valid[i] == 0) continue;  // already invalid
+    const unsigned int geomID = RTCHitN_geomID(hit, args->N, i);
+    // (1) Self/adjacent FACE exclusion (the edge's own incident mesh triangles).
+    if (doExclude && geomID == ctx->meshGeomID) {
+      unsigned int primID = RTCHitN_primID(hit, args->N, i);
+      if (ctx->baseTriCount > 0) primID %= ctx->baseTriCount;  // undo baked copies
+      bool rejected = false;
+      for (int k = 0; k < ctx->nFaces; ++k) {
+        if (static_cast<unsigned int>(ctx->faces[k]) == primID) {
+          valid[i] = 0;  // reject this self-face hit (not an occluder)
+          rejected = true;
+          break;
+        }
+      }
+      if (rejected) continue;
+    }
+    // (2) TANGENTIAL (grazing) + (3) COINCIDENT-plane rejection. A face the QI ray
+    // hits nearly edge-on (grazing) OR whose plane passes through the silhouette
+    // point (coincident) is the silhouette's OWN surface, not a real occluder.
+    if (doGraze || doCoplanar) {
+      const float nx = RTCHitN_Ng_x(hit, args->N, i);
+      const float ny = RTCHitN_Ng_y(hit, args->N, i);
+      const float nz = RTCHitN_Ng_z(hit, args->N, i);
+      const float dx = RTCRayN_dir_x(ray, args->N, i);
+      const float dy = RTCRayN_dir_y(ray, args->N, i);
+      const float dz = RTCRayN_dir_z(ray, args->N, i);
+      const float nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
+      const float dlen = std::sqrt(dx * dx + dy * dy + dz * dz);
+      if (nlen > 0.0f && dlen > 0.0f) {
+        // |dir . n| / (|dir||n|): the cosine; and tHit*that-unnormalized-by-|n| is
+        // the perpendicular distance from the ray origin to the hit's plane.
+        const float dDotN = nx * dx + ny * dy + nz * dz;
+        const float c = std::fabs(dDotN) / (nlen * dlen);
+        if (doGraze && c <= ctx->grazeCosEps) {
+          valid[i] = 0;  // (2) grazed face: not an occluder
+          continue;
+        }
+        if (doCoplanar) {
+          // perp dist(origin, plane) = tHit * |dir . n| / |n| (dir already unit).
+          const float tHit = RTCRayN_tfar(ray, args->N, i);
+          const float perp = tHit * std::fabs(dDotN) / nlen;
+          if (perp <= ctx->coplanarEps) valid[i] = 0;  // (3) coincident self-surface
+        }
+      }
+    }
+  }
+}
+
+}  // namespace
+
+EmbreeRenderer::~EmbreeRenderer() { releaseEmbree(); }
+
+void EmbreeRenderer::releaseEmbree() {
+  if (scene_) {
+    rtcReleaseScene(scene_);
+    scene_ = nullptr;
+  }
+  if (device_) {
+    rtcReleaseDevice(device_);
+    device_ = nullptr;
+  }
+}
+
+bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
+                              const int* excludeFaces, int nExclude, float eps,
+                              float grazeCosEps, float coplanarEps) const {
+  if (!scene_) return false;  // no live BVH (edges/visibility not built)
+  const Vec3 d = q - p;
+  const float len = length(d);
+  if (len <= 0.0f) return false;
+  const Vec3 dir = {d.x / len, d.y / len, d.z / len};
+  // Trim both ends to the OPEN interval (0, raylength): a tiny absolute+relative
+  // epsilon clears the surface the ray leaves and excludes the target itself.
+  // Self-occlusion is handled by the FACE exclusion + TANGENTIAL rejection in the
+  // filter (Freestyle), so this is only a small numerical guard -- it must NOT be
+  // sized to swallow a nearby occluder (the ortho QI ray therefore uses a physical,
+  // not fixed-huge, length so eps*len stays small; see qiOccludedAt).
+  const float tnear = std::max(eps * len, eps);
+  const float tfar = len * (1.0f - eps);
+  if (tnear >= tfar) return false;
+
+  // Plain any-hit test only when NO filter stage is needed (no self-faces to
+  // exclude AND no tangential AND no coincident-plane rejection -- e.g. a non-QI
+  // caller like shadows/AO).
+  if ((excludeFaces == nullptr || nExclude == 0 ||
+       meshGeomID_ == static_cast<unsigned int>(-1)) &&
+      grazeCosEps <= 0.0f && coplanarEps <= 0.0f)
+    return detail::occluded(scene_, p, dir, tnear, tfar);
+
+  // Filtered any-hit test: the argument filter rejects (a) hits on the edge's own
+  // incident mesh faces and (b) faces grazed nearly edge-on (Freestyle self-face
+  // exclusion + tangential-occluder rejection), so neither is counted as an
+  // occluder.
+  RTCRay r;
+  r.org_x = p.x;
+  r.org_y = p.y;
+  r.org_z = p.z;
+  r.dir_x = dir.x;
+  r.dir_y = dir.y;
+  r.dir_z = dir.z;
+  r.tnear = tnear;
+  r.tfar = tfar;
+  r.mask = 0xFFFFFFFFu;
+  r.flags = 0;
+  r.time = 0.0f;
+
+  ExcludeFaceContext ctx;
+  rtcInitRayQueryContext(&ctx.base);
+  ctx.meshGeomID = meshGeomID_;
+  ctx.baseTriCount = meshBaseTriCount_;
+  ctx.faces = excludeFaces;
+  ctx.nFaces = (excludeFaces != nullptr &&
+                meshGeomID_ != static_cast<unsigned int>(-1))
+                   ? nExclude
+                   : 0;
+  ctx.grazeCosEps = grazeCosEps;
+  ctx.coplanarEps = coplanarEps;
+
+  RTCOccludedArguments oargs;
+  rtcInitOccludedArguments(&oargs);
+  oargs.flags = RTC_RAY_QUERY_FLAG_INVOKE_ARGUMENT_FILTER;
+  oargs.filter = excludeFaceFilter;
+  oargs.context = &ctx.base;
+
+  rtcOccluded1(scene_, &r, &oargs);
+  return r.tfar < 0.0f;  // a NON-excluded occluder was found
+}
+
 FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
+  // A renderer instance renders one scene; if reused, drop the previous BVH
+  // before building the new one (keeps the lifetime invariant simple).
+  releaseEmbree();
+
   RTCDevice device = rtcNewDevice(nullptr);
   if (!device) throw std::runtime_error("rtcNewDevice failed");
   rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
@@ -34,7 +213,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // propagating so render() leaks neither handle.
   BuiltScene built;
   try {
-    built = buildEmbreeScene(device, scene);
+    built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
   } catch (...) {
     rtcReleaseDevice(device);
     throw;
@@ -79,6 +258,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   res.height = H;
   res.color.assign(static_cast<std::size_t>(W) * H * 4, 0.0f);
   res.depth.assign(static_cast<std::size_t>(W) * H, 0.0f);
+  // Edge G-buffer AOVs: allocated ONLY when edges are enabled. With edges off
+  // these stay empty, so no extra memory is touched and the output path is
+  // byte-identical to the no-edge render.
+  if (opt.strokeEdges.enable) {
+    const std::size_t npix = static_cast<std::size_t>(W) * H;
+    res.viewZ.assign(npix, 0.0f);
+    res.normal.assign(npix * 3, 0.0f);
+    res.objectId.assign(npix, 0xFFFFFFFFu);
+    res.materialId.assign(npix, 0xFFFFFFFFu);
+  }
   res.effectiveTriangles = scene.effectiveTriangles();
 
   // Everything the per-hit shader reads, gathered once.
@@ -123,7 +312,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
       const PixelResult pr =
           integratePixel(sc, isVeil, org, rd, static_cast<uint32_t>(px),
-                         static_cast<uint32_t>(py), cappedRays);
+                         static_cast<uint32_t>(py), dir, cappedRays);
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
       res.color[pix * 4 + 0] = pr.r;
@@ -131,6 +320,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.color[pix * 4 + 2] = pr.b;
       res.color[pix * 4 + 3] = pr.a;
       res.depth[pix] = pr.depth;
+      // Edge G-buffer store: gated so the default path writes nothing extra.
+      if (opt.strokeEdges.enable) {
+        res.viewZ[pix] = pr.viewZ;
+        res.normal[pix * 3 + 0] = pr.worldNormal.x;
+        res.normal[pix * 3 + 1] = pr.worldNormal.y;
+        res.normal[pix * 3 + 2] = pr.worldNormal.z;
+        res.objectId[pix] = pr.objectId;
+        res.materialId[pix] = pr.materialId;
+      }
     }
   }
   });
@@ -147,8 +345,24 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();
 
-  rtcReleaseScene(built.scene);
-  rtcReleaseDevice(device);
+  // Record the mesh geometry identity so occluded() can map an excluded
+  // mesh-triangle id to an Embree (geomID, primID) hit for Freestyle self-face
+  // exclusion. The mesh is attached first (scene_build.cpp), so it is geomID 0
+  // when present; find it by kind to stay robust if the build order changes or
+  // the scene has no mesh.
+  meshGeomID_ = static_cast<unsigned int>(-1);  // RTC_INVALID_GEOMETRY_ID
+  for (std::size_t g = 0; g < built.records.size(); ++g)
+    if (built.records[g].kind == GeomKind::Mesh) {
+      meshGeomID_ = static_cast<unsigned int>(g);
+      break;
+    }
+  meshBaseTriCount_ = static_cast<unsigned int>(scene.mesh.triangleCount());
+
+  // Keep the device + committed scene ALIVE so the edge pass (run after this
+  // returns, before the box downsample) can ray-cast against the live BVH via
+  // occluded(). They are released in the destructor / on the next render().
+  device_ = device;
+  scene_ = built.scene;
   return res;
 }
 

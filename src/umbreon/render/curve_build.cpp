@@ -39,8 +39,8 @@ namespace detail {
 // 0 per geometry), so each gets its own primID-indexed side-tables and its own
 // GeomKind; shadeHit dispatches on the kind.
 void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene,
-                           const std::vector<Vec3>& bakeOffsets,
-                           BuiltScene& out) {
+                           const std::vector<Vec3>& bakeOffsets, BuiltScene& out,
+                           bool buildEdgeTables) {
   if (scene.cylinders.empty()) return;
 
   // Partition source cylinders by cap semantics BEFORE chaining so the chain
@@ -61,6 +61,7 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
     out.cylMat.reserve(segs);
     out.cylGroup.reserve(segs);
     out.cylOpacity1.reserve(segs);
+    if (buildEdgeTables) out.cylMatIndex.reserve(segs);
 
     // Curve buffers, built in chain order. Vertices are shared within a chain
     // (chainLen+1 vertices per chain), so segment j of a chain uses vertices
@@ -139,6 +140,10 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
           if (j < n - 1) fl |= RTC_CURVE_FLAG_NEIGHBOR_RIGHT;
           fbuf.push_back(fl);
           const Cylinder& c = scene.cylinders[openIdx[chain[j]]];
+          // Edge pass: raw per-segment material index in primID (= push) order.
+          if (buildEdgeTables)
+            out.cylMatIndex.push_back(
+                static_cast<uint32_t>(out.cylMatIndex.size()));
           out.cylColor.push_back(c.color);
           out.cylMat.push_back(c.material);
           out.cylGroup.push_back(c.group);
@@ -154,6 +159,7 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
 
     const std::size_t nSeg = ibuf.size();
     const std::size_t nVert = vbuf.size() / 4;
+    if (buildEdgeTables) out.cylMatCount = static_cast<uint32_t>(nSeg);
     RTCGeometry g =
         rtcNewGeometry(device, RTC_GEOMETRY_TYPE_ROUND_LINEAR_CURVE);
     auto* vb = static_cast<float*>(rtcSetNewGeometryBuffer(
@@ -186,6 +192,10 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
     out.cylCapMat.reserve(segs);
     out.cylCapGroup.reserve(segs);
     out.cylCapOpacity1.reserve(segs);
+    if (buildEdgeTables) {
+      out.cylCapMatIndex.reserve(segs);
+      out.cylCapMatCount = static_cast<uint32_t>(segs);
+    }
 
     std::vector<float> vbuf;         // 4 floats per vertex (x, y, z, radius)
     std::vector<unsigned int> ibuf;  // start-vertex index per segment
@@ -205,6 +215,9 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
         vbuf.push_back(c.p1.z + off.z);
         vbuf.push_back(c.radius);
         ibuf.push_back(base);  // segment uses vertices [base, base+1]
+        if (buildEdgeTables)
+          out.cylCapMatIndex.push_back(
+              static_cast<uint32_t>(out.cylCapMatIndex.size()));
         out.cylCapColor.push_back(c.color);
         out.cylCapMat.push_back(c.material);
         out.cylCapGroup.push_back(c.group);

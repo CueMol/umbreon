@@ -77,12 +77,33 @@ struct BuiltScene {
   std::vector<Material> cylCapMat;
   std::vector<uint16_t> cylCapGroup;
   std::vector<float> cylCapOpacity1;
+
+  // --- screen-space edges: per-primitive global material index side-tables ---
+  // Phase-1 (doc 3.3 option b): a RAW per-primitive index per kind (no Material
+  // dedup). The global materialId is offset by the running per-kind count so
+  // the four kinds occupy disjoint id ranges:
+  //   mesh tri  : triMaterialId[primID]                              (uint8)
+  //   sphere    : meshMatCount + sphereMatIndex[primID]
+  //   cyl       : meshMatCount + sphereMatCount + cylMatIndex[primID]
+  //   cylCapped : meshMatCount + sphereMatCount + cylMatCount + cylCapMatIndex
+  // Built only when edges are enabled (the gate is in EmbreeRenderer::render).
+  std::vector<uint32_t> sphereMatIndex;
+  std::vector<uint32_t> cylMatIndex;
+  std::vector<uint32_t> cylCapMatIndex;
+  uint32_t meshMatCount = 0;    // mesh material slots (<= 256; triMaterialId is uint8)
+  uint32_t sphereMatCount = 0;  // sphere material slots (raw == sphere count)
+  uint32_t cylMatCount = 0;     // cyl material slots    (raw == open-cyl count)
+  uint32_t cylCapMatCount = 0;  // cylCap material slots (raw == capped-cyl count)
 };
 
 // Build and commit every Embree geometry for `scene` on `device`, returning the
 // committed RTCScene and its side tables. Throws std::runtime_error (after
 // releasing the partial scene) if the Embree build reports an error.
-BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene);
+// `buildEdgeTables` (= RenderOptions::strokeEdges.enable) additionally fills the
+// per-primitive global material-index side-tables used by the edge G-buffer
+// capture; when false those tables stay empty (no extra allocation, byte-identical).
+BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
+                            bool buildEdgeTables = false);
 
 }  // namespace detail
 }  // namespace umbreon

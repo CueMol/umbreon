@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "render/render_types.hpp"
+
 namespace umbreon {
 
 // --------------------------------------------------------------------------
@@ -178,6 +180,12 @@ struct Sphere {
   Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
   Material material = Material::flatOutline();
   uint16_t group = 0;  // transparency group (CueMol section); 0 = default
+  // Origin tag for baked POV silhouette JOINT dots: the small black spheres
+  // CueMol emits at edge-line vertices (writePoint, "<sec>_sl_tex" texture) to
+  // round the outline polyline joints. Mirrors Cylinder::fromEdgeMacro so the
+  // edge passes can drop them alongside the baked edge_line cylinders (otherwise
+  // they survive as black speckles). Set in mesh2_reader; false for atom balls.
+  bool fromEdgeMacro = false;
 };
 
 // A shaded cylinder/capsule (CueMol "stick" / silhouette edge), rendered as a
@@ -200,6 +208,13 @@ struct Cylinder {
   // hidden inside the overlap of consecutive bonds (no protruding round cap).
   // true => `open` (round/chained edge); false => capped (flat-disk bond).
   bool open = false;
+  // Origin tag: true only for cylinders produced by the POV edge_line/edge_line2
+  // macros (baked-in POV silhouette outlines). Set exclusively in
+  // mesh2_reader parseEdgeLine; raw cylinder{} bonds (including a user's open
+  // black bond) keep it false. The screen-space edge pass uses this to drop the
+  // baked POV outlines so they do not double-draw against the generated edges,
+  // applied per section and only when --edges is on (graceful degradation).
+  bool fromEdgeMacro = false;
 };
 
 // --------------------------------------------------------------------------
@@ -257,6 +272,14 @@ struct Scene {
   // uses the additive model; ALL other transparency uses front-to-back "over"
   // (fragment alpha). Empty (default) => every transparent surface is over.
   std::vector<uint16_t> veilGroups;
+
+  // Per-section (per transparency group) stroke edge style, indexed by group id
+  // (objectId >> 2). Sized to groupNames.size() and pre-filled with
+  // StrokeEdgeOptions::defaultStyle when --edges is on, then overridden per --edge
+  // ID=spec. Empty (the default) means the stroke pass falls back to the global
+  // StrokeEdgeOptions::defaultStyle. Only consulted when
+  // RenderOptions::strokeEdges.enable is set.
+  std::vector<EdgeStyle> groupEdgeStyle;
 
   std::size_t instanceCount() const { return instanceOffsets.size(); }
   std::size_t effectiveTriangles() const {

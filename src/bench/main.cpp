@@ -18,6 +18,7 @@
 #include "image/image_io.hpp"
 #include "pov/pov_scene_reader.hpp"
 #include "povexport/pov_writer.hpp"
+#include "render/object_space_edges.hpp"
 #include "umbreon.hpp"
 
 namespace {
@@ -82,6 +83,9 @@ int main(int argc, char** argv) {
     const bool povMode = endsWith(opt.input, ".pov");
     umbreon::Scene scene;
     umbreon::RenderOptions ropt;
+    // Section names recovered by the .pov geometry parser (empty for the .inc
+    // path); used to resolve --edge / per-section styling after the input block.
+    std::vector<std::string> groupNames;
 
     if (povMode) {
       // ---- .pov path: reproduce the CueMol POV-Ray viewing setup. ----
@@ -187,6 +191,9 @@ int main(int argc, char** argv) {
                       kv.first.c_str(), a, g);
         }
       }
+      // Keep the section names for the post-block --edge resolution (the edge
+      // styles need ropt.strokeEdges.defaultStyle, populated after this block).
+      groupNames = geo.groupNames;
       scene.camera = ps.camera;
       scene.lights = ps.lights;
       scene.background = ps.background;
@@ -265,6 +272,129 @@ int main(int argc, char** argv) {
     ropt.transparency = opt.transparency;
     ropt.transparentBackground = opt.transparentBackground;
 
+    // Freestyle STROKE edges (--edges). The single strokeEdges.enable flag is the
+    // master gate for the whole --edges pipeline (G-buffer AOV capture, the
+    // stroke pass, and the baked-edge removal below). Off => byte-identical
+    // default path. The --stroke-* knobs are wired only when edges are on.
+    ropt.strokeEdges.enable = opt.edges;
+    if (opt.edges) {
+      ropt.strokeEdges.silhouette = opt.strokeSilhouette;
+      ropt.strokeEdges.crease = opt.strokeCrease;
+      ropt.strokeEdges.border = opt.strokeBorder;
+      ropt.strokeEdges.taper = opt.strokeTaper;
+      ropt.strokeEdges.smooth = opt.strokeSmooth;
+      if (opt.strokeThicknessSet)
+        ropt.strokeEdges.thickness =
+            static_cast<int>(opt.strokeThickness + 0.5f);
+      if (opt.strokeResampleSet)
+        ropt.strokeEdges.resampleStepPx =
+            static_cast<int>(opt.strokeResample + 0.5f);
+      if (opt.strokeCreaseDegSet)
+        ropt.strokeEdges.creaseAngleDeg = opt.strokeCreaseDeg;
+
+      // Per-section STROKE styling. The stroke pass (applyStrokeEdges) maps each
+      // EdgeNature onto an EdgeStyle::cls[] slot (Silhouette->Silhouette,
+      // Border->Object, Crease->Crease) and reads Scene::groupEdgeStyle[group].
+      // Seed defaultStyle so a bare "--edges on" enables exactly the natures the
+      // --stroke-* toggles select, inheriting the global stroke color/thickness;
+      // then resolve --edge ID=spec overrides against the section names (parallel
+      // to the --alpha loop, warn-on-miss). With groupEdgeStyle populated the
+      // stroke pass styles per section; an empty table would fall back to the
+      // single global stroke color.
+      const int kSilSlot = static_cast<int>(umbreon::EdgeClass::Silhouette);
+      const int kObjSlot = static_cast<int>(umbreon::EdgeClass::Object);
+      const int kCreaseSlot = static_cast<int>(umbreon::EdgeClass::Crease);
+      umbreon::EdgeStyle& ds = ropt.strokeEdges.defaultStyle;
+      auto seedSlot = [&](int slot, bool on) {
+        umbreon::EdgeClassStyle& cs = ds.cls[slot];
+        cs.enabled = on;
+        cs.color[0] = ropt.strokeEdges.color[0];
+        cs.color[1] = ropt.strokeEdges.color[1];
+        cs.color[2] = ropt.strokeEdges.color[2];
+        cs.opacity = ropt.strokeEdges.opacity;
+        cs.width = static_cast<float>(ropt.strokeEdges.thickness);
+      };
+      seedSlot(kSilSlot, opt.strokeSilhouette);
+      seedSlot(kObjSlot, opt.strokeBorder);
+      seedSlot(kCreaseSlot, opt.strokeCrease);
+
+      scene.groupEdgeStyle.assign(groupNames.size(), ds);
+      if (!opt.sectionEdge.empty()) {
+        std::map<std::string, int> gidx;
+        for (std::size_t i = 0; i < groupNames.size(); ++i)
+          gidx[groupNames[i]] = static_cast<int>(i);
+        for (const auto& kv : opt.sectionEdge) {
+          auto it = gidx.find(kv.first);
+          if (it == gidx.end()) {
+            std::fprintf(stderr,
+                         "warning: section '%s' not found (try --list-groups)\n",
+                         kv.first.c_str());
+            continue;
+          }
+          scene.groupEdgeStyle[it->second] = kv.second;
+          std::printf("  edge override: section %s (group %d)\n",
+                      kv.first.c_str(), it->second);
+        }
+      }
+    }
+    if (ropt.strokeEdges.enable) {
+      // Remove baked POV edge primitives (edge_line/edge_line2 -> open
+      // cylinders, tagged fromEdgeMacro) so they do not double-draw against the
+      // Freestyle STROKE edges. PER-SECTION policy: a baked edge is dropped ONLY
+      // when its group resolves to a section whose stroke EdgeStyle enables ANY
+      // drawn nature (Silhouette / Border->Object / Crease slot). A bare
+      // "--edges on" enables silhouette+crease+border for every section and so
+      // drops all baked POV outlines -- the clean drop-in replacement (strokes in
+      // their place). A section whose --edge override disables every nature keeps
+      // its baked POV outlines. Capped bonds (open == false,
+      // GeomKind::CylinderCapped) are NEVER removed. --keep-baked-edges on
+      // suppresses the filter entirely (A/B). Runs only with --edges on; with
+      // edges off this block does not execute, so nothing is filtered
+      // (byte-identical default).
+      if (!opt.keepBakedEdges &&
+          (!scene.cylinders.empty() || !scene.spheres.empty())) {
+        const std::size_t ng = scene.groupEdgeStyle.size();
+        const int kSil = static_cast<int>(umbreon::EdgeClass::Silhouette);
+        const int kObj = static_cast<int>(umbreon::EdgeClass::Object);
+        const int kCrease = static_cast<int>(umbreon::EdgeClass::Crease);
+        auto sectionRemovesBaked = [&](std::uint16_t g) -> bool {
+          if (g >= ng) return false;  // unaddressable group: keep baked edges
+          const umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
+          return es.cls[kSil].enabled || es.cls[kObj].enabled ||
+                 es.cls[kCrease].enabled;
+        };
+        const std::size_t before = scene.cylinders.size();
+        scene.cylinders.erase(
+            std::remove_if(scene.cylinders.begin(), scene.cylinders.end(),
+                           [&](const umbreon::Cylinder& c) {
+                             // Never drop capped bonds or non-edge cylinders.
+                             return c.fromEdgeMacro && c.open &&
+                                    sectionRemovesBaked(c.group);
+                           }),
+            scene.cylinders.end());
+        const std::size_t removed = before - scene.cylinders.size();
+        // Also drop the baked silhouette JOINT-DOT spheres (writePoint, tagged
+        // fromEdgeMacro) under the SAME per-section policy: CueMol rounds each
+        // edge polyline joint with a small black sphere, so removing only the
+        // cylinders leaves those spheres as black beads sitting on top of the
+        // stroke edges. Atom balls are not fromEdgeMacro and are never touched.
+        const std::size_t beforeS = scene.spheres.size();
+        scene.spheres.erase(
+            std::remove_if(scene.spheres.begin(), scene.spheres.end(),
+                           [&](const umbreon::Sphere& s) {
+                             return s.fromEdgeMacro &&
+                                    sectionRemovesBaked(s.group);
+                           }),
+            scene.spheres.end());
+        const std::size_t removedS = beforeS - scene.spheres.size();
+        if (removed > 0 || removedS > 0)
+          std::printf(
+              "  baked POV edges removed: %zu cylinders, %zu joint dots "
+              "(sections with a stroke nature enabled)\n",
+              removed, removedS);
+      }
+    }
+
     // Ambient occlusion (both paths). Off unless --ao-samples > 0; the radius is
     // an explicit --ao-distance, else the scene-scaled default (scene builder for
     // .inc, geometry bounds for .pov). AO darkens only the ambient term.
@@ -309,6 +439,58 @@ int main(int argc, char** argv) {
           tbb::global_control::max_allowed_parallelism,
           static_cast<std::size_t>(opt.threads));
 
+    // Analytic OBJECT-SPACE silhouette edges. The silhouette is camera-dependent,
+    // so this runs only now -- after scene.camera is assigned and the scene is
+    // fully assembled (geometry, per-section alpha, screen-space edge filtering) --
+    // and strictly BEFORE render(). It computes each sphere/cylinder's n.v==0
+    // contour in 3D and APPENDS it as thin flat-black open cylinders, so the ray
+    // tracer below handles visibility/occlusion/AA/fog for the edges for free.
+    // Off (the default) => nothing appended => byte-identical default render.
+    if (opt.objEdges) {
+      // Replace the baked POV outlines with generated ones: drop the baked
+      // edge_line cylinders AND their joint-dot spheres (both fromEdgeMacro) so
+      // the generated edges do not double-draw against them. --keep-baked-edges
+      // suppresses this for an A/B comparison.
+      if (!opt.keepBakedEdges) {
+        const std::size_t bc = scene.cylinders.size(), bs = scene.spheres.size();
+        scene.cylinders.erase(
+            std::remove_if(scene.cylinders.begin(), scene.cylinders.end(),
+                           [](const umbreon::Cylinder& c) { return c.fromEdgeMacro; }),
+            scene.cylinders.end());
+        scene.spheres.erase(
+            std::remove_if(scene.spheres.begin(), scene.spheres.end(),
+                           [](const umbreon::Sphere& s) { return s.fromEdgeMacro; }),
+            scene.spheres.end());
+        const std::size_t rc = bc - scene.cylinders.size();
+        const std::size_t rs = bs - scene.spheres.size();
+        if (rc > 0 || rs > 0)
+          std::printf("  baked POV edges removed: %zu cylinders, %zu joint dots\n", rc, rs);
+      }
+      umbreon::ObjectSpaceEdgeOptions silOpt;
+      silOpt.enable = true;
+      silOpt.width = opt.objEdgeWidth;
+      silOpt.raise = opt.objEdgeRaise;
+      silOpt.segments = opt.objEdgeSegments;
+      silOpt.clip = opt.objEdgeClip;
+      silOpt.creaseAngleDeg = opt.objEdgeCreaseDeg;
+      silOpt.meshHardEdgeDeg = opt.objEdgeHardDeg;
+      silOpt.meshSilhouette = opt.objEdgeMeshSil;
+      silOpt.meshCrease = opt.objEdgeMeshCrease;
+      silOpt.meshBorder = opt.objEdgeMeshBorder;
+      silOpt.meshCreaseSmoothVetoDeg = opt.objEdgeCreaseSmoothDeg;
+      silOpt.meshCreaseConvexOnly = opt.objEdgeCreaseConvexOnly;
+      silOpt.meshBorderCoplanarVetoDeg = opt.objEdgeBorderCoplanarDeg;
+      silOpt.meshCreaseMaxDegree = opt.objEdgeCreaseMaxDeg;
+      for (int k = 0; k < 3; ++k) silOpt.color[k] = opt.objEdgeColor[k];
+      const std::size_t before = scene.cylinders.size();
+      umbreon::generateObjectSpaceEdges(scene, silOpt);
+      std::printf(
+          "  object-space silhouette edges: +%zu cylinders "
+          "(width %.3f, raise %.3f, segments %d)\n",
+          scene.cylinders.size() - before, silOpt.width, silOpt.raise,
+          silOpt.segments);
+    }
+
     // umbreon backend: primary rays + direct POV local shading + fog + gamma.
     // This is exactly what CueMol will call (no POV-Ray SDL involved).
     // Report the TBB runtime backing the parallel render: the renderer
@@ -331,6 +513,65 @@ int main(int argc, char** argv) {
     umbreon::writeImage(opt.output, frame.width, frame.height,
                         frame.color.data(), 4);
     std::printf("wrote %s\n", opt.output.c_str());
+
+    // Debug AOV dump (verification only): false-color the G-buffer the edge pass
+    // captured. Requires --edges on (otherwise the AOVs are empty). The edge
+    // AOVs stay at the SUPERSAMPLE resolution (hiW x hiH), unlike the downsampled
+    // color, so dump at those dims (recovered from the buffer size).
+    if (!opt.dumpAovPrefix.empty()) {
+      if (!ropt.strokeEdges.enable) {
+        std::fprintf(stderr,
+                     "warning: --dump-aov ignored (needs --edges on)\n");
+      } else if (frame.objectId.empty()) {
+        std::fprintf(stderr, "warning: --dump-aov: no edge AOVs captured\n");
+      } else {
+        const int hiW = finalW * ss;
+        const int hiH = finalH * ss;
+        const std::size_t np = static_cast<std::size_t>(hiW) * hiH;
+        const uint32_t kBg = 0xFFFFFFFFu;
+        // Deterministic id -> RGB false color (background sentinel -> black).
+        auto idColor = [&](uint32_t id, float* rgb) {
+          if (id == kBg) { rgb[0] = rgb[1] = rgb[2] = 0.0f; return; }
+          uint32_t h = id * 2654435761u;  // Knuth multiplicative hash
+          rgb[0] = ((h >> 16) & 0xFF) / 255.0f;
+          rgb[1] = ((h >> 8) & 0xFF) / 255.0f;
+          rgb[2] = (h & 0xFF) / 255.0f;
+        };
+        std::vector<float> oimg(np * 3), mimg(np * 3), nimg(np * 3), zimg(np * 3);
+        // viewZ range over real (non-background) hits for normalization.
+        float zmin = 1e30f, zmax = -1e30f;
+        for (std::size_t i = 0; i < np; ++i) {
+          if (frame.objectId[i] == kBg) continue;
+          const float z = frame.viewZ[i];
+          zmin = std::min(zmin, z);
+          zmax = std::max(zmax, z);
+        }
+        const float zspan = (zmax > zmin) ? (zmax - zmin) : 1.0f;
+        for (std::size_t i = 0; i < np; ++i) {
+          idColor(frame.objectId[i], &oimg[i * 3]);
+          idColor(frame.materialId[i], &mimg[i * 3]);
+          // normal*0.5+0.5 (background = the zero vector -> mid grey).
+          for (int c = 0; c < 3; ++c)
+            nimg[i * 3 + c] = frame.normal[i * 3 + c] * 0.5f + 0.5f;
+          // Normalized view-z (near=0..far=1); background sentinel -> black.
+          float zn = 0.0f;
+          if (frame.objectId[i] != kBg)
+            zn = (frame.viewZ[i] - zmin) / zspan;
+          zimg[i * 3 + 0] = zimg[i * 3 + 1] = zimg[i * 3 + 2] = zn;
+        }
+        umbreon::writeImage(opt.dumpAovPrefix + "_objectId.png", hiW, hiH,
+                            oimg.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_materialId.png", hiW, hiH,
+                            mimg.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_normal.png", hiW, hiH,
+                            nimg.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_viewZ.png", hiW, hiH,
+                            zimg.data(), 3);
+        std::printf("  dumped AOVs: %s_{objectId,materialId,normal,viewZ}.png "
+                    "(%dx%d)\n",
+                    opt.dumpAovPrefix.c_str(), hiW, hiH);
+      }
+    }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;

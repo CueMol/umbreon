@@ -22,23 +22,32 @@ namespace umbreon {
 namespace detail {
 
 // One integrated pixel: linear HDR RGBA plus the near-hit depth (0 if the ray
-// escaped to the background).
+// escaped to the background). The trailing fields are the screen-space edge
+// G-buffer for the FIRST (nearest) hit; they keep their sentinel initials when
+// the ray escapes (no write at the no-hit break) and are only consumed when
+// RenderOptions::edges is enabled.
 struct PixelResult {
   float r = 0.0f;
   float g = 0.0f;
   float b = 0.0f;
   float a = 0.0f;
   float depth = 0.0f;
+  uint32_t objectId = 0xFFFFFFFFu;    // background sentinel
+  uint32_t materialId = 0xFFFFFFFFu;  // background sentinel
+  Vec3 worldNormal{0.0f, 0.0f, 0.0f};
+  float viewZ = 0.0f;                 // linear view-z (0 == background sentinel)
 };
 
 // Integrate one primary ray (origin `org`, direction `rd`) through the scene,
 // compositing transparency. (px, py) is the hi-res pixel for deterministic
 // secondary-ray sampling; `isVeil` flags the additive (group-alpha) sections;
-// `cappedRays` counts rays that exhaust the transparent-layer ceiling.
+// `camDir` is the camera forward axis (normalized) used to convert ray-tfar to
+// linear view-z for the edge G-buffer; `cappedRays` counts rays that exhaust the
+// transparent-layer ceiling.
 inline PixelResult integratePixel(const ShadeContext& sc,
                                   const std::vector<uint8_t>& isVeil,
                                   const Vec3& org, const Vec3& rd, uint32_t px,
-                                  uint32_t py,
+                                  uint32_t py, const Vec3& camDir,
                                   std::atomic<long long>& cappedRays) {
   RTCScene rscene = sc.built.scene;
   const RenderOptions& opt = sc.opt;
@@ -59,6 +68,12 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   Vec3 Cf{0.0f, 0.0f, 0.0f};  // over (fragment) premultiplied color
   float Af = 0.0f;            // over accumulated coverage
   float nearDepth = 0.0f;
+  // Edge G-buffer for the FIRST (nearest) hit. Initialized to the background
+  // sentinel; overwritten at the first shadeHit, untouched if the ray escapes.
+  uint32_t firstObjectId = 0xFFFFFFFFu;
+  uint32_t firstMaterialId = 0xFFFFFFFFu;
+  Vec3 firstNormal{0.0f, 0.0f, 0.0f};
+  float firstViewZ = 0.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -94,9 +109,21 @@ inline PixelResult integratePixel(const ShadeContext& sc,
         rh.hit.geomID >= sc.built.records.size()) {
       break;  // ray escaped: base stays the background
     }
-    if (nearDepth == 0.0f) nearDepth = rh.ray.tfar;
-
     const HitShade hs = shadeHit(sc, rh, rd, org, px, py);
+
+    // Capture the edge G-buffer from the FIRST (nearest) hit, before any
+    // opaque/transparent compositing decision, so edges draw against the
+    // frontmost visible surface. nearDepth doubles as the first-hit guard
+    // (it is 0 only before the first hit, see PixelResult sentinel rules).
+    if (nearDepth == 0.0f) {
+      nearDepth = rh.ray.tfar;
+      firstNormal = hs.normal;        // face-forwarded toward the viewer
+      firstObjectId = hs.objectId;
+      firstMaterialId = hs.materialId;
+      // Linear view-z = tfar * dot(rd, camDir): identity under ortho,
+      // slant-corrected under perspective (Mol* getViewZ analogue).
+      firstViewZ = rh.ray.tfar * dot(rd, camDir);
+    }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
       base = hs.color;  // nearest opaque surface = the floor
@@ -169,8 +196,15 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   float outA = sumBeta + vw * covEff;
   outA = std::fmin(1.0f, std::fmax(0.0f, outA));
 
-  return PixelResult{Cv.x + vw * baseEff.x, Cv.y + vw * baseEff.y,
-                     Cv.z + vw * baseEff.z, outA, nearDepth};
+  return PixelResult{Cv.x + vw * baseEff.x,
+                     Cv.y + vw * baseEff.y,
+                     Cv.z + vw * baseEff.z,
+                     outA,
+                     nearDepth,
+                     firstObjectId,
+                     firstMaterialId,
+                     firstNormal,
+                     firstViewZ};
 }
 
 }  // namespace detail
