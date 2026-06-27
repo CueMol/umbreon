@@ -219,6 +219,10 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--ao-diffuse") {
       o.aoDiffuseFactor =
           static_cast<float>(std::atof(value("--ao-diffuse").c_str()));
+    } else if (a == "--ao-write-aov") {
+      std::string v = value("--ao-write-aov");
+      if (o.ok && !parseBool(v, o.aoWriteAov))
+        fail("--ao-write-aov expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -467,7 +471,7 @@ void printUsage(const char* prog) {
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
       "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
       "  --stroke-self-exclude-rings <int> QI self-occlusion exclude radius  [6]\n"
-      "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
+      "  --dump-aov <prefix>      dump AOV images (--edges and/or --ao-write-aov)\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
@@ -484,6 +488,7 @@ void printUsage(const char* prog) {
       "  --ao-multibounce <on|off> albedo-aware AO (anti over-dark)   [off]\n"
       "  --ao-ld <on|off>         low-discrepancy AO sampling        [off]\n"
       "  --ao-diffuse <frac>      also darken direct diffuse in cavities [0]\n"
+      "  --ao-write-aov <on|off>  emit AO/G-buffer AOVs (with --dump-aov) [off]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"

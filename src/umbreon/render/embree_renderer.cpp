@@ -267,9 +267,20 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     if (opt.strokeEdges.enable || scene.fog.enabled)
       res.viewZ.assign(npix, 0.0f);
     if (opt.strokeEdges.enable) {
-      res.normal.assign(npix * 3, 0.0f);
       res.objectId.assign(npix, 0xFFFFFFFFu);
       res.materialId.assign(npix, 0xFFFFFFFFu);
+    }
+    // normal doubles as the OIDN guide / cache spatial key, so it is allocated
+    // for the edge pass OR the AO AOV dump. The remaining AO AOVs (albedo, the
+    // contact/shape split, bent normal, mean occluder distance) ride aoWriteAov.
+    if (opt.strokeEdges.enable || opt.aoWriteAov)
+      res.normal.assign(npix * 3, 0.0f);
+    if (opt.aoWriteAov) {
+      res.albedo.assign(npix * 3, 0.0f);
+      res.bentNormal.assign(npix * 3, 0.0f);
+      res.contactAo.assign(npix, 1.0f);
+      res.shapeAo.assign(npix, 1.0f);
+      res.avgHitDist.assign(npix, 0.0f);
     }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
@@ -334,13 +345,28 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.depth[pix] = pr.depth;
       // Plane eye-z store: written whenever allocated (edges or fog).
       if (!res.viewZ.empty()) res.viewZ[pix] = pr.viewZ;
-      // Remaining edge G-buffer: gated so the default path writes nothing extra.
-      if (opt.strokeEdges.enable) {
+      // Normal: written whenever allocated (edge pass or AO AOV dump).
+      if (!res.normal.empty()) {
         res.normal[pix * 3 + 0] = pr.worldNormal.x;
         res.normal[pix * 3 + 1] = pr.worldNormal.y;
         res.normal[pix * 3 + 2] = pr.worldNormal.z;
+      }
+      // Remaining edge G-buffer: gated so the default path writes nothing extra.
+      if (opt.strokeEdges.enable) {
         res.objectId[pix] = pr.objectId;
         res.materialId[pix] = pr.materialId;
+      }
+      // AO AOVs: albedo + contact/shape + bent normal + mean occluder distance.
+      if (opt.aoWriteAov) {
+        res.albedo[pix * 3 + 0] = pr.albedo.x;
+        res.albedo[pix * 3 + 1] = pr.albedo.y;
+        res.albedo[pix * 3 + 2] = pr.albedo.z;
+        res.bentNormal[pix * 3 + 0] = pr.bentNormal.x;
+        res.bentNormal[pix * 3 + 1] = pr.bentNormal.y;
+        res.bentNormal[pix * 3 + 2] = pr.bentNormal.z;
+        res.contactAo[pix] = pr.contactAo;
+        res.shapeAo[pix] = pr.shapeAo;
+        res.avgHitDist[pix] = pr.avgHitDist;
       }
     }
   }

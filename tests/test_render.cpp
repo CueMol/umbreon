@@ -1144,6 +1144,89 @@ int main() {
             errLd < errNoise);
   }
 
+  // ===== AO quality: AOV gate is byte-identical to color; AOVs are valid =====
+  // Enabling --ao-write-aov must not change the rendered color (AOVs live in
+  // separate buffers), and the captured albedo/normal/contact/shape must hold
+  // the expected values (albedo == pigment, normal == face normal).
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions base;
+    base.width = 5; base.height = 5;
+    base.aoSamples = 64;
+    base.aoDistance = 100.0f;
+    base.aoMultiScale = true;  // enhanced path so the contact/shape split runs
+    umbreon::RenderOptions off = base; off.aoWriteAov = false;
+    umbreon::RenderOptions on = base; on.aoWriteAov = true;
+    umbreon::FrameResult fo = umbreon::render(sc, off);
+    umbreon::FrameResult fn = umbreon::render(sc, on);
+    bool colorSame = fo.color.size() == fn.color.size();
+    for (std::size_t i = 0; colorSame && i < fo.color.size(); ++i)
+      if (fo.color[i] != fn.color[i]) colorSame = false;
+    s.check("AOV gate: color byte-identical with AOVs on", colorSame);
+    s.check("AOV gate: off leaves AOV buffers empty", fo.albedo.empty());
+    s.check("AOV gate: albedo populated when on", !fn.albedo.empty());
+    s.check("AOV gate: contactAo populated when on", !fn.contactAo.empty());
+    s.check("AOV gate: shapeAo populated when on", !fn.shapeAo.empty());
+    s.check("AOV: center albedo R ~ pigment",
+            approx(fn.albedo[kCenterPix * 3 + 0], 0.5f, 1e-4f));
+    s.check("AOV: center albedo G ~ pigment",
+            approx(fn.albedo[kCenterPix * 3 + 1], 0.6f, 1e-4f));
+    s.check("AOV: center normal ~ +z",
+            approx(fn.normal[kCenterPix * 3 + 2], 1.0f, 1e-3f));
+  }
+
+  // ===== AO quality: contact / shape are distinct per-scale values =====
+  // contact (small radius) and shape (mid+large radii) are returned UNBLENDED.
+  // A FAR occluder (beyond the contact radius, within the shape radius) drops
+  // shape while contact stays open; moving the occluder NEAR also drops contact.
+  {
+    using umbreon::Vec3;
+    auto cs = [&](float z, float& contact, float& shape) {
+      umbreon::Mesh m;
+      const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                          {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({1, 1, 1, 1});
+      }
+      const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                          {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(sl[i]);
+        m.normals.push_back({0, 0, -1});
+        m.colors.push_back({0, 0, 0, 1});
+      }
+      m.material.ambient = 1.0f;
+      m.material.diffuse = 0.0f;
+      umbreon::Scene sc;
+      sc.mesh = std::move(m);
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.aoSamples = 256;
+      o.aoDistance = 10.0f;  // contact radius 0.8, shape radii 3 and 10
+      o.aoMultiScale = true;
+      o.aoWriteAov = true;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      contact = f.contactAo[kCenterPix];
+      shape = f.shapeAo[kCenterPix];
+    };
+    float cFar, sFar, cNear, sNear;
+    cs(2.0f, cFar, sFar);   // beyond contact radius (0.8): contact stays open
+    cs(0.3f, cNear, sNear);  // within contact radius: contact drops
+    s.check("AO contact/shape: far occluder drops shape, not contact",
+            cFar > sFar + 0.1f);
+    s.check("AO contact/shape: near occluder drops contact too",
+            cNear < cFar - 0.1f);
+  }
+
   // ===== Hard shadows (per-light visibility; off by default) =====
   // A floor lit by an angled light, with a slab between the floor center and the
   // light (offset in +x so it clears the straight-down camera ray). Shadows on

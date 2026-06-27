@@ -27,6 +27,7 @@ struct Options {
   bool aoMultibounce = false;   // albedo-aware GTAO cubic (anti over-darkening)
   bool aoLowDiscrepancy = false; // Hammersley + per-pixel Cranley-Patterson rotation
   float aoDiffuseFactor = 0.0f; // 0 = ambient-only; >0 also darkens direct diffuse
+  bool aoWriteAov = false;      // emit AO/G-buffer AOVs (albedo/normal/contact/...)
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows

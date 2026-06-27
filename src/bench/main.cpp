@@ -400,6 +400,7 @@ int main(int argc, char** argv) {
     ropt.aoMultibounce = opt.aoMultibounce;
     ropt.aoLowDiscrepancy = opt.aoLowDiscrepancy;
     ropt.aoDiffuseFactor = opt.aoDiffuseFactor;
+    ropt.aoWriteAov = opt.aoWriteAov;
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;
@@ -513,21 +514,18 @@ int main(int argc, char** argv) {
                         frame.color.data(), 4);
     std::printf("wrote %s\n", opt.output.c_str());
 
-    // Debug AOV dump (verification only): false-color the G-buffer the edge pass
-    // captured. Requires --edges on (otherwise the AOVs are empty). The edge
-    // AOVs stay at the SUPERSAMPLE resolution (hiW x hiH), unlike the downsampled
-    // color, so dump at those dims (recovered from the buffer size).
+    // Debug AOV dump (verification only): false-color the captured AOVs. Two
+    // independent sources feed it: the edge pass G-buffer (--edges on, kept at
+    // the SUPERSAMPLE resolution) and the AO/cache AOVs (--ao-write-aov on,
+    // downsampled to the final resolution). Either, both, or neither may be on.
     if (!opt.dumpAovPrefix.empty()) {
-      if (!ropt.strokeEdges.enable) {
-        std::fprintf(stderr,
-                     "warning: --dump-aov ignored (needs --edges on)\n");
-      } else if (frame.objectId.empty()) {
-        std::fprintf(stderr, "warning: --dump-aov: no edge AOVs captured\n");
-      } else {
+      bool dumpedAny = false;
+      const uint32_t kBg = 0xFFFFFFFFu;
+      // Edge G-buffer AOVs (hi-res): object/material id false color, normal, z.
+      if (ropt.strokeEdges.enable && !frame.objectId.empty()) {
         const int hiW = finalW * ss;
         const int hiH = finalH * ss;
         const std::size_t np = static_cast<std::size_t>(hiW) * hiH;
-        const uint32_t kBg = 0xFFFFFFFFu;
         // Deterministic id -> RGB false color (background sentinel -> black).
         auto idColor = [&](uint32_t id, float* rgb) {
           if (id == kBg) { rgb[0] = rgb[1] = rgb[2] = 0.0f; return; }
@@ -537,7 +535,6 @@ int main(int argc, char** argv) {
           rgb[2] = (h & 0xFF) / 255.0f;
         };
         std::vector<float> oimg(np * 3), mimg(np * 3), nimg(np * 3), zimg(np * 3);
-        // viewZ range over real (non-background) hits for normalization.
         float zmin = 1e30f, zmax = -1e30f;
         for (std::size_t i = 0; i < np; ++i) {
           if (frame.objectId[i] == kBg) continue;
@@ -549,10 +546,8 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < np; ++i) {
           idColor(frame.objectId[i], &oimg[i * 3]);
           idColor(frame.materialId[i], &mimg[i * 3]);
-          // normal*0.5+0.5 (background = the zero vector -> mid grey).
           for (int c = 0; c < 3; ++c)
             nimg[i * 3 + c] = frame.normal[i * 3 + c] * 0.5f + 0.5f;
-          // Normalized view-z (near=0..far=1); background sentinel -> black.
           float zn = 0.0f;
           if (frame.objectId[i] != kBg)
             zn = (frame.viewZ[i] - zmin) / zspan;
@@ -566,10 +561,60 @@ int main(int argc, char** argv) {
                             nimg.data(), 3);
         umbreon::writeImage(opt.dumpAovPrefix + "_viewZ.png", hiW, hiH,
                             zimg.data(), 3);
-        std::printf("  dumped AOVs: %s_{objectId,materialId,normal,viewZ}.png "
-                    "(%dx%d)\n",
+        std::printf("  dumped edge AOVs: %s_{objectId,materialId,normal,viewZ}"
+                    ".png (%dx%d)\n",
                     opt.dumpAovPrefix.c_str(), hiW, hiH);
+        dumpedAny = true;
       }
+      // AO / cache AOVs (final res): albedo, contact/shape AO, bent normal, mean
+      // occluder distance (and normal, when not already dumped hi-res by edges).
+      if (ropt.aoWriteAov && !frame.contactAo.empty()) {
+        const int aw = frame.width, ah = frame.height;
+        const std::size_t np = static_cast<std::size_t>(aw) * ah;
+        std::vector<float> alb(np * 3), bent(np * 3), con(np * 3), shp(np * 3),
+            avg(np * 3);
+        const float invR = ropt.aoDistance > 0.0f ? 1.0f / ropt.aoDistance : 0.0f;
+        for (std::size_t i = 0; i < np; ++i) {
+          for (int c = 0; c < 3; ++c) alb[i * 3 + c] = frame.albedo[i * 3 + c];
+          for (int c = 0; c < 3; ++c)
+            bent[i * 3 + c] = frame.bentNormal[i * 3 + c] * 0.5f + 0.5f;
+          const float cc = frame.contactAo[i];
+          const float ss2 = frame.shapeAo[i];
+          float a = frame.avgHitDist[i] * invR;  // normalize by AO radius
+          if (a > 1.0f) a = 1.0f;
+          con[i * 3 + 0] = con[i * 3 + 1] = con[i * 3 + 2] = cc;
+          shp[i * 3 + 0] = shp[i * 3 + 1] = shp[i * 3 + 2] = ss2;
+          avg[i * 3 + 0] = avg[i * 3 + 1] = avg[i * 3 + 2] = a;
+        }
+        umbreon::writeImage(opt.dumpAovPrefix + "_albedo.png", aw, ah,
+                            alb.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_contactAo.png", aw, ah,
+                            con.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_shapeAo.png", aw, ah,
+                            shp.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_bentNormal.png", aw, ah,
+                            bent.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_avgHitDist.png", aw, ah,
+                            avg.data(), 3);
+        // Dump the AO-path normal only when the edge pass did not already (its
+        // hi-res normal takes precedence to avoid a dimension clash).
+        if (!ropt.strokeEdges.enable && frame.normal.size() == np * 3) {
+          std::vector<float> nimg(np * 3);
+          for (std::size_t i = 0; i < np; ++i)
+            for (int c = 0; c < 3; ++c)
+              nimg[i * 3 + c] = frame.normal[i * 3 + c] * 0.5f + 0.5f;
+          umbreon::writeImage(opt.dumpAovPrefix + "_normal.png", aw, ah,
+                              nimg.data(), 3);
+        }
+        std::printf("  dumped AO AOVs: %s_{albedo,contactAo,shapeAo,bentNormal,"
+                    "avgHitDist}.png (%dx%d)\n",
+                    opt.dumpAovPrefix.c_str(), aw, ah);
+        dumpedAny = true;
+      }
+      if (!dumpedAny)
+        std::fprintf(
+            stderr,
+            "warning: --dump-aov ignored (needs --edges or --ao-write-aov on)\n");
     }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

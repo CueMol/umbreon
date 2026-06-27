@@ -227,6 +227,14 @@ struct FrameResult {
   std::vector<float> viewZ;          // width*height   linear view-z (edge-only)
   std::vector<std::uint32_t> objectId;    // width*height   per-pixel object id
   std::vector<std::uint32_t> materialId;  // width*height   per-pixel material id
+  // AO / surface-irradiance-cache AOVs: sized and written ONLY when
+  // RenderOptions::aoWriteAov is on (else left empty, keeping the default path
+  // byte-identical). albedo/normal above are the OIDN guide; these are the AO
+  // contact/shape split, the bent normal and the mean occluder distance.
+  std::vector<float> contactAo;   // width*height   small-radius (contact) openness
+  std::vector<float> shapeAo;     // width*height   mid+large-radius openness
+  std::vector<float> bentNormal;  // width*height*3 average unoccluded direction
+  std::vector<float> avgHitDist;  // width*height   mean occluder distance (world)
   double renderSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
 };
