@@ -82,11 +82,14 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
     // AO darkens ONLY the ambient term; gated off by default (aoSamples == 0)
     // so the flag-less render stays bit-exact (aoFactor == 1 -> x*1 == x).
-    float aoFactor = 1.0f;
+    // aoFactor is per-channel (Vec3); the legacy path fills {s,s,s} so the
+    // ambient float ops are unchanged.
+    Vec3 aoFactor{1.0f, 1.0f, 1.0f};
     if (c.opt.aoSamples > 0) {
       const float rawAO = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
                                     c.opt.aoDistance, px, py, c.opt.width);
-      aoFactor = 1.0f - c.opt.aoIntensity * (1.0f - rawAO);
+      const float s = 1.0f - c.opt.aoIntensity * (1.0f - rawAO);
+      aoFactor = Vec3{s, s, s};
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, c.ambLight, c.bg,
                           c.opt.specularScale, aoFactor, P, Ng, secEps, rscene,
@@ -142,8 +145,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
     const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
     hs.color = shadeLocal(pm, C, N, V, c.lights, c.ambLight, c.bg,
-                          c.opt.specularScale, 1.0f, P, Ng, secEps, rscene, false,
-                          1, px, py);
+                          c.opt.specularScale, Vec3{1.0f, 1.0f, 1.0f}, P, Ng,
+                          secEps, rscene, false, 1, px, py);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]
