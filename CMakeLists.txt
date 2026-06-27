@@ -41,9 +41,7 @@ add_library(bench_core STATIC
   src/bench/pov/pov_lexer.cpp
   src/bench/pov/pov_scene_reader.cpp
   src/bench/geom/mesh2_reader.cpp
-  src/bench/geom/scene_builder.cpp
   src/bench/image/image_io.cpp
-  src/bench/povexport/pov_writer.cpp
   src/bench/cli.cpp
 )
 target_include_directories(bench_core PUBLIC src/bench src/umbreon)

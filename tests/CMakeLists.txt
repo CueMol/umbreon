@@ -8,10 +8,6 @@ add_test(
   NAME mesh2_reader
   COMMAND test_mesh2_reader ${CMAKE_SOURCE_DIR}/data/test1.inc)
 
-add_executable(test_scene_builder test_scene_builder.cpp)
-target_link_libraries(test_scene_builder PRIVATE bench_core)
-add_test(NAME scene_builder COMMAND test_scene_builder)
-
 add_executable(test_math test_math.cpp)
 target_link_libraries(test_math PRIVATE bench_core)
 add_test(NAME math COMMAND test_math)
@@ -39,6 +35,10 @@ if(TARGET umbreon)
   target_link_libraries(test_render PRIVATE umbreon)
   add_test(NAME render COMMAND test_render)
 
+  add_executable(test_mesh_indexed test_mesh_indexed.cpp)
+  target_link_libraries(test_mesh_indexed PRIVATE umbreon)
+  add_test(NAME mesh_indexed COMMAND test_mesh_indexed)
+
   add_executable(test_edges_default test_edges_default.cpp)
   target_link_libraries(test_edges_default PRIVATE umbreon)
   add_test(NAME edges_default COMMAND test_edges_default)
@@ -50,4 +50,17 @@ if(TARGET umbreon)
   add_executable(test_stroke_edges test_stroke_edges.cpp)
   target_link_libraries(test_stroke_edges PRIVATE umbreon)
   add_test(NAME stroke_edges COMMAND test_stroke_edges)
+
+  # Real-data edge-pass equivalence: indexed vs de-indexed mesh must render the
+  # same with stroke edges on. Loads .pov scenes via bench_core, renders via
+  # umbreon. Screen-space tube/ribbon edge-validation scenes + a ribbon scene.
+  add_executable(test_edge_regression test_edge_regression.cpp)
+  target_link_libraries(test_edge_regression PRIVATE umbreon bench_core)
+  add_test(
+    NAME edge_regression
+    COMMAND test_edge_regression
+            ${CMAKE_SOURCE_DIR}/data/edges/edge_tube1.pov
+            ${CMAKE_SOURCE_DIR}/data/edges/edge_ribbon1.pov
+            ${CMAKE_SOURCE_DIR}/data/edges/edge_ribbon2.pov
+            ${CMAKE_SOURCE_DIR}/data/1ab0_scene1.pov)
 endif()

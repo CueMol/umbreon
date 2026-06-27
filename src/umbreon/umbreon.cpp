@@ -130,9 +130,9 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     double elsum = 0.0;
     const std::size_t nTri = scene.mesh.triangleCount();
     for (std::size_t t = 0; t < nTri; ++t) {
-      const Vec3& a = scene.mesh.positions[t * 3 + 0];
-      const Vec3& b = scene.mesh.positions[t * 3 + 1];
-      const Vec3& c = scene.mesh.positions[t * 3 + 2];
+      const Vec3& a = scene.mesh.positions[scene.mesh.cornerVertex(t * 3 + 0)];
+      const Vec3& b = scene.mesh.positions[scene.mesh.cornerVertex(t * 3 + 1)];
+      const Vec3& c = scene.mesh.positions[scene.mesh.cornerVertex(t * 3 + 2)];
       elsum += length(b - a) + length(c - b) + length(a - c);
     }
     const float meanEdge =

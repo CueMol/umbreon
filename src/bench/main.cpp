@@ -14,10 +14,8 @@
 
 #include "cli.hpp"
 #include "geom/mesh2_reader.hpp"
-#include "geom/scene_builder.hpp"
 #include "image/image_io.hpp"
 #include "pov/pov_scene_reader.hpp"
-#include "povexport/pov_writer.hpp"
 #include "render/object_space_edges.hpp"
 #include "umbreon.hpp"
 
@@ -80,15 +78,20 @@ int main(int argc, char** argv) {
   }
 
   try {
-    const bool povMode = endsWith(opt.input, ".pov");
+    if (!endsWith(opt.input, ".pov")) {
+      std::fprintf(stderr,
+                   "error: input must be a .pov scene file (got '%s')\n",
+                   opt.input.c_str());
+      return 2;
+    }
     umbreon::Scene scene;
     umbreon::RenderOptions ropt;
-    // Section names recovered by the .pov geometry parser (empty for the .inc
-    // path); used to resolve --edge / per-section styling after the input block.
+    // Section names recovered by the .pov geometry parser; used to resolve
+    // --edge / per-section styling after the input block.
     std::vector<std::string> groupNames;
 
-    if (povMode) {
-      // ---- .pov path: reproduce the CueMol POV-Ray viewing setup. ----
+    {
+      // ---- reproduce the CueMol POV-Ray viewing setup. ----
       const int W = opt.widthSet ? opt.width : 300;
       const int H = opt.heightSet ? opt.height : 300;
 
@@ -178,9 +181,20 @@ int main(int argc, char** argv) {
           // Group alpha MULTIPLIES the intrinsic (fragment) opacity, so the two
           // are orthogonal: group 0.5 x fragment 0.5 = 0.25. A fully opaque
           // fragment (1.0) just becomes the group alpha (no change vs before).
+          // Apply ONCE per vertex: with an indexed mesh a vertex is shared by
+          // several triangles of the group, and multiplying per corner would
+          // over-apply `a`. The per-block weld keeps each vertex in one group.
+          std::vector<uint8_t> alphaTouched(scene.mesh.vertexCount(), 0);
           for (std::size_t t = 0; t < scene.mesh.triangleCount(); ++t)
             if (scene.mesh.groupForTri(t) == g)
-              for (int k = 0; k < 3; ++k) scene.mesh.colors[3 * t + k].w *= a;
+              for (int k = 0; k < 3; ++k) {
+                const uint32_t v =
+                    scene.mesh.cornerVertex(t * 3 + static_cast<std::size_t>(k));
+                if (!alphaTouched[v]) {
+                  scene.mesh.colors[v].w *= a;
+                  alphaTouched[v] = 1;
+                }
+              }
           for (umbreon::Sphere& s : scene.spheres)
             if (s.group == g) s.color.w *= a;
           for (umbreon::Cylinder& c : scene.cylinders)
@@ -236,36 +250,6 @@ int main(int argc, char** argv) {
       // unless the user overrides it explicitly.
       if (opt.specularScaleSet) ropt.specularScale = opt.specularScale;
       std::printf("rendering %dx%d  backend=umbreon (embree)\n", W, H);
-    } else {
-      // ---- .inc path: legacy auto-framed scene with the instance grid. ----
-      std::printf("reading mesh2 from %s\n", opt.input.c_str());
-      umbreon::Mesh mesh = umbreon::readMesh2FromFile(opt.input);
-      std::printf("  %zu triangles, %zu vertices (de-indexed)\n",
-                  mesh.triangleCount(), mesh.vertexCount());
-
-      umbreon::BuildOptions bopt;
-      bopt.gridN = opt.gridN;
-      bopt.spacing = opt.spacing;
-      bopt.lightIntensity = opt.lightIntensity;
-      bopt.ambientIntensity = opt.ambientIntensity;
-      scene = umbreon::buildScene(mesh, bopt);
-      std::printf("  grid %d^3 = %zu instances, %zu effective triangles\n",
-                  opt.gridN, scene.instanceCount(), scene.effectiveTriangles());
-
-      // Optionally emit an equivalent POV-Ray scene for benchmarking.
-      if (!opt.emitPov.empty()) {
-        umbreon::PovWriteOptions povOpt;
-        povOpt.width = opt.width;
-        povOpt.height = opt.height;
-        povOpt.radiosity = opt.povRadiosity;
-        umbreon::writePovScene(opt.emitPov, scene, povOpt);
-        std::printf("wrote POV-Ray scene %s (radiosity %s)\n",
-                    opt.emitPov.c_str(), opt.povRadiosity ? "on" : "off");
-      }
-
-      ropt.width = opt.width;
-      ropt.height = opt.height;
-      std::printf("rendering %dx%d\n", ropt.width, ropt.height);
     }
 
     // Single-layer transparency controls (apply to both input paths).
@@ -422,7 +406,7 @@ int main(int argc, char** argv) {
     // coverage best).
     const int povDefaultSs = 3;
     const int ss = std::max(
-        1, (povMode && !opt.supersampleSet) ? povDefaultSs : opt.supersample);
+        1, !opt.supersampleSet ? povDefaultSs : opt.supersample);
     ropt.supersample = ss;
     const int finalW = ropt.width, finalH = ropt.height;
     if (ss > 1)
@@ -507,7 +491,7 @@ int main(int argc, char** argv) {
     if (scene.fog.enabled)
       std::printf("  applied fog (type %d, distance %.3f)\n", scene.fog.type,
                   scene.fog.distance);
-    if (povMode && std::fabs(scene.assumedGamma - 1.0f) > 1.0e-4f)
+    if (std::fabs(scene.assumedGamma - 1.0f) > 1.0e-4f)
       std::printf("  applied assumed_gamma %.3f\n", scene.assumedGamma);
 
     umbreon::writeImage(opt.output, frame.width, frame.height,

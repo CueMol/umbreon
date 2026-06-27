@@ -1,7 +1,12 @@
 # umbreon: Mesh を indexed 化する refactoring プラン
 
-ステータス: **提案（未着手・別機会に実施）**。本ドキュメントは設計合意の記録のみ。
-実装挙動は現状未変更。調査は branch `feat/screenspace-edges` 上で実施（2026-06-27）。
+ステータス: **実装済み（2026-06-27）**。本ドキュメントは設計合意の記録。実装は
+index-optional `Mesh`（`scene.hpp`）＋ load 時 weld（`mesh2_reader.cpp::buildIndexedBlock`、
+描画用は厳密属性 dedup・トポロジ用は `render/mesh_weld.hpp` の位置クラス `posClass`）＋
+Embree indexed build（`scene_build.cpp`）＋ 特徴線抽出の posClass 消費（`mesh_feature_edges.cpp`、
+posClass 無し時は自前 weld へ fallback）。検証は `tests/test_mesh_indexed.cpp`（合成）と
+`tests/test_edge_regression.cpp`（実データ: edge_tube1/ribbon1/ribbon2 + 1ab0_scene1 を
+edges-on で indexed vs de-indexed bit-identical 比較）。ribbon1 で頂点 ~6x 削減。
 
 > 注意（スコープ外）: この refactoring は **メモリ効率・データ構造の整理** が目的であり、
 > grazing twist で外形線が欠ける **cusp バグとは無関係**（直らない）。cusp は別件

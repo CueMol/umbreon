@@ -35,14 +35,19 @@ int main(int argc, char** argv) {
     )POV";
     umbreon::Mesh m = umbreon::readMesh2FromString(src);
     s.check_eq("synthetic: triangle count", m.triangleCount(), std::size_t(2));
-    s.check_eq("synthetic: de-indexed vertex count", m.vertexCount(),
+    // The two faces share positions v1 and v2, but those corners carry
+    // different colors (C0 vs C1), so the exact-attribute weld keeps them on
+    // separate vertices: 6 render vertices, one per corner here.
+    s.check_eq("synthetic: vertex count (corners split by color)",
+               m.vertexCount(), std::size_t(6));
+    s.check_eq("synthetic: index size == 3*triangleCount", m.index.size(),
                std::size_t(6));
-    s.check("synthetic: face 0 resolves to C0 (red)",
-            m.colors[0].x == 1.0f && m.colors[0].y == 0.0f &&
-                m.colors[0].z == 0.0f);
-    s.check("synthetic: face 1 resolves to C1 (blue)",
-            m.colors[3].x == 0.0f && m.colors[3].y == 0.0f &&
-                m.colors[3].z == 1.0f);
+    s.check("synthetic: face 0 corner 0 resolves to C0 (red)",
+            m.colors[m.index[0]].x == 1.0f && m.colors[m.index[0]].y == 0.0f &&
+                m.colors[m.index[0]].z == 0.0f);
+    s.check("synthetic: face 1 corner 0 resolves to C1 (blue)",
+            m.colors[m.index[3]].x == 0.0f && m.colors[m.index[3]].y == 0.0f &&
+                m.colors[m.index[3]].z == 1.0f);
     s.check("synthetic: macro-local finish did not leak into material",
             std::fabs(m.material.diffuse - 0.8f) < 1e-4f);
   }
@@ -63,8 +68,8 @@ int main(int argc, char** argv) {
     )POV";
     umbreon::Mesh m = umbreon::readMesh2FromString(src);
     s.check("expr: A*0.25+B*0.75 evaluates to 0.25 gray",
-            std::fabs(m.colors[0].x - 0.25f) < 1e-5f &&
-                std::fabs(m.colors[0].z - 0.25f) < 1e-5f);
+            std::fabs(m.colors[m.index[0]].x - 0.25f) < 1e-5f &&
+                std::fabs(m.colors[m.index[0]].z - 0.25f) < 1e-5f);
   }
 
   // --- cylinder cap semantics: the `open` flag ---------------------------
@@ -120,8 +125,15 @@ int main(int argc, char** argv) {
     umbreon::Mesh m = umbreon::readMesh2FromFile(argv[1]);
     s.check_eq("test1.inc: triangle count", m.triangleCount(),
                std::size_t(968));
-    s.check_eq("test1.inc: de-indexed vertex count", m.vertexCount(),
-               std::size_t(2904));
+    // Welded (indexed) vertex count: far fewer than the 2904 de-indexed corners.
+    s.check_eq("test1.inc: welded vertex count", m.vertexCount(),
+               std::size_t(514));
+    s.check("test1.inc: indexing dedups vertices",
+            m.vertexCount() < 3 * m.triangleCount());
+    s.check("test1.inc: index size == 3*triangleCount",
+            m.index.size() == 3 * m.triangleCount());
+    s.check("test1.inc: posClass sized per vertex",
+            m.posClass.size() == m.vertexCount() && m.posClassCount > 0);
     s.check("test1.inc: normals present",
             m.normals.size() == m.positions.size());
     s.check("test1.inc: colors present",
