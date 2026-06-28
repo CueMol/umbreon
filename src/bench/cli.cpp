@@ -341,6 +341,14 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--obj-edge-mesh-border");
       if (o.ok && !parseBool(v, o.objEdgeMeshBorder))
         fail("--obj-edge-mesh-border expects on/off");
+    } else if (a == "--obj-edge-visibility") {
+      std::string v = value("--obj-edge-visibility");
+      if (o.ok && !parseBool(v, o.objEdgeVisibility))
+        fail("--obj-edge-visibility expects on/off");
+    } else if (a == "--obj-edge-only") {
+      std::string v = value("--obj-edge-only");
+      if (o.ok && !parseBool(v, o.objEdgeOnly))
+        fail("--obj-edge-only expects on/off");
     } else if (a == "--stroke-thickness") {
       o.strokeThickness =
           static_cast<float>(std::atof(value("--stroke-thickness").c_str()));
@@ -460,6 +468,8 @@ void printUsage(const char* prog) {
       "  --obj-edge-mesh-sil <on|off> mesh smooth n.v==0 silhouette        [on]\n"
       "  --obj-edge-mesh-crease <on|off> mesh crease (sharp-fold) edges   [off]\n"
       "  --obj-edge-mesh-border <on|off> mesh open-boundary edges          [on]\n"
+      "  --obj-edge-visibility <on|off> object-space hidden-line clip      [off]\n"
+      "  --obj-edge-only <on|off> render ONLY edges (drop surface, verify)  [off]\n"
       "  --stroke-thickness <float> stroke full width, final px             [2]\n"
       "  --stroke-resample <float> stroke arc-length resample step, px      [2]\n"
       "  --edge-crease-deg <float> stroke crease dihedral threshold (deg)  [30]\n"

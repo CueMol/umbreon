@@ -47,6 +47,10 @@ if(TARGET umbreon)
   target_link_libraries(test_object_space_edges PRIVATE umbreon)
   add_test(NAME object_space_edges COMMAND test_object_space_edges)
 
+  add_executable(test_edge_visibility test_edge_visibility.cpp)
+  target_link_libraries(test_edge_visibility PRIVATE umbreon)
+  add_test(NAME edge_visibility COMMAND test_edge_visibility)
+
   add_executable(test_stroke_edges test_stroke_edges.cpp)
   target_link_libraries(test_stroke_edges PRIVATE umbreon)
   add_test(NAME stroke_edges COMMAND test_stroke_edges)

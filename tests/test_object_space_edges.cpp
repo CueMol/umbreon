@@ -601,5 +601,45 @@ int main() {
             coneCreases(4) == 0);
   }
 
+  // ---- (N) edge_line2 transmissive fade (visibilityClip path) -------------
+  // A camera-facing triangle: with visibilityClip on, its border edges are all
+  // visible (only the triangle's own face is excluded), so the emitted edges
+  // carry the welded-vertex alpha. An all-opaque mesh stays uniform (opacity1<0);
+  // a uniformly semi-transparent mesh fades color.w and opacity1 to that alpha.
+  {
+    auto borderEdges = [](float alpha) {
+      Scene sc;
+      sc.camera.orthographic = true;
+      sc.camera.direction = {0, 0, -1};
+      auto& m = sc.mesh;
+      m.positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+      m.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+      m.colors = {{0, 0, 0, alpha}, {0, 0, 0, alpha}, {0, 0, 0, alpha}};
+      ObjectSpaceEdgeOptions o;
+      o.enable = true;
+      o.visibilityClip = true;
+      o.width = 0.05f;
+      o.meshSilhouette = false;
+      o.meshCrease = false;
+      o.meshBorder = true;
+      umbreon::generateObjectSpaceEdges(sc, o);
+      return sc.cylinders;
+    };
+    {
+      auto cyls = borderEdges(1.0f);
+      bool ok = !cyls.empty();
+      for (const Cylinder& c : cyls)
+        ok = ok && nearf(c.color.w, 1.0f) && c.opacity1 < 0.0f;
+      s.check("fade: opaque mesh => edges opaque + uniform (opacity1<0)", ok);
+    }
+    {
+      auto cyls = borderEdges(0.4f);
+      bool ok = !cyls.empty();
+      for (const Cylinder& c : cyls)
+        ok = ok && nearf(c.color.w, 0.4f) && nearf(c.opacity1, 0.4f);
+      s.check("fade: alpha-0.4 mesh => edge color.w==0.4 and opacity1==0.4", ok);
+    }
+  }
+
   return s.report();
 }

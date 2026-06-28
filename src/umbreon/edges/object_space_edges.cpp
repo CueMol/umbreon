@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "edges/analytic_silhouette.hpp"
+#include "edges/edge_mesh_bvh.hpp"
 #include "edges/mesh_feature_edges.hpp"
 #include "scene.hpp"
 
@@ -37,15 +38,18 @@ struct RawSeg {
 // flag is reserved for the baked POV macro edges (the screen-space pass filters
 // on it), and these analytic edges are a distinct producer.
 Cylinder makeEdge(const Vec3& a, const Vec3& b, const ObjectSpaceEdgeOptions& opt,
-                  uint16_t group) {
+                  uint16_t group, float op0 = 1.0f, float op1 = 1.0f) {
   Cylinder c;
   c.p0 = a;
   c.p1 = b;
   c.radius = opt.width > 0.0f ? opt.width : 0.0f;  // guard a negative CLI width
-  c.color = Vec4{opt.color[0], opt.color[1], opt.color[2], 1.0f};
+  c.color = Vec4{opt.color[0], opt.color[1], opt.color[2], op0};  // opacity at p0
   c.material = Material::flatOutline();
   c.group = group;
-  c.opacity1 = -1.0f;  // uniform opacity along the segment
+  // edge_line2 transmissive fade: opacity1 carries p1's opacity; both opaque =>
+  // -1 (uniform), which also keeps such edges chainable (curve_build gates chain
+  // compatibility on the opacity1<0 sign).
+  c.opacity1 = (op0 >= 1.0f && op1 >= 1.0f) ? -1.0f : op1;
   c.open = true;       // round/chained edge (matches baked POV outlines)
   c.fromEdgeMacro = false;
   return c;
@@ -216,8 +220,45 @@ void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt) {
   ep.meshBorderCoplanarVetoDeg = opt.meshBorderCoplanarVetoDeg;
   ep.meshCreaseMaxDegree = opt.meshCreaseMaxDegree;
   const FeatureMesh fm = extractMeshFeatureEdges(scene.mesh, scene.camera, ep);
-  for (const FeatureSeg& s : fm.segs)
-    edges.push_back(makeEdge(s.p0, s.p1, opt, s.group));
+  if (!opt.visibilityClip) {
+    // Legacy path: emit each feature segment verbatim (ray tracer occludes the
+    // cylinders). Byte-identical default.
+    for (const FeatureSeg& s : fm.segs)
+      edges.push_back(makeEdge(s.p0, s.p1, opt, s.group));
+  } else {
+    // Object-space hidden-line: clip each edge to its visible spans against a
+    // throwaway mesh BVH (CueMol RendIntData_AABBTree ported to Embree). The
+    // exclude set is the edge's own incident faces (+ any 1-ring the extractor
+    // populated), so a grazing silhouette is not self-hidden.
+    const detail::EdgeBVH bvh = detail::buildEdgeMeshBVH(scene.mesh);
+    // Subdivision spacing ~ edgeWidth/2 (CueMol calcSilhIntrsec divw); fall back
+    // to the segment length when width is unset so a degenerate width still emits.
+    const float step = opt.width > 0.0f ? 0.5f * opt.width : 0.0f;
+    std::vector<int> excl;
+    for (const FeatureSeg& s : fm.segs) {
+      excl.clear();
+      if (s.face0 >= 0) excl.push_back(s.face0);
+      if (s.face1 >= 0) excl.push_back(s.face1);
+      for (int f : s.excludeFaces)
+        if (f >= 0) excl.push_back(f);
+      const int* ep2 = excl.empty() ? nullptr : excl.data();
+      const auto spans = detail::clipSegmentToVisibleSpans(
+          bvh, scene.camera, s.p0, s.p1, ep2, static_cast<int>(excl.size()), step);
+      // edge_line2 fade: interpolate the seg endpoint alphas at each visible
+      // span's clipped endpoints (continuous along the original edge).
+      const Vec3 segDir = s.p1 - s.p0;
+      const float segLen2 = dot(segDir, segDir);
+      auto alphaAt = [&](const Vec3& X) -> float {
+        if (segLen2 <= 0.0f) return s.alpha0;
+        float t = dot(X - s.p0, segDir) / segLen2;
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        return s.alpha0 + (s.alpha1 - s.alpha0) * t;
+      };
+      for (const auto& sp : spans)
+        edges.push_back(makeEdge(sp.first, sp.second, opt, s.group,
+                                 alphaAt(sp.first), alphaAt(sp.second)));
+    }
+  }
 
   scene.cylinders.insert(scene.cylinders.end(), edges.begin(), edges.end());
 }

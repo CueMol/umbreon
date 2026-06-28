@@ -70,6 +70,18 @@ struct ObjectSpaceEdgeOptions {
   bool meshSilhouette = true;  // smooth n.v==0 contour through faces (primary)
   bool meshCrease = true;      // sharp folds (gated below), face-normal dihedral
   bool meshBorder = true;      // open boundary edges (gated below)
+
+  // Object-space HIDDEN-LINE clip for the triangle-mesh edges (CueMol
+  // RendIntData_AABBTree visibility/clipping ported to Embree). When false (the
+  // default) each mesh FeatureSeg is emitted verbatim and the ray tracer alone
+  // occludes the resulting cylinders -- byte-identical to the legacy path. When
+  // true, a throwaway mesh BVH (edges/edge_mesh_bvh) splits each edge into its
+  // VISIBLE spans before emission, so an edge raised off the surface (or behind a
+  // transparent surface) is correctly hidden where it dips behind geometry,
+  // exactly as CueMol pre-removed the hidden parts before emitting edge_line.
+  // Analytic sphere/cylinder silhouettes still use the union-boundary clip + ray
+  // tracer (they are not part of the triangle mesh).
+  bool visibilityClip = false;
   // Hard-edge angle (degrees). CueMol ribbon meshes are deliberately NOT
   // water-tight: a sharp (rectangular beta-sheet) cross-section duplicates its
   // box-corner vertices with normals this far apart or more to encode the angular
