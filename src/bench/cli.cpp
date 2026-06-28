@@ -503,7 +503,7 @@ void printUsage(const char* prog) {
       "  --edge-qi-dots <on|off>  overlay pre-majority QI flags as dots (debug)[off]\n"
       "  --edge-qi-vertex-dots <on|off> overlay raw per-vertex QI vis dots (debug)[off]\n"
       "  --edge-qi-vertex-delta <float> offset vertex QI probe along mesh normal[0]\n"
-      "  --edge-qi-lift <float>   production QI normal-lift, abs units (0=legacy)[0.1]\n"
+      "  --edge-qi-lift <float>   production QI normal-lift, abs units (0=legacy)[0]\n"
       "  --edge-qi-split <on|off> with lift: on=per-sample split(B), off=majority(A)[off]\n"
       "  --edge-reject-concave <on|off> drop concave(valley) feature edges[on]\n"
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"

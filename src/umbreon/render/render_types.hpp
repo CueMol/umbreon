@@ -176,11 +176,11 @@ struct StrokeEdgeOptions {
   // occlusion ray (no self-face exclude / grazing / coplanar). This replaces those
   // self-occlusion heuristics with a geometric self-surface clearance, fixing the
   // hidden-line leak at tight folds. Absolute (not mesh-relative) because molecular
-  // coordinates have a fixed Angstrom scale. 0 = legacy heuristic QI. Default 0.1
-  // (concave-reject + approach A is the production combo). Falls back to legacy
-  // per-sample when the interpolated normal is degenerate (e.g. analytic sphere/
-  // cylinder chains with no mesh normal).
-  float qiNormalLift = 0.1f;
+  // coordinates have a fixed Angstrom scale. Default 0 = legacy heuristic QI
+  // (concave-reject alone is the production fix; lift is opt-in for tight folds).
+  // Falls back to legacy per-sample when the interpolated normal is degenerate
+  // (e.g. analytic sphere/cylinder chains with no mesh normal).
+  float qiNormalLift = 0.0f;
 
   // QI aggregation mode when qiNormalLift > 0 (--edge-qi-split). true = approach B:
   // per-sample visibility split into runs at transitions (no majority), so a hidden

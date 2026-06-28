@@ -186,9 +186,9 @@ struct Options {
   // vertex normal by this distance before casting (0 = at the vertex).
   float strokeQiVertexDelta = 0.0f;
   // --edge-qi-lift: PRODUCTION QI normal-lift (absolute world units). >0 switches
-  // the stroke QI to interpolated-normal-lift pure occlusion (0 = legacy QI).
-  // Default on; concave-reject + approach A is the production combo.
-  float strokeQiLift = 0.1f;
+  // the stroke QI to interpolated-normal-lift pure occlusion. Default 0 = legacy
+  // QI; concave-reject alone is the production fix, lift is opt-in for tight folds.
+  float strokeQiLift = 0.0f;
   // --edge-qi-split: with lift>0, true=approach B (per-sample split), false=A
   // (per-ViewEdge majority over the lifted sample). Default A (false).
   bool strokeQiSplit = false;
