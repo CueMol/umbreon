@@ -128,5 +128,39 @@ bool isPointVisibleToViewer(const EdgeBVH& bvh, const Vec3& P, const Camera& cam
   return isSegmentClear(bvh, P, Q, excludeFaces, nExclude);
 }
 
+std::vector<std::pair<Vec3, Vec3>> clipSegmentToVisibleSpans(
+    const EdgeBVH& bvh, const Camera& cam, const Vec3& a, const Vec3& b,
+    const int* excludeFaces, int nExclude, float step) {
+  std::vector<std::pair<Vec3, Vec3>> spans;
+  const Vec3 d = b - a;
+  const float len = length(d);
+  if (len <= 0.0f) return spans;
+  // No occluder mesh => the whole segment is visible (verbatim emit fallback).
+  if (!bvh.valid()) {
+    spans.emplace_back(a, b);
+    return spans;
+  }
+  const float s = step > 0.0f ? step : len;
+  const int K = std::max(2, static_cast<int>(std::ceil(len / s)));
+  auto pointAt = [&](int i) {
+    return a + d * (static_cast<float>(i) / static_cast<float>(K));
+  };
+  int runStart = -1;
+  auto emitRun = [&](int s0, int e0) {
+    if (e0 > s0) spans.emplace_back(pointAt(s0), pointAt(e0));
+  };
+  for (int i = 0; i <= K; ++i) {
+    const bool vis =
+        isPointVisibleToViewer(bvh, pointAt(i), cam, excludeFaces, nExclude);
+    if (vis && runStart < 0) runStart = i;
+    if (!vis && runStart >= 0) {
+      emitRun(runStart, i - 1);  // last visible sample closes the run
+      runStart = -1;
+    }
+  }
+  if (runStart >= 0) emitRun(runStart, K);
+  return spans;
+}
+
 }  // namespace detail
 }  // namespace umbreon

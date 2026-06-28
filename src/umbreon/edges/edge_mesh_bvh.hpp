@@ -18,6 +18,9 @@
 // Pure Embree; owns its own RTCDevice (independent of the renderer's).
 #pragma once
 
+#include <utility>
+#include <vector>
+
 #include <embree4/rtcore.h>
 
 #include "scene.hpp"
@@ -63,6 +66,19 @@ bool isSegmentClear(const EdgeBVH& bvh, const Vec3& P, const Vec3& Q,
 // isVertSilVisible (RendIntData_AABBTree.cpp:167) with umbreon face exclusion.
 bool isPointVisibleToViewer(const EdgeBVH& bvh, const Vec3& P, const Camera& cam,
                             const int* excludeFaces, int nExclude);
+
+// Split segment [a, b] into the maximal sub-spans that stay VISIBLE toward the
+// camera (object-space hidden-line clip). Samples the segment every ~`step` world
+// units (CueMol calcSilhIntrsec subdivision, divw == edgeWidth/2), tests each
+// sample with isPointVisibleToViewer (the edge's own faces in `excludeFaces`), and
+// returns one (start, end) pair per run of consecutive visible samples. An
+// invalid BVH (no mesh) returns the whole segment (one span). A fully hidden
+// segment returns none; a fully visible one returns a single span. The endpoints
+// of each returned span lie on sample points, so a partially hidden edge ends
+// exactly at the occlusion transition.
+std::vector<std::pair<Vec3, Vec3>> clipSegmentToVisibleSpans(
+    const EdgeBVH& bvh, const Camera& cam, const Vec3& a, const Vec3& b,
+    const int* excludeFaces, int nExclude, float step);
 
 }  // namespace detail
 }  // namespace umbreon

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "edges/analytic_silhouette.hpp"
+#include "edges/edge_mesh_bvh.hpp"
 #include "edges/mesh_feature_edges.hpp"
 #include "scene.hpp"
 
@@ -216,8 +217,34 @@ void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt) {
   ep.meshBorderCoplanarVetoDeg = opt.meshBorderCoplanarVetoDeg;
   ep.meshCreaseMaxDegree = opt.meshCreaseMaxDegree;
   const FeatureMesh fm = extractMeshFeatureEdges(scene.mesh, scene.camera, ep);
-  for (const FeatureSeg& s : fm.segs)
-    edges.push_back(makeEdge(s.p0, s.p1, opt, s.group));
+  if (!opt.visibilityClip) {
+    // Legacy path: emit each feature segment verbatim (ray tracer occludes the
+    // cylinders). Byte-identical default.
+    for (const FeatureSeg& s : fm.segs)
+      edges.push_back(makeEdge(s.p0, s.p1, opt, s.group));
+  } else {
+    // Object-space hidden-line: clip each edge to its visible spans against a
+    // throwaway mesh BVH (CueMol RendIntData_AABBTree ported to Embree). The
+    // exclude set is the edge's own incident faces (+ any 1-ring the extractor
+    // populated), so a grazing silhouette is not self-hidden.
+    const detail::EdgeBVH bvh = detail::buildEdgeMeshBVH(scene.mesh);
+    // Subdivision spacing ~ edgeWidth/2 (CueMol calcSilhIntrsec divw); fall back
+    // to the segment length when width is unset so a degenerate width still emits.
+    const float step = opt.width > 0.0f ? 0.5f * opt.width : 0.0f;
+    std::vector<int> excl;
+    for (const FeatureSeg& s : fm.segs) {
+      excl.clear();
+      if (s.face0 >= 0) excl.push_back(s.face0);
+      if (s.face1 >= 0) excl.push_back(s.face1);
+      for (int f : s.excludeFaces)
+        if (f >= 0) excl.push_back(f);
+      const int* ep2 = excl.empty() ? nullptr : excl.data();
+      const auto spans = detail::clipSegmentToVisibleSpans(
+          bvh, scene.camera, s.p0, s.p1, ep2, static_cast<int>(excl.size()), step);
+      for (const auto& sp : spans)
+        edges.push_back(makeEdge(sp.first, sp.second, opt, s.group));
+    }
+  }
 
   scene.cylinders.insert(scene.cylinders.end(), edges.begin(), edges.end());
 }

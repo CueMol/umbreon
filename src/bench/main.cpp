@@ -477,6 +477,7 @@ int main(int argc, char** argv) {
       silOpt.meshSilhouette = opt.objEdgeMeshSil;
       silOpt.meshCrease = opt.objEdgeMeshCrease;
       silOpt.meshBorder = opt.objEdgeMeshBorder;
+      silOpt.visibilityClip = opt.objEdgeVisibility;
       silOpt.meshCreaseSmoothVetoDeg = opt.objEdgeCreaseSmoothDeg;
       silOpt.meshCreaseConvexOnly = opt.objEdgeCreaseConvexOnly;
       silOpt.meshBorderCoplanarVetoDeg = opt.objEdgeBorderCoplanarDeg;

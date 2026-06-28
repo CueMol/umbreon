@@ -111,5 +111,41 @@ int main() {
             isSegmentClear(bvh, Vec3{0, 0, 0}, Vec3{0, 0, 4}, nullptr, 0));
   }
 
+  // ---- (8) clipSegmentToVisibleSpans: visible-interval split --------------
+  using umbreon::detail::clipSegmentToVisibleSpans;
+  {
+    // A segment in z=0 from x=-10 to x=10 toward the camera at (0,0,10). Each
+    // point P=(x,0,0) is hidden when its z=5 crossing (x*0.5, 0) lands in the
+    // wall triangle (|x*0.5| <~ 2.4 at y=0, i.e. |x| <~ 4.8). So the middle is
+    // hidden and the two ends are visible => exactly 2 spans.
+    auto spans = clipSegmentToVisibleSpans(bvh, persp, Vec3{-10, 0, 0},
+                                           Vec3{10, 0, 0}, nullptr, 0, 0.25f);
+    s.check("partially occluded segment => 2 spans", spans.size() == 2);
+    if (spans.size() == 2) {
+      // First span starts at the left end; last span ends at the right end.
+      s.check("span 0 starts at left end", spans[0].first.x <= -9.0f);
+      s.check("span 1 ends at right end", spans[1].second.x >= 9.0f);
+      // The hidden gap brackets the origin (x in ~[-4.8, 4.8]).
+      s.check("span 0 ends before the wall shadow", spans[0].second.x < 0.0f);
+      s.check("span 1 starts after the wall shadow", spans[1].first.x > 0.0f);
+    }
+
+    // A fully visible segment (in front of the wall, z=8 plane) => 1 span.
+    auto vis = clipSegmentToVisibleSpans(bvh, persp, Vec3{-3, 0, 8},
+                                         Vec3{3, 0, 8}, nullptr, 0, 0.25f);
+    s.check("fully visible segment => 1 span", vis.size() == 1);
+
+    // A fully hidden segment (short, centered behind the wall) => 0 spans.
+    auto hid = clipSegmentToVisibleSpans(bvh, persp, Vec3{-1, 0, 0},
+                                         Vec3{1, 0, 0}, nullptr, 0, 0.25f);
+    s.check("fully hidden segment => 0 spans", hid.empty());
+
+    // Invalid BVH => the whole segment is returned as one span (verbatim).
+    EdgeBVH empty;
+    auto whole = clipSegmentToVisibleSpans(empty, persp, Vec3{-1, 0, 0},
+                                           Vec3{1, 0, 0}, nullptr, 0, 0.25f);
+    s.check("invalid BVH => whole segment (1 span)", whole.size() == 1);
+  }
+
   return s.report();
 }
