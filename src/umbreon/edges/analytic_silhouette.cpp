@@ -1,9 +1,9 @@
 // Analytic silhouette extraction for the analytic primitives. See
-// render/analytic_silhouette.hpp. The emitters here were MOVED verbatim from the
+// edges/analytic_silhouette.hpp. The emitters here were MOVED verbatim from the
 // anonymous namespace of render/object_space_edges.cpp; the float expressions are
 // preserved exactly so `circumscribe == false` reproduces the former inline
 // obj-edges silhouette geometry bit-for-bit.
-#include "render/analytic_silhouette.hpp"
+#include "edges/analytic_silhouette.hpp"
 
 #include <cmath>
 #include <cstddef>

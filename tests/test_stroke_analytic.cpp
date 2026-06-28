@@ -27,8 +27,8 @@
 #include <cstddef>
 #include <vector>
 
-#include "render/analytic_silhouette.hpp"
-#include "render/stroke_edges.hpp"
+#include "edges/analytic_silhouette.hpp"
+#include "edges/stroke_edges.hpp"
 #include "scene.hpp"
 #include "test_util.hpp"
 #include "umbreon.hpp"

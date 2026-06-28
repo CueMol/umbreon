@@ -1,4 +1,4 @@
-#include "render/fog.hpp"
+#include "postprocess/fog.hpp"
 
 #include <cstddef>
 

@@ -16,7 +16,7 @@
 #include "geom/mesh2_reader.hpp"
 #include "image/image_io.hpp"
 #include "pov/pov_scene_reader.hpp"
-#include "render/object_space_edges.hpp"
+#include "edges/object_space_edges.hpp"
 #include "umbreon.hpp"
 
 namespace {

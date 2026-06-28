@@ -24,10 +24,18 @@ links), **`src/bench/`** is the CLI harness. The dependency is one-way —
   [docs/api/libumbreon.md](docs/api/libumbreon.md).
   - `src/umbreon/umbreon.{hpp,cpp}` — the `render()` facade (public header).
   - `src/umbreon/scene.hpp` — public scene / geometry / material API types.
-  - `src/umbreon/render/` — the rendering pipeline. `render_types.hpp` is
-    public; the build (`scene_build`, `curve_build`), shading (`shading`,
-    `secondary_rays`, `hit_shader`), `transparency` and the `fog` depth
-    post-process are internal.
+  - `src/umbreon/render/` — the core pipeline. `render_types.hpp` is public;
+    `pipeline` (frame orchestration), `embree_renderer`, and the scene/geometry
+    build (`scene_build`, `curve_build`) are internal.
+  - `src/umbreon/shading/` — the per-ray shading hot path: `hit_shader`,
+    `shading` (POV local illumination), `secondary_rays` (AO + shadow) and
+    `transparency`. Internal.
+  - `src/umbreon/edges/` — NPR edge rendering: screen-space strokes
+    (`stroke_edges`) and object-space silhouettes (`object_space_edges`), over
+    the shared extractors (`mesh_feature_edges`, `analytic_silhouette`,
+    `mesh_weld`). The first three headers are public.
+  - `src/umbreon/postprocess/` — the `fog` depth post-process and `image_ops`
+    (box-downsample / assumed-gamma / sRGB encode); `image_ops.hpp` is public.
 - **`bench_core`** (static library, pure C++17, `src/bench/`) — the `.pov`/`.inc`
   SDL parser (`pov/`, `geom/`), image IO (`image/`, PNG/PPM + PSNR/SSIM) and CLI
   option parsing (`cli.*`). No rendering-library dependency.

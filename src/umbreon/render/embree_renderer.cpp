@@ -14,10 +14,10 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
-#include "render/hit_shader.hpp"
+#include "shading/hit_shader.hpp"
 #include "render/scene_build.hpp"
-#include "render/secondary_rays.hpp"
-#include "render/transparency.hpp"
+#include "shading/secondary_rays.hpp"
+#include "shading/transparency.hpp"
 
 namespace umbreon {
 

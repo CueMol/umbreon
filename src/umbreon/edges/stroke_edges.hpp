@@ -9,7 +9,7 @@
 // LINEAR space at hi-res (the box downsample antialiases).
 //
 // Its counterpart is the OBJECT-SPACE (3D cylinder) method in
-// render/object_space_edges.hpp (--obj-edges); the two share the feature-edge
+// edges/object_space_edges.hpp (--obj-edges); the two share the feature-edge
 // extractor but are independent passes.
 //
 // Runs as a post-process on the hi-res (supersampled) FrameResult, AFTER fog and
@@ -23,7 +23,7 @@
 #include <functional>
 #include <vector>
 
-#include "render/mesh_feature_edges.hpp"
+#include "edges/mesh_feature_edges.hpp"
 #include "render/render_types.hpp"
 #include "scene.hpp"
 

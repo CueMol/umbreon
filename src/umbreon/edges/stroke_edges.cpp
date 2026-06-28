@@ -1,4 +1,4 @@
-#include "render/stroke_edges.hpp"
+#include "edges/stroke_edges.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,8 +12,8 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
-#include "render/analytic_silhouette.hpp"
-#include "render/mesh_feature_edges.hpp"
+#include "edges/analytic_silhouette.hpp"
+#include "edges/mesh_feature_edges.hpp"
 
 namespace umbreon {
 namespace {

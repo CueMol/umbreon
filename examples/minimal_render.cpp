@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <vector>
 
+#include <umbreon/postprocess/image_ops.hpp>  // srgbEncode8
 #include <umbreon/umbreon.hpp>
 
 int main() {

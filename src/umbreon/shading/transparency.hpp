@@ -15,7 +15,7 @@
 
 #include <embree4/rtcore.h>
 
-#include "render/hit_shader.hpp"
+#include "shading/hit_shader.hpp"
 #include "scene.hpp"
 
 namespace umbreon {

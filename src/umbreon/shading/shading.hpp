@@ -15,7 +15,7 @@
 
 #include <embree4/rtcore.h>
 
-#include "render/secondary_rays.hpp"
+#include "shading/secondary_rays.hpp"
 #include "scene.hpp"
 
 namespace umbreon {

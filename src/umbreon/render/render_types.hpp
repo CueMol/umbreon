@@ -15,7 +15,7 @@ namespace umbreon {
 // (render/stroke_edges.cpp, --edges): the stroke pipeline maps each EdgeNature
 // onto an EdgeClass slot for per-section coloring (see Scene::groupEdgeStyle).
 // They are independent of the OBJECT-SPACE (3D geometry) edge pass, whose
-// options live in render/object_space_edges.hpp (ObjectSpaceEdgeOptions,
+// options live in edges/object_space_edges.hpp (ObjectSpaceEdgeOptions,
 // --obj-edges).
 //
 // The five edge classes. The stroke pass uses Silhouette / Object (border) /

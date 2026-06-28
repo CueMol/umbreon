@@ -22,7 +22,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "render/mesh_feature_edges.hpp"  // FeatureSeg + scene.hpp (Scene/Camera/Vec3)
+#include "edges/mesh_feature_edges.hpp"  // FeatureSeg + scene.hpp (Scene/Camera/Vec3)
 
 namespace umbreon {
 

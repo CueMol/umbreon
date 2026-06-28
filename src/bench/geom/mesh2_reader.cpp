@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "pov/pov_lexer.hpp"
-#include "render/mesh_weld.hpp"
+#include "edges/mesh_weld.hpp"
 
 namespace umbreon {
 namespace {
@@ -29,7 +29,7 @@ using pov::tokenize;
 // corners share a render vertex only when all ten floats bit-match, so any
 // hard-edge normal split or per-corner color seam keeps its own vertex and the
 // rendered image stays bit-identical to the de-indexed triangle soup. (Distinct
-// from the position-only WeldKey in render/mesh_weld.hpp used for topology.)
+// from the position-only WeldKey in edges/mesh_weld.hpp used for topology.)
 struct RKey {
   std::uint32_t b[10];
   bool operator==(const RKey& o) const {
@@ -880,7 +880,7 @@ class Reader {
   //    separate vertices, so the rendered image is bit-identical to the legacy
   //    triangle soup. The per-block reset keeps every vertex within a single
   //    transparency group, which `--alpha` relies on.
-  //  - The position-class map (render/mesh_weld.hpp) welds by POSITION ALONE
+  //  - The position-class map (edges/mesh_weld.hpp) welds by POSITION ALONE
   //    with a ~1e-4 tolerance, GLOBALLY across blocks, reconstructing the
   //    water-tight ribbon topology that face_indices do not encode. Feature-edge
   //    extraction reads this map instead of re-welding (see

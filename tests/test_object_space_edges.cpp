@@ -22,7 +22,7 @@
 #include <cmath>
 #include <cstddef>
 
-#include "render/object_space_edges.hpp"
+#include "edges/object_space_edges.hpp"
 #include "scene.hpp"
 #include "test_util.hpp"
 
