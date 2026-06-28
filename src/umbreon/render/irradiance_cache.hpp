@@ -205,16 +205,24 @@ inline void fillRecords(std::vector<IrradianceRecord>& records,
           tea2(seed0, seed1);
           uint32_t sh0 = seed0 ^ 0x68bc21ebu;  // decorrelated shadow RNG stream
           uint32_t sh1 = seed1;
+          // Per-record Cranley-Patterson rotation of the stratified (Hammersley)
+          // sample set: each record gets a different toroidal shift so neighbors
+          // decorrelate instead of freezing into a shared white-noise pattern.
+          // Stratification lowers per-record variance vs white noise at the same
+          // count, which is what made the gather look grainy.
+          uint32_t cp0 = static_cast<uint32_t>(ri) + 1u;
+          uint32_t cp1 = 0x9E3779B9u;
+          tea2(cp0, cp1);
+          const float cpx = u32ToUnorm(cp0);
+          const float cpy = u32ToUnorm(cp1);
           Vec3 E{0.0f, 0.0f, 0.0f};
           Vec3 bentAccum{0.0f, 0.0f, 0.0f};
           float invDistSum = 0.0f;
           int nHit = 0;
           for (int sidx = 0; sidx < gp.samples; ++sidx) {
-            uint32_t s0 = seed0;
-            uint32_t s1 = static_cast<uint32_t>(sidx);
-            tea2(s0, s1);
-            const Vec3 wi =
-                cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
+            float u1, u2;
+            aoSample2d(true, 0u, sidx, gp.samples, cpx, cpy, u1, u2);
+            const Vec3 wi = cosineSampleHemisphere(u1, u2, f);
             if (dot(wi, rec.normal) < 0.01f) continue;  // grazing / below surface
             const NearestHit hit = intersectHit(rscene, O, wi, eps, gp.maxDistance);
             if (hit.hit) {
