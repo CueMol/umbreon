@@ -15,6 +15,7 @@
 #include <tbb/parallel_for.h>
 
 #include "shading/hit_shader.hpp"
+#include "render/irradiance_cache.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -381,6 +382,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     }
   }
   });
+
+  // Surface irradiance cache GI (mesh hits only): build the cache from the
+  // hi-res first-hit G-buffer and ADD the interpolated indirect to the color.
+  // Additive (direct unchanged), so gi off -- or giIntensity 0 -- is
+  // byte-identical. Runs here because the fill pass needs the live BuiltScene +
+  // lights to evaluate albedo*directLighting at each gather hit.
+  if (opt.gi) applyIndirectGI(sc, res);
 
   if (const long long capped = cappedRays.load(std::memory_order_relaxed);
       capped > 0) {

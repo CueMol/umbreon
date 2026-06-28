@@ -28,6 +28,15 @@ struct Options {
   bool aoLowDiscrepancy = false; // Hammersley + per-pixel Cranley-Patterson rotation
   float aoDiffuseFactor = 0.0f; // 0 = ambient-only; >0 also darkens direct diffuse
   bool aoWriteAov = false;      // emit AO/G-buffer AOVs (albedo/normal/contact/...)
+  // --- diffuse GI (surface irradiance cache) ---
+  bool gi = false;              // master gate for one-bounce diffuse GI
+  int giSamples = 64;           // hemisphere gather rays per cache record
+  float giIntensity = 1.0f;     // indirect gain
+  float giAccuracy = 0.15f;     // interpolation accuracy a (max influence a*R_i)
+  float giSpacing = 0.0f;       // record voxel spacing; 0 => auto (scene diagonal)
+  float giMaxDistance = 0.0f;   // indirect ray tfar; 0 => auto (scene diagonal)
+  float giNormalReject = 0.85f; // dot(n_x, n_rec) acceptance floor
+  bool giComponentReject = true; // reject records from a different CueMol section
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows

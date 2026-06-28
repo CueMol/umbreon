@@ -401,6 +401,14 @@ int main(int argc, char** argv) {
     ropt.aoLowDiscrepancy = opt.aoLowDiscrepancy;
     ropt.aoDiffuseFactor = opt.aoDiffuseFactor;
     ropt.aoWriteAov = opt.aoWriteAov;
+    ropt.gi = opt.gi;
+    ropt.giSamples = opt.giSamples;
+    ropt.giIntensity = opt.giIntensity;
+    ropt.giAccuracy = opt.giAccuracy;
+    ropt.giRecordSpacing = opt.giSpacing;
+    ropt.giMaxDistance = opt.giMaxDistance;
+    ropt.giNormalReject = opt.giNormalReject;
+    ropt.giComponentReject = opt.giComponentReject;
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;

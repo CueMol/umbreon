@@ -1191,10 +1191,11 @@ int main() {
                    10.0f - fn.depth[kCenterPix], 1e-4f));
   }
 
-  // ===== GI gate: gi=true force-captures cache AOVs, color byte-identical =====
-  // With no GI consumer wired yet, enabling `gi` only force-captures the cache
-  // input AOVs (position/normal/albedo/componentId); the rendered color must
-  // stay byte-identical to gi=false (the indirect term is added only in C5).
+  // ===== GI gate: gi force-captures cache AOVs; giIntensity 0 is byte-identical
+  // The indirect is an ADDITIVE term scaled by giIntensity, so gi on with
+  // giIntensity 0 must reproduce the no-GI color bitwise (the strongest gate),
+  // while the cache input AOVs (position/normal/albedo/componentId) are
+  // force-captured.
   {
     umbreon::Scene sc;
     sc.mesh = makeQuad(pigment);
@@ -1205,12 +1206,13 @@ int main() {
     off.width = 5; off.height = 5;
     umbreon::RenderOptions on = off;
     on.gi = true;
+    on.giIntensity = 0.0f;  // additive indirect scaled to 0 => color unchanged
     umbreon::FrameResult fo = umbreon::render(sc, off);
     umbreon::FrameResult fn = umbreon::render(sc, on);
     bool colorSame = fo.color.size() == fn.color.size();
     for (std::size_t i = 0; colorSame && i < fo.color.size(); ++i)
       if (fo.color[i] != fn.color[i]) colorSame = false;
-    s.check("GI gate: color byte-identical with gi on (no consumer)", colorSame);
+    s.check("GI gate: gi on with giIntensity 0 is byte-identical", colorSame);
     s.check("GI gate: off leaves cache AOVs empty", fo.position.empty());
     s.check("GI gate: position populated when gi on", !fn.position.empty());
     s.check("GI gate: componentId populated when gi on", !fn.componentId.empty());
@@ -1218,6 +1220,74 @@ int main() {
     // (the welded quad has group 0), not the no-mesh sentinel.
     s.check("GI gate: center componentId is a mesh section (not sentinel)",
             fn.componentId[kCenterPix] != 0xFFFFFFFFu);
+  }
+
+  // ===== GI determinism: two GI renders are bit-identical =====
+  // Per-record index seeding (not a shared counter) makes the cache fill
+  // thread-count independent and reproducible, exactly like the AO path.
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.gi = true; o.giSamples = 32;
+    umbreon::FrameResult a = umbreon::render(sc, o);
+    umbreon::FrameResult b = umbreon::render(sc, o);
+    bool identical = a.color.size() == b.color.size();
+    for (std::size_t i = 0; identical && i < a.color.size(); ++i)
+      if (a.color[i] != b.color[i]) identical = false;
+    s.check("GI determinism: two GI renders bit-identical", identical);
+  }
+
+  // ===== GI color bleeding: an emissive red wall tints the near floor =====
+  // A white floor (z=0) with a red EMISSIVE wall at x=2 (per-tri material).
+  // One-bounce indirect carries the wall's red onto the floor, more on the near
+  // (+x) side than the far (-x) side, and the bleed is red (R gain > G gain).
+  {
+    using umbreon::Vec3;
+    umbreon::Mesh m;
+    const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                        {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+    for (int i = 0; i < 6; ++i) {
+      m.positions.push_back(fl[i]);
+      m.normals.push_back({0, 0, 1});
+      m.colors.push_back({1, 1, 1, 1});
+    }
+    const Vec3 wl[6] = {{2, -2, 0}, {2, 2, 2}, {2, 2, 0},
+                        {2, -2, 0}, {2, -2, 2}, {2, 2, 2}};
+    for (int i = 0; i < 6; ++i) {
+      m.positions.push_back(wl[i]);
+      m.normals.push_back({-1, 0, 0});
+      m.colors.push_back({1, 0, 0, 1});
+    }
+    umbreon::Material floorMat;  // default ambient 0.2 / diffuse 0.8
+    umbreon::Material wallMat;
+    wallMat.emission = 1.0f;
+    wallMat.diffuse = 0.0f;
+    wallMat.ambient = 0.0f;
+    m.materials.push_back(floorMat);
+    m.materials.push_back(wallMat);
+    m.triMaterialId = {0, 0, 1, 1};  // 2 floor tris -> mat 0, 2 wall tris -> mat 1
+    umbreon::Scene sc;
+    sc.mesh = std::move(m);
+    sc.camera = makeOrthoCam();
+    sc.ambientColor = {0, 0, 0};  // isolate indirect: no ambient / env fill
+    sc.background = {0, 0, 0};
+    sc.lights.push_back(makeKeyLight());  // top light => floor lit evenly
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.gi = true; o.giSamples = 256; o.giIntensity = 1.0f;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    const float rRight = f.color[(2 * 5 + 3) * 4 + 0];  // px=3, x=0.8 (near wall)
+    const float rLeft = f.color[(2 * 5 + 1) * 4 + 0];   // px=1, x=-1.2 (far)
+    const float gRight = f.color[(2 * 5 + 3) * 4 + 1];
+    s.check("GI color bleeding: red wall brightens the near floor R",
+            rRight > rLeft + 0.01f);
+    s.check("GI color bleeding: the bleed is red (R gain > G near wall)",
+            rRight > gRight + 0.01f);
   }
 
   // ===== AO quality: contact / shape are distinct per-scale values =====

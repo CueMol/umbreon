@@ -223,6 +223,29 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--ao-write-aov");
       if (o.ok && !parseBool(v, o.aoWriteAov))
         fail("--ao-write-aov expects on/off");
+    } else if (a == "--gi") {
+      std::string v = value("--gi");
+      if (o.ok && !parseBool(v, o.gi)) fail("--gi expects on/off");
+    } else if (a == "--gi-samples") {
+      o.giSamples = std::atoi(value("--gi-samples").c_str());
+    } else if (a == "--gi-intensity") {
+      o.giIntensity =
+          static_cast<float>(std::atof(value("--gi-intensity").c_str()));
+    } else if (a == "--gi-accuracy") {
+      o.giAccuracy =
+          static_cast<float>(std::atof(value("--gi-accuracy").c_str()));
+    } else if (a == "--gi-spacing") {
+      o.giSpacing = static_cast<float>(std::atof(value("--gi-spacing").c_str()));
+    } else if (a == "--gi-max-dist") {
+      o.giMaxDistance =
+          static_cast<float>(std::atof(value("--gi-max-dist").c_str()));
+    } else if (a == "--gi-normal-reject") {
+      o.giNormalReject =
+          static_cast<float>(std::atof(value("--gi-normal-reject").c_str()));
+    } else if (a == "--gi-component-reject") {
+      std::string v = value("--gi-component-reject");
+      if (o.ok && !parseBool(v, o.giComponentReject))
+        fail("--gi-component-reject expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -489,6 +512,14 @@ void printUsage(const char* prog) {
       "  --ao-ld <on|off>         low-discrepancy AO sampling        [off]\n"
       "  --ao-diffuse <frac>      also darken direct diffuse in cavities [0]\n"
       "  --ao-write-aov <on|off>  emit AO/G-buffer AOVs (with --dump-aov) [off]\n"
+      "  --gi <on|off>            one-bounce diffuse GI (irradiance cache) [off]\n"
+      "  --gi-samples <n>         hemisphere gather rays per cache record [64]\n"
+      "  --gi-intensity <f>       indirect gain [1.0]\n"
+      "  --gi-accuracy <a>        interpolation accuracy; max influence a*R_i [0.15]\n"
+      "  --gi-spacing <world>     record voxel spacing; 0 = auto [0]\n"
+      "  --gi-max-dist <world>    indirect ray search radius; 0 = auto [0]\n"
+      "  --gi-normal-reject <c>   record normal-dot acceptance floor [0.85]\n"
+      "  --gi-component-reject <on|off> reject cross-section records [on]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"

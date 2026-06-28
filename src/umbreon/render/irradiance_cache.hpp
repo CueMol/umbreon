@@ -34,6 +34,7 @@
 
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
+#include "shading/hit_shader.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/shading.hpp"
 #include "scene.hpp"
@@ -292,6 +293,152 @@ struct IrradianceCache {
   std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
   float cellSize = 1.0f;
 };
+
+// Build the spatial hash AFTER fill (radii known): register each record into
+// every voxel its influence box [pos +/- accuracy*R_i] overlaps, so a lookup at
+// x only needs x's home cell. Records are visited in ascending index order, so
+// each cell's list ends up sorted by index -- the lookup then accumulates in a
+// fixed float order with no per-pixel sort.
+inline void buildGrid(IrradianceCache& cache, float cellSize, float accuracy) {
+  cache.cellSize = cellSize;
+  cache.grid.clear();
+  const float inv = 1.0f / cellSize;
+  for (uint32_t i = 0; i < cache.records.size(); ++i) {
+    const IrradianceRecord& r = cache.records[i];
+    const float reach = accuracy * r.radius;  // a*R_i influence radius
+    const long long lox =
+        static_cast<long long>(std::floor((r.position.x - reach) * inv));
+    const long long hix =
+        static_cast<long long>(std::floor((r.position.x + reach) * inv));
+    const long long loy =
+        static_cast<long long>(std::floor((r.position.y - reach) * inv));
+    const long long hiy =
+        static_cast<long long>(std::floor((r.position.y + reach) * inv));
+    const long long loz =
+        static_cast<long long>(std::floor((r.position.z - reach) * inv));
+    const long long hiz =
+        static_cast<long long>(std::floor((r.position.z + reach) * inv));
+    for (long long iz = loz; iz <= hiz; ++iz)
+      for (long long iy = loy; iy <= hiy; ++iy)
+        for (long long ix = lox; ix <= hix; ++ix)
+          cache.grid[packVoxel(ix, iy, iz)].push_back(i);
+  }
+}
+
+// [D] Interpolate the cached irradiance at shading point x (normal nx, section
+// comp). Gathers the home cell's candidate records, rejects cross-section and
+// normal-divergent ones, and forms the Ward weight w = 1/(dist/R + sqrt(1-n.n)).
+// Records with w <= 1/accuracy are out of influence. valid=false when no record
+// is trusted (the caller then leaves the indirect at 0 for that pixel).
+inline Vec3 interpolateIrradiance(const IrradianceCache& cache, const Vec3& x,
+                                  const Vec3& nx, uint32_t comp,
+                                  const RenderOptions& opt, bool& valid) {
+  valid = false;
+  const float inv = 1.0f / cache.cellSize;
+  auto it = cache.grid.find(voxelKey(x, inv));
+  if (it == cache.grid.end()) return Vec3{0.0f, 0.0f, 0.0f};
+  const float wMin = 1.0f / opt.giAccuracy;
+  Vec3 Esum{0.0f, 0.0f, 0.0f};
+  float wSum = 0.0f;
+  // The cell list is in ascending record-index order (buildGrid visits records
+  // in order), so this float accumulation is order- and thread-independent.
+  for (uint32_t idx : it->second) {
+    const IrradianceRecord& ri = cache.records[idx];
+    if (opt.giComponentReject && ri.componentId != comp) continue;
+    const float ndot = dot(nx, ri.normal);
+    if (ndot < opt.giNormalReject) continue;
+    const float dist = length(x - ri.position);
+    const float denom =
+        dist / ri.radius + std::sqrt(std::fmax(0.0f, 1.0f - ndot)) + 1e-6f;
+    const float w = 1.0f / denom;
+    if (w <= wMin) continue;
+    Esum = Esum + ri.irradiance * w;
+    wSum += w;
+  }
+  if (wSum > 0.0f) {
+    valid = true;
+    return Esum * (1.0f / wSum);
+  }
+  return Vec3{0.0f, 0.0f, 0.0f};
+}
+
+// Full GI pass: build the irradiance cache from the hi-res first-hit G-buffer
+// (placement -> fill -> neighbor clamp -> grid) and add the interpolated
+// indirect to the color. ADDITIVE -- indirect = giIntensity * albedo * E_cached
+// * shapeAo is added to the existing direct color, so giIntensity == 0 (or gi
+// off) leaves the color byte-identical. Mesh pixels only. Runs inside
+// EmbreeRenderer::render() where the BuiltScene + lights are still live.
+inline void applyIndirectGI(const ShadeContext& sc, FrameResult& res) {
+  const RenderOptions& opt = sc.opt;
+  if (res.position.empty() || res.componentId.empty() || res.normal.empty() ||
+      res.albedo.empty())
+    return;  // cache AOVs must be captured (the gi gate forces them on)
+  RTCBounds bounds;
+  rtcGetSceneBounds(sc.built.scene, &bounds);
+  const Vec3 lo{bounds.lower_x, bounds.lower_y, bounds.lower_z};
+  const Vec3 hi{bounds.upper_x, bounds.upper_y, bounds.upper_z};
+  const float diagonal = length(hi - lo);
+  if (!(diagonal > 0.0f)) return;
+  const float spacing =
+      opt.giRecordSpacing > 0.0f ? opt.giRecordSpacing : diagonal * 0.01f;
+  const float maxDist =
+      opt.giMaxDistance > 0.0f ? opt.giMaxDistance : diagonal * 0.5f;
+  if (spacing <= 0.0f) return;
+
+  // [B] placement, [C] fill, neighbor clamp, grid build.
+  IrradianceCache cache;
+  cache.records = placeRecordsVoxel(res, spacing);
+  if (cache.records.empty()) return;
+  GIFillParams gp;
+  gp.samples = opt.giSamples;
+  gp.maxDistance = maxDist;
+  gp.up = sc.aoUp;
+  gp.ambient = sc.ambLight;
+  gp.sky[0] = opt.aoSkyColor[0];
+  gp.sky[1] = opt.aoSkyColor[1];
+  gp.sky[2] = opt.aoSkyColor[2];
+  gp.ground[0] = opt.aoGroundColor[0];
+  gp.ground[1] = opt.aoGroundColor[1];
+  gp.ground[2] = opt.aoGroundColor[2];
+  gp.shadows = opt.shadows;
+  gp.shadowSamples = opt.shadowSamples;
+  gp.radiusMin = spacing * 0.5f;
+  gp.radiusMax = std::min(diagonal, spacing * 32.0f);
+  fillRecords(cache.records, sc.built, sc.mesh, sc.lights, sc.built.scene, gp);
+  neighborClamp(cache.records, spacing);
+  buildGrid(cache, spacing, opt.giAccuracy);
+
+  // [D] interpolation + [E] additive composite, parallel over pixels.
+  const int W = res.width, H = res.height;
+  res.indirect.assign(static_cast<std::size_t>(W) * H * 3, 0.0f);
+  tbb::parallel_for(
+      tbb::blocked_range<int>(0, H), [&](const tbb::blocked_range<int>& rows) {
+        for (int py = rows.begin(); py != rows.end(); ++py)
+          for (int px = 0; px < W; ++px) {
+            const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+            const uint32_t comp = res.componentId[pix];
+            if (comp == 0xFFFFFFFFu) continue;  // non-mesh pixel: no indirect
+            const Vec3 x{res.position[pix * 3 + 0], res.position[pix * 3 + 1],
+                         res.position[pix * 3 + 2]};
+            const Vec3 nx{res.normal[pix * 3 + 0], res.normal[pix * 3 + 1],
+                          res.normal[pix * 3 + 2]};
+            bool valid = false;
+            const Vec3 E = interpolateIrradiance(cache, x, nx, comp, opt, valid);
+            if (!valid) continue;  // no trusted record: indirect stays 0
+            const float shape = res.shapeAo.empty() ? 1.0f : res.shapeAo[pix];
+            const float g = opt.giIntensity;
+            const float ind0 = g * res.albedo[pix * 3 + 0] * E.x * shape;
+            const float ind1 = g * res.albedo[pix * 3 + 1] * E.y * shape;
+            const float ind2 = g * res.albedo[pix * 3 + 2] * E.z * shape;
+            res.indirect[pix * 3 + 0] = ind0;
+            res.indirect[pix * 3 + 1] = ind1;
+            res.indirect[pix * 3 + 2] = ind2;
+            res.color[pix * 4 + 0] += ind0;
+            res.color[pix * 4 + 1] += ind1;
+            res.color[pix * 4 + 2] += ind2;
+          }
+      });
+}
 
 }  // namespace detail
 }  // namespace umbreon
