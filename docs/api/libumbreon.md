@@ -288,6 +288,15 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `aoSamples` | 0 | メッシュヒットあたりの AO レイ数。**0 = AO OFF**（既定で bit-exact） |
 | `aoDistance` | 1e20 | AO オクルーダ探索半径（ray tfar, world 単位）。シーン径の数分の1程度が目安 |
 | `aoIntensity` | 1.0 | AO 強度: `aoFactor = 1 - aoIntensity*(1-rawAO)` |
+| `aoFalloffPower` | 0.0 | 0 = binary（legacy）。> 0 で距離減衰 `(max(0,1-t/R))^power`（遠方遮蔽を緩和） |
+| `aoMultiScale` | false | true で 3 段ネスト半径 `{0.08,0.30,1.0}*aoDistance`（接触影＋形状陰影を両立） |
+| `aoBentNormal` | false | true で bent normal に沿った 2 色 sky/ground 方向性 ambient |
+| `aoSkyColor` / `aoGroundColor` | `{1,1,1}` | bent normal 勾配の上/下半球の色（× `scene.ambientColor`） |
+| `aoUseCameraUp` / `aoUp` | true / `{0,1,0}` | 勾配軸：カメラ up（view-stable）か明示世界軸 |
+| `aoMultibounce` | false | true で albedo 別 GTAO cubic（淡色凹部の過暗化を抑制） |
+| `aoLowDiscrepancy` | false | true で Hammersley + per-pixel Cranley-Patterson（同サンプル数で AO 分散↓） |
+| `aoDiffuseFactor` | 0.0 | 0 = ambient のみ。> 0 で凹部の直接 diffuse も減光（粗い間接遮蔽近似） |
+| `aoWriteAov` | false | true で AO/G-buffer AOV（albedo/normal/contact/shape/bent/avgHitDist）を `FrameResult` へ出力。色は不変 |
 | `shadows` | false | ライトからの影を落とす。false = OFF |
 | `shadowSamples` | 1 | ライトあたりの影レイ数（> 1 でソフト＝エリアライト） |
 | `lightRadius` | 0.0 | ライトの角半径（度）。> 0 でソフト影（penumbra） |
@@ -298,6 +307,11 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 
 > AO/影は既定 OFF なので、`RenderOptions` を既定構築すると現行の POV マッチ出力（bit-exact）に
 > なる。AO/影を使う場合は該当フィールドを設定する。
+>
+> 立体感プリセット指針: 滑らかな density surface では「広域の窪み暗化」が立体感の主因なので
+> `aoMultibounce=true` + `aoDiffuseFactor≈0.6`（大半径 AO を残し凹部を深く落とす）が有効。
+> `aoFalloffPower`/`aoMultiScale` は遠方遮蔽を割り引くため、滑らかな面ではむしろ平坦化する点に注意
+> （接触影・方向性が要るモデルでは有効）。詳細は `docs/plans/ao-quality.md` の「プリセット指針」。
 
 ### 4.7 `FrameResult`
 
@@ -307,7 +321,10 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `color` | `vector<float>` | `width*height*4` の **linear HDR RGBA**、**左上原点** |
 | `depth` | `vector<float>` | `width*height`、カメラからのレイ距離（背景は 0） |
 | `viewZ` | `vector<float>` | 平面 eye-z（背景は 0）。**stroke edges 有効時 or fog 有効時のみ充填**（線形 fog が参照）。それ以外は空 |
-| `albedo` / `normal` | `vector<float>` | AOV スロット（**現状 `render()` では未充填＝空**） |
+| `albedo` / `normal` | `vector<float>` | first-hit AOV（OIDN guide / cache 空間キー）。**`aoWriteAov` 有効時に主経路で充填**（normal は stroke edges 有効時も）。それ以外は空 |
+| `contactAo` / `shapeAo` | `vector<float>` | AO の接触/形状成分（未ブレンド）。**`aoWriteAov` 有効時のみ充填** |
+| `bentNormal` | `vector<float>` | `width*height*3` 平均非遮蔽方向。**`aoWriteAov` 有効時のみ充填** |
+| `avgHitDist` | `vector<float>` | 平均オクルーダ距離（world）。暗さ要因の切り分け用。**`aoWriteAov` 有効時のみ充填** |
 | `renderSeconds` | `double` | レンダ時間 |
 | `effectiveTriangles` | `size_t` | 実効三角形数（instance 込み） |
 
@@ -374,7 +391,12 @@ std::vector<float> boxDownsample(const std::vector<float>& src, int w, int h,
 ## 8. 既知の制限・今後
 
 - **GI/二次反射なし**（single-bounce）。反射は `reflection * background` の近似のみ。
-- `albedo` / `normal` AOV は `render()` では未充填（必要なら今後対応）。
+  立体感向上の AO 品質拡張（multi-scale / 距離減衰 / bent normal / multibounce /
+  low-discrepancy / diffuse 減衰）は `aoFalloffPower` ほかで利用可（既定 OFF で bit-exact）。
+  これらの設計は `docs/plans/ao-quality.md`、後段の diffuse GI cache は
+  `docs/plans/surface-irradiance-cache.md` を参照。
+- `albedo` / `normal` ほか AO AOV は `aoWriteAov` 有効時に `render()` で充填される
+  （OIDN guide / surface irradiance cache の入力を兼ねる）。
 - `render()` はフレームごとに Embree デバイス＋BVH を再構築する。対話的に多数フレームを
   回す用途では、デバイス／シーンを保持する `Renderer` ハンドル API の追加を将来検討
   （現状は静止画・バッチ用途を想定）。

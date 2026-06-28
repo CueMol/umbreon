@@ -44,15 +44,23 @@ inline float blinnExp(float roughness) {
 //       + reflection*background.
 // The FLAT preset (ambient 1, diffuse 0, specular 0, phong 0) with ambLight
 // (1,1,1) yields out = C, preserving the flat outline/silhouette behavior.
+// aoFactor is a per-channel Vec3 (1,1,1) = no occlusion; the legacy scalar AO
+// passes {s,s,s}, so the same float op sequence runs and the output is
+// bit-identical. The per-channel form lets the albedo-aware multibounce term
+// (phase 3) lift each channel differently.
+// diffuseAo scales ONLY the direct diffuse accumulation (not ambient, not
+// specular): 1 = no effect (POV/scivis contract, bit-exact), <1 darkens diffuse
+// in occluded cavities as a coarse indirect-shadowing approximation. The outline
+// path and the legacy AO path pass 1.0f, so x*1 keeps those outputs unchanged.
 inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
                        const Vec3& V, const std::vector<Light>& lights,
                        const Vec3& ambLight, const Vec3& bg, float specularScale,
-                       float aoFactor, const Vec3& P, const Vec3& Ng, float eps,
-                       RTCScene rscene, bool shadowsOn, int shadowSamples,
-                       uint32_t px, uint32_t py) {
-  Vec3 out{mat.emission * C.x + aoFactor * mat.ambient * C.x * ambLight.x,
-           mat.emission * C.y + aoFactor * mat.ambient * C.y * ambLight.y,
-           mat.emission * C.z + aoFactor * mat.ambient * C.z * ambLight.z};
+                       const Vec3& aoFactor, float diffuseAo, const Vec3& P,
+                       const Vec3& Ng, float eps, RTCScene rscene, bool shadowsOn,
+                       int shadowSamples, uint32_t px, uint32_t py) {
+  Vec3 out{mat.emission * C.x + aoFactor.x * mat.ambient * C.x * ambLight.x,
+           mat.emission * C.y + aoFactor.y * mat.ambient * C.y * ambLight.y,
+           mat.emission * C.z + aoFactor.z * mat.ambient * C.z * ambLight.z};
 
   const float exp = blinnExp(mat.roughness);
   // Per-pixel deterministic RNG stream for soft-shadow sampling (advanced per
@@ -82,7 +90,7 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
     } else {
       d = std::pow(ndl, mat.brilliance);
     }
-    const float dk = mat.diffuse * d;
+    const float dk = mat.diffuse * d * diffuseAo;
     out.x += dk * C.x * Lc.x;
     out.y += dk * C.y * Lc.y;
     out.z += dk * C.z * Lc.z;

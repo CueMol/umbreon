@@ -185,6 +185,19 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     if (!frame.normal.empty() && !opt.strokeEdges.enable)
       frame.normal =
           boxDownsample(frame.normal, frame.width, frame.height, 3, ss);
+    // AO AOVs are a continuous hi-res set: box-averaging them to the output
+    // resolution is exactly the supersample denoise the AO relies on (more
+    // effective samples per output pixel). Done before width/height become final.
+    if (!frame.contactAo.empty()) {
+      frame.contactAo =
+          boxDownsample(frame.contactAo, frame.width, frame.height, 1, ss);
+      frame.shapeAo =
+          boxDownsample(frame.shapeAo, frame.width, frame.height, 1, ss);
+      frame.avgHitDist =
+          boxDownsample(frame.avgHitDist, frame.width, frame.height, 1, ss);
+      frame.bentNormal =
+          boxDownsample(frame.bentNormal, frame.width, frame.height, 3, ss);
+    }
     frame.width = finalW;
     frame.height = finalH;
   }

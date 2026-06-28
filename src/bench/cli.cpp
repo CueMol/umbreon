@@ -61,6 +61,16 @@ std::vector<std::string> split(const std::string& s, char delim) {
   return out;
 }
 
+// Parse "x,y,z" into a float triple (used for the explicit AO gradient axis).
+// Returns false on the wrong component count.
+bool parseVec3(const std::string& s, float v[3]) {
+  std::vector<std::string> parts = split(s, ',');
+  if (parts.size() != 3) return false;
+  for (int i = 0; i < 3; ++i)
+    v[i] = static_cast<float>(std::atof(parts[i].c_str()));
+  return true;
+}
+
 // Parse a per-section --edge spec into an EdgeStyle. Grammar (comma-separated
 // class entries; each entry is a class token followed by optional :key=value
 // style attributes):
@@ -172,6 +182,47 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--ao-intensity") {
       o.aoIntensity =
           static_cast<float>(std::atof(value("--ao-intensity").c_str()));
+    } else if (a == "--ao-falloff") {
+      o.aoFalloffPower =
+          static_cast<float>(std::atof(value("--ao-falloff").c_str()));
+    } else if (a == "--ao-multiscale") {
+      std::string v = value("--ao-multiscale");
+      if (o.ok && !parseBool(v, o.aoMultiScale))
+        fail("--ao-multiscale expects on/off");
+    } else if (a == "--ao-bent-normal") {
+      std::string v = value("--ao-bent-normal");
+      if (o.ok && !parseBool(v, o.aoBentNormal))
+        fail("--ao-bent-normal expects on/off");
+    } else if (a == "--ao-sky") {
+      std::string v = value("--ao-sky");
+      if (o.ok && !parseHexColor(v, o.aoSkyColor))
+        fail("--ao-sky expects #RRGGBB");
+    } else if (a == "--ao-ground") {
+      std::string v = value("--ao-ground");
+      if (o.ok && !parseHexColor(v, o.aoGroundColor))
+        fail("--ao-ground expects #RRGGBB");
+    } else if (a == "--ao-camera-up") {
+      std::string v = value("--ao-camera-up");
+      if (o.ok && !parseBool(v, o.aoUseCameraUp))
+        fail("--ao-camera-up expects on/off");
+    } else if (a == "--ao-up") {
+      std::string v = value("--ao-up");
+      if (o.ok && !parseVec3(v, o.aoUp)) fail("--ao-up expects x,y,z");
+    } else if (a == "--ao-multibounce") {
+      std::string v = value("--ao-multibounce");
+      if (o.ok && !parseBool(v, o.aoMultibounce))
+        fail("--ao-multibounce expects on/off");
+    } else if (a == "--ao-ld") {
+      std::string v = value("--ao-ld");
+      if (o.ok && !parseBool(v, o.aoLowDiscrepancy))
+        fail("--ao-ld expects on/off");
+    } else if (a == "--ao-diffuse") {
+      o.aoDiffuseFactor =
+          static_cast<float>(std::atof(value("--ao-diffuse").c_str()));
+    } else if (a == "--ao-write-aov") {
+      std::string v = value("--ao-write-aov");
+      if (o.ok && !parseBool(v, o.aoWriteAov))
+        fail("--ao-write-aov expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -420,13 +471,24 @@ void printUsage(const char* prog) {
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
       "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
       "  --stroke-self-exclude-rings <int> QI self-occlusion exclude radius  [6]\n"
-      "  --dump-aov <prefix>      with --edges on, dump G-buffer AOV images\n"
+      "  --dump-aov <prefix>      dump AOV images (--edges and/or --ao-write-aov)\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
+      "  --ao-falloff <power>     AO distance falloff exponent  [0 = binary]\n"
+      "  --ao-multiscale <on|off> 3 nested AO radii (contact+shape)   [off]\n"
+      "  --ao-bent-normal <on|off> directional sky/ground ambient    [off]\n"
+      "  --ao-sky #RRGGBB         bent-normal up-hemisphere tint  [#ffffff]\n"
+      "  --ao-ground #RRGGBB      bent-normal down-hemisphere tint[#ffffff]\n"
+      "  --ao-camera-up <on|off>  gradient axis = camera up          [on]\n"
+      "  --ao-up x,y,z            explicit gradient axis (camera-up off)\n"
+      "  --ao-multibounce <on|off> albedo-aware AO (anti over-dark)   [off]\n"
+      "  --ao-ld <on|off>         low-discrepancy AO sampling        [off]\n"
+      "  --ao-diffuse <frac>      also darken direct diffuse in cavities [0]\n"
+      "  --ao-write-aov <on|off>  emit AO/G-buffer AOVs (with --dump-aov) [off]\n"
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"

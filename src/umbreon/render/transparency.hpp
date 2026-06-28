@@ -36,6 +36,13 @@ struct PixelResult {
   uint32_t materialId = 0xFFFFFFFFu;  // background sentinel
   Vec3 worldNormal{0.0f, 0.0f, 0.0f};
   float viewZ = 0.0f;                 // linear view-z (0 == background sentinel)
+  // First-hit AO / G-buffer AOVs (only meaningful with RenderOptions::aoWriteAov;
+  // keep their open/neutral defaults when the ray escapes). Color is unaffected.
+  Vec3 albedo{0.0f, 0.0f, 0.0f};
+  Vec3 bentNormal{0.0f, 0.0f, 0.0f};
+  float contactAo = 1.0f;
+  float shapeAo = 1.0f;
+  float avgHitDist = 0.0f;
 };
 
 // Integrate one primary ray (origin `org`, direction `rd`) through the scene,
@@ -74,6 +81,11 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   uint32_t firstMaterialId = 0xFFFFFFFFu;
   Vec3 firstNormal{0.0f, 0.0f, 0.0f};
   float firstViewZ = 0.0f;
+  Vec3 firstAlbedo{0.0f, 0.0f, 0.0f};
+  Vec3 firstBent{0.0f, 0.0f, 0.0f};
+  float firstContact = 1.0f;
+  float firstShape = 1.0f;
+  float firstAvgHit = 0.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -123,6 +135,11 @@ inline PixelResult integratePixel(const ShadeContext& sc,
       // Linear view-z = tfar * dot(rd, camDir): identity under ortho,
       // slant-corrected under perspective (Mol* getViewZ analogue).
       firstViewZ = rh.ray.tfar * dot(rd, camDir);
+      firstAlbedo = hs.albedo;
+      firstBent = hs.bentNormal;
+      firstContact = hs.contactAo;
+      firstShape = hs.shapeAo;
+      firstAvgHit = hs.avgHitDist;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -204,7 +221,12 @@ inline PixelResult integratePixel(const ShadeContext& sc,
                      firstObjectId,
                      firstMaterialId,
                      firstNormal,
-                     firstViewZ};
+                     firstViewZ,
+                     firstAlbedo,
+                     firstBent,
+                     firstContact,
+                     firstShape,
+                     firstAvgHit};
 }
 
 }  // namespace detail
