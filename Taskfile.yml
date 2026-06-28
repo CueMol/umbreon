@@ -14,19 +14,22 @@ env:
     sh: 'echo "${CMAKE_GENERATOR:-Ninja}"'
 
 vars:
+  # Upstream versions for the FROM-SOURCE fallback only (deps:build-* on platforms
+  # without a published deplibs bundle). The deplibs path does NOT use these: it
+  # reads the bundled component versions from target/deplibs.env (EMBREE_VER /
+  # TBB_VER) and builds the prefix paths from those, so the version lives in one
+  # place (the released bundle) and bumping DEPLIBS_VERSION is enough.
   EMBREE_VERSION: "4.4.1"
   TBB_VERSION: "2023.0.0"
   DEPS_SRC: "{{.ROOT_DIR}}/deps/src"
   DEPS_PREFIX: "{{.ROOT_DIR}}/deps/prefix"
-  # CueMol2 deplibs: prebuilt static Embree/TBB for Linux x64, macOS x64/arm64
-  # and Windows x64. The embree/tbb versions inside the bundle match
-  # EMBREE_VERSION/TBB_VERSION above, and each ships its own CMake package config
-  # under <prefix>/lib/cmake.
-  DEPLIBS_VERSION: "v0.0.9"
+  # CueMol2 deplibs: prebuilt static Embree/TBB (+CGAL/OIDN/...) for Linux x64,
+  # macOS x64/arm64 and Windows x64. Each component ships its own CMake package
+  # config under target/<component>-<ver>/lib/cmake; component versions are listed
+  # in target/deplibs.env. Bumping DEPLIBS_VERSION re-fetches (version marker).
+  DEPLIBS_VERSION: "v0.1.0"
   DEPLIBS_DIR: "{{.ROOT_DIR}}/deps/deplibs"
-  EMBREE_PREFIX: "{{.DEPLIBS_DIR}}/target/embree-{{.EMBREE_VERSION}}"
-  TBB_PREFIX: "{{.DEPLIBS_DIR}}/target/tbb-{{.TBB_VERSION}}"
-  STATIC_PREFIX_PATH: "{{.EMBREE_PREFIX}};{{.TBB_PREFIX}}"
+  DEPLIBS_ENV: "{{.DEPLIBS_DIR}}/target/deplibs.env"
 
 tasks:
   deps:
@@ -43,7 +46,7 @@ tasks:
         fi
 
   deps:fetch:
-    desc: Download CueMol2 deplibs (prebuilt static Embree {{.EMBREE_VERSION}} + TBB {{.TBB_VERSION}}) into deps/deplibs
+    desc: Download CueMol2 deplibs ({{.DEPLIBS_VERSION}} prebuilt static Embree/TBB) into deps/deplibs
     cmds:
       # deplibs is published for Linux x64, macOS x64/arm64 and Windows x64.
       # Select the matching bundle; fall back with a hint on other platforms.
@@ -61,19 +64,20 @@ tasks:
             echo "Use 'task deps:build' (build from source) or 'task deps' (system packages) instead." >&2
             exit 1 ;;
         esac
-        # The bundle also carries CGAL etc.; umbreon only consumes embree/tbb.
+        # The bundle also carries CGAL/OIDN etc.; umbreon only consumes embree/tbb.
+        # Drop any previously-extracted (possibly older) bundle so a version bump
+        # cannot leave stale component dirs behind.
+        cmake -E rm -rf "{{.DEPLIBS_DIR}}/target"
         cmake -E make_directory "{{.DEPLIBS_DIR}}"
         curl -sL "https://github.com/CueMol/build_scripts/releases/download/{{.DEPLIBS_VERSION}}/$asset" -o "{{.DEPLIBS_DIR}}/deplibs.tar.bz2"
         cmake -E chdir "{{.DEPLIBS_DIR}}" cmake -E tar xjf "deplibs.tar.bz2"
         cmake -E remove "{{.DEPLIBS_DIR}}/deplibs.tar.bz2"
+        # Record which release is extracted so the status check below re-fetches
+        # when DEPLIBS_VERSION changes (the component dir names alone don't move
+        # if only the bundle, not embree/tbb, was rebuilt).
+        echo "{{.DEPLIBS_VERSION}}" > "{{.DEPLIBS_DIR}}/target/.deplibs_version"
     status:
-      # Windows ships import/static libs as embree4.lib/tbb.lib; Unix as .a files.
-      - |
-        if [ "{{OS}}" = "windows" ]; then
-          test -f {{.EMBREE_PREFIX}}/lib/embree4.lib && test -f {{.TBB_PREFIX}}/lib/tbb.lib
-        else
-          test -f {{.EMBREE_PREFIX}}/lib/libembree4.a && test -f {{.TBB_PREFIX}}/lib/libtbb.a
-        fi
+      - test "$(cat {{.DEPLIBS_DIR}}/target/.deplibs_version 2>/dev/null)" = "{{.DEPLIBS_VERSION}}"
 
   deps:build-tbb:
     desc: Build oneTBB {{.TBB_VERSION}} as a static library into deps/prefix
@@ -126,49 +130,66 @@ tasks:
     desc: Build both TBB and Embree as static libraries into deps/prefix
     deps: [deps:build-embree]
 
-  build:static:
-    desc: Build umbreon against static Embree/TBB (deplibs on Linux/macOS/Windows x64 + macOS arm64, source build elsewhere)
+  configure:static:
+    internal: true
+    # Resolve static Embree/TBB -- CueMol deplibs release {{.DEPLIBS_VERSION}} on
+    # the published platforms (Linux/macOS/Windows x64 + macOS arm64), source-built
+    # static libs elsewhere -- and configure build/ against them. `-U` clears any
+    # cached package dirs so a build/ previously configured for system libs is
+    # re-resolved to the deplibs prefix (find_package CONFIG otherwise reuses the
+    # stale *_DIR cache and ignores CMAKE_PREFIX_PATH).
     cmds:
       - |
         set -e
         case "{{OS}}/{{ARCH}}" in
           linux/amd64|darwin/amd64|darwin/arm64|windows/amd64)
             task deps:fetch
-            PREFIX="{{.STATIC_PREFIX_PATH}}" ;;
+            # Component versions come from the bundle itself, not hardcoded vars.
+            . "{{.DEPLIBS_ENV}}"
+            PREFIX="{{.DEPLIBS_DIR}}/target/embree-${EMBREE_VER};{{.DEPLIBS_DIR}}/target/tbb-${TBB_VER}" ;;
           *)
             task deps:build
             PREFIX="{{.DEPS_PREFIX}}" ;;
         esac
-        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PREFIX"
-        cmake --build build -j
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PREFIX" \
+          -Uembree_DIR -UTBB_DIR
+
+  build:static:
+    desc: Build against static Embree/TBB from CueMol deplibs (alias of `build`; used by CI)
+    cmds:
+      - task: configure:static
+      - cmake --build build -j
 
   test:static:
-    desc: Build and test against static Embree/TBB (deplibs on Linux/macOS/Windows x64 + macOS arm64, source build elsewhere)
+    desc: Build and test against static Embree/TBB from CueMol deplibs (alias of `test`; used by CI)
     cmds:
-      - |
-        set -e
-        case "{{OS}}/{{ARCH}}" in
-          linux/amd64|darwin/amd64|darwin/arm64|windows/amd64)
-            task deps:fetch
-            PREFIX="{{.STATIC_PREFIX_PATH}}" ;;
-          *)
-            task deps:build
-            PREFIX="{{.DEPS_PREFIX}}" ;;
-        esac
-        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PREFIX"
-        cmake --build build -j
-        ctest --test-dir build --output-on-failure
+      - task: configure:static
+      - cmake --build build -j
+      - ctest --test-dir build --output-on-failure
 
   build:
-    desc: Configure and build (Release)
+    desc: Configure (static Embree/TBB via CueMol deplibs {{.DEPLIBS_VERSION}}) and build (Release)
     cmds:
-      - cmake -S . -B build
+      - task: configure:static
       - cmake --build build -j
 
   test:
-    desc: Build and run the unit / integration tests
+    desc: Build (static deplibs) and run the unit / integration tests
     cmds:
-      - cmake -S . -B build
+      - task: configure:static
+      - cmake --build build -j
+      - ctest --test-dir build --output-on-failure
+
+  build:system:
+    desc: Build against system-installed Embree/TBB (apt/brew); no deplibs download
+    cmds:
+      - cmake -S . -B build -Uembree_DIR -UTBB_DIR -UCMAKE_PREFIX_PATH
+      - cmake --build build -j
+
+  test:system:
+    desc: Build and test against system-installed Embree/TBB (apt/brew)
+    cmds:
+      - cmake -S . -B build -Uembree_DIR -UTBB_DIR -UCMAKE_PREFIX_PATH
       - cmake --build build -j
       - ctest --test-dir build --output-on-failure
 
