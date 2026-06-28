@@ -12,8 +12,8 @@
 #include <set>
 #include <vector>
 
-#include "render/mesh_feature_edges.hpp"
-#include "render/stroke_edges.hpp"
+#include "edges/mesh_feature_edges.hpp"
+#include "edges/stroke_edges.hpp"
 #include "scene.hpp"
 #include "test_util.hpp"
 

@@ -8,7 +8,7 @@
 // transparent fogged render can be re-composited over any backdrop later.
 #include <cmath>
 
-#include "render/fog.hpp"
+#include "postprocess/fog.hpp"
 #include "test_util.hpp"
 
 namespace {

@@ -8,8 +8,8 @@
 #include <limits>
 #include <vector>
 
+#include "postprocess/image_ops.hpp"
 #include "test_util.hpp"
-#include "umbreon.hpp"
 
 namespace {
 bool approx(float a, float b, float eps) { return std::fabs(a - b) <= eps; }

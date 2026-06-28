@@ -2,7 +2,7 @@
 //
 // This is the OBJECT-SPACE (3D geometry) edge method, selected by --obj-edges.
 // Its counterpart is the Freestyle-style STROKE method in
-// render/stroke_edges.hpp (StrokeEdgeOptions, --edges). The two are
+// edges/stroke_edges.hpp (StrokeEdgeOptions, --edges). The two are
 // independent; never enable both at once (they would double-draw).
 //
 // For each analytic primitive (Sphere, Cylinder) this computes the 3D locus

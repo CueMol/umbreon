@@ -14,8 +14,8 @@
 
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
-#include "render/secondary_rays.hpp"
-#include "render/shading.hpp"
+#include "shading/secondary_rays.hpp"
+#include "shading/shading.hpp"
 #include "scene.hpp"
 
 namespace umbreon {

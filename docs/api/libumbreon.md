@@ -94,6 +94,15 @@ target_link_libraries(cuemol_render PRIVATE umbreon::umbreon)
 これが推移的に `<umbreon/scene.hpp>`（ジオメトリ／カメラ／ライト／マテリアル型）と
 `<umbreon/render/render_types.hpp>`（`RenderOptions`／`FrameResult`）を取り込みます。
 
+画像後処理ヘルパ（`srgbEncode8` / `applyAssumedGamma` / `boxDownsample`）は別ヘッダ
+`<umbreon/postprocess/image_ops.hpp>` に分離されています。エッジ関連の公開ヘッダは
+`<umbreon/edges/{stroke_edges,mesh_feature_edges,object_space_edges}.hpp>` です。
+
+> **移行メモ（フォルダ再編）**: 以前 `<umbreon/render/>` 配下にあった公開ヘッダのうち、
+> `srgbEncode8` 等は `umbreon.hpp` から `<umbreon/postprocess/image_ops.hpp>` へ、
+> エッジ系3ヘッダは `<umbreon/render/...>` から `<umbreon/edges/...>` へ移動しました。
+> `render_types.hpp` は `<umbreon/render/render_types.hpp>` のまま据え置きです。
+
 バージョンは `UMBREON_VERSION_MAJOR` / `_MINOR` / `_PATCH` マクロで参照できます。
 
 ---
@@ -142,6 +151,7 @@ opt.shadows = true;         // 影
 umbreon::FrameResult frame = umbreon::render(scene, opt);
 
 // 6) linear HDR float RGBA -> 8-bit sRGB バイト列（CueMol 側の画像パイプラインへ）
+//    srgbEncode8 は <umbreon/postprocess/image_ops.hpp> で提供される。
 std::vector<std::uint8_t> rgb = umbreon::srgbEncode8(frame, 3);
 ```
 
@@ -225,7 +235,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 > 出力し、巻き境界の頂点・法線が重複するため、隣接巻きとの接続は座標一致としてしか存在しない）。
 > エッジ抽出（`--edges` / `--obj-edges`）は `posClass` で隣接を見て water-tight トポロジーを判定する
 > （`posClass` 不在なら抽出器が同じ位置溶接を自前で再現する fallback）。溶接の単一定義は
-> `render/mesh_weld.hpp`、詳細・限界は `render/mesh_feature_edges.cpp` の step 1 を参照。
+> `edges/mesh_weld.hpp`、詳細・限界は `edges/mesh_feature_edges.cpp` の step 1 を参照。
 
 **`Sphere`**: `center`, `radius`, `color`(rgb+opacity), `material`（既定 `Material::flatOutline()`）, `group`。
 
@@ -329,6 +339,8 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `effectiveTriangles` | `size_t` | 実効三角形数（instance 込み） |
 
 ### 4.8 ポストプロセスユーティリティ
+
+ヘッダ: `<umbreon/postprocess/image_ops.hpp>`（`namespace umbreon`）。
 
 ```cpp
 // linear RGBA -> 8-bit sRGB バイト列。channels は 3(RGB) か 4(RGBA; alpha は linear 格納)。

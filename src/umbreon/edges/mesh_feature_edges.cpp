@@ -5,7 +5,7 @@
 // pipeline and the same silhouette / crease / border predicates, changed ONLY in
 // the sink (topology-tagged FeatureSeg instead of disconnected RawSeg) and in
 // tracking node ids for chaining.
-#include "render/mesh_feature_edges.hpp"
+#include "edges/mesh_feature_edges.hpp"
 
 #include <array>
 #include <cmath>
@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "render/mesh_weld.hpp"
+#include "edges/mesh_weld.hpp"
 
 namespace umbreon {
 namespace {
@@ -82,7 +82,7 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   // smooth winding seams. NOTE: this weld is unrelated to the smooth-silhouette
   // CUSP visibility gap (the missing outline at grazing twists); that is a contour
   // fold-back handled by Freestyle's computeCusps, independent of topology.
-  // The weld key (WeldKey/weldKey, render/mesh_weld.hpp) and ~1e-4 tolerance are
+  // The weld key (WeldKey/weldKey, edges/mesh_weld.hpp) and ~1e-4 tolerance are
   // shared with the mesh2 reader, which bakes the very same partition into
   // mesh.posClass at load time. When that map is present we CONSUME it (the fast
   // path) instead of rehashing; otherwise (hand-built meshes) we weld here.

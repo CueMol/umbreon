@@ -113,11 +113,13 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/embree_renderer.cpp
     src/umbreon/render/scene_build.cpp
     src/umbreon/render/curve_build.cpp
-    src/umbreon/render/fog.cpp
-    src/umbreon/render/stroke_edges.cpp
-    src/umbreon/render/mesh_feature_edges.cpp
-    src/umbreon/render/object_space_edges.cpp
-    src/umbreon/render/analytic_silhouette.cpp
+    src/umbreon/render/pipeline.cpp
+    src/umbreon/postprocess/fog.cpp
+    src/umbreon/postprocess/image_ops.cpp
+    src/umbreon/edges/stroke_edges.cpp
+    src/umbreon/edges/mesh_feature_edges.cpp
+    src/umbreon/edges/object_space_edges.cpp
+    src/umbreon/edges/analytic_silhouette.cpp
     src/umbreon/umbreon.cpp
   )
   # Namespaced alias so in-tree (add_subdirectory) consumers link the same
@@ -167,10 +169,13 @@ if(TARGET umbreon)
   install(FILES src/umbreon/umbreon.hpp src/umbreon/scene.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
   install(FILES src/umbreon/render/render_types.hpp
-                src/umbreon/render/object_space_edges.hpp
-                src/umbreon/render/mesh_feature_edges.hpp
-                src/umbreon/render/stroke_edges.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
+  install(FILES src/umbreon/edges/object_space_edges.hpp
+                src/umbreon/edges/mesh_feature_edges.hpp
+                src/umbreon/edges/stroke_edges.hpp
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/edges)
+  install(FILES src/umbreon/postprocess/image_ops.hpp
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/postprocess)
 
   # The exported target records its PUBLIC link to Embree/TBB. That only round-
   # trips when they were found as CONFIG packages (imported targets the generated
