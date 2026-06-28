@@ -40,6 +40,7 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   const std::size_t nTri = nCorner / 3;
   if (nTri == 0) return result;
   const bool haveNrm = mesh.normals.size() == mesh.vertexCount();
+  const bool haveCol = mesh.colors.size() == mesh.vertexCount();
   // Per-corner attribute reads routed through the optional index. With a
   // de-indexed mesh cornerVertex(c)==c, so this is the legacy access.
   auto cornerPos = [&](std::size_t c) -> const Vec3& {
@@ -47,6 +48,9 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   };
   auto cornerNrm = [&](std::size_t c) -> const Vec3& {
     return mesh.normals[mesh.cornerVertex(c)];
+  };
+  auto cornerAlpha = [&](std::size_t c) -> float {
+    return mesh.colors[mesh.cornerVertex(c)].w;
   };
 
   // 1) POSITIONAL WELD of the de-indexed corners into shared vertices
@@ -87,6 +91,10 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   // mesh.posClass at load time. When that map is present we CONSUME it (the fast
   // path) instead of rehashing; otherwise (hand-built meshes) we weld here.
   std::vector<Vec3> vpos, vacc;
+  // Per welded-vertex alpha accumulation (summed corner opacity + count),
+  // averaged into FeatureMesh::valpha. Only filled when the mesh has colors.
+  std::vector<float> vAlphaSum;
+  std::vector<int> vAlphaCnt;
   std::vector<int> corner2v(nCorner);
   std::size_t nV;
   const bool usePosClass =
@@ -99,6 +107,10 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
     nV = static_cast<std::size_t>(mesh.posClassCount);
     vpos.assign(nV, Vec3{0.0f, 0.0f, 0.0f});
     vacc.assign(nV, Vec3{0.0f, 0.0f, 0.0f});
+    if (haveCol) {
+      vAlphaSum.assign(nV, 0.0f);
+      vAlphaCnt.assign(nV, 0);
+    }
     std::vector<char> seen(nV, 0);
     for (std::size_t c = 0; c < nCorner; ++c) {
       const std::size_t v =
@@ -109,6 +121,10 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
         seen[v] = 1;
       }
       if (haveNrm) vacc[v] = vacc[v] + cornerNrm(c);
+      if (haveCol) {
+        vAlphaSum[v] += cornerAlpha(c);
+        vAlphaCnt[v]++;
+      }
     }
   } else {
     std::unordered_map<WeldKey, int, WeldKeyHash> vmap;
@@ -121,12 +137,20 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
         vmap.emplace(k, vi);
         vpos.push_back(cornerPos(c));
         vacc.push_back(haveNrm ? cornerNrm(c) : Vec3{0.0f, 0.0f, 0.0f});
+        if (haveCol) {
+          vAlphaSum.push_back(cornerAlpha(c));
+          vAlphaCnt.push_back(1);
+        }
         corner2v[c] = vi;
       } else {
         corner2v[c] = it->second;
         if (haveNrm)
           vacc[static_cast<std::size_t>(it->second)] =
               vacc[static_cast<std::size_t>(it->second)] + cornerNrm(c);
+        if (haveCol) {
+          vAlphaSum[static_cast<std::size_t>(it->second)] += cornerAlpha(c);
+          vAlphaCnt[static_cast<std::size_t>(it->second)]++;
+        }
       }
     }
     nV = vpos.size();
@@ -166,6 +190,17 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   }
 
   result.vpos = vpos;
+
+  // Per welded-vertex alpha (averaged corner opacity) for the edge_line2
+  // transmissive endpoint fade. Left EMPTY when the mesh carries no per-vertex
+  // color, so the edges stay uniformly opaque (FeatureSeg::alpha* keep their 1
+  // default => opacity1 == -1).
+  if (haveCol) {
+    result.valpha.assign(nV, 1.0f);
+    for (std::size_t v = 0; v < nV; ++v)
+      if (vAlphaCnt[v] > 0)
+        result.valpha[v] = vAlphaSum[v] / static_cast<float>(vAlphaCnt[v]);
+  }
 
   // Mean triangle edge length, computed unconditionally (independent of which
   // natures are enabled) so the stroke pass can derive the obj-edges silhouette
@@ -595,6 +630,20 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
     for (const CreaseCand& c : creaseCand)
       if (creaseDeg[c.a] <= maxDeg && creaseDeg[c.b] <= maxDeg)
         pushEdge(c.a, c.b, EdgeNature::Crease, c.grp, c.f0, c.f1);
+  }
+
+  // Tag each segment's endpoint opacity from the welded-vertex alpha. Welded-id
+  // endpoints (hard-edge / crease / border, v < nV) get their vertex alpha;
+  // synthetic smooth-contour crossings (v >= nV, no single vertex) keep the
+  // opaque default. No-op when the mesh has no per-vertex color (valpha empty).
+  if (!result.valpha.empty()) {
+    const int nVi = static_cast<int>(nV);
+    for (FeatureSeg& seg : result.segs) {
+      if (seg.v0 >= 0 && seg.v0 < nVi)
+        seg.alpha0 = result.valpha[static_cast<std::size_t>(seg.v0)];
+      if (seg.v1 >= 0 && seg.v1 < nVi)
+        seg.alpha1 = result.valpha[static_cast<std::size_t>(seg.v1)];
+    }
   }
 
   result.nodeCount = nextNode;

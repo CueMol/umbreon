@@ -82,12 +82,22 @@ struct FeatureSeg {
   // marks a contour fold-back (cusp). A zero nrm is the "not a smooth contour
   // segment" discriminator, so cusp detection skips it.
   Vec3 nrm{0.0f, 0.0f, 0.0f};
+  // Per-endpoint opacity (welded-vertex alpha), for the object-space edge_line2
+  // transmissive fade: alpha0 at p0/v0, alpha1 at p1/v1. 1 == opaque (the
+  // default; kept for synthetic smooth-contour crossings with no single vertex,
+  // and whenever the mesh carries no per-vertex color). Consumed by the
+  // object-space pass when visibilityClip is on; the verbatim path ignores them.
+  float alpha0 = 1.0f, alpha1 = 1.0f;
 };
 
 // Extracted feature edges of a mesh. `vpos` is the welded vertex table (for
 // reference / future use); the chain id space spans [0, nodeCount).
 struct FeatureMesh {
   std::vector<Vec3> vpos;       // welded vertex positions, indexed by welded id
+  // Per welded-vertex opacity (averaged corner alpha), indexed by welded id.
+  // EMPTY when the mesh carries no per-vertex color (edges then stay opaque).
+  // Source of FeatureSeg::alpha0/alpha1 for the edge_line2 transmissive fade.
+  std::vector<float> valpha;
   std::vector<FeatureSeg> segs;
   int nodeCount = 0;            // total chain node ids (welded + synthetic)
   // Mean triangle edge length (elsum / (3*nTri)) of the welded mesh. Surfaced so
