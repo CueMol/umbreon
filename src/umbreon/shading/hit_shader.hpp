@@ -42,6 +42,7 @@ struct HitShade {
   float contactAo = 1.0f;          // small-radius (contact) openness
   float shapeAo = 1.0f;            // mid+large-radius (shape) openness
   float avgHitDist = 0.0f;         // mean occluder distance (world units)
+  Vec3 position{0.0f, 0.0f, 0.0f}; // world-space hit point (irradiance-cache key)
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -171,6 +172,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       hs.contactAo = aoAov.contact;
       hs.shapeAo = aoAov.shape;
       hs.avgHitDist = aoAov.avgHitDist;
+      hs.position = P;  // world first-hit point: irradiance-cache spatial key
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,

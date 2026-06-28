@@ -1177,6 +1177,18 @@ int main() {
             approx(fn.albedo[kCenterPix * 3 + 1], 0.6f, 1e-4f));
     s.check("AOV: center normal ~ +z",
             approx(fn.normal[kCenterPix * 3 + 2], 1.0f, 1e-3f));
+    s.check("AOV gate: position populated when on", !fn.position.empty());
+    s.check("AOV gate: off leaves position empty", fo.position.empty());
+    // The ortho center ray (cam {0,0,10} looking -z) hits the z=0 quad at the
+    // origin, so the first-hit world position is ~origin and obeys the depth
+    // identity position == camOrg + rd*depth (here z == 10 - depth).
+    s.check("AOV: center position ~ origin",
+            approx(fn.position[kCenterPix * 3 + 0], 0.0f, 1e-4f) &&
+                approx(fn.position[kCenterPix * 3 + 1], 0.0f, 1e-4f) &&
+                approx(fn.position[kCenterPix * 3 + 2], 0.0f, 1e-4f));
+    s.check("AOV: center position z == camOrg.z - depth",
+            approx(fn.position[kCenterPix * 3 + 2],
+                   10.0f - fn.depth[kCenterPix], 1e-4f));
   }
 
   // ===== AO quality: contact / shape are distinct per-scale values =====

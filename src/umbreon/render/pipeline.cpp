@@ -136,6 +136,9 @@ FrameResult renderFrame(const Scene& scene, const RenderOptions& opt) {
           boxDownsample(frame.avgHitDist, frame.width, frame.height, 1, ss);
       frame.bentNormal =
           boxDownsample(frame.bentNormal, frame.width, frame.height, 3, ss);
+      if (!frame.position.empty())
+        frame.position =
+            boxDownsample(frame.position, frame.width, frame.height, 3, ss);
     }
     frame.width = finalW;
     frame.height = finalH;

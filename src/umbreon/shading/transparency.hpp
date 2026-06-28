@@ -43,6 +43,7 @@ struct PixelResult {
   float contactAo = 1.0f;
   float shapeAo = 1.0f;
   float avgHitDist = 0.0f;
+  Vec3 position{0.0f, 0.0f, 0.0f};  // world first-hit point (cache key; 0 on escape)
 };
 
 // Integrate one primary ray (origin `org`, direction `rd`) through the scene,
@@ -86,6 +87,7 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   float firstContact = 1.0f;
   float firstShape = 1.0f;
   float firstAvgHit = 0.0f;
+  Vec3 firstPosition{0.0f, 0.0f, 0.0f};
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -140,6 +142,7 @@ inline PixelResult integratePixel(const ShadeContext& sc,
       firstContact = hs.contactAo;
       firstShape = hs.shapeAo;
       firstAvgHit = hs.avgHitDist;
+      firstPosition = hs.position;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -226,7 +229,8 @@ inline PixelResult integratePixel(const ShadeContext& sc,
                      firstBent,
                      firstContact,
                      firstShape,
-                     firstAvgHit};
+                     firstAvgHit,
+                     firstPosition};
 }
 
 }  // namespace detail

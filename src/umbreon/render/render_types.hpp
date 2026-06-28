@@ -235,6 +235,8 @@ struct FrameResult {
   std::vector<float> shapeAo;     // width*height   mid+large-radius openness
   std::vector<float> bentNormal;  // width*height*3 average unoccluded direction
   std::vector<float> avgHitDist;  // width*height   mean occluder distance (world)
+  std::vector<float> position;    // width*height*3 world-space first-hit point
+                                  // (irradiance-cache spatial key / denoise guide)
   double renderSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
 };

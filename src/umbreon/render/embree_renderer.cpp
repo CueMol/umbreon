@@ -281,6 +281,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.contactAo.assign(npix, 1.0f);
       res.shapeAo.assign(npix, 1.0f);
       res.avgHitDist.assign(npix, 0.0f);
+      res.position.assign(npix * 3, 0.0f);
     }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
@@ -367,6 +368,9 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         res.contactAo[pix] = pr.contactAo;
         res.shapeAo[pix] = pr.shapeAo;
         res.avgHitDist[pix] = pr.avgHitDist;
+        res.position[pix * 3 + 0] = pr.position.x;
+        res.position[pix * 3 + 1] = pr.position.y;
+        res.position[pix * 3 + 2] = pr.position.z;
       }
     }
   }
