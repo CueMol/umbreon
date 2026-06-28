@@ -35,6 +35,10 @@ if(TARGET umbreon)
   target_link_libraries(test_render PRIVATE umbreon)
   add_test(NAME render COMMAND test_render)
 
+  add_executable(test_gi test_gi.cpp)
+  target_link_libraries(test_gi PRIVATE umbreon)
+  add_test(NAME gi COMMAND test_gi)
+
   add_executable(test_mesh_indexed test_mesh_indexed.cpp)
   target_link_libraries(test_mesh_indexed PRIVATE umbreon)
   add_test(NAME mesh_indexed COMMAND test_mesh_indexed)
