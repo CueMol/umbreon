@@ -130,6 +130,10 @@ struct Options {
   // edge raised off the surface or behind a transparent surface is hidden where
   // it dips behind geometry.
   bool objEdgeVisibility = false;
+  // Verification only: after generating object-space edges, drop the surface
+  // (mesh + original spheres/cylinders) so ONLY the edge cylinders render. Makes
+  // the visibility ON/OFF difference visible (no occluder hides the back edges).
+  bool objEdgeOnly = false;
   float objEdgeCreaseDeg = 75.0f;
   // Hard-edge angle (deg): a sharp ribbon cross-section (rectangular beta-sheet)
   // duplicates its box-corner vertices with normals this far apart. The mesh

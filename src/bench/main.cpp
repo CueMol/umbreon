@@ -490,6 +490,18 @@ int main(int argc, char** argv) {
           "(width %.3f, raise %.3f, segments %d)\n",
           scene.cylinders.size() - before, silOpt.width, silOpt.raise,
           silOpt.segments);
+      if (opt.objEdgeOnly) {
+        // Verification: drop the surface so only the generated edge cylinders
+        // [before..end] render. Edge extraction (incl. ON's mesh-BVH visibility)
+        // already ran above, so removing the mesh now is safe.
+        scene.cylinders.erase(
+            scene.cylinders.begin(),
+            scene.cylinders.begin() + static_cast<std::ptrdiff_t>(before));
+        scene.spheres.clear();
+        scene.mesh = umbreon::Mesh{};
+        std::printf("  --obj-edge-only: rendering %zu edge cylinders only\n",
+                    scene.cylinders.size());
+      }
     }
 
     // umbreon backend: primary rays + direct POV local shading + fog + gamma.
