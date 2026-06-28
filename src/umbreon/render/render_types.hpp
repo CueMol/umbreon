@@ -185,6 +185,22 @@ struct RenderOptions {
            aoMultibounce || aoLowDiscrepancy || aoDiffuseFactor > 0.0f;
   }
 
+  // --- diffuse GI (surface irradiance cache; mesh hits only) ----------------
+  // Default OFF = current local shading. `gi` is the MASTER gate: false => the
+  // GI passes never run, no GI AOV is force-captured, and the color stays
+  // byte-identical to the no-GI render. The indirect is an ADDITIVE term (direct
+  // is unchanged), so gi=true with giIntensity=0 is also byte-identical to gi
+  // off. Auto-sized fields (0 => scene-diagonal derived) resolve inside render().
+  bool gi = false;               // master gate for the irradiance-cache GI passes
+  int giSamples = 64;            // hemisphere gather rays per cache record
+  float giMaxDistance = 0.0f;    // indirect ray tfar; 0 => scene-diagonal auto
+  float giIntensity = 1.0f;      // indirect gain (POV non-physical normalization)
+  float giAccuracy = 0.15f;      // interpolation accuracy a; max influence = a*R_i
+  float giRecordSpacing = 0.0f;  // voxel target spacing; 0 => scene-diagonal auto
+  float giNormalReject = 0.85f;  // dot(n_x,n_rec) floor for record acceptance
+  bool giComponentReject = true; // reject records from a different CueMol section
+  bool giSeedPerVertex = false;  // seed on mesh vertices (view-independent cache)
+
   // --- shadows (per-light visibility; never applied to outline primitives) ---
   bool shadows = false;        // cast shadows from the lights; false = off
   int shadowSamples = 1;       // shadow rays per light (>1 = soft area light)
@@ -237,6 +253,13 @@ struct FrameResult {
   std::vector<float> avgHitDist;  // width*height   mean occluder distance (world)
   std::vector<float> position;    // width*height*3 world-space first-hit point
                                   // (irradiance-cache spatial key / denoise guide)
+  // Per-pixel CueMol section/group of the first MESH hit (0xFFFFFFFF == no mesh
+  // hit). The irradiance cache uses it as both the GI hit mask and the leak-
+  // rejection key. Sized when aoWriteAov OR gi is on.
+  std::vector<std::uint32_t> componentId;  // width*height
+  // Interpolated indirect irradiance from the GI composite pass (debug / future
+  // denoise demodulation). Sized only when gi is on.
+  std::vector<float> indirect;    // width*height*3
   double renderSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
 };

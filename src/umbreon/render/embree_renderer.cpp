@@ -273,15 +273,20 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // normal doubles as the OIDN guide / cache spatial key, so it is allocated
     // for the edge pass OR the AO AOV dump. The remaining AO AOVs (albedo, the
     // contact/shape split, bent normal, mean occluder distance) ride aoWriteAov.
-    if (opt.strokeEdges.enable || opt.aoWriteAov)
+    if (opt.strokeEdges.enable || opt.aoWriteAov || opt.gi)
       res.normal.assign(npix * 3, 0.0f);
-    if (opt.aoWriteAov) {
+    // The GI passes consume the same first-hit attributes (position/normal/
+    // albedo/component + the contact/shape split), so `gi` force-captures the
+    // AO/G-buffer AOVs too. This only fills separate buffers; the color is
+    // unchanged, keeping gi-on byte-identical to gi-off (until the GI composite).
+    if (opt.aoWriteAov || opt.gi) {
       res.albedo.assign(npix * 3, 0.0f);
       res.bentNormal.assign(npix * 3, 0.0f);
       res.contactAo.assign(npix, 1.0f);
       res.shapeAo.assign(npix, 1.0f);
       res.avgHitDist.assign(npix, 0.0f);
       res.position.assign(npix * 3, 0.0f);
+      res.componentId.assign(npix, 0xFFFFFFFFu);
     }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
@@ -358,7 +363,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         res.materialId[pix] = pr.materialId;
       }
       // AO AOVs: albedo + contact/shape + bent normal + mean occluder distance.
-      if (opt.aoWriteAov) {
+      if (opt.aoWriteAov || opt.gi) {
         res.albedo[pix * 3 + 0] = pr.albedo.x;
         res.albedo[pix * 3 + 1] = pr.albedo.y;
         res.albedo[pix * 3 + 2] = pr.albedo.z;
@@ -371,6 +376,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         res.position[pix * 3 + 0] = pr.position.x;
         res.position[pix * 3 + 1] = pr.position.y;
         res.position[pix * 3 + 2] = pr.position.z;
+        res.componentId[pix] = pr.componentId;
       }
     }
   }

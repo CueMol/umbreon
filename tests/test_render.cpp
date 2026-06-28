@@ -1191,6 +1191,35 @@ int main() {
                    10.0f - fn.depth[kCenterPix], 1e-4f));
   }
 
+  // ===== GI gate: gi=true force-captures cache AOVs, color byte-identical =====
+  // With no GI consumer wired yet, enabling `gi` only force-captures the cache
+  // input AOVs (position/normal/albedo/componentId); the rendered color must
+  // stay byte-identical to gi=false (the indirect term is added only in C5).
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions off;
+    off.width = 5; off.height = 5;
+    umbreon::RenderOptions on = off;
+    on.gi = true;
+    umbreon::FrameResult fo = umbreon::render(sc, off);
+    umbreon::FrameResult fn = umbreon::render(sc, on);
+    bool colorSame = fo.color.size() == fn.color.size();
+    for (std::size_t i = 0; colorSame && i < fo.color.size(); ++i)
+      if (fo.color[i] != fn.color[i]) colorSame = false;
+    s.check("GI gate: color byte-identical with gi on (no consumer)", colorSame);
+    s.check("GI gate: off leaves cache AOVs empty", fo.position.empty());
+    s.check("GI gate: position populated when gi on", !fn.position.empty());
+    s.check("GI gate: componentId populated when gi on", !fn.componentId.empty());
+    // The center pixel is a mesh hit, so its componentId is a real section id
+    // (the welded quad has group 0), not the no-mesh sentinel.
+    s.check("GI gate: center componentId is a mesh section (not sentinel)",
+            fn.componentId[kCenterPix] != 0xFFFFFFFFu);
+  }
+
   // ===== AO quality: contact / shape are distinct per-scale values =====
   // contact (small radius) and shape (mid+large radii) are returned UNBLENDED.
   // A FAR occluder (beyond the contact radius, within the shape radius) drops

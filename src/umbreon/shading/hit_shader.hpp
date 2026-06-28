@@ -43,6 +43,9 @@ struct HitShade {
   float shapeAo = 1.0f;            // mid+large-radius (shape) openness
   float avgHitDist = 0.0f;         // mean occluder distance (world units)
   Vec3 position{0.0f, 0.0f, 0.0f}; // world-space hit point (irradiance-cache key)
+  uint32_t componentId = 0xFFFFFFFFu;  // CueMol section of a MESH hit; sentinel
+                                       // 0xFFFFFFFF for outline primitives (GI
+                                       // hit mask + leak-rejection key)
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -163,9 +166,10 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
         diffuseAo = 1.0f - c.opt.aoDiffuseFactor * (1.0f - openness);
     }
     // Main-path AO / G-buffer AOVs (OIDN guide + surface-irradiance-cache input
-    // + AO-tuning debug). Gated on aoWriteAov; the color computed above is
-    // unchanged whether or not these are written.
-    if (c.opt.aoWriteAov) {
+    // + AO-tuning debug). Gated on aoWriteAov OR gi (the GI passes consume the
+    // same first-hit attributes); the color computed above is unchanged whether
+    // or not these are written, so forcing capture under `gi` is color-invariant.
+    if (c.opt.aoWriteAov || c.opt.gi) {
       hs.albedo = C;
       hs.normal = N;
       hs.bentNormal = aoAov.bent;
@@ -173,6 +177,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       hs.shapeAo = aoAov.shape;
       hs.avgHitDist = aoAov.avgHitDist;
       hs.position = P;  // world first-hit point: irradiance-cache spatial key
+      // Real CueMol section of this mesh hit (sentinel stays for primitives).
+      hs.componentId = static_cast<uint32_t>(c.mesh.groupForTri(rh.hit.primID));
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
