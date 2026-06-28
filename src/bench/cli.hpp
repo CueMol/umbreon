@@ -195,6 +195,9 @@ struct Options {
   // --edge-reject-concave: drop concave (valley) feature edges across all natures
   // via the two adjacent faces' geometric normals. Default on.
   bool strokeRejectConcave = true;
+  // --stroke-geom-silhouette: false (default) = smooth n.v==0 contour; true =
+  // geometric per-edge silhouette (face-normal straddle on all mesh edges).
+  bool strokeGeomSilhouette = false;
   // DRAW analytic silhouettes of the analytic primitives (spheres/cylinders) in
   // the stroke pass, so --edges outlines ball-and-stick too (default ON).
   // --stroke-analytic off draws a mesh-only outline, but the ball-stick is still

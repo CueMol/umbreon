@@ -1694,6 +1694,7 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
   ep.width = 0.0f;
   ep.silhouetteCamBias = false;  // QI from the true n.v==0 surface, no eye-ward bias (fix B)
   ep.silhouette = se.silhouette;
+  ep.geomSilhouette = se.meshGeomSilhouette;
   ep.crease = se.crease;
   ep.border = se.border;
   ep.meshHardEdgeDeg = se.meshHardEdgeDeg;

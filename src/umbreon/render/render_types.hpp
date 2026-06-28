@@ -97,6 +97,12 @@ struct StrokeEdgeOptions {
   bool meshCreaseConvexOnly = true;        // keep convex creases, drop valleys
   float meshBorderCoplanarVetoDeg = 35.0f; // coplanar-continuation border veto
   int meshCreaseMaxDegree = 4;             // drop crease hubs above this degree
+  // Silhouette method (--stroke-geom-silhouette). false (default) = SMOOTH contour
+  // (interpolated n.v==0) + hard-edge straddle; matches the smooth-shaded outline.
+  // true = GEOMETRIC per-edge silhouette (face-normal straddle on ALL mesh edges):
+  // follows mesh edges at mesh resolution (denser at grazing folds) but is faceted
+  // and breaks up under grazing QI. See ExtractParams::geomSilhouette.
+  bool meshGeomSilhouette = false;
   // Drop CONCAVE (valley) feature edges across ALL natures (crease + hard-edge
   // silhouette) via the two adjacent faces' geometric normals (--edge-reject-
   // concave). On by default for stroke edges.

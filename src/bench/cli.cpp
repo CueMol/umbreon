@@ -403,6 +403,10 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--edge-reject-concave");
       if (o.ok && !parseBool(v, o.strokeRejectConcave))
         fail("--edge-reject-concave expects on/off");
+    } else if (a == "--stroke-geom-silhouette") {
+      std::string v = value("--stroke-geom-silhouette");
+      if (o.ok && !parseBool(v, o.strokeGeomSilhouette))
+        fail("--stroke-geom-silhouette expects on/off");
     } else if (a == "--stroke-analytic") {
       std::string v = value("--stroke-analytic");
       if (o.ok && !parseBool(v, o.strokeAnalytic))
@@ -506,6 +510,7 @@ void printUsage(const char* prog) {
       "  --edge-qi-lift <float>   production QI normal-lift, abs units (0=legacy)[0]\n"
       "  --edge-qi-split <on|off> with lift: on=per-sample split(B), off=majority(A)[off]\n"
       "  --edge-reject-concave <on|off> drop concave(valley) feature edges[on]\n"
+      "  --stroke-geom-silhouette <on|off> geometric per-edge silhouette[off]\n"
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
       "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
       "  --stroke-self-exclude-rings <int> QI self-occlusion exclude radius  [6]\n"

@@ -271,6 +271,7 @@ int main(int argc, char** argv) {
       ropt.strokeEdges.qiNormalLift = opt.strokeQiLift;
       ropt.strokeEdges.qiSplit = opt.strokeQiSplit;
       ropt.strokeEdges.rejectConcaveEdges = opt.strokeRejectConcave;
+      ropt.strokeEdges.meshGeomSilhouette = opt.strokeGeomSilhouette;
       ropt.strokeEdges.analytic = opt.strokeAnalytic;
       if (opt.strokeAnalyticSegmentsSet)
         ropt.strokeEdges.analyticSegments = opt.strokeAnalyticSegments;
