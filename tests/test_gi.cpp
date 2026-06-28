@@ -1,6 +1,7 @@
 // Unit tests for the surface irradiance cache (detail). Exercises the
 // deterministic record placement directly on a hand-built first-hit G-buffer,
 // independent of the full render pipeline.
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -10,6 +11,8 @@
 #include "test_util.hpp"
 
 namespace {
+
+bool approx(float a, float b, float eps) { return std::fabs(a - b) <= eps; }
 
 // Build a WxH first-hit G-buffer where every pixel is a mesh hit at a regular
 // world position p = {px*step, py*step, 0}, all in section 0, normal +z.
@@ -78,6 +81,22 @@ int main() {
     s.check("placement: only mesh pixels seed records", r.size() == 1);
     s.check("placement: seeded record keeps the mesh section id",
             !r.empty() && r[0].componentId == 0u);
+  }
+
+  // Neighbor clamp: an over-large radius shrinks to a nearer record's radius
+  // plus their separation; the small radius is untouched. Both read the ORIGINAL
+  // radii (separate write array), so the result is order-independent.
+  {
+    std::vector<IrradianceRecord> recs(2);
+    recs[0].position = {0.0f, 0.0f, 0.0f};
+    recs[0].radius = 0.1f;
+    recs[1].position = {0.5f, 0.0f, 0.0f};
+    recs[1].radius = 100.0f;
+    neighborClamp(recs, 1.0f);
+    s.check("neighbor clamp: over-large radius shrinks to R_j + dist",
+            approx(recs[1].radius, 0.6f, 1e-5f));
+    s.check("neighbor clamp: nearer small radius is unchanged",
+            approx(recs[0].radius, 0.1f, 1e-6f));
   }
 
   return s.report();

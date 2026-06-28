@@ -163,6 +163,52 @@ inline float intersectNearest(RTCScene rscene, const Vec3& O, const Vec3& dir,
              : std::numeric_limits<float>::infinity();
 }
 
+// Full nearest-hit query: like intersectNearest, but keeps the hit attributes
+// (geom/prim ids, barycentrics, geometric normal) the irradiance-cache fill
+// needs to evaluate albedo * direct-lighting at the one-bounce point. hit ==
+// false on a miss (the GI fill then folds in the environment radiance instead).
+struct NearestHit {
+  bool hit = false;
+  float t = 0.0f;
+  uint32_t geomID = RTC_INVALID_GEOMETRY_ID;
+  uint32_t primID = 0;
+  float u = 0.0f;
+  float v = 0.0f;
+  Vec3 ng{0.0f, 0.0f, 0.0f};
+};
+
+inline NearestHit intersectHit(RTCScene rscene, const Vec3& O, const Vec3& dir,
+                               float tnear, float tfar) {
+  RTCRayHit rh;
+  rh.ray.org_x = O.x;
+  rh.ray.org_y = O.y;
+  rh.ray.org_z = O.z;
+  rh.ray.dir_x = dir.x;
+  rh.ray.dir_y = dir.y;
+  rh.ray.dir_z = dir.z;
+  rh.ray.tnear = tnear;
+  rh.ray.tfar = tfar;
+  rh.ray.mask = 0xFFFFFFFFu;
+  rh.ray.flags = 0;
+  rh.ray.time = 0.0f;
+  rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+  rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+  RTCIntersectArguments iargs;
+  rtcInitIntersectArguments(&iargs);
+  rtcIntersect1(rscene, &rh, &iargs);
+  NearestHit h;
+  if (rh.hit.geomID != RTC_INVALID_GEOMETRY_ID) {
+    h.hit = true;
+    h.t = rh.ray.tfar;
+    h.geomID = rh.hit.geomID;
+    h.primID = rh.hit.primID;
+    h.u = rh.hit.u;
+    h.v = rh.hit.v;
+    h.ng = Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+  }
+  return h;
+}
+
 // Van der Corput radical inverse in base 2 (bit reversal): the second Hammersley
 // coordinate. Returns a value in [0,1).
 inline float radicalInverse2(uint32_t bits) {

@@ -20,13 +20,22 @@
 // are added below as they land. C3 wires the structs + deterministic placement.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include <embree4/rtcore.h>
+
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
+
 #include "render/render_types.hpp"
+#include "render/scene_build.hpp"
+#include "shading/secondary_rays.hpp"
+#include "shading/shading.hpp"
 #include "scene.hpp"
 
 namespace umbreon {
@@ -94,6 +103,183 @@ inline std::vector<IrradianceRecord> placeRecordsVoxel(const FrameResult& res,
     }
   }
   return records;
+}
+
+// Two-color sky/ground hemisphere gradient along a miss-ray direction (the GI
+// environment fill). Mirrors the bent-normal directional ambient in the hit
+// shader: a direction toward `up` sees the sky tint, away sees the ground tint.
+// `ambient` is the scene ambient color (the gradient is modulated by it).
+inline Vec3 environmentRadiance(const Vec3& wi, const Vec3& up,
+                                const Vec3& ambient, const float sky[3],
+                                const float ground[3]) {
+  const float w = 0.5f * (dot(wi, up) + 1.0f);
+  return Vec3{ambient.x * (ground[0] + (sky[0] - ground[0]) * w),
+              ambient.y * (ground[1] + (sky[1] - ground[1]) * w),
+              ambient.z * (ground[2] + (sky[2] - ground[2]) * w)};
+}
+
+// One-bounce outgoing radiance at a gather hit (point y, incoming dir rayDir).
+// Mesh hits reflect emission + diffuse direct light only: specular indirect is
+// dropped (this is diffuse GI) and ambient is excluded so the cache does not
+// double-count itself. Non-mesh (outline primitive) hits are black occluders --
+// they block indirect light but bounce none, keeping GI a mesh-only light source.
+inline Vec3 gatherMeshRadiance(const BuiltScene& built, const Mesh& mesh,
+                               const std::vector<Light>& lights, RTCScene rscene,
+                               const NearestHit& hit, const Vec3& y,
+                               const Vec3& rayDir, float eps, bool shadowsOn,
+                               int shadowSamples, uint32_t& s0, uint32_t& s1) {
+  const GeomRecord& rec = built.records[hit.geomID];
+  if (rec.kind != GeomKind::Mesh) return Vec3{0.0f, 0.0f, 0.0f};
+  float nbuf[3] = {0, 0, 0};
+  float cbuf[4] = {0, 0, 0, 1};
+  rtcInterpolate0(rec.geom, hit.primID, hit.u, hit.v,
+                  RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
+  rtcInterpolate0(rec.geom, hit.primID, hit.u, hit.v,
+                  RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
+  const Vec3 ny = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rayDir);
+  const Vec3 Cy{cbuf[0], cbuf[1], cbuf[2]};
+  const Material& my = mesh.materialForTri(hit.primID);
+  Vec3 L{my.emission * Cy.x, my.emission * Cy.y, my.emission * Cy.z};
+  for (const Light& l : lights) {
+    const float ndl = dot(ny, l.L);
+    if (ndl <= 0.0f) continue;
+    float d;
+    if (my.brilliance == 1.0f)
+      d = ndl;
+    else if (my.brilliance == 0.0f)
+      d = 1.0f;
+    else
+      d = std::pow(ndl, my.brilliance);
+    const float shadow =
+        shadowsOn
+            ? computeShadow(rscene, y, hit.ng, ny, eps, l, shadowSamples, s0, s1)
+            : 1.0f;
+    const float dk = my.diffuse * d * shadow;
+    L.x += dk * Cy.x * l.color.x;
+    L.y += dk * Cy.y * l.color.y;
+    L.z += dk * Cy.z * l.color.z;
+  }
+  return L;
+}
+
+// Knobs for the [C] fill pass.
+struct GIFillParams {
+  int samples = 64;
+  float maxDistance = 1.0f;       // gather ray tfar (indirect search radius)
+  Vec3 up{0.0f, 1.0f, 0.0f};      // env gradient axis (camera up)
+  Vec3 ambient{1.0f, 1.0f, 1.0f}; // scene ambient color
+  float sky[3] = {1.0f, 1.0f, 1.0f};
+  float ground[3] = {1.0f, 1.0f, 1.0f};
+  bool shadows = false;
+  int shadowSamples = 1;
+  float radiusMin = 0.0f;
+  float radiusMax = 1.0e20f;
+};
+
+// [C] Fill: gather one-bounce diffuse irradiance at each record over a cosine-
+// weighted hemisphere (the same sampling as computeAO, but with a closest hit so
+// the bounce point's radiance can be evaluated). TBB-parallel and per-record
+// independent; each record seeds its RNG from its STABLE index (never a shared
+// counter) and accumulates samples in fixed order, so the result is identical
+// regardless of thread count. The valid radius R_i is the harmonic mean of the
+// gather hit distances (near surfaces dominate => dense records in cavities),
+// clamped to [radiusMin, radiusMax].
+inline void fillRecords(std::vector<IrradianceRecord>& records,
+                        const BuiltScene& built, const Mesh& mesh,
+                        const std::vector<Light>& lights, RTCScene rscene,
+                        const GIFillParams& gp) {
+  if (records.empty()) return;
+  tbb::parallel_for(
+      tbb::blocked_range<std::size_t>(0, records.size()),
+      [&](const tbb::blocked_range<std::size_t>& rr) {
+        for (std::size_t ri = rr.begin(); ri != rr.end(); ++ri) {
+          IrradianceRecord& rec = records[ri];
+          const Frame f = frameFromNormal(rec.normal);
+          const float eps =
+              selfIntersectEps(rec.position, rec.normal, gp.maxDistance);
+          const Vec3 O = rec.position + rec.normal * eps;
+          // Per-record fixed seed from the stable index (no shared counter).
+          uint32_t seed0 = static_cast<uint32_t>(ri);
+          uint32_t seed1 = 0x9E3779B9u;
+          tea2(seed0, seed1);
+          uint32_t sh0 = seed0 ^ 0x68bc21ebu;  // decorrelated shadow RNG stream
+          uint32_t sh1 = seed1;
+          Vec3 E{0.0f, 0.0f, 0.0f};
+          Vec3 bentAccum{0.0f, 0.0f, 0.0f};
+          float invDistSum = 0.0f;
+          int nHit = 0;
+          for (int sidx = 0; sidx < gp.samples; ++sidx) {
+            uint32_t s0 = seed0;
+            uint32_t s1 = static_cast<uint32_t>(sidx);
+            tea2(s0, s1);
+            const Vec3 wi =
+                cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
+            if (dot(wi, rec.normal) < 0.01f) continue;  // grazing / below surface
+            const NearestHit hit = intersectHit(rscene, O, wi, eps, gp.maxDistance);
+            if (hit.hit) {
+              const Vec3 y = O + wi * hit.t;
+              E = E + gatherMeshRadiance(built, mesh, lights, rscene, hit, y, wi,
+                                         eps, gp.shadows, gp.shadowSamples, sh0,
+                                         sh1);
+              invDistSum += 1.0f / hit.t;
+              ++nHit;
+            } else {
+              E = E + environmentRadiance(wi, gp.up, gp.ambient, gp.sky,
+                                          gp.ground);
+              bentAccum = bentAccum + wi;
+            }
+          }
+          const float inv = 1.0f / static_cast<float>(gp.samples);
+          rec.irradiance = E * inv;
+          rec.bentNormal = safeNormalize(bentAccum, rec.normal);
+          float R =
+              (nHit > 0) ? static_cast<float>(nHit) / invDistSum : gp.maxDistance;
+          if (R < gp.radiusMin) R = gp.radiusMin;
+          if (R > gp.radiusMax) R = gp.radiusMax;
+          rec.radius = R;
+        }
+      });
+}
+
+// Neighbor clamping (Krivanek 2006), the key leak-prevention step: a record's
+// valid radius cannot exceed a nearer record's radius plus their separation,
+// R_i = min(R_i, R_j + ||x_i - x_j||). min is commutative and reads the ORIGINAL
+// radii (writing clamped values to a separate array), so the result is order- and
+// thread-independent. Records are bucketed at `cellSize`; the neighborhood sweep
+// is capped at `maxReach` cells (leaks are local, so a bounded sweep suffices and
+// keeps an over-large open-region radius from blowing up the scan).
+inline void neighborClamp(std::vector<IrradianceRecord>& records, float cellSize,
+                          int maxReach = 3) {
+  const std::size_t n = records.size();
+  if (n == 0 || cellSize <= 0.0f) return;
+  const float inv = 1.0f / cellSize;
+  std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
+  for (uint32_t i = 0; i < n; ++i)
+    grid[voxelKey(records[i].position, inv)].push_back(i);
+  std::vector<float> clamped(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const Vec3& xi = records[i].position;
+    float R = records[i].radius;
+    const int reach = std::min(
+        maxReach, std::max(1, static_cast<int>(std::ceil(R * inv))));
+    const long long cx = static_cast<long long>(std::floor(xi.x * inv));
+    const long long cy = static_cast<long long>(std::floor(xi.y * inv));
+    const long long cz = static_cast<long long>(std::floor(xi.z * inv));
+    for (long long dz = -reach; dz <= reach; ++dz)
+      for (long long dy = -reach; dy <= reach; ++dy)
+        for (long long dx = -reach; dx <= reach; ++dx) {
+          auto it = grid.find(packVoxel(cx + dx, cy + dy, cz + dz));
+          if (it == grid.end()) continue;
+          for (uint32_t j : it->second) {
+            if (static_cast<std::size_t>(j) == i) continue;
+            const float dd = length(xi - records[j].position);
+            const float cand = records[j].radius + dd;  // ORIGINAL radius of j
+            if (cand < R) R = cand;
+          }
+        }
+    clamped[i] = R;
+  }
+  for (std::size_t i = 0; i < n; ++i) records[i].radius = clamped[i];
 }
 
 // The cache: records in canonical placement order plus a spatial hash from world
