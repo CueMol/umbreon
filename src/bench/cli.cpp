@@ -515,7 +515,7 @@ void printUsage(const char* prog) {
       "  --gi <on|off>            one-bounce diffuse GI (irradiance cache) [off]\n"
       "  --gi-samples <n>         hemisphere gather rays per cache record [64]\n"
       "  --gi-intensity <f>       indirect gain [1.0]\n"
-      "  --gi-accuracy <a>        interpolation accuracy; max influence a*R_i [0.15]\n"
+      "  --gi-accuracy <a>        influence-radius multiplier a*R_i [1.0]\n"
       "  --gi-spacing <world>     record voxel spacing; 0 = auto [0]\n"
       "  --gi-max-dist <world>    indirect ray search radius; 0 = auto [0]\n"
       "  --gi-normal-reject <c>   record normal-dot acceptance floor [0.85]\n"

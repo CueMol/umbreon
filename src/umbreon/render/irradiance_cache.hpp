@@ -337,27 +337,50 @@ inline Vec3 interpolateIrradiance(const IrradianceCache& cache, const Vec3& x,
   const float inv = 1.0f / cache.cellSize;
   auto it = cache.grid.find(voxelKey(x, inv));
   if (it == cache.grid.end()) return Vec3{0.0f, 0.0f, 0.0f};
-  const float wMin = 1.0f / opt.giAccuracy;
+  // pbrt-style separable error: err = max(positional, angular), each normalized
+  // so err < 1 is the influence boundary. Positional uses the FULL influence
+  // radius a*R_i (not the old 0.15*R_i, which under-covered cavities and left
+  // holes); angular maps the normal-reject cosine floor to a unit error. The
+  // weight wt = 1 - err falls off CONTINUOUSLY to 0 at the boundary, removing
+  // the lattice step the old 1/denom + hard threshold produced.
+  const float a = opt.giAccuracy;  // influence-radius multiplier (a*R_i)
+  const float nrejScale =
+      std::sqrt(std::fmax(1.0e-6f, 1.0f - opt.giNormalReject));
   Vec3 Esum{0.0f, 0.0f, 0.0f};
   float wSum = 0.0f;
+  // Lowest-error in-section record, for the no-coverage fallback.
+  float bestErr = 1.0e30f;
+  uint32_t bestIdx = 0xFFFFFFFFu;
   // The cell list is in ascending record-index order (buildGrid visits records
   // in order), so this float accumulation is order- and thread-independent.
   for (uint32_t idx : it->second) {
     const IrradianceRecord& ri = cache.records[idx];
     if (opt.giComponentReject && ri.componentId != comp) continue;
     const float ndot = dot(nx, ri.normal);
-    if (ndot < opt.giNormalReject) continue;
-    const float dist = length(x - ri.position);
-    const float denom =
-        dist / ri.radius + std::sqrt(std::fmax(0.0f, 1.0f - ndot)) + 1e-6f;
-    const float w = 1.0f / denom;
-    if (w <= wMin) continue;
+    const float perr = length(x - ri.position) / (a * ri.radius);
+    const float nerr = std::sqrt(std::fmax(0.0f, 1.0f - ndot)) / nrejScale;
+    const float err = std::fmax(perr, nerr);
+    if (err < bestErr) {
+      bestErr = err;
+      bestIdx = idx;
+    }
+    if (err >= 1.0f) continue;
+    const float w = 1.0f - err;  // continuous falloff to 0 at the boundary
     Esum = Esum + ri.irradiance * w;
     wSum += w;
   }
-  if (wSum > 0.0f) {
+  // Minimum support: a single weak record is too splotchy. Below it, fall back
+  // to the nearest in-section record so a cavity / curved spot never punches a
+  // hole (indirect = 0) where GI matters most -- the classic Ward failure the
+  // fixed-grid placement made worse.
+  constexpr float kMinSupport = 0.5f;
+  if (wSum >= kMinSupport) {
     valid = true;
     return Esum * (1.0f / wSum);
+  }
+  if (bestIdx != 0xFFFFFFFFu) {
+    valid = true;
+    return cache.records[bestIdx].irradiance;
   }
   return Vec3{0.0f, 0.0f, 0.0f};
 }
@@ -403,7 +426,10 @@ inline void applyIndirectGI(const ShadeContext& sc, FrameResult& res) {
   gp.shadows = opt.shadows;
   gp.shadowSamples = opt.shadowSamples;
   gp.radiusMin = spacing * 0.5f;
-  gp.radiusMax = std::min(diagonal, spacing * 32.0f);
+  // Cap the radius so the full-R influence box (a*R_i, registered per cell in
+  // buildGrid) stays a few cells wide -- an open-region record with a huge
+  // harmonic-mean radius would otherwise blow up the grid registration.
+  gp.radiusMax = std::min(diagonal, spacing * 4.0f);
   fillRecords(cache.records, sc.built, sc.mesh, sc.lights, sc.built.scene, gp);
   neighborClamp(cache.records, spacing);
   buildGrid(cache, spacing, opt.giAccuracy);

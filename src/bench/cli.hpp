@@ -32,7 +32,7 @@ struct Options {
   bool gi = false;              // master gate for one-bounce diffuse GI
   int giSamples = 64;           // hemisphere gather rays per cache record
   float giIntensity = 1.0f;     // indirect gain
-  float giAccuracy = 0.15f;     // interpolation accuracy a (max influence a*R_i)
+  float giAccuracy = 1.0f;      // influence-radius multiplier a (a*R_i)
   float giSpacing = 0.0f;       // record voxel spacing; 0 => auto (scene diagonal)
   float giMaxDistance = 0.0f;   // indirect ray tfar; 0 => auto (scene diagonal)
   float giNormalReject = 0.85f; // dot(n_x, n_rec) acceptance floor

@@ -195,7 +195,7 @@ struct RenderOptions {
   int giSamples = 64;            // hemisphere gather rays per cache record
   float giMaxDistance = 0.0f;    // indirect ray tfar; 0 => scene-diagonal auto
   float giIntensity = 1.0f;      // indirect gain (POV non-physical normalization)
-  float giAccuracy = 0.15f;      // interpolation accuracy a; max influence = a*R_i
+  float giAccuracy = 1.0f;       // influence-radius multiplier a (err=max(dist/(a*R_i),nerr)<1)
   float giRecordSpacing = 0.0f;  // voxel target spacing; 0 => scene-diagonal auto
   float giNormalReject = 0.85f;  // dot(n_x,n_rec) floor for record acceptance
   bool giComponentReject = true; // reject records from a different CueMol section
