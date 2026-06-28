@@ -176,6 +176,25 @@ struct Options {
   bool strokeTaper = false;
   // Demo geometry shader (--stroke-smooth): corner-preserving backbone smoothing.
   bool strokeSmooth = false;
+  // DEBUG (--edge-qi-dots): overlay the PRE-majority QI class vs final decision as
+  // colored dots, to visualize the per-ViewEdge majority rule on the render.
+  bool strokeQiDots = false;
+  // DEBUG (--edge-qi-vertex-dots): overlay raw per-vertex QI visibility as dots
+  // (blue = hidden, green = visible) to check QI self-consistency at vertices.
+  bool strokeQiVertexDots = false;
+  // --edge-qi-vertex-delta: offset the per-vertex QI probe along the original mesh
+  // vertex normal by this distance before casting (0 = at the vertex).
+  float strokeQiVertexDelta = 0.0f;
+  // --edge-qi-lift: PRODUCTION QI normal-lift (absolute world units). >0 switches
+  // the stroke QI to interpolated-normal-lift pure occlusion (0 = legacy QI).
+  // Default on; concave-reject + approach A is the production combo.
+  float strokeQiLift = 0.1f;
+  // --edge-qi-split: with lift>0, true=approach B (per-sample split), false=A
+  // (per-ViewEdge majority over the lifted sample). Default A (false).
+  bool strokeQiSplit = false;
+  // --edge-reject-concave: drop concave (valley) feature edges across all natures
+  // via the two adjacent faces' geometric normals. Default on.
+  bool strokeRejectConcave = true;
   // DRAW analytic silhouettes of the analytic primitives (spheres/cylinders) in
   // the stroke pass, so --edges outlines ball-and-stick too (default ON).
   // --stroke-analytic off draws a mesh-only outline, but the ball-stick is still

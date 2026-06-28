@@ -186,7 +186,12 @@ std::vector<std::vector<Vec2f>> buildRibbonStrips(
 // ray-cast visibility query against the live Embree scene kept alive through
 // this pass (see EmbreeRenderer); an empty query draws every vertex as visible.
 // Polylines are split at hidden runs so only visible portions are drawn.
+// `occludedRaw` (optional) is a BARE visibility query with no QI self-occlusion
+// heuristics (no self-face exclude / grazing / coplanar); it is used ONLY by the
+// --edge-qi-vertex-dots debug overlay to plot pure per-vertex visibility. An empty
+// query disables that overlay.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
-                      const RenderOptions& opt, const OcclusionQuery& occluded);
+                      const RenderOptions& opt, const OcclusionQuery& occluded,
+                      const OcclusionQuery& occludedRaw = OcclusionQuery{});
 
 }  // namespace umbreon

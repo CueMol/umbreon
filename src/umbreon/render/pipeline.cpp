@@ -108,7 +108,19 @@ FrameResult renderFrame(const Scene& scene, const RenderOptions& opt) {
       return renderer.occluded(p, q, excludeFaces, nExclude, 1.0e-4f,
                                kQiGrazeCosEps, coplanarEps);
     };
-    applyStrokeEdges(frame, scene, opt, occluded);
+    // RAW visibility query (NO QI self-occlusion heuristics: no self-face exclude,
+    // no grazing, no coplanar -- just whether any surface lies between the point and
+    // the eye). Used by the production normal-lift QI (--edge-qi-lift, approach A:
+    // the lifted sample is off its own surface so no heuristic is needed) and by the
+    // --edge-qi-vertex-dots debug overlay. Built only when either is requested so
+    // the legacy path is unaffected.
+    OcclusionQuery occludedRaw;
+    if (opt.strokeEdges.debugQiVertexDots || opt.strokeEdges.qiNormalLift > 0.0f) {
+      occludedRaw = [&renderer](const Vec3& p, const Vec3& q, const int*, int) {
+        return renderer.occluded(p, q, nullptr, 0, 1.0e-4f, 0.0f, 0.0f);
+      };
+    }
+    applyStrokeEdges(frame, scene, opt, occluded, occludedRaw);
   }
 
   if (ss > 1) {

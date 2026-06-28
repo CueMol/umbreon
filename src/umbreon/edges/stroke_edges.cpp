@@ -1034,6 +1034,17 @@ struct SubSpan {
   bool unitStart = false;  // begins a new ViewEdge (real junction or chain start)
 };
 
+// DEBUG overlay record (--edge-qi-dots): one sub-span's screen midpoint with its
+// PRE-majority QI class (rawHidden, from the sub-span's own pooled samples) and the
+// FINAL post per-ViewEdge-majority decision (finalHidden). Lets the renderer paint
+// a colored dot so the majority rule's effect (leaks / over-hides) is visible.
+struct QiDot {
+  float x = 0.0f, y = 0.0f;
+  bool rawHidden = false;
+  bool finalHidden = false;
+  bool hasSamples = false;  // false => no QI ray hit this sub-span (tot == 0)
+};
+
 // Detect CUSPS along a chain's smooth n.v==0 contour (Freestyle computeCusps,
 // ViewMapBuilder.cpp:1296). For each smooth backbone segment k (segNrm[k] nonzero)
 // compute crossP = normalize(edgeDir x nrm) and its dot with the eye->point view
@@ -1134,11 +1145,18 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
                                 const std::vector<SubSpan>& spans,
                                 const ScreenProj& sp,
                                 const OcclusionQuery& occluded,
-                                const std::vector<char>& cuspNode) {
+                                const std::vector<char>& cuspNode,
+                                const std::vector<Vec3>& vertNrm, float lift,
+                                const OcclusionQuery& occludedRaw,
+                                std::vector<QiDot>* dbgDots = nullptr) {
   std::vector<char> hidden(spans.size(), 0);
   const std::size_t nPts = chain.pts.size();
   if (!occluded || nPts < 2 || spans.empty()) return hidden;
   const std::size_t nSeg = nPts - 1;
+  // Normal-lift pure QI is active only when a positive lift, a raw (heuristic-free)
+  // query and a per-vertex normal table are all available (approach A).
+  const bool useLift =
+      lift > 0.0f && static_cast<bool>(occludedRaw) && vertNrm.size() == nPts;
 
   // Pool one sub-span's QI samples (length-weighted along its screen extent) into a
   // running occluded/total tally -- Freestyle samples ~one ray per tessellation
@@ -1166,9 +1184,30 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
       const float frac =
           (static_cast<float>(sIdx) + 0.5f) / static_cast<float>(samples);
       const float tt = s.a + (s.b - s.a) * frac;
-      const Vec3 P = {A.x + (B.x - A.x) * tt, A.y + (B.y - A.y) * tt,
-                      A.z + (B.z - A.z) * tt};
-      if (qiOccludedAt(P, sp, occluded, fp, nF)) ++occ;
+      Vec3 P = {A.x + (B.x - A.x) * tt, A.y + (B.y - A.y) * tt,
+                A.z + (B.z - A.z) * tt};
+      bool occludedHit;
+      // Approach A: lift the sample off the surface by `lift` along the GPU-shader-
+      // style interpolated mesh vertex normal (lerp of the segment endpoints), then
+      // a PURE occlusion ray (no exclude/grazing/coplanar). Fall back to the legacy
+      // self-excluding query when the interpolated normal is degenerate (e.g. an
+      // analytic sphere/cylinder chain with no mesh normal).
+      if (useLift) {
+        const Vec3& Na = vertNrm[k];
+        const Vec3& Nb = vertNrm[k + 1];
+        Vec3 N = {Na.x + (Nb.x - Na.x) * tt, Na.y + (Nb.y - Na.y) * tt,
+                  Na.z + (Nb.z - Na.z) * tt};
+        const float nl = length(N);
+        if (nl > 1.0e-12f) {
+          P = P + (N * (lift / nl));
+          occludedHit = qiOccludedAt(P, sp, occludedRaw, nullptr, 0);
+        } else {
+          occludedHit = qiOccludedAt(P, sp, occluded, fp, nF);
+        }
+      } else {
+        occludedHit = qiOccludedAt(P, sp, occluded, fp, nF);
+      }
+      if (occludedHit) ++occ;
       ++tot;
     }
   };
@@ -1217,7 +1256,223 @@ std::vector<char> subSpanHidden(const EdgeChain& chain,
             : 0;
   for (std::size_t i = 0; i < spans.size(); ++i)
     hidden[i] = unitHidden[static_cast<std::size_t>(spanUnit[i])];
+
+  // DEBUG (--edge-qi-dots): record each sub-span's PRE-majority class (from its OWN
+  // pooled samples) and the FINAL post-majority decision, at its screen midpoint.
+  if (dbgDots) {
+    for (std::size_t i = 0; i < spans.size(); ++i) {
+      int o = 0, t = 0;
+      tallySpan(spans[i], o, t);
+      const SubSpan& s = spans[i];
+      const std::size_t k = static_cast<std::size_t>(s.seg);
+      const Vec3& A = chain.pts[k];
+      const Vec3& B = chain.pts[k + 1];
+      const float tt = 0.5f * (s.a + s.b);
+      const Vec3 P = {A.x + (B.x - A.x) * tt, A.y + (B.y - A.y) * tt,
+                      A.z + (B.z - A.z) * tt};
+      QiDot d;
+      d.hasSamples = (t > 0);
+      d.rawHidden = (t > 0 && o * 2 > t);  // sub-span's own pre-majority class
+      d.finalHidden = (hidden[i] != 0);
+      float vz;
+      if (worldToScreen(sp, P, d.x, d.y, vz)) dbgDots->push_back(d);
+    }
+  }
   return hidden;
+}
+
+// APPROACH B: per-sample normal-lift PURE visibility, split into runs at the
+// visible<->hidden transitions -- NO per-ViewEdge majority. Each emitted sub-span
+// carries its OWN visibility, so a hidden contour fold-back ("curl") that shares a
+// ViewEdge with a visible middle is split off and not dragged visible by a
+// majority vote (the leak the lifted-but-majority approach A could not fix). The
+// input `spans` (split at 2D crossings + cusps) only bound the sampling; each is
+// re-sampled at ~one ray per kQiSubSpanSampleStepPx, median-of-3 smoothed to drop
+// single-sample grazing spikes, and emitted as one or more finer sub-spans.
+// `outSpans`/`outHidden` (backbone order, contiguous) REPLACE the caller's spans
+// for projection. Falls back to the legacy self-excluding query per sample when the
+// interpolated normal is degenerate (analytic sphere/cylinder chains).
+void subSpanHiddenSplit(const EdgeChain& chain,
+                        const std::vector<SubSpan>& spans, const ScreenProj& sp,
+                        const OcclusionQuery& occluded,
+                        const std::vector<Vec3>& vertNrm, float lift,
+                        const OcclusionQuery& occludedRaw,
+                        std::vector<SubSpan>& outSpans,
+                        std::vector<char>& outHidden,
+                        std::vector<QiDot>* dbgDots) {
+  outSpans.clear();
+  outHidden.clear();
+  const std::size_t nPts = chain.pts.size();
+  if (nPts < 2) return;
+  const std::size_t nSeg = nPts - 1;
+  const bool useLift =
+      lift > 0.0f && static_cast<bool>(occludedRaw) && vertNrm.size() == nPts;
+
+  // Per-sample hidden test at parameter t on segment k (lift+pure, else legacy).
+  auto sampleHidden = [&](std::size_t k, float t) -> bool {
+    const Vec3& A = chain.pts[k];
+    const Vec3& B = chain.pts[k + 1];
+    Vec3 P = {A.x + (B.x - A.x) * t, A.y + (B.y - A.y) * t,
+              A.z + (B.z - A.z) * t};
+    if (useLift) {
+      const Vec3& Na = vertNrm[k];
+      const Vec3& Nb = vertNrm[k + 1];
+      Vec3 N = {Na.x + (Nb.x - Na.x) * t, Na.y + (Nb.y - Na.y) * t,
+                Na.z + (Nb.z - Na.z) * t};
+      const float nl = length(N);
+      if (nl > 1.0e-12f) {
+        P = P + (N * (lift / nl));
+        return qiOccludedAt(P, sp, occludedRaw, nullptr, 0);
+      }
+    }
+    const std::vector<int> buf = buildSegmentExclude(chain, k, nSeg, nPts);
+    const int nF = static_cast<int>(buf.size());
+    return qiOccludedAt(P, sp, occluded, nF > 0 ? buf.data() : nullptr, nF);
+  };
+
+  for (const SubSpan& s : spans) {
+    if (s.b - s.a <= kZero) continue;
+    const std::size_t k = static_cast<std::size_t>(s.seg);
+    const Vec3& A = chain.pts[k];
+    const Vec3& B = chain.pts[k + 1];
+    float ax, ay, avz, bx, by, bvz;
+    const bool aok = worldToScreen(sp, A, ax, ay, avz);
+    const bool bok = worldToScreen(sp, B, bx, by, bvz);
+    int samples = 1;
+    if (aok && bok) {
+      const float dx = (bx - ax) * (s.b - s.a), dy = (by - ay) * (s.b - s.a);
+      const float spanPx = std::sqrt(dx * dx + dy * dy);
+      samples = static_cast<int>(spanPx / kQiSubSpanSampleStepPx) + 1;
+      if (samples < 1) samples = 1;
+      if (samples > kQiSubSpanMaxSamples) samples = kQiSubSpanMaxSamples;
+    }
+    std::vector<char> hid(static_cast<std::size_t>(samples));
+    std::vector<float> tt(static_cast<std::size_t>(samples));
+    for (int i = 0; i < samples; ++i) {
+      const float frac =
+          (static_cast<float>(i) + 0.5f) / static_cast<float>(samples);
+      tt[static_cast<std::size_t>(i)] = s.a + (s.b - s.a) * frac;
+      hid[static_cast<std::size_t>(i)] =
+          sampleHidden(k, tt[static_cast<std::size_t>(i)]) ? 1 : 0;
+    }
+    // Median-of-3 smoothing: drop isolated single-sample flips (residual grazing
+    // noise) so a lone spike does not dash the stroke or punch a 1-sample hole.
+    std::vector<char> sm(static_cast<std::size_t>(samples));
+    for (int i = 0; i < samples; ++i) {
+      const int a = hid[static_cast<std::size_t>(std::max(0, i - 1))];
+      const int b = hid[static_cast<std::size_t>(i)];
+      const int c = hid[static_cast<std::size_t>(std::min(samples - 1, i + 1))];
+      sm[static_cast<std::size_t>(i)] = (a + b + c >= 2) ? 1 : 0;
+    }
+    // Emit contiguous runs of equal visibility; split at the midpoint parameter
+    // between the two samples straddling a transition; clamp run ends to [s.a,s.b].
+    int i0 = 0;
+    while (i0 < samples) {
+      int i1 = i0;
+      while (i1 + 1 < samples &&
+             sm[static_cast<std::size_t>(i1 + 1)] == sm[static_cast<std::size_t>(i0)])
+        ++i1;
+      const float a = (i0 == 0) ? s.a
+                                : 0.5f * (tt[static_cast<std::size_t>(i0 - 1)] +
+                                          tt[static_cast<std::size_t>(i0)]);
+      const float b = (i1 == samples - 1)
+                          ? s.b
+                          : 0.5f * (tt[static_cast<std::size_t>(i1)] +
+                                    tt[static_cast<std::size_t>(i1 + 1)]);
+      SubSpan ns;
+      ns.seg = s.seg;
+      ns.a = a;
+      ns.b = b;
+      outSpans.push_back(ns);
+      outHidden.push_back(sm[static_cast<std::size_t>(i0)]);
+      if (dbgDots) {
+        const float tmid = 0.5f * (a + b);
+        const Vec3 P = {A.x + (B.x - A.x) * tmid, A.y + (B.y - A.y) * tmid,
+                        A.z + (B.z - A.z) * tmid};
+        QiDot d;
+        d.hasSamples = true;
+        d.rawHidden = sm[static_cast<std::size_t>(i0)];
+        d.finalHidden = sm[static_cast<std::size_t>(i0)];
+        float vz;
+        if (worldToScreen(sp, P, d.x, d.y, vz)) dbgDots->push_back(d);
+      }
+      i0 = i1 + 1;
+    }
+  }
+}
+
+// Look up the ORIGINAL mesh vertex normal at a chain backbone vertex P. Searches
+// the mesh corner vertices of the triangles incident to the vertex's adjacent
+// feature segments (segFaces / segExclude / incidentFaces) and returns the normal
+// of the corner whose position is closest to P -- for a hard-edge/crease/border
+// vertex (which IS a mesh vertex) this is exact; for a smooth-contour point
+// (interpolated on a triangle edge) it is the nearer endpoint's normal. Returns
+// the zero vector when the mesh has no normals or no incident face is known.
+Vec3 meshVertexNormalAt(const EdgeChain& chain, std::size_t i, const Mesh& mesh) {
+  if (mesh.normals.size() != mesh.positions.size() || mesh.normals.empty())
+    return Vec3{0.0f, 0.0f, 0.0f};
+  const std::size_t nSeg = chain.pts.size() - 1;
+  const Vec3& P = chain.pts[i];
+  float best = -1.0f;
+  Vec3 bestN{0.0f, 0.0f, 0.0f};
+  auto considerTri = [&](int t) {
+    if (t < 0) return;
+    const std::size_t base = static_cast<std::size_t>(t) * 3;
+    for (int k = 0; k < 3; ++k) {
+      const uint32_t v = mesh.cornerVertex(base + static_cast<std::size_t>(k));
+      const Vec3 d = mesh.positions[v] - P;
+      const float d2 = dot(d, d);
+      if (best < 0.0f || d2 < best) { best = d2; bestN = mesh.normals[v]; }
+    }
+  };
+  auto considerSeg = [&](std::size_t s) {
+    if (chain.segFaces.size() == nSeg) {
+      considerTri(chain.segFaces[s][0]);
+      considerTri(chain.segFaces[s][1]);
+    }
+    if (chain.segExclude.size() == nSeg)
+      for (int t : chain.segExclude[s]) considerTri(t);
+  };
+  if (i > 0) considerSeg(i - 1);
+  if (i < nSeg) considerSeg(i);
+  if (chain.incidentFaces.size() == chain.pts.size())
+    for (int t : chain.incidentFaces[i]) considerTri(t);
+  return bestN;
+}
+
+// DEBUG (--edge-qi-vertex-dots): PURE per backbone VERTEX visibility. Casts ONE
+// ray toward the eye from the vertex -- OPTIONALLY pushed off the surface by
+// `normalDelta` along the ORIGINAL mesh vertex normal (mesh.normals, looked up by
+// meshVertexNormalAt) -- and records whether ANY surface lies strictly between
+// that point and the eye -- nothing else. Uses the RAW occlusion query
+// (`occludedRaw`), which applies NONE of the QI self-occlusion heuristics: no
+// self-face exclusion, no grazing rejection, no coplanar/depth self-surface skip.
+// The normalDelta offset is the analogue of the old eye-ward camBias, but along
+// the surface normal instead. So the dot reflects the bare geometric visibility of
+// the (offset) vertex alone (blue = something is in front, green = clear). No
+// interior sampling, no sub-span pooling, no per-ViewEdge majority.
+void chainVertexQiDots(const EdgeChain& chain, const ScreenProj& sp,
+                       const OcclusionQuery& occludedRaw, const Mesh& mesh,
+                       float normalDelta, std::vector<QiDot>* dbgDots) {
+  if (!occludedRaw || dbgDots == nullptr) return;
+  const std::size_t nPts = chain.pts.size();
+  if (nPts < 2) return;
+  for (std::size_t i = 0; i < nPts; ++i) {
+    Vec3 P = chain.pts[i];
+    if (normalDelta != 0.0f) {
+      const Vec3 n = meshVertexNormalAt(chain, i, mesh);
+      const float nl = length(n);
+      if (nl > 1.0e-12f) P = P + (n * (normalDelta / nl));
+    }
+    // Pure visibility: no exclude faces (nullptr/0), raw query (no graze/coplanar).
+    const bool hid = qiOccludedAt(P, sp, occludedRaw, nullptr, 0);
+    QiDot d;
+    d.hasSamples = true;
+    d.rawHidden = hid;
+    d.finalHidden = hid;
+    float vz;
+    if (worldToScreen(sp, P, d.x, d.y, vz)) dbgDots->push_back(d);
+  }
 }
 
 // Project a chain's sub-spans to the screen as a visibility-tagged Pt2 polyline.
@@ -1423,7 +1678,8 @@ std::vector<std::vector<Vec2f>> buildRibbonStrips(
 // restricted to its rows). The default (edges off) path never reaches here, so
 // the no-edge render stays byte-identical.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
-                      const RenderOptions& opt, const OcclusionQuery& occluded) {
+                      const RenderOptions& opt, const OcclusionQuery& occluded,
+                      const OcclusionQuery& occludedRaw) {
   const StrokeEdgeOptions& se = opt.strokeEdges;
   if (!se.enable) return;
   const int W = frame.width, H = frame.height;
@@ -1444,6 +1700,7 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
   ep.creaseAngleDeg = se.creaseAngleDeg;
   ep.meshCreaseSmoothVetoDeg = se.meshCreaseSmoothVetoDeg;
   ep.meshCreaseConvexOnly = se.meshCreaseConvexOnly;
+  ep.rejectConcaveEdges = se.rejectConcaveEdges;
   ep.meshBorderCoplanarVetoDeg = se.meshBorderCoplanarVetoDeg;
   ep.meshCreaseMaxDegree = se.meshCreaseMaxDegree;
   ep.selfExcludeRings = se.selfExcludeRings;  // geodesic self-occlusion exclude
@@ -1562,6 +1819,10 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
 
   // Build all ribbon strips for the frame up front; rasterize them tiled.
   std::vector<StyledStrip> strips;
+  // DEBUG overlay (--edge-qi-dots): collected across all chains, drawn last.
+  std::vector<QiDot> qiDots;
+  // DEBUG overlay (--edge-qi-vertex-dots): per-VERTEX raw QI visibility.
+  std::vector<QiDot> vertQiDots;
   for (std::size_t ci = 0; ci < chains.size(); ++ci) {
     const EdgeChain& ch = chains[ci];
     if (ch.segs.empty()) continue;
@@ -1588,10 +1849,40 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     // since no unit straddles a real visible/hidden boundary.
     const std::size_t nSegChain = ch.pts.size() - 1;
     const std::vector<char> cuspNode = computeChainCusps(ch, sp);
-    const std::vector<SubSpan> spans =
+    std::vector<SubSpan> spans =
         splitChainAtCrossings(nSegChain, chainSegCross[ci], cuspNode);
-    const std::vector<char> spanHide =
-        subSpanHidden(ch, spans, sp, occluded, cuspNode);
+    // Per-backbone-vertex INPUT-MESH normal table for the normal-lift pure QI
+    // (interpolated per sample). Built only when the production lift is on; empty
+    // disables the lift (legacy heuristic QI).
+    std::vector<Vec3> vertNrm;
+    if (se.qiNormalLift > 0.0f && occludedRaw) {
+      vertNrm.resize(ch.pts.size());
+      for (std::size_t vi = 0; vi < ch.pts.size(); ++vi)
+        vertNrm[vi] = meshVertexNormalAt(ch, vi, scene.mesh);
+    }
+    std::vector<char> spanHide;
+    if (se.qiNormalLift > 0.0f && occludedRaw && se.qiSplit) {
+      // Approach B: per-sample lift+pure visibility, split at transitions (no
+      // majority). Produces finer sub-spans that REPLACE `spans` for projection.
+      std::vector<SubSpan> fineSpans;
+      std::vector<char> fineHide;
+      subSpanHiddenSplit(ch, spans, sp, occluded, vertNrm, se.qiNormalLift,
+                         occludedRaw, fineSpans, fineHide,
+                         se.debugQiDots ? &qiDots : nullptr);
+      spans = std::move(fineSpans);
+      spanHide = std::move(fineHide);
+    } else {
+      // Approach A (qiNormalLift>0, qiSplit off): per-ViewEdge majority over the
+      // LIFTED pure sample. Legacy (qiNormalLift==0): majority over the heuristic
+      // sample. Same call -- subSpanHidden lifts only when given a positive lift.
+      spanHide = subSpanHidden(ch, spans, sp, occluded, cuspNode, vertNrm,
+                               se.qiNormalLift, occludedRaw,
+                               se.debugQiDots ? &qiDots : nullptr);
+    }
+    if (se.debugQiVertexDots)
+      chainVertexQiDots(ch, sp, occludedRaw, scene.mesh, se.debugQiVertexDelta,
+                        &vertQiDots);
+    if (spans.empty()) continue;  // nothing to project (all sub-spans degenerate)
     const std::vector<Pt2> proj = projectChainSubSpans(ch, spans, spanHide, sp);
     // STROKE LAYER: wrap the visibility-tagged polyline as a parametric Stroke
     // (buildStroke), arc-length resample it (resampleStroke), then emit one ribbon
@@ -1630,7 +1921,7 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     buildStrokeReps(stroke, strips);
   }
 
-  if (strips.empty()) return;
+  if (strips.empty() && qiDots.empty() && vertQiDots.empty()) return;
 
   // Stable-sort strips for compositing. compositeOver paints in array order, so the
   // LAST strip is on top (painter's algorithm). Primary key = DEPTH: sort FARTHER
@@ -1656,6 +1947,63 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
         for (const StyledStrip& ss : strips)
           rasterizeStrip(frame.color, W, rb, re, ss.strip, ss.color, ss.opacity);
       });
+
+  // DEBUG dot stamping shared by both overlays. Colors are LINEAR (gamma-corrected
+  // on output). Dot radius scales with the supersample factor so it survives the
+  // box-downsample at ~2 final px.
+  const float r = std::max(2.0f, 2.5f * ssScale);
+  const float r2 = r * r;
+  auto stamp = [&](float fx, float fy, float cr, float cg, float cb) {
+    const int x0 = std::max(0, static_cast<int>(std::floor(fx - r)));
+    const int x1 = std::min(W - 1, static_cast<int>(std::ceil(fx + r)));
+    const int y0 = std::max(0, static_cast<int>(std::floor(fy - r)));
+    const int y1 = std::min(H - 1, static_cast<int>(std::ceil(fy + r)));
+    for (int y = y0; y <= y1; ++y) {
+      for (int x = x0; x <= x1; ++x) {
+        const float dx = static_cast<float>(x) + 0.5f - fx;
+        const float dy = static_cast<float>(y) + 0.5f - fy;
+        if (dx * dx + dy * dy > r2) continue;
+        const std::size_t idx = static_cast<std::size_t>(y * W + x) * 4;
+        frame.color[idx] = cr;
+        frame.color[idx + 1] = cg;
+        frame.color[idx + 2] = cb;
+        frame.color[idx + 3] = 1.0f;
+      }
+    }
+  };
+
+  // DEBUG (--edge-qi-dots): stamp the PRE-majority QI flags on top of everything,
+  // so a leak (pre-hidden but drawn) or an over-hide (pre-visible but dropped)
+  // stands out.
+  if (se.debugQiDots) {
+    for (const QiDot& d : qiDots) {
+      float cr, cg, cb;
+      if (!d.hasSamples) {  // no QI ray (default-visible): neutral gray
+        cr = 0.5f; cg = 0.5f; cb = 0.5f;
+      } else if (d.rawHidden && d.finalHidden) {  // correctly hidden
+        cr = 0.0f; cg = 0.1f; cb = 1.0f;          // blue
+      } else if (d.rawHidden && !d.finalHidden) {  // LEAK
+        cr = 1.0f; cg = 0.0f; cb = 0.0f;           // red
+      } else if (!d.rawHidden && d.finalHidden) {  // over-hidden
+        cr = 1.0f; cg = 0.3f; cb = 0.0f;           // orange
+      } else {                                     // correctly visible
+        cr = 0.0f; cg = 0.6f; cb = 0.0f;           // green
+      }
+      stamp(d.x, d.y, cr, cg, cb);
+    }
+  }
+
+  // DEBUG (--edge-qi-vertex-dots): stamp the RAW per-vertex QI result -- blue =
+  // hidden, green = visible -- to check whether the bare QI test is self-consistent
+  // vertex by vertex (a lone disagreeing vertex flags a QI inconsistency there).
+  if (se.debugQiVertexDots) {
+    for (const QiDot& d : vertQiDots) {
+      if (d.rawHidden)
+        stamp(d.x, d.y, 0.0f, 0.1f, 1.0f);  // hidden: blue
+      else
+        stamp(d.x, d.y, 0.0f, 0.6f, 0.0f);  // visible: green
+    }
+  }
 }
 
 }  // namespace umbreon

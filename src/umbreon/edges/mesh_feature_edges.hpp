@@ -135,6 +135,11 @@ struct ExtractParams {
   bool meshCreaseConvexOnly = false;
   float meshBorderCoplanarVetoDeg = 0.0f;
   int meshCreaseMaxDegree = 0;
+  // Drop CONCAVE (valley, dihedral < 180deg) feature edges across ALL natures with
+  // two adjacent faces (crease + hard-edge silhouette), using the two faces'
+  // geometric normals. Border (single face) is exempt. Off by default to keep the
+  // obj-edges path byte-identical; the stroke pass enables it.
+  bool rejectConcaveEdges = false;
 
   // QI self-occlusion exclude radius, in EDGE-adjacency rings over the TRUE surface
   // (faceNbr), grown beyond the edge's incident faces {f0,f1}. The stroke QI then

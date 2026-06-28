@@ -265,6 +265,12 @@ int main(int argc, char** argv) {
       ropt.strokeEdges.border = opt.strokeBorder;
       ropt.strokeEdges.taper = opt.strokeTaper;
       ropt.strokeEdges.smooth = opt.strokeSmooth;
+      ropt.strokeEdges.debugQiDots = opt.strokeQiDots;
+      ropt.strokeEdges.debugQiVertexDots = opt.strokeQiVertexDots;
+      ropt.strokeEdges.debugQiVertexDelta = opt.strokeQiVertexDelta;
+      ropt.strokeEdges.qiNormalLift = opt.strokeQiLift;
+      ropt.strokeEdges.qiSplit = opt.strokeQiSplit;
+      ropt.strokeEdges.rejectConcaveEdges = opt.strokeRejectConcave;
       ropt.strokeEdges.analytic = opt.strokeAnalytic;
       if (opt.strokeAnalyticSegmentsSet)
         ropt.strokeEdges.analyticSegments = opt.strokeAnalyticSegments;
