@@ -474,7 +474,6 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // [D] per-pixel interpolation into the debug AOVs (parallel, read-only).
     tbb::parallel_for(tbb::blocked_range<int>(0, H),
                       [&](const tbb::blocked_range<int>& rows) {
-      std::vector<uint32_t> cand;
       for (int py = rows.begin(); py != rows.end(); ++py) {
         for (int px = 0; px < W; ++px) {
           const std::size_t pix = static_cast<std::size_t>(py) * W + px;
@@ -487,23 +486,21 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
                         res.normal[pix * 3 + 2]};
           Vec3 E{0.0f, 0.0f, 0.0f};
           float occ = 0.0f;
-          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E, &occ);
+          float rad = gp.maxDistance;
+          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E, &occ,
+                                        &rad);
           res.indirect[pix * 3 + 0] = E.x;
           res.indirect[pix * 3 + 1] = E.y;
           res.indirect[pix * 3 + 2] = E.z;
           res.giOcclusion[pix] = occ;  // AO-like concavity map (env-independent)
-          // Record-density debug: the nearest in-cell record's radius. A small
-          // radius (tight harmonic mean in a concavity) maps to a bright value,
-          // so dense / concave regions stand out from open flats.
-          cache.query(X, cand);
-          float nearR = -1.0f, nearD = std::numeric_limits<float>::infinity();
-          for (uint32_t i : cand) {
-            const detail::IrradianceRecord& r = cache.records[i];
-            const float d = length(X - r.position);
-            if (d < nearD) { nearD = d; nearR = r.radius; }
-          }
-          if (nearR > 0.0f) {
-            float h = (std::log(nearR) - densLogLo) / densLogSpan;
+          // Trust-radius heatmap: the interpolated (smooth) record radius R_i.
+          // R_i is the harmonic-mean distance to surrounding geometry, so it is
+          // SMALL where the surface folds in on itself (a record there only
+          // covers a tight area => that is where adaptive seeding would add more
+          // records) and LARGE on open surfaces. log-mapped: dark = small R_i =
+          // tight concavity / contact, bright = large R_i = open.
+          if (rad > 0.0f) {
+            float h = (std::log(rad) - densLogLo) / densLogSpan;
             if (h < 0.0f) h = 0.0f;
             if (h > 1.0f) h = 1.0f;
             res.giRecordViz[pix * 3 + 0] = h;

@@ -414,12 +414,14 @@ inline void neighborClamp(IrradianceCache& cache, float accuracy) {
 inline bool interpolateIrradiance(const IrradianceCache& cache,
                                   const IrradianceCacheParams& p, const Vec3& x,
                                   const Vec3& nx, int componentX, Vec3& outE,
-                                  float* outOcclusion = nullptr) {
+                                  float* outOcclusion = nullptr,
+                                  float* outRadius = nullptr) {
   std::vector<uint32_t> cand;
   cache.query(x, cand);
   const float wMin = 1.0f / p.accuracy;
   Vec3 Esum{0.0f, 0.0f, 0.0f};
   float occSum = 0.0f;
+  float radSum = 0.0f;
   float wSum = 0.0f;
   // Track the single best (highest-weight) component/normal-compatible record so
   // a point with records nearby but none passing the strict Ward accuracy cutoff
@@ -447,21 +449,25 @@ inline bool interpolateIrradiance(const IrradianceCache& cache,
     if (w <= wMin) continue;
     Esum = Esum + r.irradiance * w;
     occSum += r.occlusion * w;
+    radSum += r.radius * w;
     wSum += w;
   }
   if (wSum > 0.0f) {
     outE = Vec3{Esum.x / wSum, Esum.y / wSum, Esum.z / wSum};
     if (outOcclusion) *outOcclusion = occSum / wSum;
+    if (outRadius) *outRadius = radSum / wSum;
     return true;
   }
   if (bestIdx != 0xFFFFFFFFu) {  // nearest compatible record (no hole)
     const IrradianceRecord& r = cache.records[bestIdx];
     outE = r.irradiance;
     if (outOcclusion) *outOcclusion = r.occlusion;
+    if (outRadius) *outRadius = r.radius;
     return true;
   }
   outE = environmentRadiance(p, nx);
   if (outOcclusion) *outOcclusion = 0.0f;  // no record => assume open
+  if (outRadius) *outRadius = p.maxDistance;  // no record => maximally open
   return false;
 }
 
