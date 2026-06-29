@@ -429,7 +429,8 @@ struct FrameResult {
   // radius R_i (bright = small radius = dense records, e.g. in concavities).
   std::vector<float> position;    // width*height*3 world-space first-hit position
   std::vector<float> indirect;    // width*height*3 interpolated E_cached
-  std::vector<float> giRecordViz; // width*height*3 record-density debug false-color
+  std::vector<float> giRecordViz; // width*height*3 record-radius (log R_i) heatmap
+  std::vector<float> giOcclusion; // width*height   gather occlusion fraction (AO-like)
   double renderSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
 };

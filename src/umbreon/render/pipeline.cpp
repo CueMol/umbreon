@@ -183,6 +183,8 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
           boxDownsample(frame.indirect, frame.width, frame.height, 3, ss);
       frame.giRecordViz =
           boxDownsample(frame.giRecordViz, frame.width, frame.height, 3, ss);
+      frame.giOcclusion =
+          boxDownsample(frame.giOcclusion, frame.width, frame.height, 1, ss);
     }
     frame.width = finalW;
     frame.height = finalH;

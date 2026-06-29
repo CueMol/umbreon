@@ -300,6 +300,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.position.assign(npix * 3, 0.0f);
       res.indirect.assign(npix * 3, 0.0f);
       res.giRecordViz.assign(npix * 3, 0.0f);
+      res.giOcclusion.assign(npix, 0.0f);
     }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
@@ -442,7 +443,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     gp.groundColor =
         Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1], opt.aoGroundColor[2]};
     gp.samples = std::max(1, opt.giSamples);
-    gp.maxDistance = (opt.giMaxDistance > 0.0f) ? opt.giMaxDistance : diag;
+    // Auto gather distance: a fraction of the scene diagonal. Full-diagonal
+    // gather lets distant surfaces fill the hemisphere uniformly, washing out the
+    // concavity contrast (every point sees ~the same far geometry); a contact-
+    // scale fraction keeps near occluders dominant so pockets read darker, while
+    // still collecting the local one-bounce indirect. Tune with --gi-max-dist.
+    gp.maxDistance = (opt.giMaxDistance > 0.0f) ? opt.giMaxDistance : diag * 0.1f;
     gp.spacing = (opt.giRecordSpacing > 0.0f) ? opt.giRecordSpacing : diag * 0.01f;
     if (gp.spacing <= 0.0f) gp.spacing = 1.0f;
     gp.accuracy = opt.giAccuracy;
@@ -480,10 +486,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           const Vec3 Nx{res.normal[pix * 3 + 0], res.normal[pix * 3 + 1],
                         res.normal[pix * 3 + 2]};
           Vec3 E{0.0f, 0.0f, 0.0f};
-          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E);
+          float occ = 0.0f;
+          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E, &occ);
           res.indirect[pix * 3 + 0] = E.x;
           res.indirect[pix * 3 + 1] = E.y;
           res.indirect[pix * 3 + 2] = E.z;
+          res.giOcclusion[pix] = occ;  // AO-like concavity map (env-independent)
           // Record-density debug: the nearest in-cell record's radius. A small
           // radius (tight harmonic mean in a concavity) maps to a bright value,
           // so dense / concave regions stand out from open flats.

@@ -658,21 +658,58 @@ int main(int argc, char** argv) {
       if (ropt.gi && !frame.indirect.empty()) {
         const int aw = frame.width, ah = frame.height;
         const std::size_t np = static_cast<std::size_t>(aw) * ah;
-        float emax = 0.0f;
-        for (std::size_t i = 0; i < np * 3; ++i)
-          emax = std::max(emax, frame.indirect[i]);
-        const float escale = (emax > 0.0f) ? 1.0f / emax : 1.0f;
-        std::vector<float> ind(np * 3);
-        for (std::size_t i = 0; i < np * 3; ++i)
-          ind[i] = frame.indirect[i] * escale;  // [0,1] normalized E_cached
+        // Luminance stats over MESH pixels only (indirect > 0). With a uniform
+        // white environment the open surface saturates near the env value, so a
+        // raw [0,max] map plus sRGB crushes the concavity gradient into a near-
+        // binary image. Contrast-stretch [lo,hi] (robust 2nd/98th percentile)
+        // instead, so the open-vs-concave variation fills the tonal range.
+        std::vector<float> lum;
+        lum.reserve(np);
+        float emin = 1e30f, emax = 0.0f;
+        for (std::size_t i = 0; i < np; ++i) {
+          const float L = (frame.indirect[i * 3 + 0] + frame.indirect[i * 3 + 1] +
+                           frame.indirect[i * 3 + 2]) / 3.0f;
+          if (L <= 0.0f) continue;  // background / non-mesh first hit
+          lum.push_back(L);
+          emin = std::min(emin, L);
+          emax = std::max(emax, L);
+        }
+        float lo = 0.0f, hi = (emax > 0.0f) ? emax : 1.0f;
+        if (!lum.empty()) {
+          std::sort(lum.begin(), lum.end());
+          lo = lum[static_cast<std::size_t>(lum.size() * 0.02f)];
+          hi = lum[static_cast<std::size_t>(lum.size() * 0.98f)];
+          if (hi <= lo) hi = lo + 1e-6f;
+        }
+        const float inv = 1.0f / (hi - lo);
+        std::vector<float> ind(np * 3), raw(np * 3);
+        for (std::size_t i = 0; i < np * 3; ++i) {
+          raw[i] = (emax > 0.0f) ? frame.indirect[i] / emax : 0.0f;  // [0,max]
+          float v = (frame.indirect[i] - lo) * inv;                  // stretched
+          ind[i] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        }
         umbreon::writeImage(opt.dumpAovPrefix + "_indirect.png", aw, ah,
                             ind.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_indirectRaw.png", aw, ah,
+                            raw.data(), 3);
         umbreon::writeImage(opt.dumpAovPrefix + "_giRecords.png", aw, ah,
                             frame.giRecordViz.data(), 3);
+        // Openness map (1 - gather occlusion fraction): env- and bounce-
+        // independent, so it shows concavity darkening cleanly even when a bright
+        // white environment fills the E_cached pits back in. White = open convex,
+        // dark = occluded concavity. Background / non-mesh stays white (open).
+        std::vector<float> opn(np * 3);
+        for (std::size_t i = 0; i < np; ++i) {
+          const float open = 1.0f - frame.giOcclusion[i];
+          opn[i * 3 + 0] = opn[i * 3 + 1] = opn[i * 3 + 2] = open;
+        }
+        umbreon::writeImage(opt.dumpAovPrefix + "_giOpenness.png", aw, ah,
+                            opn.data(), 3);
         std::printf(
-            "  dumped GI AOVs: %s_{indirect,giRecords}.png (%dx%d, E_cached "
-            "max %.4g)\n",
-            opt.dumpAovPrefix.c_str(), aw, ah, emax);
+            "  dumped GI AOVs: %s_{indirect,indirectRaw,giRecords,giOpenness}"
+            ".png (%dx%d)\n"
+            "    E_cached luminance: min %.4g  max %.4g  stretch [%.4g, %.4g]\n",
+            opt.dumpAovPrefix.c_str(), aw, ah, emin, emax, lo, hi);
         dumpedAny = true;
       }
       if (!dumpedAny)

@@ -51,6 +51,7 @@ struct IrradianceRecord {
   Vec3 irradiance;     // RGB indirect irradiance E_i
   Vec3 bentNormal;     // average unoccluded direction (env lookup; debug)
   float radius = 0.0f; // effective radius R_i (harmonic mean, clamped)
+  float occlusion = 0.0f;  // cosine-weighted gather hit fraction (AO-like; debug)
   uint32_t geomID = 0xFFFFFFFFu;
   uint16_t componentID = 0;  // CueMol section (group); rejects cross-section blend
 };
@@ -118,15 +119,24 @@ class IrradianceCache {
     for (uint32_t i = 0; i < records.size(); ++i) registerRecord(i);
   }
 
-  // Candidate record indices that may influence a point (the point's own cell),
-  // returned sorted+unique so any downstream float summation is deterministic.
+  // Candidate record indices that may influence a point, gathered from the 3x3x3
+  // block of cells around it (records sit ~one cell apart, and a small-radius
+  // concave record only registers into its own cell, so a single-cell query
+  // misses the local records a neighbor point needs). Returned sorted+unique so
+  // any downstream float summation is deterministic.
   void query(const Vec3& p, std::vector<uint32_t>& out) const {
     out.clear();
     const float inv = 1.0f / cellSize_;
-    auto it = grid_.find(key(cellCoord(p.x, inv), cellCoord(p.y, inv),
-                             cellCoord(p.z, inv)));
-    if (it == grid_.end()) return;
-    out = it->second;
+    const int64_t cx = cellCoord(p.x, inv);
+    const int64_t cy = cellCoord(p.y, inv);
+    const int64_t cz = cellCoord(p.z, inv);
+    for (int dz = -1; dz <= 1; ++dz)
+      for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) {
+          auto it = grid_.find(key(cx + dx, cy + dy, cz + dz));
+          if (it == grid_.end()) continue;
+          out.insert(out.end(), it->second.begin(), it->second.end());
+        }
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
   }
@@ -345,6 +355,7 @@ inline void fillRecords(IrradianceCache& cache, const IrradianceCacheParams& p) 
           }
           const float invN = 1.0f / static_cast<float>(N);
           rec.irradiance = Vec3{E.x * invN, E.y * invN, E.z * invN};
+          rec.occlusion = static_cast<float>(nHit) * invN;  // hit fraction
           rec.bentNormal = safeNormalize(bentAccum, rec.normal);
           // Harmonic-mean occluder distance: near surfaces dominate, so a record
           // in a tight concavity gets a small radius (dense influence) while an
@@ -402,12 +413,21 @@ inline void neighborClamp(IrradianceCache& cache, float accuracy) {
 // for run-to-run bit reproducibility.
 inline bool interpolateIrradiance(const IrradianceCache& cache,
                                   const IrradianceCacheParams& p, const Vec3& x,
-                                  const Vec3& nx, int componentX, Vec3& outE) {
+                                  const Vec3& nx, int componentX, Vec3& outE,
+                                  float* outOcclusion = nullptr) {
   std::vector<uint32_t> cand;
   cache.query(x, cand);
   const float wMin = 1.0f / p.accuracy;
   Vec3 Esum{0.0f, 0.0f, 0.0f};
+  float occSum = 0.0f;
   float wSum = 0.0f;
+  // Track the single best (highest-weight) component/normal-compatible record so
+  // a point with records nearby but none passing the strict Ward accuracy cutoff
+  // (sparse records relative to their radius) still gets the nearest cached value
+  // instead of a hole. Only a point with NO compatible record at all falls back
+  // to the environment.
+  uint32_t bestIdx = 0xFFFFFFFFu;
+  float bestW = 0.0f;
   for (uint32_t i : cand) {
     const IrradianceRecord& r = cache.records[i];
     if (p.componentReject && componentX >= 0 &&
@@ -423,15 +443,25 @@ inline bool interpolateIrradiance(const IrradianceCache& cache,
     float denom = d / r.radius + std::sqrt(std::fmax(0.0f, 1.0f - nd));
     if (denom < 1.0e-4f) denom = 1.0e-4f;
     const float w = 1.0f / denom;
+    if (w > bestW) { bestW = w; bestIdx = i; }
     if (w <= wMin) continue;
     Esum = Esum + r.irradiance * w;
+    occSum += r.occlusion * w;
     wSum += w;
   }
   if (wSum > 0.0f) {
     outE = Vec3{Esum.x / wSum, Esum.y / wSum, Esum.z / wSum};
+    if (outOcclusion) *outOcclusion = occSum / wSum;
+    return true;
+  }
+  if (bestIdx != 0xFFFFFFFFu) {  // nearest compatible record (no hole)
+    const IrradianceRecord& r = cache.records[bestIdx];
+    outE = r.irradiance;
+    if (outOcclusion) *outOcclusion = r.occlusion;
     return true;
   }
   outE = environmentRadiance(p, nx);
+  if (outOcclusion) *outOcclusion = 0.0f;  // no record => assume open
   return false;
 }
 
