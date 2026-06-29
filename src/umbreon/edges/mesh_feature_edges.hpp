@@ -129,12 +129,26 @@ struct ExtractParams {
   bool crease = true;      // interior fold edges
   bool border = true;      // open boundary edges
 
+  // Silhouette method (only relevant when silhouette==true). false (default) =
+  // SMOOTH contour (3a: interpolated n.v==0 sub-triangle crossings) + hard-edge
+  // straddle (3b) gated by meshHardEdgeDeg. true = GEOMETRIC per-edge silhouette:
+  // disable 3a and run the 3b face-normal straddle on ALL edges (gate removed), so
+  // the silhouette follows mesh edges at mesh resolution. Trade-off: 3a is smooth
+  // but its vertices go sparse at grazing folds; 3b is mesh-dense but faceted and
+  // its grazing edges self-occlude under QI (broken/dashed outline).
+  bool geomSilhouette = false;
+
   float meshHardEdgeDeg = 40.0f;
   float creaseAngleDeg = 30.0f;
   float meshCreaseSmoothVetoDeg = 0.0f;
   bool meshCreaseConvexOnly = false;
   float meshBorderCoplanarVetoDeg = 0.0f;
   int meshCreaseMaxDegree = 0;
+  // Drop CONCAVE (valley, dihedral < 180deg) feature edges across ALL natures with
+  // two adjacent faces (crease + hard-edge silhouette), using the two faces'
+  // geometric normals. Border (single face) is exempt. Off by default to keep the
+  // obj-edges path byte-identical; the stroke pass enables it.
+  bool rejectConcaveEdges = false;
 
   // QI self-occlusion exclude radius, in EDGE-adjacency rings over the TRUE surface
   // (faceNbr), grown beyond the edge's incident faces {f0,f1}. The stroke QI then

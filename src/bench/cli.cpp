@@ -381,6 +381,32 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--stroke-smooth");
       if (o.ok && !parseBool(v, o.strokeSmooth))
         fail("--stroke-smooth expects on/off");
+    } else if (a == "--edge-qi-dots") {
+      std::string v = value("--edge-qi-dots");
+      if (o.ok && !parseBool(v, o.strokeQiDots))
+        fail("--edge-qi-dots expects on/off");
+    } else if (a == "--edge-qi-vertex-dots") {
+      std::string v = value("--edge-qi-vertex-dots");
+      if (o.ok && !parseBool(v, o.strokeQiVertexDots))
+        fail("--edge-qi-vertex-dots expects on/off");
+    } else if (a == "--edge-qi-vertex-delta") {
+      o.strokeQiVertexDelta =
+          static_cast<float>(std::atof(value("--edge-qi-vertex-delta").c_str()));
+    } else if (a == "--edge-qi-lift") {
+      o.strokeQiLift =
+          static_cast<float>(std::atof(value("--edge-qi-lift").c_str()));
+    } else if (a == "--edge-qi-split") {
+      std::string v = value("--edge-qi-split");
+      if (o.ok && !parseBool(v, o.strokeQiSplit))
+        fail("--edge-qi-split expects on/off");
+    } else if (a == "--edge-reject-concave") {
+      std::string v = value("--edge-reject-concave");
+      if (o.ok && !parseBool(v, o.strokeRejectConcave))
+        fail("--edge-reject-concave expects on/off");
+    } else if (a == "--stroke-geom-silhouette") {
+      std::string v = value("--stroke-geom-silhouette");
+      if (o.ok && !parseBool(v, o.strokeGeomSilhouette))
+        fail("--stroke-geom-silhouette expects on/off");
     } else if (a == "--stroke-analytic") {
       std::string v = value("--stroke-analytic");
       if (o.ok && !parseBool(v, o.strokeAnalytic))
@@ -478,6 +504,13 @@ void printUsage(const char* prog) {
       "  --stroke-border <on|off> stroke border nature                     [on]\n"
       "  --stroke-taper <on|off>  taper stroke width toward its ends (demo) [off]\n"
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"
+      "  --edge-qi-dots <on|off>  overlay pre-majority QI flags as dots (debug)[off]\n"
+      "  --edge-qi-vertex-dots <on|off> overlay raw per-vertex QI vis dots (debug)[off]\n"
+      "  --edge-qi-vertex-delta <float> offset vertex QI probe along mesh normal[0]\n"
+      "  --edge-qi-lift <float>   production QI normal-lift, abs units (0=legacy)[0]\n"
+      "  --edge-qi-split <on|off> with lift: on=per-sample split(B), off=majority(A)[off]\n"
+      "  --edge-reject-concave <on|off> drop concave(valley) feature edges[on]\n"
+      "  --stroke-geom-silhouette <on|off> geometric per-edge silhouette[off]\n"
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
       "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
       "  --stroke-self-exclude-rings <int> QI self-occlusion exclude radius  [6]\n"

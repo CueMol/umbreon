@@ -77,15 +77,25 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                     RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
     rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
                     RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
-    Vec3 N = faceForward(normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]}), rd);
+    // Face-forward the SMOOTH shading normal using the GEOMETRIC normal Ng, NOT
+    // the interpolated normal itself. At grazing incidence on a smoothly curved
+    // surface (e.g. a tube bending toward the viewer, seen nearly along its axis)
+    // dot(N_interp, rd) is ~0 and noisy across neighboring pixels, so a faceForward
+    // keyed on N_interp flips it erratically per pixel -- a jagged dark shading
+    // wedge. Ng is piecewise-constant per triangle and changes sign cleanly only at
+    // the true silhouette, so keying the flip on Ng is stable. (rh.hit.Ng follows
+    // the mesh winding, which CueMol emits consistently outward.)
+    const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+    const Vec3 NgF = faceForward(Ng, rd);
+    Vec3 N = normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
+    if (dot(N, NgF) < 0.0f) N = Vec3{-N.x, -N.y, -N.z};
     const Vec3 C = {cbuf[0], cbuf[1], cbuf[2]};
     const Material& triMat = c.mesh.materialForTri(rh.hit.primID);
-    // Hit point and GEOMETRIC normal (rh.hit.Ng, not the interpolated shading
-    // normal N): shared by the AO and shadow secondary rays. Offsetting the
-    // secondary-ray origin along Ng avoids self-hits on concave meshes.
+    // Hit point. The GEOMETRIC normal Ng (declared above) is shared by the AO and
+    // shadow secondary rays; offsetting the secondary-ray origin along Ng avoids
+    // self-hits on concave meshes.
     const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
                  org.z + rd.z * rh.ray.tfar};
-    const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
     // Self-intersection epsilon for the secondary (AO/shadow) rays: the SAME
     // scale-adaptive value the transparency walk uses, from the PRIMARY ray
     // length rh.ray.tfar. A far camera makes the hit-point error ~ tfar*2^-23,

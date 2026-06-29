@@ -176,6 +176,28 @@ struct Options {
   bool strokeTaper = false;
   // Demo geometry shader (--stroke-smooth): corner-preserving backbone smoothing.
   bool strokeSmooth = false;
+  // DEBUG (--edge-qi-dots): overlay the PRE-majority QI class vs final decision as
+  // colored dots, to visualize the per-ViewEdge majority rule on the render.
+  bool strokeQiDots = false;
+  // DEBUG (--edge-qi-vertex-dots): overlay raw per-vertex QI visibility as dots
+  // (blue = hidden, green = visible) to check QI self-consistency at vertices.
+  bool strokeQiVertexDots = false;
+  // --edge-qi-vertex-delta: offset the per-vertex QI probe along the original mesh
+  // vertex normal by this distance before casting (0 = at the vertex).
+  float strokeQiVertexDelta = 0.0f;
+  // --edge-qi-lift: PRODUCTION QI normal-lift (absolute world units). >0 switches
+  // the stroke QI to interpolated-normal-lift pure occlusion. Default 0 = legacy
+  // QI; concave-reject alone is the production fix, lift is opt-in for tight folds.
+  float strokeQiLift = 0.0f;
+  // --edge-qi-split: with lift>0, true=approach B (per-sample split), false=A
+  // (per-ViewEdge majority over the lifted sample). Default A (false).
+  bool strokeQiSplit = false;
+  // --edge-reject-concave: drop concave (valley) feature edges across all natures
+  // via the two adjacent faces' geometric normals. Default on.
+  bool strokeRejectConcave = true;
+  // --stroke-geom-silhouette: false (default) = smooth n.v==0 contour; true =
+  // geometric per-edge silhouette (face-normal straddle on all mesh edges).
+  bool strokeGeomSilhouette = false;
   // DRAW analytic silhouettes of the analytic primitives (spheres/cylinders) in
   // the stroke pass, so --edges outlines ball-and-stick too (default ON).
   // --stroke-analytic off draws a mesh-only outline, but the ball-stick is still

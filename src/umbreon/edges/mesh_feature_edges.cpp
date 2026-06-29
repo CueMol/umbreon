@@ -177,6 +177,32 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
       if (length(vN[v]) < 0.5f) vN[v] = fNg[f];
     }
 
+  // CONCAVE-fold test from the two adjacent faces' GEOMETRIC normals (the dihedral
+  // the faces make across edge a-b): true when the surface folds INWARD (a valley,
+  // angle < 180deg). The average face normal points TOWARD the two faces' opposite
+  // apex vertices for a valley and AWAY for a convex ridge, so dot(nAvg, apexMid -
+  // edgeMid) > 0 marks a concave edge. An edge with fewer than two faces (a border)
+  // has no dihedral and is never concave. Used by opt.rejectConcaveEdges to drop
+  // concave feature edges across ALL natures (NPR convention: ink only convex
+  // ridges / silhouettes). MUST use the geometric face normals here, by request.
+  auto isConcaveEdge = [&](int f1, int f2, std::size_t a, std::size_t b) -> bool {
+    if (f1 < 0 || f2 < 0) return false;
+    const std::size_t g1 = static_cast<std::size_t>(f1);
+    const std::size_t g2 = static_cast<std::size_t>(f2);
+    auto apex = [&](std::size_t f) -> Vec3 {
+      const std::size_t x = static_cast<std::size_t>(fa[f]);
+      const std::size_t y = static_cast<std::size_t>(fb[f]);
+      const std::size_t z = static_cast<std::size_t>(fc[f]);
+      if (x != a && x != b) return vpos[x];
+      if (y != a && y != b) return vpos[y];
+      return vpos[z];
+    };
+    const Vec3 nAvg = normalize(fNg[g1] + fNg[g2]);
+    const Vec3 edgeMid = (vpos[a] + vpos[b]) * 0.5f;
+    const Vec3 apexMid = (apex(g1) + apex(g2)) * 0.5f;
+    return dot(nAvg, apexMid - edgeMid) > 0.0f;
+  };
+
   // Welded vertex -> incident triangle ids (for the EXPANDED QI self/adjacent-
   // face exclusion). For each triangle, append it to the table of each of its 3
   // welded vertices. Drives the 1-ring exclude set below (Freestyle's "skip an
@@ -403,8 +429,17 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
     const float camBias =
         opt.silhouetteCamBias ? std::fmax(0.5f * w, 0.15f * meanEdge) : 0.0f;
 
+    // Silhouette method selector (opt.geomSilhouette): false (default) = SMOOTH
+    // contour 3a (interpolated n.v==0, sub-triangle crossings; matches the smooth-
+    // shaded outline) plus 3b only on hard edges. true = GEOMETRIC per-edge
+    // silhouette: disable 3a and apply the 3b face-normal straddle to ALL edges
+    // (hard-edge gate removed), so the silhouette follows mesh edges at mesh
+    // resolution. Each has trade-offs (3a smooth but sparse at grazing folds; 3b
+    // mesh-dense but faceted and broken under grazing QI), hence the toggle.
+    const bool geomSilOnly = opt.geomSilhouette;
+
     // 3a) SMOOTH silhouette: per face, connect the two n.v==0 zero-crossings.
-    for (std::size_t f = 0; f < nTri; ++f) {
+    for (std::size_t f = 0; !geomSilOnly && f < nTri; ++f) {
       const int cc[3] = {static_cast<int>(3 * f), static_cast<int>(3 * f + 1),
                          static_cast<int>(3 * f + 2)};
       const int wv[3] = {corner2v[static_cast<std::size_t>(cc[0])],
@@ -485,7 +520,8 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
       if (adj.f2 < 0) continue;  // border edge: handled in crease/border pass
       const std::size_t f1 = static_cast<std::size_t>(adj.f1);
       const std::size_t f2 = static_cast<std::size_t>(adj.f2);
-      if (dot(fNg[f1], fNg[f2]) >= hardCos) continue;  // smooth edge: 3a covers it
+      if (!geomSilOnly && dot(fNg[f1], fNg[f2]) >= hardCos)
+        continue;  // smooth edge: 3a covers it (unless geom-sil diagnostic)
       const std::size_t a = static_cast<std::size_t>(kv.first & 0xffffffffu);
       const std::size_t b = static_cast<std::size_t>(kv.first >> 32);
       const Vec3 da = viewerDirAt(vpos[a], cam);
@@ -493,6 +529,8 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
       const bool straddleA = dot(da, fNg[f1]) * dot(da, fNg[f2]) < 0.0f;
       const bool straddleB = dot(db, fNg[f1]) * dot(db, fNg[f2]) < 0.0f;
       if (!straddleA && !straddleB) continue;
+      // Drop a CONCAVE hard edge (valley fold) from the silhouette candidates.
+      if (opt.rejectConcaveEdges && isConcaveEdge(adj.f1, adj.f2, a, b)) continue;
       const Vec3 outw = normalize(fNg[f1] + fNg[f2]);
       emit(static_cast<int>(a), vpos[a] + outw * silOff + da * camBias,
            static_cast<int>(b), vpos[b] + outw * silOff + db * camBias,
@@ -507,15 +545,6 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
     const float smoothCos = std::cos(opt.meshCreaseSmoothVetoDeg * kPi / 180.0f);
     const bool borderVeto = opt.meshBorderCoplanarVetoDeg > 0.0f;
     const float borderColinCos = std::cos(opt.meshBorderCoplanarVetoDeg * kPi / 180.0f);
-
-    auto apexOf = [&](int f, std::size_t a, std::size_t b) -> Vec3 {
-      const std::size_t x = static_cast<std::size_t>(fa[f]);
-      const std::size_t y = static_cast<std::size_t>(fb[f]);
-      const std::size_t z = static_cast<std::size_t>(fc[f]);
-      if (x != a && x != b) return vpos[x];
-      if (y != a && y != b) return vpos[y];
-      return vpos[z];
-    };
 
     // Per-corner SHADING normal of face f at welded vertex v -- the RAW vertex
     // normal the surface actually interpolates (mesh.normals), NOT the hard-edge
@@ -610,13 +639,11 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
         if (agree >= smoothCos) continue;  // smooth-shaded across edge: no crease
       }
 
-      if (opt.meshCreaseConvexOnly) {
-        const Vec3 nAvg = normalize(fNg[f1] + fNg[f2]);
-        const Vec3 edgeMid = (vpos[a] + vpos[b]) * 0.5f;
-        const Vec3 apexMid =
-            (apexOf(adj.f1, a, b) + apexOf(adj.f2, a, b)) * 0.5f;
-        if (dot(nAvg, apexMid - edgeMid) > 0.0f) continue;
-      }
+      // Drop a CONCAVE crease (valley fold). meshCreaseConvexOnly is the legacy
+      // crease-specific gate; rejectConcaveEdges is the unified all-nature gate.
+      if ((opt.meshCreaseConvexOnly || opt.rejectConcaveEdges) &&
+          isConcaveEdge(adj.f1, adj.f2, a, b))
+        continue;
 
       const std::uint16_t grp = mesh.groupForTri(static_cast<std::size_t>(adj.f1));
       if (maxDeg > 0) {

@@ -97,6 +97,16 @@ struct StrokeEdgeOptions {
   bool meshCreaseConvexOnly = true;        // keep convex creases, drop valleys
   float meshBorderCoplanarVetoDeg = 35.0f; // coplanar-continuation border veto
   int meshCreaseMaxDegree = 4;             // drop crease hubs above this degree
+  // Silhouette method (--stroke-geom-silhouette). false (default) = SMOOTH contour
+  // (interpolated n.v==0) + hard-edge straddle; matches the smooth-shaded outline.
+  // true = GEOMETRIC per-edge silhouette (face-normal straddle on ALL mesh edges):
+  // follows mesh edges at mesh resolution (denser at grazing folds) but is faceted
+  // and breaks up under grazing QI. See ExtractParams::geomSilhouette.
+  bool meshGeomSilhouette = false;
+  // Drop CONCAVE (valley) feature edges across ALL natures (crease + hard-edge
+  // silhouette) via the two adjacent faces' geometric normals (--edge-reject-
+  // concave). On by default for stroke edges.
+  bool rejectConcaveEdges = true;
   // QI self-occlusion exclude radius (edge-adjacency rings over the true surface;
   // see ExtractParams::selfExcludeRings). >0 stops a twisted ribbon over-hiding its
   // own silhouette where its across-width fold self-occludes it, without leaking a
@@ -142,6 +152,48 @@ struct StrokeEdgeOptions {
   // stroke pipeline maps each EdgeNature onto a styling slot in EdgeStyle (see
   // Scene::groupEdgeStyle).
   EdgeStyle defaultStyle;
+
+  // DEBUG visualization: overlay one dot per sub-span at its screen midpoint,
+  // colored by the PRE-majority QI class vs the FINAL (post per-ViewEdge majority)
+  // decision, so the majority rule's effect is visible on the render:
+  //   green  = pre-visible, drawn   (correctly shown)
+  //   blue   = pre-hidden,  dropped (correctly hidden)
+  //   red    = pre-hidden,  drawn   (LEAK: majority dragged a hidden span visible)
+  //   orange = pre-visible, dropped (over-hidden by the majority)
+  // Off by default (no overlay, output unchanged). --edge-qi-dots on enables it.
+  bool debugQiDots = false;
+
+  // DEBUG (--edge-qi-vertex-dots): overlay the RAW per-backbone-VERTEX QI result
+  // (one ray per vertex, no sub-span pooling or per-ViewEdge majority) as dots --
+  // blue = hidden, green = visible -- to verify the bare QI test is self-consistent
+  // vertex by vertex. Off by default (no overlay, output unchanged).
+  bool debugQiVertexDots = false;
+
+  // DEBUG (--edge-qi-vertex-delta): when nonzero, the --edge-qi-vertex-dots probe
+  // is pushed off the surface by this distance (world units) along the ORIGINAL
+  // mesh vertex normal before the visibility ray is cast (analogue of the old
+  // eye-ward camBias, but along the surface normal). 0 = probe at the vertex.
+  float debugQiVertexDelta = 0.0f;
+
+  // PRODUCTION QI normal-lift (--edge-qi-lift), ABSOLUTE world units. When > 0 the
+  // per-ViewEdge QI sampling (subSpanHidden) pushes each sample point off the
+  // surface by this distance along the INTERPOLATED input-mesh vertex normal (GPU-
+  // shader-style lerp of the segment's two endpoint normals) and casts a PURE
+  // occlusion ray (no self-face exclude / grazing / coplanar). This replaces those
+  // self-occlusion heuristics with a geometric self-surface clearance, fixing the
+  // hidden-line leak at tight folds. Absolute (not mesh-relative) because molecular
+  // coordinates have a fixed Angstrom scale. Default 0 = legacy heuristic QI
+  // (concave-reject alone is the production fix; lift is opt-in for tight folds).
+  // Falls back to legacy per-sample when the interpolated normal is degenerate
+  // (e.g. analytic sphere/cylinder chains with no mesh normal).
+  float qiNormalLift = 0.0f;
+
+  // QI aggregation mode when qiNormalLift > 0 (--edge-qi-split). true = approach B:
+  // per-sample visibility split into runs at transitions (no majority), so a hidden
+  // fold-back on a partly-visible edge is cut off. false (default) = approach A:
+  // per-ViewEdge majority (legacy aggregation, just with the lifted pure sample).
+  // Ignored when qiNormalLift == 0.
+  bool qiSplit = false;
 };
 
 // Options for umbreon::render(). Every field here is honored by the renderer;
