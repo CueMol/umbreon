@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Per-hit shading dispatch for the umbreon renderer: given a primary/transparency
 // ray hit, pick the right shading path (smooth-shaded mesh vs flat outline
 // primitive), interpolate or read the surface attributes, drive the AO/shadow

@@ -95,13 +95,39 @@ target_link_libraries(cuemol_render PRIVATE umbreon::umbreon)
 `<umbreon/render/render_types.hpp>`（`RenderOptions`／`FrameResult`）を取り込みます。
 
 画像後処理ヘルパ（`srgbEncode8` / `applyAssumedGamma` / `boxDownsample`）は別ヘッダ
-`<umbreon/postprocess/image_ops.hpp>` に分離されています。エッジ関連の公開ヘッダは
-`<umbreon/edges/{stroke_edges,mesh_feature_edges,object_space_edges}.hpp>` です。
+`<umbreon/postprocess/image_ops.hpp>` に分離されています。**エッジ描画（NPR）は専用ヘッダを
+include しません**: 公開APIは `<umbreon/render/render_types.hpp>` のオプション型
+（`StrokeEdgeOptions` / `ObjectSpaceEdgeOptions` / `EdgeStyle`）を `RenderOptions` に設定して
+`render()` を呼ぶだけです（詳細は 4.6 / 4.9）。
 
-> **移行メモ（フォルダ再編）**: 以前 `<umbreon/render/>` 配下にあった公開ヘッダのうち、
-> `srgbEncode8` 等は `umbreon.hpp` から `<umbreon/postprocess/image_ops.hpp>` へ、
-> エッジ系3ヘッダは `<umbreon/render/...>` から `<umbreon/edges/...>` へ移動しました。
-> `render_types.hpp` は `<umbreon/render/render_types.hpp>` のまま据え置きです。
+#### 公開API面（SSOT — Single Source of Truth）
+
+libumbreon が **公開（install 対象）** とするヘッダは、以下の **4つだけ**です。これ以外の
+`src/umbreon/` 配下のヘッダ（`render/embree_renderer.hpp`、`render/pipeline.hpp`、`shading/*`、
+`postprocess/fog.hpp`、**`edges/*.hpp`（エッジ抽出・可視性・ラスタライズの実装）** など）は
+すべて **INTERNAL** であり、install されず、API/ABI 安定性の保証対象外です（予告なく変更されます。
+downstream から直接 include しないでください）。
+
+| 公開ヘッダ | 主な内容 |
+| --- | --- |
+| `<umbreon/umbreon.hpp>` | エントリポイント `render()`、`UMBREON_VERSION_*` |
+| `<umbreon/scene.hpp>` | `Scene` / `Mesh` / `Material` / `Sphere` / `Cylinder` / `Camera` / `DistantLight` / `Fog` / `Vec3` 等 |
+| `<umbreon/render/render_types.hpp>` | `RenderOptions` / `FrameResult` / `EdgeClass` / `EdgeStyle` / **`StrokeEdgeOptions`** / **`ObjectSpaceEdgeOptions`** |
+| `<umbreon/postprocess/image_ops.hpp>` | `srgbEncode8` / `applyAssumedGamma` / `boxDownsample` |
+
+> **エッジAPIの境界**: 2つのエッジ方式（ストローク / オブジェクト空間）の**公開API は
+> オプション型のみ**で、いずれも `render_types.hpp` にあります。抽出・QI可視性・リボン生成などの
+> 実装（`edges/stroke_edges.hpp` / `edges/mesh_feature_edges.hpp` / `edges/object_space_edges.hpp`
+> ほか）は INTERNAL に降格し、install されません。`render()` が内部でこれらを駆動します。
+
+この一覧は次の **3箇所と一致**していなければなりません（ヘッダを追加・移動する際は3箇所すべてを更新）:
+
+1. 本表
+2. `CMakeLists.txt` の `install(FILES ...)`（public ヘッダのみを install）
+3. 各ヘッダ先頭の可視性マーカー — 公開ヘッダは
+   `// libumbreon PUBLIC API header (installed). ...`、
+   内部ヘッダは `// libumbreon INTERNAL header -- not installed, ...` を先頭に持ちます。
+   公開面の照合は `grep -rl 'libumbreon PUBLIC API header' src/umbreon` で行えます（4つ返るのが正）。
 
 バージョンは `UMBREON_VERSION_MAJOR` / `_MINOR` / `_PATCH` マクロで参照できます。
 
@@ -166,14 +192,19 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 ```
 
 パイプライン（内部順序）:
-`supersample（opt.width*ss × opt.height*ss で描画）` → `Embree primary-ray シェーディング
-(+AO +影)` → `OpenGL 線形 fog（scene.fog, 平面 eye-z）` → `linear box-downsample` → `assumed_gamma（scene.assumedGamma）`。
+`object-space エッジ生成（opt.objectSpaceEdges, 有効時のみ）` → `supersample（opt.width*ss × opt.height*ss で描画）`
+→ `Embree primary-ray シェーディング (+AO +影)` → `OpenGL 線形 fog（scene.fog, 平面 eye-z）`
+→ `stroke エッジ合成（opt.strokeEdges, 有効時のみ）` → `linear box-downsample` → `assumed_gamma（scene.assumedGamma）`。
 
 - `opt.width` / `opt.height` は **最終出力**サイズ（supersample 前ではない）。
 - 戻り値は **linear HDR** のフレームバッファ（後段で sRGB エンコードする）。
+- **エッジ描画**は §4.9 を参照。2方式とも `RenderOptions` のフィールドを設定して `render()` を
+  呼ぶだけで完結する（追加ヘッダ不要）。両方式の同時有効化は不可（後述の例外）。
 - **スレッド**: 内部で TBB により行並列（既定で全コア）。スレッド数を絞りたい場合は
   呼び出し側で `tbb::global_control` を使う。
 - **例外**: Embree のデバイス生成／シーン構築に失敗すると `std::runtime_error` を投げる。
+  また `opt.strokeEdges.enable` と `opt.objectSpaceEdges.enable` を**同時に true** にすると
+  `std::runtime_error`（mutually exclusive）を投げる。
 - **状態**: `render()` は呼び出しごとに Embree デバイスを生成・破棄する（ステートレス）。
   そのため**同一プロセスから順に**何度でも呼べる。複数スレッドからの**同時**呼び出しは
   非対応（内部で TBB を使うため）。連続フレームは逐次呼び出すこと。
@@ -314,6 +345,8 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `transparency` | true | front-to-back 透過 walk。false = 不透明のみ（最前面で停止） |
 | `transparentBackground` | false | 背景の被覆 0 → 出力 alpha = 累積被覆（POV `_transpbg`）。fog 有効時は fog 色を焼かず `alpha *= f` でフェード（§4.5） |
 | `maxTransparentLayers` | 256 | 1レイあたり透過ヒット数の安全上限（通常は alpha 早期終了で停止） |
+| `strokeEdges` | `enable=false` | 方式A: Freestyle 風ストロークエッジ（§4.9）。`StrokeEdgeOptions` |
+| `objectSpaceEdges` | `enable=false` | 方式B: 解析的オブジェクト空間エッジ（§4.9）。`ObjectSpaceEdgeOptions`。`strokeEdges` と排他 |
 
 > AO/影は既定 OFF なので、`RenderOptions` を既定構築すると現行の POV マッチ出力（bit-exact）に
 > なる。AO/影を使う場合は該当フィールドを設定する。
@@ -356,6 +389,44 @@ std::vector<float> boxDownsample(const std::vector<float>& src, int w, int h,
 
 > `render()` は linear HDR を返す。表示・保存用には `srgbEncode8()` で 8-bit sRGB に変換し、
 > その**バイト列を CueMol 側の画像保存に渡す**（PNG/PPM 書き出しはライブラリには含まれない）。
+
+---
+
+### 4.9 エッジ描画（NPR）— 2方式とも `RenderOptions` 駆動
+
+libumbreon はシルエット/輪郭線（NPR エッジ）を2方式で描ける。**どちらも公開APIは
+`render_types.hpp` のオプション型のみ**で、`RenderOptions` のフィールドに設定して `render()` を
+呼ぶだけ。専用ヘッダの include は不要（抽出・可視性・ラスタライズの実装は INTERNAL）。
+
+| 方式 | オプション | 手法 | 既定 |
+| --- | --- | --- | --- |
+| **A: ストロークエッジ** | `RenderOptions::strokeEdges`（`StrokeEdgeOptions`） | Freestyle 風。特徴エッジを抽出→チェーン化→QI可視判定（ライブBVHへレイキャスト）→可変幅リボンを linear 合成 | `enable=false` |
+| **B: オブジェクト空間エッジ** | `RenderOptions::objectSpaceEdges`（`ObjectSpaceEdgeOptions`） | 球/円柱/メッシュの n.v==0 輪郭を解析的に求め、細い flat-black の「open」円柱として描画（通常ジオメトリとしてレイトレースが遮蔽処理） | `enable=false` |
+
+```cpp
+umbreon::RenderOptions opts;
+
+// 方式A:
+opts.strokeEdges.enable      = true;
+opts.strokeEdges.silhouette  = true;   // EdgeStyle 系で per-class の色/幅も設定可
+
+// — または — 方式B:
+opts.objectSpaceEdges.enable = true;
+opts.objectSpaceEdges.width  = 0.03f;
+opts.objectSpaceEdges.color[0] = opts.objectSpaceEdges.color[1] =
+    opts.objectSpaceEdges.color[2] = 0.0f;
+
+auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完結
+```
+
+- **排他**: 両方式とも同じ輪郭を描くため、`strokeEdges.enable` と `objectSpaceEdges.enable` を
+  **同時に true** にすると二重描画になる。これを防ぐため `render()` は両方 true のとき
+  `std::runtime_error` を投げる（最大でも片方）。
+- **スタイリング（方式A）**: `EdgeClass`（Silhouette / Disconnected / Object / Material / Crease）
+  ごとに `EdgeClassStyle`（色・不透明度・幅）を束ねた `EdgeStyle` を `strokeEdges.defaultStyle`、
+  CueMol セクション（透過グループ）単位の上書きは `Scene::groupEdgeStyle` で指定する。
+- **非破壊**: 方式B は内部でエッジ円柱を `Scene` に追加するが、`render()` は `const Scene&` を
+  受け取り、追加は**内部の一時コピー**に対して行う。呼び出し側の `Scene` は変更されない。
 
 ---
 

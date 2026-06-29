@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Shared feature-edge extraction + screen projection for the edge passes.
 //
 // This module factors the topology-bearing feature-edge detection out of the

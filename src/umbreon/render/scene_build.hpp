@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Embree scene construction for the umbreon renderer: turns a umbreon::Scene
 // (mesh, spheres, cylinders) into a committed RTCScene plus the primID-indexed
 // side tables the shader reads back. This is cold, run-once-per-frame work, so

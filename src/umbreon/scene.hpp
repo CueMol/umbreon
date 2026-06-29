@@ -1,3 +1,5 @@
+// libumbreon PUBLIC API header (installed). Part of the supported public
+// API surface; keep in sync with install(FILES) in CMakeLists.txt.
 // Core scene data structures shared across the prototype.
 // Pure C++17, no rendering-library dependency.
 #pragma once

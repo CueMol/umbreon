@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Freestyle-style stroke edge rendering (--edges).
 //
 // This is the active --edges implementation: a Freestyle-faithful stroke

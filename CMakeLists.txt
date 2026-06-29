@@ -161,6 +161,12 @@ endif()
 #   find_package(umbreon) -> umbreon::umbreon, or add_subdirectory(umbreon).
 # Only the public API headers are installed; internal headers (the Embree
 # renderer, fog, and the bench-only POV/geometry/image code) stay private.
+#
+# Public-surface SSOT: keep the install(FILES) list below in sync with the
+# table in docs/api/libumbreon.md and the per-header visibility markers
+# ("libumbreon PUBLIC API header" vs "... INTERNAL header"). All three must
+# list the same 4 public headers (umbreon.hpp, scene.hpp,
+# render/render_types.hpp, postprocess/image_ops.hpp).
 # --------------------------------------------------------------------------
 if(TARGET umbreon)
   install(TARGETS umbreon EXPORT umbreonTargets
@@ -171,10 +177,10 @@ if(TARGET umbreon)
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
   install(FILES src/umbreon/render/render_types.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
-  install(FILES src/umbreon/edges/object_space_edges.hpp
-                src/umbreon/edges/mesh_feature_edges.hpp
-                src/umbreon/edges/stroke_edges.hpp
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/edges)
+  # NPR edges are public only through their OPTION types (StrokeEdgeOptions /
+  # ObjectSpaceEdgeOptions / EdgeStyle in render/render_types.hpp) driven via
+  # RenderOptions + render(). The edges/*.hpp extraction/visibility/rasterizer
+  # headers are INTERNAL (not installed) -- see their INTERNAL markers.
   install(FILES src/umbreon/postprocess/image_ops.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/postprocess)
 

@@ -21,10 +21,12 @@
 //   * CYLINDER end-on: side lines collapse, a cap-rim circle is emitted instead.
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
 
 #include "edges/object_space_edges.hpp"
 #include "scene.hpp"
 #include "test_util.hpp"
+#include "umbreon.hpp"  // render(): drives method B via RenderOptions::objectSpaceEdges
 
 namespace {
 
@@ -638,6 +640,107 @@ int main() {
       for (const Cylinder& c : cyls)
         ok = ok && nearf(c.color.w, 0.4f) && nearf(c.opacity1, 0.4f);
       s.check("fade: alpha-0.4 mesh => edge color.w==0.4 and opacity1==0.4", ok);
+    }
+  }
+
+  // ---- (R) render() integration: method B driven via RenderOptions ---------
+  // The public API for method B is RenderOptions::objectSpaceEdges + render(),
+  // symmetric with method A (strokeEdges). render() runs generateObjectSpaceEdges
+  // internally on a private scene copy. These lock that contract.
+  {
+    using umbreon::FrameResult;
+    using umbreon::RenderOptions;
+
+    // A small renderable scene: ortho camera framing a unit sphere over white.
+    auto makeScene = []() {
+      Scene sc;
+      sc.camera.orthographic = true;
+      sc.camera.position = {0, 0, 10};
+      sc.camera.direction = {0, 0, -1};
+      sc.camera.up = {0, 1, 0};
+      sc.camera.height = 4.0f;
+      sc.background = {1, 1, 1};
+      Sphere sp;
+      sp.center = {0, 0, 0};
+      sp.radius = 1.0f;
+      sp.color = {0.3f, 0.4f, 0.5f, 1.0f};
+      sc.spheres.push_back(sp);
+      return sc;
+    };
+    ObjectSpaceEdgeOptions opt;
+    opt.enable = true;
+    // Push the silhouette ring out past the sphere (raise) and make it thick
+    // enough to land on pixel centers, so the black ring is plainly visible over
+    // the white background (the equivalence check below does not depend on this,
+    // but the "edges change the image" sanity check does). color defaults to black.
+    opt.width = 0.2f;
+    opt.raise = 0.15f;
+
+    // (R1) EQUIVALENCE: the render()-integrated pass must produce byte-identical
+    // output to the legacy "generate edges, then render" pre-process. This is the
+    // regression guard that moving method B into render() did not change pixels.
+    {
+      Scene pre = makeScene();
+      umbreon::generateObjectSpaceEdges(pre, opt);  // legacy pre-process path
+      RenderOptions roptNo;
+      roptNo.width = 32;
+      roptNo.height = 32;
+      FrameResult fPre = umbreon::render(pre, roptNo);
+
+      Scene base = makeScene();
+      RenderOptions roptB = roptNo;
+      roptB.objectSpaceEdges = opt;  // integrated path: render() generates
+      FrameResult fInt = umbreon::render(base, roptB);
+
+      bool identical = fPre.color.size() == fInt.color.size() &&
+                       !fPre.color.empty();
+      for (std::size_t i = 0; identical && i < fPre.color.size(); ++i)
+        if (fPre.color[i] != fInt.color[i]) identical = false;
+      s.check("render(): integrated B == pre-generate path (byte-identical)",
+              identical);
+
+      // Sanity: the edges actually changed the image vs a no-edge render (so the
+      // equivalence above is not the trivial "both did nothing").
+      Scene plain = makeScene();
+      FrameResult fPlain = umbreon::render(plain, roptNo);
+      bool differs = fPlain.color.size() == fInt.color.size();
+      bool anyDiff = false;
+      for (std::size_t i = 0; differs && i < fPlain.color.size(); ++i)
+        if (fPlain.color[i] != fInt.color[i]) anyDiff = true;
+      s.check("render(): objectSpaceEdges changes the image vs no edges",
+              differs && anyDiff);
+    }
+
+    // (R2) NON-DESTRUCTIVE: render() takes const Scene&; the integrated pass must
+    // mutate only its private copy, never the caller's scene.
+    {
+      Scene base = makeScene();
+      const std::size_t before = base.cylinders.size();
+      RenderOptions roptB;
+      roptB.width = 16;
+      roptB.height = 16;
+      roptB.objectSpaceEdges = opt;
+      (void)umbreon::render(base, roptB);
+      s.check("render(): caller scene not mutated (cylinders unchanged)",
+              base.cylinders.size() == before);
+    }
+
+    // (R3) MUTUAL EXCLUSION: enabling both edge methods would double-draw the
+    // silhouette, so render() rejects the combination with std::runtime_error.
+    {
+      Scene base = makeScene();
+      RenderOptions both;
+      both.width = 8;
+      both.height = 8;
+      both.strokeEdges.enable = true;
+      both.objectSpaceEdges.enable = true;
+      bool threw = false;
+      try {
+        (void)umbreon::render(base, both);
+      } catch (const std::runtime_error&) {
+        threw = true;
+      }
+      s.check("render(): strokeEdges + objectSpaceEdges both on => throws", threw);
     }
   }
 

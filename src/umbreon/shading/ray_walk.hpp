@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Front-to-back all-hit ray walk for the object-space edge extractor's
 // visibility / clipping queries.
 //

@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Embree 4 rendering wrapper: turns a Scene into a rendered framebuffer using
 // primary camera rays plus direct POV-Ray-style local shading, with optional
 // ambient occlusion and shadows (secondary rays; both off by default). No

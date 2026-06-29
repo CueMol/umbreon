@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // POV-Ray-style local illumination model for the Embree renderer: the per-hit
 // shader (shadeLocal) that turns a pigment + normal + lights into a shaded
 // color, matching POV-Ray's diffuse / Blinn-specular / Phong / metallic /

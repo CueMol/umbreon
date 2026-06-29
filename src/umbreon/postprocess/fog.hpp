@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // OpenGL linear fog reproduced as a depth-based post-process.
 //
 // CueMol's interactive display uses OpenGL linear fog; its POV-Ray export only
