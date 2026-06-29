@@ -449,7 +449,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // scale fraction keeps near occluders dominant so pockets read darker, while
     // still collecting the local one-bounce indirect. Tune with --gi-max-dist.
     gp.maxDistance = (opt.giMaxDistance > 0.0f) ? opt.giMaxDistance : diag * 0.1f;
-    gp.spacing = (opt.giRecordSpacing > 0.0f) ? opt.giRecordSpacing : diag * 0.01f;
+    // Auto record spacing = a small fraction of the scene diagonal. k0 = 0.007
+    // (~140 records across the diagonal) is a balanced default: fine enough that
+    // the interpolated cache resolves surface concavities without the blocky look
+    // of the coarser k0 = 0.01, at ~2x the record count. Override with
+    // --gi-spacing; the adaptive step will later refine tight (small-R_i) regions.
+    gp.spacing = (opt.giRecordSpacing > 0.0f) ? opt.giRecordSpacing : diag * 0.007f;
     if (gp.spacing <= 0.0f) gp.spacing = 1.0f;
     gp.accuracy = opt.giAccuracy;
     gp.normalReject = opt.giNormalReject;
