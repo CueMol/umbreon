@@ -330,10 +330,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // reads them right below. Allocated only when GI is on.
   std::vector<int> giGroup;
   std::vector<uint32_t> giGeom;
+  std::vector<float> giRefl;  // per-pixel mat.diffuse * pigment (GI composite)
   if (opt.gi) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     giGroup.assign(npix, -1);
     giGeom.assign(npix, 0xFFFFFFFFu);
+    giRefl.assign(npix * 3, 0.0f);
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -395,6 +397,9 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         res.position[pix * 3 + 2] = pr.worldPos.z;
         giGroup[pix] = pr.firstGroup;
         giGeom[pix] = pr.firstGeomID;
+        giRefl[pix * 3 + 0] = pr.giReflectance.x;
+        giRefl[pix * 3 + 1] = pr.giReflectance.y;
+        giRefl[pix * 3 + 2] = pr.giReflectance.z;
       }
       // AO AOVs: albedo + contact/shape + bent normal + mean occluder distance.
       if (opt.aoWriteAov) {
@@ -442,6 +447,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     gp.skyColor = Vec3{opt.aoSkyColor[0], opt.aoSkyColor[1], opt.aoSkyColor[2]};
     gp.groundColor =
         Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1], opt.aoGroundColor[2]};
+    gp.envIntensity = opt.giEnvIntensity;
     gp.samples = std::max(1, opt.giSamples);
     // Auto gather distance: a fraction of the scene diagonal. Full-diagonal
     // gather lets distant surfaces fill the hemisphere uniformly, washing out the
@@ -494,9 +500,21 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           float rad = gp.maxDistance;
           detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E, &occ,
                                         &rad);
-          res.indirect[pix * 3 + 0] = E.x;
-          res.indirect[pix * 3 + 1] = E.y;
-          res.indirect[pix * 3 + 2] = E.z;
+          // [E] A-route composite: L += giIntensity * (mat.diffuse * pigment) *
+          // E_cached. The constant ambient was already dropped from res.color in
+          // the shade (gi path), and no AO multiplies here -- occlusion lives
+          // inside E_cached, so it is counted exactly once. indirect AOV stores
+          // this added term (for denoise demodulation / debug).
+          const float gI = opt.giIntensity;
+          const Vec3 ind{gI * giRefl[pix * 3 + 0] * E.x,
+                         gI * giRefl[pix * 3 + 1] * E.y,
+                         gI * giRefl[pix * 3 + 2] * E.z};
+          res.color[pix * 4 + 0] += ind.x;
+          res.color[pix * 4 + 1] += ind.y;
+          res.color[pix * 4 + 2] += ind.z;
+          res.indirect[pix * 3 + 0] = ind.x;
+          res.indirect[pix * 3 + 1] = ind.y;
+          res.indirect[pix * 3 + 2] = ind.z;
           res.giOcclusion[pix] = occ;  // AO-like concavity map (env-independent)
           // Trust-radius heatmap: the interpolated (smooth) record radius R_i.
           // R_i is the harmonic-mean distance to surrounding geometry, so it is

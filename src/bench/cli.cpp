@@ -236,6 +236,9 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--gi-intensity") {
       o.giIntensity =
           static_cast<float>(std::atof(value("--gi-intensity").c_str()));
+    } else if (a == "--gi-env-intensity") {
+      o.giEnvIntensity =
+          static_cast<float>(std::atof(value("--gi-env-intensity").c_str()));
     } else if (a == "--gi-accuracy") {
       o.giAccuracy =
           static_cast<float>(std::atof(value("--gi-accuracy").c_str()));
@@ -569,6 +572,7 @@ void printUsage(const char* prog) {
       "  --gi-samples <int>       hemisphere gather rays per record    [64]\n"
       "  --gi-max-dist <world>    gather ray max distance (0 = auto)    [0]\n"
       "  --gi-intensity <float>   indirect gain (1.0 = physical)      [1.0]\n"
+      "  --gi-env-intensity <f>   sky/ground env fill scale (bounce full) [0.5]\n"
       "  --gi-accuracy <a>        interpolation accuracy a           [0.15]\n"
       "  --gi-spacing <world>     record voxel spacing (0 = auto)       [0]\n"
       "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"

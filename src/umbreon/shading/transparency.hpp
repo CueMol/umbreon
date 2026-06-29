@@ -52,6 +52,7 @@ struct PixelResult {
   Vec3 worldPos{0.0f, 0.0f, 0.0f};
   int firstGroup = -1;                  // CueMol section; -1 = background
   uint32_t firstGeomID = 0xFFFFFFFFu;   // Embree geomID; sentinel = background
+  Vec3 giReflectance{0.0f, 0.0f, 0.0f}; // mat.diffuse * pigment (GI composite)
 };
 
 // Integrate one primary ray (origin `org`, direction `rd`) through the scene,
@@ -98,6 +99,7 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   Vec3 firstWorldPos{0.0f, 0.0f, 0.0f};
   int firstGroup = -1;
   uint32_t firstGeomID = 0xFFFFFFFFu;
+  Vec3 firstGiReflectance{0.0f, 0.0f, 0.0f};
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -159,6 +161,7 @@ inline PixelResult integratePixel(const ShadeContext& sc,
                            org.z + rd.z * rh.ray.tfar};
       firstGroup = hs.group;
       firstGeomID = rh.hit.geomID;
+      firstGiReflectance = hs.giReflectance;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -248,7 +251,8 @@ inline PixelResult integratePixel(const ShadeContext& sc,
                      firstAvgHit,
                      firstWorldPos,
                      firstGroup,
-                     firstGeomID};
+                     firstGeomID,
+                     firstGiReflectance};
 }
 
 }  // namespace detail

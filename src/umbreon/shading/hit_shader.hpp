@@ -41,6 +41,10 @@ struct HitShade {
   // reads them, so enabling them does not change the rendered color.
   Vec3 albedo{0.0f, 0.0f, 0.0f};   // pigment color (OIDN guide / cache albedo)
   Vec3 bentNormal{0.0f, 0.0f, 0.0f};  // average unoccluded direction
+  // Diffuse reflectance mat.diffuse * pigment of the FIRST mesh hit, captured
+  // for the GI composite L += giIntensity * giReflectance * E_cached (post-pass).
+  // Zero unless RenderOptions::gi is on and the hit is a mesh.
+  Vec3 giReflectance{0.0f, 0.0f, 0.0f};
   float contactAo = 1.0f;          // small-radius (contact) openness
   float shapeAo = 1.0f;            // mid+large-radius (shape) openness
   float avgHitDist = 0.0f;         // mean occluder distance (world units)
@@ -188,6 +192,17 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       // mesh hit even when the AO AOVs are off. This does not feed the color.
       hs.albedo = C;
       hs.normal = N;
+    }
+    // A-route GI composite: when GI is on, DROP the constant ambient term from
+    // the local shade (zero ambLight for this mesh hit) and instead add the
+    // gathered, occlusion-aware indirect in a post-pass. Folding the receiver's
+    // diffuse reflectance (mat.diffuse * pigment) here lets the post-pass do a
+    // plain L += giIntensity * giReflectance * E_cached. The outline/primitive
+    // path keeps its ambient (flat color) and gets no indirect.
+    if (c.opt.gi) {
+      hs.giReflectance =
+          Vec3{triMat.diffuse * C.x, triMat.diffuse * C.y, triMat.diffuse * C.z};
+      ambLight = Vec3{0.0f, 0.0f, 0.0f};
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,

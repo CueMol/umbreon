@@ -67,6 +67,7 @@ struct IrradianceCacheParams {
   Vec3 envUp{0.0f, 1.0f, 0.0f};        // sky/ground gradient axis
   Vec3 skyColor{1.0f, 1.0f, 1.0f};     // up-hemisphere env tint
   Vec3 groundColor{1.0f, 1.0f, 1.0f};  // down-hemisphere env tint
+  float envIntensity = 1.0f;           // environment (miss) fill scale
   int samples = 64;                    // hemisphere gather rays per record
   float maxDistance = 0.0f;            // gather tfar (> 0)
   float spacing = 0.0f;                // voxel seed world spacing (> 0)
@@ -177,9 +178,10 @@ inline uint32_t hashU32(uint32_t x) {
 // ambient, so an open point gathers ~ambLight and an occluded one gathers less.
 inline Vec3 environmentRadiance(const IrradianceCacheParams& p, const Vec3& wi) {
   const float w = 0.5f * (dot(wi, p.envUp) + 1.0f);
-  return Vec3{p.ambLight.x * (p.groundColor.x + (p.skyColor.x - p.groundColor.x) * w),
-              p.ambLight.y * (p.groundColor.y + (p.skyColor.y - p.groundColor.y) * w),
-              p.ambLight.z * (p.groundColor.z + (p.skyColor.z - p.groundColor.z) * w)};
+  const float e = p.envIntensity;
+  return Vec3{e * p.ambLight.x * (p.groundColor.x + (p.skyColor.x - p.groundColor.x) * w),
+              e * p.ambLight.y * (p.groundColor.y + (p.skyColor.y - p.groundColor.y) * w),
+              e * p.ambLight.z * (p.groundColor.z + (p.skyColor.z - p.groundColor.z) * w)};
 }
 
 // One-bounce outgoing radiance of a gather-ray hit toward the record: the hit

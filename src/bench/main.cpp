@@ -419,15 +419,18 @@ int main(int argc, char** argv) {
     ropt.giBounces = opt.giBounces;
     ropt.giMaxDistance = opt.giMaxDistance;
     ropt.giIntensity = opt.giIntensity;
+    ropt.giEnvIntensity = opt.giEnvIntensity;
     ropt.giAccuracy = opt.giAccuracy;
     ropt.giRecordSpacing = opt.giRecordSpacing;
     ropt.giNormalReject = opt.giNormalReject;
     ropt.giComponentReject = opt.giComponentReject;
     ropt.giSeedPerVertex = opt.giSeedPerVertex;
     if (ropt.gi)
-      std::printf("  diffuse GI: irradiance cache, %d samples/record%s\n",
-                  ropt.giSamples,
-                  ropt.giSeedPerVertex ? " (per-vertex seed)" : "");
+      std::printf(
+          "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "
+          "env %.2f%s\n",
+          ropt.giSamples, ropt.giIntensity, ropt.giEnvIntensity,
+          ropt.giSeedPerVertex ? " (per-vertex seed)" : "");
     if (ropt.aoSamples > 0)
       std::printf(
           "  ambient occlusion: %d samples, radius %.3f, intensity %.2f\n",
@@ -708,7 +711,7 @@ int main(int argc, char** argv) {
         std::printf(
             "  dumped GI AOVs: %s_{indirect,indirectRaw,giRecords,giOpenness}"
             ".png (%dx%d)\n"
-            "    E_cached luminance: min %.4g  max %.4g  stretch [%.4g, %.4g]\n",
+            "    indirect luminance: min %.4g  max %.4g  stretch [%.4g, %.4g]\n",
             opt.dumpAovPrefix.c_str(), aw, ah, emin, emax, lo, hi);
         dumpedAny = true;
       }

@@ -1361,39 +1361,33 @@ int main() {
             minR > 0.5f);
   }
 
-  // ===== Diffuse GI: surface irradiance cache (steps 1-3) =====
-  // The cache is built (placement + gather/fill) and exposed via the `indirect`
-  // (E_cached) and `position` AOVs. The final color composite is NOT wired yet,
-  // so a gi==on render must leave the color bit-identical to gi==off; only the
-  // AOVs are added. These lock that contract plus determinism and the core
-  // physical property (occlusion darkens E_cached).
+  // ===== Diffuse GI: surface irradiance cache (steps 1-4) =====
+  // The cache is built (placement + gather/fill + interpolation) and the indirect
+  // is composited into the color via the A-route: L = L_direct + giIntensity *
+  // (mat.diffuse * pigment) * E_cached, with NO constant ambient and NO AO
+  // multiply (occlusion lives inside E_cached -- counted once). These lock: GI
+  // off is byte-identical, GI on is deterministic, occlusion darkens the color
+  // without flattening, and a colored neighbor bleeds onto the receiver.
 
-  // GI color gate: enabling the cache must not change the rendered color (steps
-  // 1-3 only produce AOVs). Raw != comparison, like the AO determinism test.
+  // GI off byte-identical: a default (gi off) render must equal the locked
+  // no-GI baseline (the cache pass is fully gated).
   {
     umbreon::Scene sc;
     sc.mesh = makeQuad(pigment);
     sc.camera = makeOrthoCam();
     sc.lights.push_back(makeKeyLight());
     sc.background = {0, 0, 0};
-    umbreon::RenderOptions off;
-    off.width = 5; off.height = 5;
-    umbreon::RenderOptions on = off;
-    on.gi = true;
-    on.giSamples = 32;
-    umbreon::FrameResult fo = umbreon::render(sc, off);
-    umbreon::FrameResult fn = umbreon::render(sc, on);
-    bool identical = fo.color.size() == fn.color.size();
-    for (std::size_t i = 0; identical && i < fo.color.size(); ++i)
-      if (fo.color[i] != fn.color[i]) identical = false;
-    s.check("GI gate: color byte-identical gi on vs off", identical);
-    s.check("GI gate: indirect AOV populated when on",
-            fn.indirect.size() == fo.color.size() / 4 * 3 && !fn.position.empty());
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;  // gi stays off
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("GI off: center R == no-GI baseline 0.30",
+            approx(f.color[kCenterRgba + 0], 0.30f, 1e-4f));
+    s.check("GI off: no cache AOVs allocated", f.indirect.empty());
   }
 
-  // GI determinism: the cache placement (occupied-voxel set) and per-record
-  // gather seed (record index only) are thread-count independent, so two renders
-  // produce bit-identical E_cached.
+  // GI determinism: placement (occupied-voxel set) + per-record gather seed
+  // (record index only) + read-only interpolation are thread-count independent,
+  // so two gi-on renders are bit-identical in the composited color.
   {
     umbreon::Scene sc;
     sc.mesh = makeQuad(pigment);
@@ -1406,16 +1400,18 @@ int main() {
     o.giSamples = 48;
     umbreon::FrameResult a = umbreon::render(sc, o);
     umbreon::FrameResult b = umbreon::render(sc, o);
-    bool identical = a.indirect.size() == b.indirect.size() && !a.indirect.empty();
-    for (std::size_t i = 0; identical && i < a.indirect.size(); ++i)
-      if (a.indirect[i] != b.indirect[i]) identical = false;
-    s.check("GI determinism: two renders' E_cached bit-identical", identical);
+    bool identical = a.color.size() == b.color.size() && !a.color.empty();
+    for (std::size_t i = 0; identical && i < a.color.size(); ++i)
+      if (a.color[i] != b.color[i]) identical = false;
+    s.check("GI determinism: two gi-on renders bit-identical color", identical);
   }
 
-  // GI occlusion: a floor with a slab above it gathers LESS environment (the
-  // slab blocks part of the hemisphere and bounces no light), so its cached
-  // irradiance is strictly darker than the same floor left open. This is the
-  // single-counting property: occlusion lives inside E_cached.
+  // Single counting (the A-route番人 test): a diffuse-lit white floor with a
+  // slab above it. With GI on the occluded floor is strictly DARKER than the
+  // open floor (the slab cuts indirect, and bounces no light), yet stays well
+  // above black (direct diffuse is untouched). This is the "darker but not
+  // washed flat" property -- the old constant-ambient + AO-multiply pipeline
+  // could not produce it.
   {
     using umbreon::Vec3;
     auto floor = [](bool withSlab) {
@@ -1428,9 +1424,7 @@ int main() {
         m.colors.push_back({1, 1, 1, 1});
       }
       if (withSlab) {
-        // Offset in +x so it clears the center camera ray (x=0) but blocks the
-        // +x half of the center floor point's gather hemisphere.
-        const float z = 0.4f;  // close above the floor
+        const float z = 0.4f;  // close above the floor, offset +x
         const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
                             {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
         for (int i = 0; i < 6; ++i) {
@@ -1439,14 +1433,15 @@ int main() {
           m.colors.push_back({0, 0, 0, 1});
         }
       }
-      m.material.ambient = 1.0f;
-      m.material.diffuse = 0.0f;  // isolate the gathered environment term
+      m.material.ambient = 0.2f;
+      m.material.diffuse = 0.8f;  // a real direct-diffuse + indirect term
       return m;
     };
     auto sceneOf = [](umbreon::Mesh m) {
       umbreon::Scene sc;
       sc.mesh = std::move(m);
       sc.camera = makeOrthoCam();
+      sc.lights.push_back(makeKeyLight());  // head-on key, lights the floor
       sc.ambientColor = {1, 1, 1};
       sc.background = {0, 0, 0};
       return sc;
@@ -1460,13 +1455,64 @@ int main() {
     o.giAccuracy = 0.3f;
     umbreon::FrameResult openF = umbreon::render(sceneOf(floor(false)), o);
     umbreon::FrameResult occF = umbreon::render(sceneOf(floor(true)), o);
-    const std::size_t c = kCenterPix * 3;  // center pixel, indirect R channel
-    s.check("GI occ: open floor gathers ~full ambient (E_cached R ~1)",
-            approx(openF.indirect[c + 0], 1.0f, 0.1f));
-    s.check("GI occ: slab darkens E_cached (occluded < open)",
-            occF.indirect[c + 0] + 0.05f < openF.indirect[c + 0]);
-    s.check("GI occ: occluded E_cached not fully black",
-            occF.indirect[c + 0] > 0.01f);
+    const std::size_t c = kCenterRgba;  // center pixel, R channel
+    // direct-diffuse floor (head-on light, mat.diffuse 0.8, intensity 0.5) = 0.4.
+    s.check("GI single-count: occluded floor darker than open",
+            occF.color[c + 0] + 0.05f < openF.color[c + 0]);
+    s.check("GI single-count: occluded floor keeps its direct diffuse (~>=0.35)",
+            occF.color[c + 0] > 0.35f);
+    s.check("GI single-count: open floor brighter than direct-only (indirect adds)",
+            openF.color[c + 0] > 0.45f);
+  }
+
+  // Color bleeding: a white floor next to a lit RED wall. Gather rays from the
+  // floor that hit the wall pick up its red one-bounce radiance, so the floor's
+  // composited indirect is redder than it is blue (the wall only feeds R). The
+  // receiver is white, so any R>B at the floor comes from the neighbor's color.
+  {
+    using umbreon::Vec3;
+    umbreon::Mesh m;
+    // White floor on z=0 (normal +z).
+    const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                        {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+    for (int i = 0; i < 6; ++i) {
+      m.positions.push_back(fl[i]);
+      m.normals.push_back({0, 0, 1});
+      m.colors.push_back({1, 1, 1, 1});  // white receiver
+    }
+    // Red wall at x=1 (normal -x, facing the floor center), z in [0,2].
+    const Vec3 wl[6] = {{1, -2, 0}, {1, 2, 0}, {1, 2, 2},
+                        {1, -2, 0}, {1, 2, 2}, {1, -2, 2}};
+    for (int i = 0; i < 6; ++i) {
+      m.positions.push_back(wl[i]);
+      m.normals.push_back({-1, 0, 0});
+      m.colors.push_back({1, 0, 0, 1});  // red source
+    }
+    m.material.ambient = 0.2f;
+    m.material.diffuse = 0.8f;
+    umbreon::Scene sc;
+    sc.mesh = std::move(m);
+    sc.camera = makeOrthoCam();
+    umbreon::DistantLight l;  // travels +x and -z: lights both floor and wall
+    l.direction = umbreon::Vec3{0.6f, 0.0f, -0.8f};
+    l.color = {1, 1, 1};
+    l.intensity = 0.6f;
+    sc.lights.push_back(l);
+    sc.ambientColor = {0.2f, 0.2f, 0.2f};  // modest env so the wall bounce shows
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.gi = true;
+    o.giSamples = 256;
+    o.giMaxDistance = 6.0f;
+    o.giRecordSpacing = 0.4f;
+    o.giAccuracy = 0.3f;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    const std::size_t c = kCenterRgba;
+    s.check("GI bleed: floor indirect redder than blue near red wall",
+            f.indirect[kCenterPix * 3 + 0] > f.indirect[kCenterPix * 3 + 2] + 0.01f);
+    s.check("GI bleed: floor composited R > B (red bleed visible)",
+            f.color[c + 0] > f.color[c + 2] + 0.01f);
   }
 
   return s.report();
