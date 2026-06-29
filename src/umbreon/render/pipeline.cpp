@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
 
+#include "edges/object_space_edges.hpp"
 #include "edges/stroke_edges.hpp"
 #include "postprocess/fog.hpp"
 #include "postprocess/image_ops.hpp"
@@ -18,7 +20,29 @@ namespace umbreon {
 // not-odr-used.
 constexpr float kQiGrazeCosEps = 1.0e-4f;
 
-FrameResult renderFrame(const Scene& scene, const RenderOptions& opt) {
+FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
+  // The two NPR edge methods both draw the silhouette and would double-ink if
+  // run together (stroke ribbons over object-space edge cylinders); reject the
+  // combination rather than silently picking one.
+  if (opt.strokeEdges.enable && opt.objectSpaceEdges.enable)
+    throw std::runtime_error(
+        "umbreon::render: strokeEdges and objectSpaceEdges are mutually "
+        "exclusive; enable at most one");
+
+  // Method B (object-space edges): emit the analytic/mesh silhouette as "open"
+  // edge cylinders that the tracer occludes for free. The pass mutates the scene
+  // (appends to Scene::cylinders) and is camera dependent, so run it here -- on a
+  // PRIVATE copy, keeping render()'s `const Scene&` contract -- before tracing.
+  // The copy is paid only when the pass is enabled.
+  Scene objEdgeScene;
+  const Scene* scenePtr = &sceneIn;
+  if (opt.objectSpaceEdges.enable) {
+    objEdgeScene = sceneIn;
+    generateObjectSpaceEdges(objEdgeScene, opt.objectSpaceEdges);
+    scenePtr = &objEdgeScene;
+  }
+  const Scene& scene = *scenePtr;
+
   const int ss = std::max(1, opt.supersample);
   const int finalW = opt.width, finalH = opt.height;
 

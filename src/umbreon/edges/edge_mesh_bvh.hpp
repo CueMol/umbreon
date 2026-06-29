@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Dedicated edge-mesh BVH for object-space edge visibility / clipping queries.
 //
 // The object-space edge pass (edges/object_space_edges.cpp) runs BEFORE the

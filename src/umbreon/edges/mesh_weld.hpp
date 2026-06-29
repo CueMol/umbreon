@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Positional weld grid shared by the mesh2 reader and the feature-edge
 // extractor.
 //

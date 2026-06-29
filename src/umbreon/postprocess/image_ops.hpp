@@ -1,3 +1,5 @@
+// libumbreon PUBLIC API header (installed). Part of the supported public
+// API surface; keep in sync with install(FILES) in CMakeLists.txt.
 // Image post-process helpers for the umbreon renderer: linear-space box
 // downsample (the supersample resolve), assumed-gamma, and 8-bit sRGB encode.
 // Split out of umbreon.cpp so the public entry stays a thin facade; also reused

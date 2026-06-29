@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Front-to-back transparency integration for one primary ray. Walks the hits
 // along the ray, compositing CueMol "veil" groups additively (group alpha) and
 // every other transparent fragment with "over" (fragment alpha), over the

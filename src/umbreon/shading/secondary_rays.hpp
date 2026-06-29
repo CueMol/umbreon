@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Secondary-ray visibility estimators for the Embree renderer: ambient occlusion
 // and (soft) shadows, plus the deterministic sampling / RNG / self-intersection
 // primitives they share. Ported from OSPRay's scivis/ao renderer (Apache-2.0):

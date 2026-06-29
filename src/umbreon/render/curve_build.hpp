@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Cylinder geometry construction for the umbreon renderer. POV emits two kinds
 // of cylinders that need different Embree linear-curve types and side tables:
 // `open` silhouette edges (chained ROUND_LINEAR_CURVE) and capped bonds

@@ -1,3 +1,5 @@
+// libumbreon PUBLIC API header (installed). Part of the supported public
+// API surface; keep in sync with install(FILES) in CMakeLists.txt.
 // umbreon: a CueMol-embeddable offline renderer backend. Build a Scene
 // (geometry, camera, lights, material, fog), call render(), and get a linear
 // HDR framebuffer. Depends only on Intel Embree 4 + TBB -- no POV-Ray SDL and

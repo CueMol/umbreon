@@ -1,3 +1,5 @@
+// libumbreon INTERNAL header -- not installed, not part of the public API.
+// Implementation detail; may change without notice. Do not include downstream.
 // Analytic silhouette (n.v == 0 contour) extraction for the ANALYTIC primitives
 // (Sphere, Cylinder), shared by BOTH edge methods -- mirroring how
 // mesh_feature_edges.{hpp,cpp} factors the triangle-mesh feature extraction out

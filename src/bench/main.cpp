@@ -446,13 +446,11 @@ int main(int argc, char** argv) {
           tbb::global_control::max_allowed_parallelism,
           static_cast<std::size_t>(opt.threads));
 
-    // Analytic OBJECT-SPACE silhouette edges. The silhouette is camera-dependent,
-    // so this runs only now -- after scene.camera is assigned and the scene is
-    // fully assembled (geometry, per-section alpha, screen-space edge filtering) --
-    // and strictly BEFORE render(). It computes each sphere/cylinder's n.v==0
-    // contour in 3D and APPENDS it as thin flat-black open cylinders, so the ray
-    // tracer below handles visibility/occlusion/AA/fog for the edges for free.
-    // Off (the default) => nothing appended => byte-identical default render.
+    // Analytic OBJECT-SPACE silhouette edges (method B). The production path
+    // drives this through render() via RenderOptions::objectSpaceEdges, exactly
+    // like the stroke method (method A) -- render() generates the camera-
+    // dependent edge cylinders internally before tracing. Off (the default) =>
+    // byte-identical default render.
     if (opt.objEdges) {
       // Replace the baked POV outlines with generated ones: drop the baked
       // edge_line cylinders AND their joint-dot spheres (both fromEdgeMacro) so
@@ -490,17 +488,15 @@ int main(int argc, char** argv) {
       silOpt.meshBorderCoplanarVetoDeg = opt.objEdgeBorderCoplanarDeg;
       silOpt.meshCreaseMaxDegree = opt.objEdgeCreaseMaxDeg;
       for (int k = 0; k < 3; ++k) silOpt.color[k] = opt.objEdgeColor[k];
-      const std::size_t before = scene.cylinders.size();
-      umbreon::generateObjectSpaceEdges(scene, silOpt);
-      std::printf(
-          "  object-space silhouette edges: +%zu cylinders "
-          "(width %.3f, raise %.3f, segments %d)\n",
-          scene.cylinders.size() - before, silOpt.width, silOpt.raise,
-          silOpt.segments);
       if (opt.objEdgeOnly) {
-        // Verification: drop the surface so only the generated edge cylinders
-        // [before..end] render. Edge extraction (incl. ON's mesh-BVH visibility)
-        // already ran above, so removing the mesh now is safe.
+        // Verification path: render ONLY the generated edge cylinders. The
+        // silhouette extraction needs the surfaces present, but they must be
+        // gone before the trace -- the inverse ordering of the integrated pass.
+        // So here (and only here) we call the extraction directly, strip the
+        // surfaces, and leave the integrated pass disabled (edges are already in
+        // scene.cylinders). The render()-driven production path is the else branch.
+        const std::size_t before = scene.cylinders.size();
+        umbreon::generateObjectSpaceEdges(scene, silOpt);
         scene.cylinders.erase(
             scene.cylinders.begin(),
             scene.cylinders.begin() + static_cast<std::ptrdiff_t>(before));
@@ -508,6 +504,13 @@ int main(int argc, char** argv) {
         scene.mesh = umbreon::Mesh{};
         std::printf("  --obj-edge-only: rendering %zu edge cylinders only\n",
                     scene.cylinders.size());
+      } else {
+        // Production path: hand the options to render(), symmetric with method A.
+        ropt.objectSpaceEdges = silOpt;
+        std::printf(
+            "  object-space silhouette edges: via render() "
+            "(width %.3f, raise %.3f, segments %d)\n",
+            silOpt.width, silOpt.raise, silOpt.segments);
       }
     }
 
