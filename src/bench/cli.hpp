@@ -32,6 +32,18 @@ struct Options {
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows
 
+  // --- diffuse GI: surface irradiance cache (--gi) ---
+  bool gi = false;              // master gate; off => byte-identical default
+  int giSamples = 64;           // hemisphere gather rays per record
+  int giBounces = 1;            // 1 = one-bounce; >1 = multi-bounce (later step)
+  float giMaxDistance = 0.0f;   // gather ray tfar; 0 => auto (scene diagonal)
+  float giIntensity = 1.0f;     // indirect gain (1.0 physical; user knob)
+  float giAccuracy = 0.15f;     // interpolation accuracy a
+  float giRecordSpacing = 0.0f; // voxel seed spacing; 0 => auto
+  float giNormalReject = 0.85f; // min dot(n_x, n_rec) to accept a record
+  bool giComponentReject = true;// reject cross-section records (leak guard)
+  bool giSeedPerVertex = false; // seed from mesh vertices (view-independent)
+
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults
   // matching the reference render and overridable with --declare.

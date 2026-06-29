@@ -15,6 +15,7 @@
 #include <tbb/parallel_for.h>
 
 #include "shading/hit_shader.hpp"
+#include "render/irradiance_cache.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -117,6 +118,14 @@ void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
       }
     }
   }
+}
+
+// True if the built scene contains a triangle mesh (the GI / AO gate: indirect
+// is gathered for mesh hits only, never for flat outline primitives).
+bool meshPresent(const detail::BuiltScene& built) {
+  for (const detail::GeomRecord& r : built.records)
+    if (r.kind == detail::GeomKind::Mesh) return true;
+  return false;
 }
 
 }  // namespace
@@ -282,6 +291,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.shapeAo.assign(npix, 1.0f);
       res.avgHitDist.assign(npix, 0.0f);
     }
+    // GI cache AOVs: world-space first-hit position (cache seed key), the
+    // interpolated indirect (debug E_cached) and the record-density debug viz.
+    // The normal AOV is also needed as the cache seed normal, so allocate it for
+    // the GI path too (harmless: written from the same N, no color change).
+    if (opt.gi) {
+      if (res.normal.empty()) res.normal.assign(npix * 3, 0.0f);
+      res.position.assign(npix * 3, 0.0f);
+      res.indirect.assign(npix * 3, 0.0f);
+      res.giRecordViz.assign(npix * 3, 0.0f);
+    }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
 
@@ -303,6 +322,17 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   for (uint16_t g : scene.veilGroups) {
     if (g >= isVeil.size()) isVeil.resize(static_cast<std::size_t>(g) + 1, 0);
     isVeil[g] = 1;
+  }
+
+  // Per-pixel GI cache seed side-channels (component id / Embree geomID of the
+  // first hit). Kept local to render() (not in FrameResult): the cache build
+  // reads them right below. Allocated only when GI is on.
+  std::vector<int> giGroup;
+  std::vector<uint32_t> giGeom;
+  if (opt.gi) {
+    const std::size_t npix = static_cast<std::size_t>(W) * H;
+    giGroup.assign(npix, -1);
+    giGeom.assign(npix, 0xFFFFFFFFu);
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -356,6 +386,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         res.objectId[pix] = pr.objectId;
         res.materialId[pix] = pr.materialId;
       }
+      // GI cache seed: world-space first-hit position + per-pixel component /
+      // geomID side-channels read by the cache build below.
+      if (opt.gi) {
+        res.position[pix * 3 + 0] = pr.worldPos.x;
+        res.position[pix * 3 + 1] = pr.worldPos.y;
+        res.position[pix * 3 + 2] = pr.worldPos.z;
+        giGroup[pix] = pr.firstGroup;
+        giGeom[pix] = pr.firstGeomID;
+      }
       // AO AOVs: albedo + contact/shape + bent normal + mean occluder distance.
       if (opt.aoWriteAov) {
         res.albedo[pix * 3 + 0] = pr.albedo.x;
@@ -383,6 +422,95 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();
+
+  // --- diffuse GI: surface irradiance cache (post-pass on the live BVH) ---
+  // [B] placement + [C] gather/fill + neighbor clamp, then [D] interpolation
+  // into the debug `indirect` (E_cached) and `giRecordViz` (record-density) AOVs.
+  // The final color composite ([E]) is NOT wired in this step, so a gi==on render
+  // leaves res.color unchanged vs gi==off. Runs at the (supersampled) hi-res W*H.
+  if (opt.gi && meshPresent(built)) {
+    const Aabb b = scene.mesh.bounds();
+    const float diag = b.valid() ? b.diagonal() : 1.0f;
+    detail::IrradianceCacheParams gp;
+    gp.scene = built.scene;
+    gp.built = &built;
+    gp.mesh = &m;
+    gp.lights = &lights;
+    gp.ambLight = ambLight;
+    gp.envUp = aoUpAxis;
+    gp.skyColor = Vec3{opt.aoSkyColor[0], opt.aoSkyColor[1], opt.aoSkyColor[2]};
+    gp.groundColor =
+        Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1], opt.aoGroundColor[2]};
+    gp.samples = std::max(1, opt.giSamples);
+    gp.maxDistance = (opt.giMaxDistance > 0.0f) ? opt.giMaxDistance : diag;
+    gp.spacing = (opt.giRecordSpacing > 0.0f) ? opt.giRecordSpacing : diag * 0.01f;
+    if (gp.spacing <= 0.0f) gp.spacing = 1.0f;
+    gp.accuracy = opt.giAccuracy;
+    gp.normalReject = opt.giNormalReject;
+    gp.componentReject = opt.giComponentReject;
+    gp.shadows = opt.shadows;
+    gp.shadowSamples = opt.shadowSamples;
+
+    detail::IrradianceCache cache = detail::buildIrradianceCache(
+        gp, W, H, res.position.data(), res.normal.data(), giGroup.data(),
+        giGeom.data(), opt.giSeedPerVertex);
+
+    // Record-radius heatmap normalization. A record's harmonic-mean radius R_i
+    // is small in a concavity (nearby occluders dominate) and large on an open
+    // surface; the two extremes span orders of magnitude (Rmin .. maxDistance),
+    // so map log(R_i) linearly into [0,1]. Dark = small radius = tight/concave
+    // record, bright = large radius = open surface.
+    const float densRmin = std::fmax(0.25f * gp.spacing, 1.0e-6f);
+    const float densLogLo = std::log(densRmin);
+    const float densLogSpan =
+        std::fmax(std::log(std::fmax(gp.maxDistance, densRmin)) - densLogLo, 1.0e-6f);
+
+    // [D] per-pixel interpolation into the debug AOVs (parallel, read-only).
+    tbb::parallel_for(tbb::blocked_range<int>(0, H),
+                      [&](const tbb::blocked_range<int>& rows) {
+      std::vector<uint32_t> cand;
+      for (int py = rows.begin(); py != rows.end(); ++py) {
+        for (int px = 0; px < W; ++px) {
+          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+          const uint32_t g = giGeom[pix];
+          if (g == 0xFFFFFFFFu) continue;
+          if (built.records[g].kind != GeomKind::Mesh) continue;
+          const Vec3 X{res.position[pix * 3 + 0], res.position[pix * 3 + 1],
+                       res.position[pix * 3 + 2]};
+          const Vec3 Nx{res.normal[pix * 3 + 0], res.normal[pix * 3 + 1],
+                        res.normal[pix * 3 + 2]};
+          Vec3 E{0.0f, 0.0f, 0.0f};
+          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E);
+          res.indirect[pix * 3 + 0] = E.x;
+          res.indirect[pix * 3 + 1] = E.y;
+          res.indirect[pix * 3 + 2] = E.z;
+          // Record-density debug: the nearest in-cell record's radius. A small
+          // radius (tight harmonic mean in a concavity) maps to a bright value,
+          // so dense / concave regions stand out from open flats.
+          cache.query(X, cand);
+          float nearR = -1.0f, nearD = std::numeric_limits<float>::infinity();
+          for (uint32_t i : cand) {
+            const detail::IrradianceRecord& r = cache.records[i];
+            const float d = length(X - r.position);
+            if (d < nearD) { nearD = d; nearR = r.radius; }
+          }
+          if (nearR > 0.0f) {
+            float h = (std::log(nearR) - densLogLo) / densLogSpan;
+            if (h < 0.0f) h = 0.0f;
+            if (h > 1.0f) h = 1.0f;
+            res.giRecordViz[pix * 3 + 0] = h;
+            res.giRecordViz[pix * 3 + 1] = h;
+            res.giRecordViz[pix * 3 + 2] = h;
+          }
+        }
+      }
+    });
+
+    std::fprintf(stderr,
+                 "gi: irradiance cache built -- %zu records (spacing %.4g, "
+                 "samples %d, maxDist %.4g)\n",
+                 cache.records.size(), gp.spacing, gp.samples, gp.maxDistance);
+  }
 
   // Record the mesh geometry identity so occluded() can map an excluded
   // mesh-triangle id to an Embree (geomID, primID) hit for Freestyle self-face

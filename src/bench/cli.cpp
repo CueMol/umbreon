@@ -223,6 +223,36 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--ao-write-aov");
       if (o.ok && !parseBool(v, o.aoWriteAov))
         fail("--ao-write-aov expects on/off");
+    } else if (a == "--gi") {
+      std::string v = value("--gi");
+      if (o.ok && !parseBool(v, o.gi)) fail("--gi expects on/off");
+    } else if (a == "--gi-samples") {
+      o.giSamples = std::atoi(value("--gi-samples").c_str());
+    } else if (a == "--gi-bounces") {
+      o.giBounces = std::atoi(value("--gi-bounces").c_str());
+    } else if (a == "--gi-max-dist") {
+      o.giMaxDistance =
+          static_cast<float>(std::atof(value("--gi-max-dist").c_str()));
+    } else if (a == "--gi-intensity") {
+      o.giIntensity =
+          static_cast<float>(std::atof(value("--gi-intensity").c_str()));
+    } else if (a == "--gi-accuracy") {
+      o.giAccuracy =
+          static_cast<float>(std::atof(value("--gi-accuracy").c_str()));
+    } else if (a == "--gi-spacing") {
+      o.giRecordSpacing =
+          static_cast<float>(std::atof(value("--gi-spacing").c_str()));
+    } else if (a == "--gi-normal-reject") {
+      o.giNormalReject =
+          static_cast<float>(std::atof(value("--gi-normal-reject").c_str()));
+    } else if (a == "--gi-component-reject") {
+      std::string v = value("--gi-component-reject");
+      if (o.ok && !parseBool(v, o.giComponentReject))
+        fail("--gi-component-reject expects on/off");
+    } else if (a == "--gi-seed-per-vertex") {
+      std::string v = value("--gi-seed-per-vertex");
+      if (o.ok && !parseBool(v, o.giSeedPerVertex))
+        fail("--gi-seed-per-vertex expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -535,6 +565,15 @@ void printUsage(const char* prog) {
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"
+      "  --gi <on|off>            diffuse GI surface irradiance cache [off]\n"
+      "  --gi-samples <int>       hemisphere gather rays per record    [64]\n"
+      "  --gi-max-dist <world>    gather ray max distance (0 = auto)    [0]\n"
+      "  --gi-intensity <float>   indirect gain (1.0 = physical)      [1.0]\n"
+      "  --gi-accuracy <a>        interpolation accuracy a           [0.15]\n"
+      "  --gi-spacing <world>     record voxel spacing (0 = auto)       [0]\n"
+      "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
+      "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
+      "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
       "  --compare <a> <b>        print PSNR/SSIM between two PPM files\n"
       "  --convert <in> <out>     convert a PPM to PNG/PPM\n"
       "  -h, --help               show this help\n",

@@ -183,6 +183,11 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       hs.contactAo = aoAov.contact;
       hs.shapeAo = aoAov.shape;
       hs.avgHitDist = aoAov.avgHitDist;
+    } else if (c.opt.gi) {
+      // GI cache seeds need the smooth shading normal and pigment at the first
+      // mesh hit even when the AO AOVs are off. This does not feed the color.
+      hs.albedo = C;
+      hs.normal = N;
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,

@@ -411,6 +411,23 @@ int main(int argc, char** argv) {
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;
+
+    // Diffuse GI: surface irradiance cache (steps 1-3: cache build + fill +
+    // debug AOVs; the final composite is not wired yet, so color is unchanged).
+    ropt.gi = opt.gi;
+    ropt.giSamples = opt.giSamples;
+    ropt.giBounces = opt.giBounces;
+    ropt.giMaxDistance = opt.giMaxDistance;
+    ropt.giIntensity = opt.giIntensity;
+    ropt.giAccuracy = opt.giAccuracy;
+    ropt.giRecordSpacing = opt.giRecordSpacing;
+    ropt.giNormalReject = opt.giNormalReject;
+    ropt.giComponentReject = opt.giComponentReject;
+    ropt.giSeedPerVertex = opt.giSeedPerVertex;
+    if (ropt.gi)
+      std::printf("  diffuse GI: irradiance cache, %d samples/record%s\n",
+                  ropt.giSamples,
+                  ropt.giSeedPerVertex ? " (per-vertex seed)" : "");
     if (ropt.aoSamples > 0)
       std::printf(
           "  ambient occlusion: %d samples, radius %.3f, intensity %.2f\n",
@@ -634,10 +651,35 @@ int main(int argc, char** argv) {
                     opt.dumpAovPrefix.c_str(), aw, ah);
         dumpedAny = true;
       }
+      // GI cache AOVs (final res): E_cached (indirect) auto-normalized for
+      // display, plus the record-density debug viz (bright = small radius =
+      // dense records, e.g. in concavities). Lets the cache be eyeballed before
+      // the final composite is wired.
+      if (ropt.gi && !frame.indirect.empty()) {
+        const int aw = frame.width, ah = frame.height;
+        const std::size_t np = static_cast<std::size_t>(aw) * ah;
+        float emax = 0.0f;
+        for (std::size_t i = 0; i < np * 3; ++i)
+          emax = std::max(emax, frame.indirect[i]);
+        const float escale = (emax > 0.0f) ? 1.0f / emax : 1.0f;
+        std::vector<float> ind(np * 3);
+        for (std::size_t i = 0; i < np * 3; ++i)
+          ind[i] = frame.indirect[i] * escale;  // [0,1] normalized E_cached
+        umbreon::writeImage(opt.dumpAovPrefix + "_indirect.png", aw, ah,
+                            ind.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_giRecords.png", aw, ah,
+                            frame.giRecordViz.data(), 3);
+        std::printf(
+            "  dumped GI AOVs: %s_{indirect,giRecords}.png (%dx%d, E_cached "
+            "max %.4g)\n",
+            opt.dumpAovPrefix.c_str(), aw, ah, emax);
+        dumpedAny = true;
+      }
       if (!dumpedAny)
         std::fprintf(
             stderr,
-            "warning: --dump-aov ignored (needs --edges or --ao-write-aov on)\n");
+            "warning: --dump-aov ignored (needs --edges, --ao-write-aov or "
+            "--gi on)\n");
     }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

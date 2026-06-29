@@ -173,6 +173,17 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
       frame.bentNormal =
           boxDownsample(frame.bentNormal, frame.width, frame.height, 3, ss);
     }
+    // GI cache AOVs (continuous): downsample to the output resolution like the
+    // other guide channels. position is world-space, so the box average is a
+    // mild edge blend, acceptable for a debug/guide buffer.
+    if (!frame.indirect.empty()) {
+      frame.position =
+          boxDownsample(frame.position, frame.width, frame.height, 3, ss);
+      frame.indirect =
+          boxDownsample(frame.indirect, frame.width, frame.height, 3, ss);
+      frame.giRecordViz =
+          boxDownsample(frame.giRecordViz, frame.width, frame.height, 3, ss);
+    }
     frame.width = finalW;
     frame.height = finalH;
   }

@@ -1361,5 +1361,113 @@ int main() {
             minR > 0.5f);
   }
 
+  // ===== Diffuse GI: surface irradiance cache (steps 1-3) =====
+  // The cache is built (placement + gather/fill) and exposed via the `indirect`
+  // (E_cached) and `position` AOVs. The final color composite is NOT wired yet,
+  // so a gi==on render must leave the color bit-identical to gi==off; only the
+  // AOVs are added. These lock that contract plus determinism and the core
+  // physical property (occlusion darkens E_cached).
+
+  // GI color gate: enabling the cache must not change the rendered color (steps
+  // 1-3 only produce AOVs). Raw != comparison, like the AO determinism test.
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions off;
+    off.width = 5; off.height = 5;
+    umbreon::RenderOptions on = off;
+    on.gi = true;
+    on.giSamples = 32;
+    umbreon::FrameResult fo = umbreon::render(sc, off);
+    umbreon::FrameResult fn = umbreon::render(sc, on);
+    bool identical = fo.color.size() == fn.color.size();
+    for (std::size_t i = 0; identical && i < fo.color.size(); ++i)
+      if (fo.color[i] != fn.color[i]) identical = false;
+    s.check("GI gate: color byte-identical gi on vs off", identical);
+    s.check("GI gate: indirect AOV populated when on",
+            fn.indirect.size() == fo.color.size() / 4 * 3 && !fn.position.empty());
+  }
+
+  // GI determinism: the cache placement (occupied-voxel set) and per-record
+  // gather seed (record index only) are thread-count independent, so two renders
+  // produce bit-identical E_cached.
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.gi = true;
+    o.giSamples = 48;
+    umbreon::FrameResult a = umbreon::render(sc, o);
+    umbreon::FrameResult b = umbreon::render(sc, o);
+    bool identical = a.indirect.size() == b.indirect.size() && !a.indirect.empty();
+    for (std::size_t i = 0; identical && i < a.indirect.size(); ++i)
+      if (a.indirect[i] != b.indirect[i]) identical = false;
+    s.check("GI determinism: two renders' E_cached bit-identical", identical);
+  }
+
+  // GI occlusion: a floor with a slab above it gathers LESS environment (the
+  // slab blocks part of the hemisphere and bounces no light), so its cached
+  // irradiance is strictly darker than the same floor left open. This is the
+  // single-counting property: occlusion lives inside E_cached.
+  {
+    using umbreon::Vec3;
+    auto floor = [](bool withSlab) {
+      umbreon::Mesh m;
+      const Vec3 fl[6] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                          {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      for (int i = 0; i < 6; ++i) {
+        m.positions.push_back(fl[i]);
+        m.normals.push_back({0, 0, 1});
+        m.colors.push_back({1, 1, 1, 1});
+      }
+      if (withSlab) {
+        // Offset in +x so it clears the center camera ray (x=0) but blocks the
+        // +x half of the center floor point's gather hemisphere.
+        const float z = 0.4f;  // close above the floor
+        const Vec3 sl[6] = {{0.1f, -2, z}, {4, -2, z}, {4, 2, z},
+                            {0.1f, -2, z}, {4, 2, z},  {0.1f, 2, z}};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(sl[i]);
+          m.normals.push_back({0, 0, -1});
+          m.colors.push_back({0, 0, 0, 1});
+        }
+      }
+      m.material.ambient = 1.0f;
+      m.material.diffuse = 0.0f;  // isolate the gathered environment term
+      return m;
+    };
+    auto sceneOf = [](umbreon::Mesh m) {
+      umbreon::Scene sc;
+      sc.mesh = std::move(m);
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      return sc;
+    };
+    umbreon::RenderOptions o;
+    o.width = 5; o.height = 5;
+    o.gi = true;
+    o.giSamples = 128;
+    o.giMaxDistance = 10.0f;
+    o.giRecordSpacing = 0.5f;
+    o.giAccuracy = 0.3f;
+    umbreon::FrameResult openF = umbreon::render(sceneOf(floor(false)), o);
+    umbreon::FrameResult occF = umbreon::render(sceneOf(floor(true)), o);
+    const std::size_t c = kCenterPix * 3;  // center pixel, indirect R channel
+    s.check("GI occ: open floor gathers ~full ambient (E_cached R ~1)",
+            approx(openF.indirect[c + 0], 1.0f, 0.1f));
+    s.check("GI occ: slab darkens E_cached (occluded < open)",
+            occF.indirect[c + 0] + 0.05f < openF.indirect[c + 0]);
+    s.check("GI occ: occluded E_cached not fully black",
+            occF.indirect[c + 0] > 0.01f);
+  }
+
   return s.report();
 }
