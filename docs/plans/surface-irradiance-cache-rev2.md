@@ -376,8 +376,13 @@ oidnGetDeviceError(...) で検査; release
 4. interpolation([D]) + leak 棄却 + `shadeLocal` indirect **置換**配線([E]、定数 ambient/AO 乗算なし) + `--gi` gate/CLI。**遮蔽の単一計上テスト**・color bleeding・leak・決定性テスト。視覚確認(白っぽく平坦が出ないこと)。
 5. multi-bounce([C] の `giBounces`、段ごと read-only 前段参照) — 暗所単調性・決定性テスト。POV 比較の主軸。
 6. 勾配補間([C]/[D] の `giGradients`) + adaptive 細分(`giAdaptive`) — 滑らかさ/record 削減/凹部精度の quality 検証。
-7. denoise: AtrousBilateral([F] 自前) + CLI + no-op/分散テスト。
-8. OIDN backend(`UMBREON_WITH_OIDN`) + フォールバック warning + ビルドガードテスト + docs(本ファイル追補)。
+7. **[完了 e426ba4]** denoise: AtrousBilateral([F] 自前) + CLI + no-op/分散テスト。
+   - CLI 既定: `--denoiser` 未指定時は `--gi` on で atrous、off で None(library API 既定は None のまま byte-identical)。
+   - テスト: 平坦半面の分散低下 / 法線エッジ保存 / 背景画素不変 / iters=0 no-op。
+8. **[完了 e426ba4]** OIDN backend(`UMBREON_WITH_OIDN`) + フォールバック warning + ビルドガードテスト + docs(本ファイル追補)。
+   - deplibs oidn-2.5.0 を `find_package(OpenImageDenoise 2 CONFIG)` で検出、`UMBREON_HAVE_OIDN` ガード。未検出 ON ビルドは warning + a-trous フォールバック。
+   - Taskfile static 経路で `CMAKE_PREFIX_PATH` に OIDN prefix 追加 + `UMBREON_WITH_OIDN=ON`。
+   - 注: 現状の評価条件(gi-accuracy 0.15 / gi-samples 64)で OIDN はほぼ無変化(設定要調整)。残留の暗点は stochastic でなく cache level の構造的アーティファクトのため、両 denoiser とも温存する(別途 cache level の課題)。
 
 ---
 
