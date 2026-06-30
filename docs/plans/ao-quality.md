@@ -231,3 +231,37 @@ diffuse_term *= (1 - aoDiffuseFactor*(1 - openness))
 4. 立体感の段階確認: `--ao-diffuse` の値を上げるほど凹部の陰影が強まることを目視。
 5. AOV/cache 互換確認: `--ao-write-aov on --dump-aov out_aov` で `out_aov_{albedo,normal,contactAo,shapeAo,avgHitDist,bentNormal}.png` を出力し、albedo=pigment・normal=面向き・contact が溝で暗く・avgHitDist が「近接接触(暗・小距離)」と「遠方遮蔽(暗・大距離)」を弁別できることを目視。これらが将来の cache lookup / OIDN guide / edge-aware upsample の入力になる。
 5. AOV/cache 互換確認: `--ao-write-aov on --dump-aov out_aov` で `out_aov_{albedo,normal,contactAo,shapeAo,avgHitDist,bentNormal}.png` を出力し、albedo=pigment・normal=面向き・contact が溝で暗く・avgHitDist が「近接接触(暗・小距離)」と「遠方遮蔽(暗・大距離)」を弁別できることを目視。これらが将来の cache lookup / OIDN guide / edge-aware upsample の入力になる。
+
+---
+
+## 追補 (2026-06-30): GTAO 相当の実測レシピ + 実プリミティブへの AO 拡張
+
+`ao_test1.pov`(実 SES 表面)で OpenGL GTAO 参照(`ao_test1_ogl.png`)と並べた検証で確定した点。
+詳細なリファレンスは `docs/api/libumbreon.md`(§4.6) と `docs/umbreon_cli.md`(奥行き節)。
+
+### 実測レシピ(GTAO 同等の奥行き)
+
+```
+--ao-samples 256 --ao-multiscale on --ao-bent-normal on \
+--ao-falloff 0 --ao-diffuse 1.0 --ao-distance 40   # 600^2, scene 径 ~65
+```
+
+効くレバーの順:
+1. **`aoDiffuseFactor=1.0`** — 本命。direct diffuse を凹部で減光して初めて強い陰影が出る。
+   既定(`aoDiffuseFactor=0`)では AO は ambient 項のみ減光 → AO OFF と全体の ~2% しか変わらず
+   「陰影が弱い」状態だった(計測: AO on vs off の平均|差| 5.2/255)。
+2. **`aoFalloffPower=0`(binary)** — 谷を最も鋭く落とす。`>0` は遠方遮蔽を緩めコントラスト低下。
+3. **`aoDistance` は大きめ(シーン径 0.5〜0.85 倍)** — このスケールでは**大半径ほど強い**。
+   短半径(d6)は近傍に occluder が無く AO OFF と同等(直感に反する)。
+
+注意: ambient のエネルギー配分(`_amb_frac`)引き上げは AO の効きを上げない(GI 専用に回り direct が
+減るだけ → 全体が暗くなりコントラストはむしろ低下、計測 D 系列)。強度は `aoDiffuseFactor` で上げる。
+
+### 実プリミティブへの AO 拡張(commit 0acb107)
+
+旧実装は AO をメッシュヒットのみに適用し、球・シリンダは「flat outline」として一律除外していた
+ため、ポケット内の CPK 原子球が暗くならなかった。**実 CSG プリミティブ(VdW 原子球・bond
+シリンダ; `fromEdgeMacro=false`)にもメッシュ同様 AO を適用**するよう変更。NPR outline 装飾
+(`fromEdgeMacro=true`)はフラットのまま。区別は由来タグを `BuiltScene` に伝播して行う
+(`sphereFromEdge`/`cylFromEdge`/`cylCapFromEdge`)。AO factor 計算は `computeAoShade()` に集約し
+mesh/primitive 両分岐で共用(mesh は bit-exact)。リガンド領域の計測: 平均輝度 136.2 → 90.8。

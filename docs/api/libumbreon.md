@@ -24,7 +24,7 @@ primary ray + **POV 忠実なローカルシェーディング**（per-geometry 
 | 機能 | 対応 | 制御 |
 |---|---|---|
 | 直接光（distant light）+ 環境光 | あり | `Scene::lights`, `Scene::ambientColor` |
-| Ambient Occlusion（メッシュのみ） | あり（既定 OFF） | `RenderOptions::aoSamples` ほか |
+| Ambient Occlusion（メッシュ＋実プリミティブ） | あり（既定 OFF） | `RenderOptions::aoSamples` ほか |
 | 影（ハード／ソフト＝エリアライト） | あり（既定 OFF） | `RenderOptions::shadows` ほか |
 | 透過（front-to-back over ＋ group veil） | あり | `RenderOptions::transparency`, `Scene::veilGroups` |
 | OpenGL 線形 fog（深度ベース post-process／透過時 alpha フェード） | あり | `Scene::fog` |
@@ -275,14 +275,19 @@ FrameResult render(const Scene& scene, const RenderOptions& opt);
 `open`（**重要**: `true` = キャップ無しのシルエットエッジ。共有端点で連結し継ぎ目の
 ビーズを防ぐ。`false` = フラットキャップの bond/wireframe）。
 
-> 球・シリンダは既定で `Material::flatOutline()`（ambient 1 / diffuse 0 = 生色のフラット表示）。
-> **AO も影も outline プリミティブには適用されない**（シルエットが誤って暗くならない）。
+> 球・シリンダには 2 種ある。**実 CSG プリミティブ**（`fromEdgeMacro=false`: CueMol の VdW
+> 原子球・bond シリンダ）と、**baked NPR outline 装飾**（`fromEdgeMacro=true`: シルエットエッジ
+> シリンダ・継ぎ目ビーズ。既定で `Material::flatOutline()`）。
+> **AO は実プリミティブにはメッシュ同様に適用され**（ポケット内の CPK 原子も周囲の SES と同じく
+> 暗化する）、**outline 装飾には適用されない**（シルエットが誤って暗くならない）。区別は由来タグ
+> `Scene::{Sphere,Cylinder}::fromEdgeMacro` を `BuiltScene` に伝播して行う（マテリアル推測ではない）。
+> 影はどちらのプリミティブにも落ちない（メッシュのみ）。
 
 ### 4.4 `Material`（POV finish）
 
 | フィールド | 既定 | 意味 |
 |---|---|---|
-| `ambient` | 0.2 | 環境光係数（AO はこの項のみを減光） |
+| `ambient` | 0.2 | 環境光係数（AO は既定でこの項のみを減光。`aoDiffuseFactor>0` で直接 diffuse も減光） |
 | `diffuse` | 0.8 | 拡散係数 |
 | `specular` | 0.0 | Blinn ハイライト量 |
 | `roughness` | 0.02 | Blinn の粗さ（小さいほど鋭い） |
@@ -326,7 +331,7 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 |---|---|---|
 | `width` / `height` | 1024 / 768 | 最終出力サイズ（px） |
 | `supersample` | 1 | `width*ss × height*ss` で描画し linear で box 平均（AA）。1 = OFF |
-| `aoSamples` | 0 | メッシュヒットあたりの AO レイ数。**0 = AO OFF**（既定で bit-exact） |
+| `aoSamples` | 0 | メッシュ／実プリミティブヒットあたりの AO レイ数。**0 = AO OFF**（既定で bit-exact） |
 | `aoDistance` | 1e20 | AO オクルーダ探索半径（ray tfar, world 単位）。シーン径の数分の1程度が目安 |
 | `aoIntensity` | 1.0 | AO 強度: `aoFactor = 1 - aoIntensity*(1-rawAO)` |
 | `aoFalloffPower` | 0.0 | 0 = binary（legacy）。> 0 で距離減衰 `(max(0,1-t/R))^power`（遠方遮蔽を緩和） |
@@ -351,10 +356,19 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 > AO/影は既定 OFF なので、`RenderOptions` を既定構築すると現行の POV マッチ出力（bit-exact）に
 > なる。AO/影を使う場合は該当フィールドを設定する。
 >
-> 立体感プリセット指針: 滑らかな density surface では「広域の窪み暗化」が立体感の主因なので
-> `aoMultibounce=true` + `aoDiffuseFactor≈0.6`（大半径 AO を残し凹部を深く落とす）が有効。
-> `aoFalloffPower`/`aoMultiScale` は遠方遮蔽を割り引くため、滑らかな面ではむしろ平坦化する点に注意
-> （接触影・方向性が要るモデルでは有効）。詳細は `docs/plans/ao-quality.md` の「プリセット指針」。
+> **AO の効きとエネルギー配分（重要）**: AO（`aoFactor`）は既定で ambient 項のみを減光する。
+> CueMol の既定ライティングはエネルギーの大半を direct light に置く（material `ambient≈0.2`）ため、
+> 既定設定（`aoFalloffPower=0` の binary だが `aoDiffuseFactor=0`・auto 大半径）では AO は AO OFF と
+> 全体の数%しか変わらず、**陰影が弱く見える**。強い奥行きを出すには direct 項を AO で減光する
+> `aoDiffuseFactor` を上げるのが本命レバー（`_amb_frac` 等の ambient 配分引き上げは GI 専用で、
+> AO モードでは暗くなるだけ）。
+>
+> **奥行き重視プリセット（GTAO 相当の立体感）**: 分子表面で OpenGL GTAO と同等の奥行きが出る
+> 実測レシピ — `aoSamples≥128, aoMultiScale=true, aoBentNormal=true, aoFalloffPower=0`(binary),
+> `aoDiffuseFactor=1.0`, `aoDistance≈シーン径の 0.5〜0.85 倍`（このスケールのシーンでは
+> **大半径ほど強い**。短半径は近傍に occluder が無く効かない）。`aoIntensity>1` は過暗化。
+> `aoMultibounce=true` は淡色凹部の黒潰れを抑えたいときに併用。
+> 経緯と計測値は `docs/plans/ao-quality.md`（追補）、CLI 例は `docs/umbreon_cli.md`（奥行き節）を参照。
 
 ### 4.7 `FrameResult`
 
