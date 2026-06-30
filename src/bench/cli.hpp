@@ -45,6 +45,7 @@ struct Options {
   bool giComponentReject = true;// reject cross-section records (leak guard)
   bool giSeedPerVertex = false; // seed from mesh vertices (view-independent)
   bool giGradients = false;     // Ward-Heckbert gradient interpolation
+  bool giOutlierReject = true;  // lift isolated fully-occluded dark records
 
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults

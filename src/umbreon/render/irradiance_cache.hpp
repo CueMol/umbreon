@@ -77,6 +77,7 @@ struct IrradianceCacheParams {
   int samples = 64;                    // hemisphere gather rays per record
   int bounces = 1;                     // 1 = one-bounce; >1 = multi-bounce stages
   bool gradients = false;              // Ward-Heckbert gradient fill + interpolation
+  bool outlierReject = true;           // lift isolated fully-occluded dark records
   float maxDistance = 0.0f;            // gather tfar (> 0)
   float spacing = 0.0f;                // voxel seed world spacing (> 0)
   float accuracy = 0.15f;              // interpolation accuracy a
@@ -732,6 +733,70 @@ inline bool interpolateIrradiance(const IrradianceCache& cache,
   return false;
 }
 
+// [C] Dark-outlier rejection. A record whose hemisphere is (near) fully self-
+// occluded gathers ~0 in one-bounce -- all its rays hit immediate neighbors that
+// are themselves shadowed, so they re-emit no light. On high-frequency molecular
+// surfaces this aliases: a seed that lands in a sub-spacing micro-pocket (an atom-
+// sphere valley) reads black while its rim neighbors see open sky and read bright,
+// so it paints an isolated dark voxel square. Replace each such dark outlier's
+// irradiance with the distance-weighted mean of its same-component neighbors: an
+// isolated dark record is lifted to its bright surroundings, while a genuine dark
+// cavity (its neighbors are dark too, so their median is dark) is NOT flagged and
+// stays dark -- preserving the real depth cue. Only near-fully-occluded records
+// (occlusion >= 0.9) are candidates, so gentle concavities (the smooth shading the
+// effect is meant to keep) are never touched. The pass reads a snapshot (new values
+// computed from the old records, assigned after the scan), so it is order-
+// independent and bit-reproducible like the neighbor radius clamp.
+inline void rejectDarkOutliers(IrradianceCache& cache,
+                               const IrradianceCacheParams& p) {
+  const std::size_t n = cache.records.size();
+  if (n == 0) return;
+  const float reach = 2.0f * p.spacing;
+  IrradianceCache tg;
+  tg.setCellSize(reach);
+  tg.records = cache.records;  // positions only; radius unused here
+  tg.buildGrid(0.0f);          // own-cell registration; the 3x3x3 query spans reach
+  auto lumOf = [](const Vec3& e) {
+    return 0.2126f * e.x + 0.7152f * e.y + 0.0722f * e.z;
+  };
+  std::vector<Vec3> newE(n);
+  std::vector<uint8_t> changed(n, 0);
+  std::vector<uint32_t> cand;
+  std::vector<float> nbLum;
+  for (std::size_t i = 0; i < n; ++i) {
+    const IrradianceRecord& ri = cache.records[i];
+    newE[i] = ri.irradiance;
+    if (ri.occlusion < 0.9f) continue;  // only near-fully-occluded candidates
+    tg.query(ri.position, cand);
+    Vec3 wMeanE{0.0f, 0.0f, 0.0f};
+    float wSum = 0.0f;
+    nbLum.clear();
+    for (uint32_t j : cand) {
+      if (j == static_cast<uint32_t>(i)) continue;
+      const IrradianceRecord& rj = cache.records[j];
+      if (rj.componentID != ri.componentID) continue;
+      const float d = length(ri.position - rj.position);
+      if (d > reach) continue;
+      if (dot(ri.normal, rj.normal) < p.normalReject) continue;
+      nbLum.push_back(lumOf(rj.irradiance));
+      const float w = 1.0f / (d + 1.0e-4f);
+      wMeanE = wMeanE + rj.irradiance * w;
+      wSum += w;
+    }
+    if (nbLum.size() < 4 || wSum <= 0.0f) continue;  // too few neighbors to judge
+    std::sort(nbLum.begin(), nbLum.end());
+    const float med = nbLum[nbLum.size() / 2];
+    // Flag only a clear dark outlier: well below a bright neighbor median. A
+    // genuine cavity has a dark median (med <= 0.05), so it is never flagged.
+    if (med > 0.05f && lumOf(ri.irradiance) < 0.5f * med) {
+      newE[i] = wMeanE * (1.0f / wSum);
+      changed[i] = 1;
+    }
+  }
+  for (std::size_t i = 0; i < n; ++i)
+    if (changed[i]) cache.records[i].irradiance = newE[i];
+}
+
 // Build the whole cache: [B] placement -> [C] fill -> neighbor clamp -> grid.
 // `pos`/`nrm`/`group`/`geom` are the W*H first-hit G-buffer (see placeRecords).
 inline IrradianceCache buildIrradianceCache(const IrradianceCacheParams& p, int W,
@@ -748,6 +813,7 @@ inline IrradianceCache buildIrradianceCache(const IrradianceCacheParams& p, int 
 
   // Bounce 1: one-bounce (direct + environment), no previous cache to read.
   fillRecords(cache, p, nullptr);
+  if (p.outlierReject) rejectDarkOutliers(cache, p);
   neighborClamp(cache, p.accuracy);
   cache.buildGrid(p.accuracy);
 
@@ -760,6 +826,7 @@ inline IrradianceCache buildIrradianceCache(const IrradianceCacheParams& p, int 
   for (int b = 2; b <= bounces; ++b) {
     const IrradianceCache prev = cache;  // snapshot of bounce b-1 (records + grid)
     fillRecords(cache, p, &prev);
+    if (p.outlierReject) rejectDarkOutliers(cache, p);
     neighborClamp(cache, p.accuracy);
     cache.buildGrid(p.accuracy);
   }

@@ -260,6 +260,10 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--gi-gradients");
       if (o.ok && !parseBool(v, o.giGradients))
         fail("--gi-gradients expects on/off");
+    } else if (a == "--gi-outlier-reject") {
+      std::string v = value("--gi-outlier-reject");
+      if (o.ok && !parseBool(v, o.giOutlierReject))
+        fail("--gi-outlier-reject expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -576,6 +580,7 @@ void printUsage(const char* prog) {
       "  --gi-samples <int>       hemisphere gather rays per record    [64]\n"
       "  --gi-bounces <int>       indirect bounces (1 = one-bounce)     [1]\n"
       "  --gi-gradients <on|off>  Ward-Heckbert gradient interpolation [off]\n"
+      "  --gi-outlier-reject <on|off> lift isolated dark cache records  [on]\n"
       "  --gi-max-dist <world>    gather ray max distance (0 = auto)    [0]\n"
       "  --gi-intensity <float>   indirect gain (1.0 = physical)      [1.0]\n"
       "  --gi-env-intensity <f>   ambient fill mult (auto-calibrated; <1 deeper) [1.0]\n"

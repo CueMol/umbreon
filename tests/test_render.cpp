@@ -10,6 +10,8 @@
 #include "test_util.hpp"
 #include "umbreon.hpp"
 
+#include "render/irradiance_cache.hpp"  // detail::rejectDarkOutliers unit test
+
 namespace {
 
 bool approx(float a, float b, float eps) { return std::fabs(a - b) <= eps; }
@@ -1695,6 +1697,57 @@ int main() {
     for (std::size_t i = 0; identical && i < a.color.size(); ++i)
       if (a.color[i] != b.color[i]) identical = false;
     s.check("GI gradients: two gradient renders bit-identical", identical);
+  }
+
+  // Dark-outlier rejection (rejectDarkOutliers). A near-fully-occluded record
+  // gathers ~0 in one-bounce; on bumpy geometry an isolated such record (a seed
+  // in a sub-spacing micro-pocket) paints a black voxel square while its bright
+  // rim neighbors do not. The pass must lift an ISOLATED dark record to its
+  // bright neighbors, yet leave a CLUSTERED dark record (a genuine cavity, whose
+  // neighbors are also dark) untouched. Tested directly on a hand-built cache so
+  // the spec is locked independently of the (scene-dependent) gather.
+  {
+    using umbreon::Vec3;
+    using umbreon::detail::IrradianceCache;
+    using umbreon::detail::IrradianceCacheParams;
+    using umbreon::detail::IrradianceRecord;
+    auto lum = [](const Vec3& e) {
+      return 0.2126f * e.x + 0.7152f * e.y + 0.0722f * e.z;
+    };
+    // 5x5 coplanar grid (z=0, normal +z), unit spacing. `centerDark` flags only
+    // the middle record as dark+occluded; otherwise all are bright (isolated
+    // case). `allDark` makes every record dark+occluded (clustered cavity case).
+    auto build = [&](bool allDark) {
+      IrradianceCache c;
+      c.setCellSize(1.0f);
+      for (int y = 0; y < 5; ++y)
+        for (int x = 0; x < 5; ++x) {
+          IrradianceRecord r;
+          r.position = Vec3{static_cast<float>(x), static_cast<float>(y), 0.0f};
+          r.normal = Vec3{0.0f, 0.0f, 1.0f};
+          const bool center = (x == 2 && y == 2);
+          const bool dark = allDark || center;
+          r.irradiance = dark ? Vec3{0.0f, 0.0f, 0.0f} : Vec3{1.0f, 1.0f, 1.0f};
+          r.occlusion = dark ? 1.0f : 0.3f;
+          r.componentID = 0;
+          c.records.push_back(r);
+        }
+      return c;
+    };
+    IrradianceCacheParams pp;
+    pp.spacing = 1.0f;
+    pp.normalReject = 0.85f;
+    const std::size_t mid = 2 * 5 + 2;  // center index
+
+    IrradianceCache iso = build(false);
+    umbreon::detail::rejectDarkOutliers(iso, pp);
+    s.check("GI outlier reject: isolated dark record lifted to bright neighbors",
+            lum(iso.records[mid].irradiance) > 0.5f);
+
+    IrradianceCache cav = build(true);
+    umbreon::detail::rejectDarkOutliers(cav, pp);
+    s.check("GI outlier reject: clustered dark cavity stays dark",
+            lum(cav.records[mid].irradiance) < 0.05f);
   }
 
   return s.report();

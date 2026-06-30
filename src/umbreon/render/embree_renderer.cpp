@@ -457,6 +457,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     gp.samples = std::max(1, opt.giSamples);
     gp.bounces = std::max(1, opt.giBounces);
     gp.gradients = opt.giGradients;
+    gp.outlierReject = opt.giOutlierReject;
     // Auto gather distance: a fraction of the scene diagonal. Full-diagonal
     // gather lets distant surfaces fill the hemisphere uniformly, washing out the
     // concavity contrast (every point sees ~the same far geometry); a contact-
