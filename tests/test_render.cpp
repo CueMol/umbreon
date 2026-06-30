@@ -1573,5 +1573,68 @@ int main() {
             giWell > 0.3f);
   }
 
+  // Multi-bounce (giBounces): an enclosed well lit top-down. The vertical walls
+  // receive no direct light (n.L == 0), so with one bounce the well floor only
+  // gets the (occluded) environment plus the walls' direct bounce (~0). A second
+  // bounce lets the walls re-emit the light they gathered from the brightly lit
+  // floor, so the well floor brightens. This locks the bounce energy as monotone
+  // (>= one bounce) and the stage as deterministic (per-record seed, read-only
+  // previous snapshot).
+  //
+  // Per-vertex seeding is used so every wall has cache records regardless of the
+  // top-down camera's view coverage (edge-on walls leave almost no visible-
+  // surface records). This isolates genuine inter-reflection: the multi-bounce
+  // gather only adds a hit's indirect when a real record covers it, so without
+  // wall records the second bounce would (correctly) add nothing.
+  {
+    using umbreon::Vec3;
+    auto well = []() {
+      umbreon::Mesh m;
+      auto quad = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 n) {
+        Vec3 v[6] = {a, b, c, a, c, d};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(v[i]); m.normals.push_back(n);
+          m.colors.push_back({1, 1, 1, 1});
+        }
+      };
+      quad({-1,-1,0},{1,-1,0},{1,1,0},{-1,1,0},{0,0,1});  // floor
+      const float h = 3.0f;  // tall walls => deep well
+      quad({1,-1,0},{1,1,0},{1,1,h},{1,-1,h},{-1,0,0});
+      quad({-1,-1,0},{-1,1,h},{-1,1,0},{-1,-1,h},{1,0,0});
+      quad({-1,1,0},{1,1,0},{1,1,h},{-1,1,h},{0,-1,0});
+      quad({-1,-1,0},{-1,-1,h},{1,-1,h},{1,-1,0},{0,1,0});
+      m.material.ambient = 0.2f; m.material.diffuse = 0.8f;
+      return m;
+    };
+    auto render = [&](int bounces) {
+      umbreon::Scene sc;
+      sc.mesh = well();
+      sc.camera = makeOrthoCam();
+      umbreon::DistantLight l;
+      l.direction = {0, 0, -1}; l.color = {1, 1, 1}; l.intensity = 0.8f;
+      sc.lights.push_back(l);
+      sc.ambientColor = {1, 1, 1}; sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.gi = true; o.giSamples = 256; o.giMaxDistance = 10.0f;
+      o.giRecordSpacing = 0.3f; o.giAccuracy = 0.3f;
+      o.giBounces = bounces;
+      o.giSeedPerVertex = true;  // records on all walls (view-independent)
+      return umbreon::render(sc, o);
+    };
+    const float well1 = render(1).color[kCenterRgba + 0];
+    const float well2 = render(2).color[kCenterRgba + 0];
+    s.check("GI multi-bounce: second bounce brightens the enclosed well",
+            well2 > well1 + 1.0e-4f);
+    // Determinism: two giBounces=2 renders must be bit-identical (each stage is
+    // per-record seeded and reads only the read-only previous snapshot).
+    umbreon::FrameResult a = render(2);
+    umbreon::FrameResult b = render(2);
+    bool identical = a.color.size() == b.color.size();
+    for (std::size_t i = 0; identical && i < a.color.size(); ++i)
+      if (a.color[i] != b.color[i]) identical = false;
+    s.check("GI multi-bounce: two giBounces=2 renders bit-identical", identical);
+  }
+
   return s.report();
 }

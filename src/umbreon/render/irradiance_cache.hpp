@@ -69,6 +69,7 @@ struct IrradianceCacheParams {
   Vec3 groundColor{1.0f, 1.0f, 1.0f};  // down-hemisphere env tint
   float envIntensity = 1.0f;           // environment (miss) fill scale
   int samples = 64;                    // hemisphere gather rays per record
+  int bounces = 1;                     // 1 = one-bounce; >1 = multi-bounce stages
   float maxDistance = 0.0f;            // gather tfar (> 0)
   float spacing = 0.0f;                // voxel seed world spacing (> 0)
   float accuracy = 0.15f;              // interpolation accuracy a
@@ -184,13 +185,24 @@ inline Vec3 environmentRadiance(const IrradianceCacheParams& p, const Vec3& wi) 
               e * p.ambLight.z * (p.groundColor.z + (p.skyColor.z - p.groundColor.z) * w)};
 }
 
-// One-bounce outgoing radiance of a gather-ray hit toward the record: the hit
-// surface's diffuse reflectance (mat.diffuse * pigment) times its direct
-// irradiance (sum of lit lights, optionally shadowed). Restricted to MESH hits
-// (the GI gate); a non-mesh hit (flat outline sphere/cylinder) is a pure occluder
-// and contributes zero, matching the AO/GI "mesh only" scope.
+// Forward declaration: the multi-bounce gather (below) reads the previous
+// bounce's cache through interpolateIrradiance, which is defined after this.
+inline bool interpolateIrradiance(const IrradianceCache& cache,
+                                  const IrradianceCacheParams& p, const Vec3& x,
+                                  const Vec3& nx, int componentX, Vec3& outE,
+                                  float* outOcclusion, float* outRadius);
+
+// Outgoing radiance of a gather-ray hit toward the record: the hit surface's
+// diffuse reflectance (mat.diffuse * pigment) times its incident irradiance.
+// In one-bounce (prevCache == null) the incident term is direct only (sum of lit
+// lights, optionally shadowed). In multi-bounce (prevCache != null) the previous
+// bounce's interpolated indirect irradiance at the hit point is added, so the hit
+// re-emits direct + already-bounced light. Restricted to MESH hits (the GI gate);
+// a non-mesh hit (flat outline sphere/cylinder) is a pure occluder and
+// contributes zero, matching the AO/GI "mesh only" scope.
 inline Vec3 oneBounceRadiance(const IrradianceCacheParams& p, const RTCRayHit& rh,
-                              const Vec3& O, const Vec3& wi) {
+                              const Vec3& O, const Vec3& wi,
+                              const IrradianceCache* prevCache) {
   const GeomRecord& rec = p.built->records[rh.hit.geomID];
   if (rec.kind != GeomKind::Mesh) return Vec3{0.0f, 0.0f, 0.0f};
 
@@ -227,6 +239,23 @@ inline Vec3 oneBounceRadiance(const IrradianceCacheParams& p, const RTCRayHit& r
     E.x += ndl * l.color.x * sh;
     E.y += ndl * l.color.y * sh;
     E.z += ndl * l.color.z * sh;
+  }
+  // Multi-bounce: add the previous bounce's incident indirect irradiance at y to
+  // its direct irradiance before reflecting. Only a genuinely cached value is
+  // added: when no record covers y, interpolate returns false and we add zero
+  // rather than its full-environment fallback. That fallback (designed to keep
+  // the *visible* image hole-free) assumes y is fully open to the sky, which
+  // over-injects ambient at occluded points -- exactly the cavity floors that
+  // lack records -- and would re-brighten the concavities multi-bounce is meant
+  // to deepen. Leaving the uncached indirect at zero is the conservative choice
+  // (under- not over-estimate) and keeps cavities from washing out. compY rejects
+  // cross-section leaks (same guard as the final interpolation).
+  if (prevCache) {
+    Vec3 Eind{0.0f, 0.0f, 0.0f};
+    const int compY = static_cast<int>(p.mesh->groupForTri(rh.hit.primID));
+    if (interpolateIrradiance(*prevCache, p, Py, Ny, compY, Eind, nullptr,
+                              nullptr))
+      E = E + Eind;
   }
   const float kd = mat.diffuse;
   return Vec3{kd * Cy.x * E.x, kd * Cy.y * E.y, kd * Cy.z * E.z};
@@ -318,10 +347,13 @@ inline void placeRecordsPerVertex(IrradianceCache& cache,
   }
 }
 
-// [C] Fill: gather one-bounce irradiance at each record in parallel. Each record
-// seeds its RNG only from its index, so the result is independent of TBB thread
-// count and bit-reproducible. Writes E_i, bent normal and harmonic-mean radius.
-inline void fillRecords(IrradianceCache& cache, const IrradianceCacheParams& p) {
+// [C] Fill: gather irradiance at each record in parallel. Each record seeds its
+// RNG only from its index, so the result is independent of TBB thread count and
+// bit-reproducible. Writes E_i, bent normal and harmonic-mean radius. prevCache
+// is null for the one-bounce stage; for later bounces it is the read-only
+// previous-bounce snapshot whose indirect is added at each gather hit.
+inline void fillRecords(IrradianceCache& cache, const IrradianceCacheParams& p,
+                        const IrradianceCache* prevCache) {
   const int N = p.samples;
   const float R = p.maxDistance;
   const float Rmin = 0.25f * p.spacing;
@@ -349,7 +381,7 @@ inline void fillRecords(IrradianceCache& cache, const IrradianceCacheParams& p) 
                 cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
             const RTCRayHit rh = intersectFull(p.scene, O, wi, eps, R);
             if (rh.hit.geomID != RTC_INVALID_GEOMETRY_ID) {
-              const Vec3 Ly = oneBounceRadiance(p, rh, O, wi);
+              const Vec3 Ly = oneBounceRadiance(p, rh, O, wi, prevCache);
               E = E + Ly;
               if (rh.ray.tfar > 0.0f) invDistSum += 1.0f / rh.ray.tfar;
               ++nHit;
@@ -494,9 +526,24 @@ inline IrradianceCache buildIrradianceCache(const IrradianceCacheParams& p, int 
     placeRecordsPerVertex(cache, p);
   else
     placeRecordsVoxel(cache, p, W, H, pos, nrm, group, geom);
-  fillRecords(cache, p);
+
+  // Bounce 1: one-bounce (direct + environment), no previous cache to read.
+  fillRecords(cache, p, nullptr);
   neighborClamp(cache, p.accuracy);
   cache.buildGrid(p.accuracy);
+
+  // Additional bounces (giBounces > 1): each stage re-gathers irradiance, adding
+  // the previous bounce's interpolated indirect at every gather hit. The previous
+  // cache is a read-only snapshot, so each stage stays per-record independent and
+  // bit-reproducible (the determinism contract). Placement and the geometry-only
+  // harmonic-mean radius are identical across bounces; only irradiance changes.
+  const int bounces = (p.bounces < 1) ? 1 : p.bounces;
+  for (int b = 2; b <= bounces; ++b) {
+    const IrradianceCache prev = cache;  // snapshot of bounce b-1 (records + grid)
+    fillRecords(cache, p, &prev);
+    neighborClamp(cache, p.accuracy);
+    cache.buildGrid(p.accuracy);
+  }
   return cache;
 }
 
