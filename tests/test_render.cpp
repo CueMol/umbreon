@@ -1515,5 +1515,59 @@ int main() {
             f.color[c + 0] > f.color[c + 2] + 0.01f);
   }
 
+  // GI cavity depth (the deep-well番人): a white floor enclosed by tall walls
+  // (deep well) lit top-down. With the auto-calibrated environment fill, an OPEN
+  // floor keeps the gi-off baseline brightness (GI does not wash it brighter)
+  // while the enclosed well floor is darkened by occlusion -- the depth cue. This
+  // locks the env calibration (open ~= baseline) and the cavity darkening
+  // magnitude together; a regression to a washing env or a phantom-lit bounce
+  // would break one or the other.
+  {
+    using umbreon::Vec3;
+    auto well = [](bool walls) {
+      umbreon::Mesh m;
+      auto quad = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 n) {
+        Vec3 v[6] = {a, b, c, a, c, d};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(v[i]); m.normals.push_back(n);
+          m.colors.push_back({1, 1, 1, 1});
+        }
+      };
+      quad({-1,-1,0},{1,-1,0},{1,1,0},{-1,1,0},{0,0,1});  // floor
+      if (walls) {
+        const float h = 3.0f;  // tall walls => deep well, floor center enclosed
+        quad({1,-1,0},{1,1,0},{1,1,h},{1,-1,h},{-1,0,0});
+        quad({-1,-1,0},{-1,1,h},{-1,1,0},{-1,-1,h},{1,0,0});
+        quad({-1,1,0},{1,1,0},{1,1,h},{-1,1,h},{0,-1,0});
+        quad({-1,-1,0},{-1,-1,h},{1,-1,h},{1,-1,0},{0,1,0});
+      }
+      m.material.ambient = 0.2f; m.material.diffuse = 0.8f;
+      return m;
+    };
+    auto centerR = [&](bool walls, bool gi) {
+      umbreon::Scene sc;
+      sc.mesh = well(walls);
+      sc.camera = makeOrthoCam();
+      umbreon::DistantLight l;
+      l.direction = {0, 0, -1}; l.color = {1, 1, 1}; l.intensity = 0.8f;
+      sc.lights.push_back(l);
+      sc.ambientColor = {1, 1, 1}; sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.gi = gi; o.giSamples = 256; o.giMaxDistance = 10.0f;
+      o.giRecordSpacing = 0.3f; o.giAccuracy = 0.3f;
+      return umbreon::render(sc, o).color[kCenterRgba + 0];
+    };
+    const float baseOpen = centerR(false, false);  // gi-off open floor
+    const float giOpen = centerR(false, true);      // gi-on open floor
+    const float giWell = centerR(true, true);       // gi-on enclosed well floor
+    s.check("GI depth: auto-calibrated env keeps open ~= gi-off baseline",
+            approx(giOpen, baseOpen, 0.05f));
+    s.check("GI depth: enclosed well floor darkened vs open (>=10%)",
+            giWell < giOpen * 0.9f);
+    s.check("GI depth: well floor stays above black (bounce/env fill present)",
+            giWell > 0.3f);
+  }
+
   return s.report();
 }

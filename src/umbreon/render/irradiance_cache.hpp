@@ -212,15 +212,18 @@ inline Vec3 oneBounceRadiance(const IrradianceCacheParams& p, const RTCRayHit& r
   const float eps = selfIntersectEps(Py, wi, rh.ray.tfar);
 
   // Direct irradiance at y (no albedo, no 1/pi): sum of lit lights' N.L * color,
-  // shadowed if requested. Diffuse reflectance mat.diffuse * Cy then multiplies.
+  // each shadow-tested. The bounce-source visibility is NOT optional: a wall deep
+  // in a cavity is in shadow, so it must bounce no light -- otherwise enclosed
+  // regions get filled by phantom-lit walls and never darken. (This is decoupled
+  // from the primary render's `shadows` flag: the GI gather is always physically
+  // shadow-correct even when the direct pass draws no hard shadows.) Diffuse
+  // reflectance mat.diffuse * Cy then multiplies.
   Vec3 E{0.0f, 0.0f, 0.0f};
   uint32_t s0 = hashU32(rh.hit.primID), s1 = hashU32(rh.hit.geomID + 0x9E3779B9u);
   for (const Light& l : *p.lights) {
     const float ndl = dot(Ny, l.L);
     if (ndl <= 0.0f) continue;
-    float sh = 1.0f;
-    if (p.shadows)
-      sh = computeShadow(p.scene, Py, Ng, Ny, eps, l, p.shadowSamples, s0, s1);
+    const float sh = computeShadow(p.scene, Py, Ng, Ny, eps, l, 1, s0, s1);
     E.x += ndl * l.color.x * sh;
     E.y += ndl * l.color.y * sh;
     E.z += ndl * l.color.z * sh;
@@ -359,10 +362,15 @@ inline void fillRecords(IrradianceCache& cache, const IrradianceCacheParams& p) 
           rec.irradiance = Vec3{E.x * invN, E.y * invN, E.z * invN};
           rec.occlusion = static_cast<float>(nHit) * invN;  // hit fraction
           rec.bentNormal = safeNormalize(bentAccum, rec.normal);
-          // Harmonic-mean occluder distance: near surfaces dominate, so a record
-          // in a tight concavity gets a small radius (dense influence) while an
-          // open record reaches far. Clamp away the zero/over-large extremes.
-          float Ri = (nHit > 0) ? static_cast<float>(nHit) / invDistSum : R;
+          // Harmonic-mean occluder distance (Ward / Jarosz Eq 3.8):
+          //   R_i = N / sum_k(1/d_k),  d_k = inf for a miss (1/d_k = 0).
+          // The NUMERATOR is the TOTAL sample count N, not the hit count -- a
+          // mostly-open record (few hits) then gets a LARGE radius (sparse
+          // influence in open space) and a crevice record (many near hits) a
+          // SMALL one (dense in corners), which is the whole point of the harmonic
+          // mean. Using nHit here instead collapsed that contrast. Clamp the
+          // zero/over-large extremes; neighbor clamping bounds it further.
+          float Ri = (invDistSum > 0.0f) ? static_cast<float>(N) / invDistSum : R;
           if (Ri < Rmin) Ri = Rmin;
           if (Ri > R) Ri = R;
           rec.radius = Ri;

@@ -357,13 +357,16 @@ struct RenderOptions {
   int giBounces = 1;            // 1 = one-bounce; >1 = multi-bounce (later step)
   float giMaxDistance = 0.0f;   // gather ray tfar; 0 => auto (scene diagonal)
   float giIntensity = 1.0f;     // indirect gain (physical 1.0; user knob, no 1/pi)
-  float giEnvIntensity = 0.5f;  // environment (sky/ground miss) fill scale; scales
-                                // ONLY the gather miss term (not the surface
-                                // bounce), so color bleeding stays full strength
-                                // while the ambient sky fill is tamed. 1.0 = full
-                                // scene-ambient radiance dome (over-bright on a
-                                // white background); 0.5 keeps open surfaces from
-                                // washing out the direct shading.
+  float giEnvIntensity = 1.0f;  // MULTIPLIER on the auto-calibrated environment
+                                // (sky/ground miss) fill. The base fill is set so
+                                // an OPEN surface's GI indirect matches the POV
+                                // ambient it replaces (env = mat.ambient/diffuse),
+                                // so 1.0 keeps open surfaces at the gi-off
+                                // brightness and only occluded recesses darken
+                                // (depth). >1 adds ambient fill (flatter), <1
+                                // deepens the occlusion contrast. Scales ONLY the
+                                // miss term; surface bounce / color bleeding stay
+                                // at full strength.
   float giAccuracy = 0.15f;     // interpolation accuracy a (max influence = a*R_i)
   float giRecordSpacing = 0.0f; // voxel seed world spacing; 0 => auto (diag*0.007)
   bool giGradients = false;     // gradient interpolation (later step; unused now)

@@ -38,7 +38,7 @@ struct Options {
   int giBounces = 1;            // 1 = one-bounce; >1 = multi-bounce (later step)
   float giMaxDistance = 0.0f;   // gather ray tfar; 0 => auto (scene diagonal)
   float giIntensity = 1.0f;     // indirect gain (1.0 physical; user knob)
-  float giEnvIntensity = 0.5f;  // environment (sky/ground) fill scale (bounce stays full)
+  float giEnvIntensity = 1.0f;  // environment (sky/ground) fill scale (bounce stays full)
   float giAccuracy = 0.15f;     // interpolation accuracy a
   float giRecordSpacing = 0.0f; // voxel seed spacing; 0 => auto
   float giNormalReject = 0.85f; // min dot(n_x, n_rec) to accept a record
