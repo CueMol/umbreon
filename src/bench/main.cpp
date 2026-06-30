@@ -252,7 +252,13 @@ int main(int argc, char** argv) {
       for (umbreon::DistantLight& L : scene.lights) L.intensity *= opt.povGain;
       scene.ambientIntensity = opt.povGain;
 
-      scene.assumedGamma = ps.assumedGamma;
+      // Always display-encode with assumed_gamma 2.2, regardless of what the
+      // .pov declares (CueMol exports assumed_gamma 1.0 for the radiosity path
+      // and 2.2 elsewhere; the POV-Ray radiosity reference is tone-matched at
+      // 2.2). Overriding here keeps umbreon's output tone consistent across
+      // scenes instead of swinging brightness with the file's gamma tag.
+      scene.assumedGamma = 2.2f;
+      (void)ps.assumedGamma;
 
       const std::string camDesc =
           scene.camera.orthographic
