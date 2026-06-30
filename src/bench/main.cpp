@@ -95,6 +95,26 @@ int main(int argc, char** argv) {
       const int W = opt.widthSet ? opt.width : 300;
       const int H = opt.heightSet ? opt.height : 300;
 
+      // GI energy balance: mirror the .pov's #ifdef(_radiosity) branch. The
+      // umbreon default lighting puts ALL energy in the direct lights
+      // (_amb_frac=0), so GI -- which only replaces the constant ambient with an
+      // occlusion-aware gather -- has nothing to occlude and is nearly a no-op
+      // (pixel-identical to the flat render). When GI is on, adopt the POV
+      // radiosity balance: move half the energy into the ambient the GI gathers
+      // and dim the direct lights to match (POV _radiosity: _light_inten=1.6,
+      // _amb_frac=0.5, _flash_frac=0.5). Only the non-rad DEFAULTS are bumped, so
+      // an explicit --declare still wins.
+      if (opt.gi) {
+        auto giDefault = [&](const char* k, double nonRad, double rad) {
+          auto it = opt.declares.find(k);
+          if (it == opt.declares.end() || it->second == nonRad)
+            opt.declares[k] = rad;
+        };
+        giDefault("_light_inten", 1.3, 1.6);
+        giDefault("_amb_frac", 0.0, 0.5);
+        giDefault("_flash_frac", 0.6, 0.5);
+      }
+
       umbreon::PovParseOptions popt;
       popt.imageWidth = W;
       popt.imageHeight = H;
@@ -213,7 +233,21 @@ int main(int argc, char** argv) {
       scene.background = ps.background;
       scene.fog = ps.fog;
 
-      scene.ambientColor = umbreon::Vec3{1.0f, 1.0f, 1.0f};
+      // Ambient light color/energy. Without GI this is the neutral white the
+      // material finish-ambient term multiplies. With GI it carries the ambient
+      // ENERGY the gather occludes: _light_inten * _amb_frac (the POV radiosity
+      // dome's emission), white, scaled by the same exposure gain as the direct
+      // lights so the direct/ambient split stays balanced. The GI environment
+      // radiance is this color * --gi-env-intensity; the constant-ambient term it
+      // would otherwise feed is dropped on the GI path (see hit_shader).
+      if (opt.gi) {
+        const double ambE =
+            opt.declares["_light_inten"] * opt.declares["_amb_frac"];
+        const float a = static_cast<float>(ambE) * opt.povGain;
+        scene.ambientColor = umbreon::Vec3{a, a, a};
+      } else {
+        scene.ambientColor = umbreon::Vec3{1.0f, 1.0f, 1.0f};
+      }
 
       for (umbreon::DistantLight& L : scene.lights) L.intensity *= opt.povGain;
       scene.ambientIntensity = opt.povGain;

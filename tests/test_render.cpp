@@ -1561,11 +1561,15 @@ int main() {
     const float baseOpen = centerR(false, false);  // gi-off open floor
     const float giOpen = centerR(false, true);      // gi-on open floor
     const float giWell = centerR(true, true);       // gi-on enclosed well floor
-    s.check("GI depth: auto-calibrated env keeps open ~= gi-off baseline",
-            approx(giOpen, baseOpen, 0.05f));
-    s.check("GI depth: enclosed well floor darkened vs open (>=10%)",
-            giWell < giOpen * 0.9f);
-    s.check("GI depth: well floor stays above black (bounce/env fill present)",
+    // The GI environment is a real occlusion-aware ambient light (env =
+    // ambientColor * gi-env-intensity), so an open surface gathers the full
+    // ambient (brighter than the flat gi-off material-ambient) while the enclosed
+    // well floor, cut off from that ambient, darkens -- the depth cue.
+    s.check("GI depth: env adds occlusion-aware ambient (open > gi-off flat)",
+            giOpen > baseOpen);
+    s.check("GI depth: enclosed well floor darkened vs open (>=15%)",
+            giWell < giOpen * 0.85f);
+    s.check("GI depth: well floor stays above black (fill present)",
             giWell > 0.3f);
   }
 

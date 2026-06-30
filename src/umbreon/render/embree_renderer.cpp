@@ -447,21 +447,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     gp.skyColor = Vec3{opt.aoSkyColor[0], opt.aoSkyColor[1], opt.aoSkyColor[2]};
     gp.groundColor =
         Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1], opt.aoGroundColor[2]};
-    // Auto-calibrate the environment fill so an OPEN surface's GI indirect
-    // matches the POV ambient term it replaces: gi-off open = mat.ambient*C*
-    // ambLight, gi-on open ~= mat.diffuse*C*(env*ambLight), so env =
-    // ambient/diffuse keeps open surfaces at their original brightness and lets
-    // ONLY occluded recesses darken (depth), instead of a fixed env washing the
-    // whole surface brighter. giEnvIntensity (default 1.0) multiplies on top.
-    {
-      float sumA = 0.0f, sumD = 0.0f;
-      if (!m.materials.empty()) {
-        for (const Material& mt : m.materials) { sumA += mt.ambient; sumD += mt.diffuse; }
-      } else { sumA = m.material.ambient; sumD = m.material.diffuse; }
-      float ratio = (sumD > 1.0e-4f) ? sumA / sumD : 0.25f;
-      if (ratio > 1.0f) ratio = 1.0f;  // ambient should not exceed diffuse fill
-      gp.envIntensity = ratio * opt.giEnvIntensity;
-    }
+    // Environment (sky/ground miss) radiance = scene.ambientColor (gp.ambLight)
+    // times the user gi-env-intensity multiplier. scene.ambientColor IS the
+    // ambient light energy the GI gathers occlusion-aware; GI is meaningful only
+    // when that ambient carries real energy, so the harness moves a fraction of
+    // the lighting energy into it when GI is on (the POV radiosity _amb_frac
+    // balance) -- otherwise an all-direct lighting starves GI to a near no-op.
+    gp.envIntensity = opt.giEnvIntensity;
     gp.samples = std::max(1, opt.giSamples);
     // Auto gather distance: a fraction of the scene diagonal. Full-diagonal
     // gather lets distant surfaces fill the hemisphere uniformly, washing out the
