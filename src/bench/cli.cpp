@@ -264,6 +264,32 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--gi-outlier-reject");
       if (o.ok && !parseBool(v, o.giOutlierReject))
         fail("--gi-outlier-reject expects on/off");
+    } else if (a == "--denoiser") {
+      std::string v = value("--denoiser");
+      if (v == "none")
+        o.denoiser = 0;
+      else if (v == "atrous")
+        o.denoiser = 1;
+      else if (v == "oidn")
+        o.denoiser = 2;
+      else
+        fail("--denoiser expects none/atrous/oidn");
+    } else if (a == "--denoise-iters") {
+      o.denoiseIters = std::atoi(value("--denoise-iters").c_str());
+    } else if (a == "--denoise-sigma-z") {
+      o.denoiseSigmaZ = static_cast<float>(std::atof(value("--denoise-sigma-z").c_str()));
+    } else if (a == "--denoise-sigma-n") {
+      o.denoiseSigmaN = static_cast<float>(std::atof(value("--denoise-sigma-n").c_str()));
+    } else if (a == "--denoise-sigma-l") {
+      o.denoiseSigmaL = static_cast<float>(std::atof(value("--denoise-sigma-l").c_str()));
+    } else if (a == "--denoise-demodulate") {
+      std::string v = value("--denoise-demodulate");
+      if (o.ok && !parseBool(v, o.denoiseDemodulateAlbedo))
+        fail("--denoise-demodulate expects on/off");
+    } else if (a == "--oidn-clean-aux") {
+      std::string v = value("--oidn-clean-aux");
+      if (o.ok && !parseBool(v, o.oidnCleanAux))
+        fail("--oidn-clean-aux expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -581,6 +607,13 @@ void printUsage(const char* prog) {
       "  --gi-bounces <int>       indirect bounces (1 = one-bounce)     [1]\n"
       "  --gi-gradients <on|off>  Ward-Heckbert gradient interpolation [off]\n"
       "  --gi-outlier-reject <on|off> lift isolated dark cache records  [on]\n"
+      "  --denoiser <none|atrous|oidn> GI denoise backend  [atrous when --gi]\n"
+      "  --denoise-iters <int>    a-trous wavelet iterations            [5]\n"
+      "  --denoise-sigma-z <f>    depth edge-stop sigma                 [1]\n"
+      "  --denoise-sigma-n <f>    normal edge-stop exponent           [128]\n"
+      "  --denoise-sigma-l <f>    luminance edge-stop sigma             [4]\n"
+      "  --denoise-demodulate <on|off> denoise color/albedo            [on]\n"
+      "  --oidn-clean-aux <on|off> OIDN treats aux as noise-free        [on]\n"
       "  --gi-max-dist <world>    gather ray max distance (0 = auto)    [0]\n"
       "  --gi-intensity <float>   indirect gain (1.0 = physical)      [1.0]\n"
       "  --gi-env-intensity <f>   ambient fill mult (auto-calibrated; <1 deeper) [1.0]\n"

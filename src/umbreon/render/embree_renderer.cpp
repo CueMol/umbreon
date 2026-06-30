@@ -284,8 +284,14 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // contact/shape split, bent normal, mean occluder distance) ride aoWriteAov.
     if (opt.strokeEdges.enable || opt.aoWriteAov)
       res.normal.assign(npix * 3, 0.0f);
+    // Albedo is the denoiser's demodulation guide as well as an AO AOV, so it is
+    // allocated whenever the GI denoise pass will demodulate by it (not only on an
+    // explicit AOV dump).
+    const bool wantAlbedoGuide =
+        opt.aoWriteAov ||
+        (opt.gi && opt.denoiser != 0 && opt.denoiseDemodulateAlbedo);
+    if (wantAlbedoGuide) res.albedo.assign(npix * 3, 0.0f);
     if (opt.aoWriteAov) {
-      res.albedo.assign(npix * 3, 0.0f);
       res.bentNormal.assign(npix * 3, 0.0f);
       res.contactAo.assign(npix, 1.0f);
       res.shapeAo.assign(npix, 1.0f);
@@ -401,11 +407,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         giRefl[pix * 3 + 1] = pr.giReflectance.y;
         giRefl[pix * 3 + 2] = pr.giReflectance.z;
       }
-      // AO AOVs: albedo + contact/shape + bent normal + mean occluder distance.
-      if (opt.aoWriteAov) {
+      // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
+      // buffer was allocated above (wantAlbedoGuide).
+      if (!res.albedo.empty()) {
         res.albedo[pix * 3 + 0] = pr.albedo.x;
         res.albedo[pix * 3 + 1] = pr.albedo.y;
         res.albedo[pix * 3 + 2] = pr.albedo.z;
+      }
+      // AO AOVs: contact/shape + bent normal + mean occluder distance.
+      if (opt.aoWriteAov) {
         res.bentNormal[pix * 3 + 0] = pr.bentNormal.x;
         res.bentNormal[pix * 3 + 1] = pr.bentNormal.y;
         res.bentNormal[pix * 3 + 2] = pr.bentNormal.z;

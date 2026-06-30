@@ -467,6 +467,15 @@ int main(int argc, char** argv) {
     ropt.giSeedPerVertex = opt.giSeedPerVertex;
     ropt.giGradients = opt.giGradients;
     ropt.giOutlierReject = opt.giOutlierReject;
+    // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
+    // None otherwise. An explicit --denoiser (0/1/2) is honored as-is.
+    ropt.denoiser = opt.denoiser >= 0 ? opt.denoiser : (ropt.gi ? 1 : 0);
+    ropt.denoiseIters = opt.denoiseIters;
+    ropt.denoiseSigmaZ = opt.denoiseSigmaZ;
+    ropt.denoiseSigmaN = opt.denoiseSigmaN;
+    ropt.denoiseSigmaL = opt.denoiseSigmaL;
+    ropt.denoiseDemodulateAlbedo = opt.denoiseDemodulateAlbedo;
+    ropt.oidnCleanAux = opt.oidnCleanAux;
     if (ropt.gi)
       std::printf(
           "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "

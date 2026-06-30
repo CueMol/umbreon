@@ -47,6 +47,18 @@ struct Options {
   bool giGradients = false;     // Ward-Heckbert gradient interpolation
   bool giOutlierReject = true;  // lift isolated fully-occluded dark records
 
+  // --- denoise ---
+  // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI
+  // renders stay byte-identical and GI renders denoise by default). An explicit
+  // --denoiser sets 0/1/2 and overrides the GI-conditional default.
+  int denoiser = -1;            // -1=unset, 0=None, 1=AtrousBilateral, 2=OIDN
+  int denoiseIters = 5;         // a-trous iterations
+  float denoiseSigmaZ = 1.0f;   // depth/position edge-stop sigma
+  float denoiseSigmaN = 128.0f; // normal edge-stop exponent
+  float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
+  bool denoiseDemodulateAlbedo = true;  // denoise color/albedo then re-multiply
+  bool oidnCleanAux = true;     // OIDN: treat primary-hit aux as noise-free
+
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults
   // matching the reference render and overridable with --declare.

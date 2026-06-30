@@ -6,11 +6,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 #include "test_util.hpp"
 #include "umbreon.hpp"
 
 #include "render/irradiance_cache.hpp"  // detail::rejectDarkOutliers unit test
+#include "render/denoise.hpp"           // denoiseAtrous unit test
 
 namespace {
 
@@ -1748,6 +1751,103 @@ int main() {
     umbreon::detail::rejectDarkOutliers(cav, pp);
     s.check("GI outlier reject: clustered dark cavity stays dark",
             lum(cav.records[mid].irradiance) < 0.05f);
+  }
+
+  // Edge-aware a-trous denoise (denoiseAtrous). A frame split into a dark-left /
+  // bright-right surface, each flat half carrying deterministic per-pixel noise,
+  // with a NORMAL discontinuity on the seam. The pass must (1) reduce the noise
+  // variance inside a flat half, (2) keep the left/right luminance step (the
+  // normal edge-stop rejects cross-seam taps), and (3) leave background pixels
+  // (no normal) byte-identical. A top strip is background. Position guide is
+  // omitted so only the normal/luminance edge-stops drive the test.
+  {
+    const int W = 24, H = 24;
+    const std::size_t N = static_cast<std::size_t>(W) * H;
+    umbreon::FrameResult f;
+    f.width = W;
+    f.height = H;
+    f.color.assign(N * 4, 0.0f);
+    f.normal.assign(N * 3, 0.0f);
+    const int bgRows = 4;            // top strip: background (zero normal)
+    const float baseL = 0.3f, baseR = 0.8f;
+    const float amp = 0.08f;        // deterministic noise amplitude
+    auto noiseAt = [](std::size_t i) {
+      // Deterministic LCG-style hash in [-0.5, 0.5]; no <random>, reproducible.
+      std::uint32_t h = static_cast<std::uint32_t>(i) * 1103515245u + 12345u;
+      return (static_cast<float>((h >> 16) & 0x7fffu) / 32768.0f) - 0.5f;
+    };
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t p = static_cast<std::size_t>(y) * W + x;
+        if (y < bgRows) {
+          // Background: zero normal, fixed sentinel color (must stay untouched).
+          const float bg = 0.123f;
+          f.color[p * 4 + 0] = f.color[p * 4 + 1] = f.color[p * 4 + 2] = bg;
+          f.color[p * 4 + 3] = 1.0f;
+          continue;
+        }
+        const bool left = x < W / 2;
+        f.normal[p * 3 + 0] = left ? 0.0f : 1.0f;  // normal discontinuity at seam
+        f.normal[p * 3 + 2] = left ? 1.0f : 0.0f;
+        const float base = left ? baseL : baseR;
+        const float v = base + amp * noiseAt(p);
+        f.color[p * 4 + 0] = f.color[p * 4 + 1] = f.color[p * 4 + 2] = v;
+        f.color[p * 4 + 3] = 1.0f;
+      }
+    const std::vector<float> before = f.color;
+
+    auto lumStats = [&](const std::vector<float>& c, int x0, int x1) {
+      // mean/variance of luminance over a flat interior window, rows [bgRows+2,H-2).
+      double s1 = 0.0, s2 = 0.0;
+      int n = 0;
+      for (int y = bgRows + 2; y < H - 2; ++y)
+        for (int x = x0; x < x1; ++x) {
+          const std::size_t p = static_cast<std::size_t>(y) * W + x;
+          const float l = 0.2126f * c[p * 4 + 0] + 0.7152f * c[p * 4 + 1] +
+                          0.0722f * c[p * 4 + 2];
+          s1 += l;
+          s2 += l * l;
+          ++n;
+        }
+      const double mean = s1 / n;
+      return std::pair<double, double>{mean, s2 / n - mean * mean};
+    };
+    const auto lBefore = lumStats(before, 2, 9);   // left flat interior
+    const auto rBefore = lumStats(before, 15, 22);  // right flat interior
+
+    umbreon::RenderOptions o;
+    o.denoiseIters = 5;
+    o.denoiseDemodulateAlbedo = false;  // no albedo buffer; denoise raw color
+    umbreon::denoiseAtrous(f, o);
+
+    const auto lAfter = lumStats(f.color, 2, 9);
+    const auto rAfter = lumStats(f.color, 15, 22);
+
+    // (1) Noise variance falls substantially inside a flat half.
+    s.check("denoise atrous: left-half variance reduced",
+            lAfter.second < 0.4 * lBefore.second && rAfter.second < 0.4 * rBefore.second);
+    // (2) The left/right luminance step survives (normal edge-stop, no smearing).
+    const double gapBefore = rBefore.first - lBefore.first;
+    const double gapAfter = rAfter.first - lAfter.first;
+    s.check("denoise atrous: left/right luminance edge preserved",
+            gapAfter > 0.9 * gapBefore);
+    // (3) Background (zero normal) pixels are byte-identical.
+    bool bgSame = true;
+    for (int x = 0; x < W; ++x) {
+      const std::size_t p = static_cast<std::size_t>(0) * W + x;
+      for (int c = 0; c < 3; ++c)
+        if (f.color[p * 4 + c] != before[p * 4 + c]) bgSame = false;
+    }
+    s.check("denoise atrous: background pixels untouched", bgSame);
+
+    // (4) iters=0 is a strict no-op (byte-identical), guarding the early-out.
+    umbreon::FrameResult f0 = f;
+    const std::vector<float> pre0 = f0.color;
+    umbreon::RenderOptions z = o;
+    z.denoiseIters = 0;
+    umbreon::denoiseAtrous(f0, z);
+    bool noop = f0.color == pre0;
+    s.check("denoise atrous: iters=0 is a byte-identical no-op", noop);
   }
 
   return s.report();

@@ -374,6 +374,21 @@ struct RenderOptions {
   bool giComponentReject = true;// reject records of a different component (leak)
   bool giSeedPerVertex = false; // true => seed from mesh vertices (view-independent)
 
+  // --- denoise (post-pass on the linear HDR color, after downsample / before
+  // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised
+  // render. AtrousBilateral (1) is the built-in, zero-dependency edge-avoiding
+  // a-trous (Dammertz 2010 + SVGF edge-stops); OIDN (2) is an optional backend
+  // (later step). The edge-stop guides are the GI/AO G-buffer (position, normal)
+  // plus the color's own luminance, so the smoothing follows the cache's residual
+  // noise without crossing depth/normal/illumination edges.
+  int denoiser = 0;             // DenoiserBackend: 0=None, 1=AtrousBilateral, 2=OIDN
+  int denoiseIters = 5;         // a-trous wavelet iterations (2^i dilation)
+  float denoiseSigmaZ = 1.0f;   // depth/position edge-stop sigma
+  float denoiseSigmaN = 128.0f; // normal edge-stop exponent
+  float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
+  bool denoiseDemodulateAlbedo = true;  // denoise color/albedo, then re-multiply
+  bool oidnCleanAux = true;     // OIDN: primary-hit albedo/normal are noise-free
+
   // --- shadows (per-light visibility; never applied to outline primitives) ---
   bool shadows = false;        // cast shadows from the lights; false = off
   int shadowSamples = 1;       // shadow rays per light (>1 = soft area light)

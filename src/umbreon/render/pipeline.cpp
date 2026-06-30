@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <stdexcept>
 
 #include "edges/object_space_edges.hpp"
 #include "edges/stroke_edges.hpp"
 #include "postprocess/fog.hpp"
 #include "postprocess/image_ops.hpp"
+#include "render/denoise.hpp"
 #include "render/embree_renderer.hpp"
 
 namespace umbreon {
@@ -188,6 +190,24 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
     }
     frame.width = finalW;
     frame.height = finalH;
+  }
+
+  // Edge-aware denoise on the linear HDR color, at final resolution, before the
+  // gamma encode (OIDN/SVGF operate in linear HDR; the supersample box-average is
+  // the primary denoise, this is the finishing pass). No-op when denoiser == None,
+  // keeping the default render byte-identical. OIDN falls back to the built-in
+  // a-trous when the library was not compiled in.
+  if (opt.denoiser == static_cast<int>(DenoiserBackend::OIDN)) {
+#ifdef UMBREON_HAVE_OIDN
+    denoiseOidn(frame, opt);
+#else
+    std::fprintf(stderr,
+                 "warning: OIDN denoiser backend not built (UMBREON_WITH_OIDN "
+                 "off); falling back to the built-in a-trous denoiser\n");
+    denoiseAtrous(frame, opt);
+#endif
+  } else if (opt.denoiser != static_cast<int>(DenoiserBackend::None)) {
+    denoiseAtrous(frame, opt);
   }
 
   applyAssumedGamma(frame, scene.assumedGamma);

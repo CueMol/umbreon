@@ -141,18 +141,21 @@ tasks:
     cmds:
       - |
         set -e
+        OIDN_FLAG=-DUMBREON_WITH_OIDN=OFF
         case "{{OS}}/{{ARCH}}" in
           linux/amd64|darwin/amd64|darwin/arm64|windows/amd64)
             task deps:fetch
             # Component versions come from the bundle itself, not hardcoded vars.
             . "{{.DEPLIBS_ENV}}"
-            PREFIX="{{.DEPLIBS_DIR}}/target/embree-${EMBREE_VER};{{.DEPLIBS_DIR}}/target/tbb-${TBB_VER}" ;;
+            PREFIX="{{.DEPLIBS_DIR}}/target/embree-${EMBREE_VER};{{.DEPLIBS_DIR}}/target/tbb-${TBB_VER};{{.DEPLIBS_DIR}}/target/oidn-${OIDN_VER}"
+            # The bundle ships OIDN; enable the optional backend against it.
+            OIDN_FLAG=-DUMBREON_WITH_OIDN=ON ;;
           *)
             task deps:build
             PREFIX="{{.DEPS_PREFIX}}" ;;
         esac
         cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PREFIX" \
-          -Uembree_DIR -UTBB_DIR
+          "$OIDN_FLAG" -Uembree_DIR -UTBB_DIR -UOpenImageDenoise_DIR
 
   build:static:
     desc: Build against static Embree/TBB from CueMol deplibs (alias of `build`; used by CI)
