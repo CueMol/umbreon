@@ -44,6 +44,7 @@ struct Options {
   float giNormalReject = 0.85f; // min dot(n_x, n_rec) to accept a record
   bool giComponentReject = true;// reject cross-section records (leak guard)
   bool giSeedPerVertex = false; // seed from mesh vertices (view-independent)
+  bool giGradients = false;     // Ward-Heckbert gradient interpolation
 
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults

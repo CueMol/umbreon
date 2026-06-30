@@ -50,6 +50,12 @@ struct IrradianceRecord {
   Vec3 normal;         // shading normal at the record
   Vec3 irradiance;     // RGB indirect irradiance E_i
   Vec3 bentNormal;     // average unoccluded direction (env lookup; debug)
+  // Ward-Heckbert irradiance gradients (zero unless giGradients). Channel-indexed
+  // spatial vectors: gradT[c]/gradR[c] is the translational/rotational gradient of
+  // irradiance channel c, both lying in the record's tangent plane. Interpolation
+  // adds dot(x - x_i, gradT[c]) + dot(n_i x n_x, gradR[c]) to E_i.c.
+  Vec3 gradT[3]{};
+  Vec3 gradR[3]{};
   float radius = 0.0f; // effective radius R_i (harmonic mean, clamped)
   float occlusion = 0.0f;  // cosine-weighted gather hit fraction (AO-like; debug)
   uint32_t geomID = 0xFFFFFFFFu;
@@ -70,6 +76,7 @@ struct IrradianceCacheParams {
   float envIntensity = 1.0f;           // environment (miss) fill scale
   int samples = 64;                    // hemisphere gather rays per record
   int bounces = 1;                     // 1 = one-bounce; >1 = multi-bounce stages
+  bool gradients = false;              // Ward-Heckbert gradient fill + interpolation
   float maxDistance = 0.0f;            // gather tfar (> 0)
   float spacing = 0.0f;                // voxel seed world spacing (> 0)
   float accuracy = 0.15f;              // interpolation accuracy a
@@ -347,6 +354,176 @@ inline void placeRecordsPerVertex(IrradianceCache& cache,
   }
 }
 
+// Stratified-hemisphere gather with Ward-Heckbert irradiance gradients (Ward &
+// Heckbert 1992, "Irradiance Gradients", Eq 3/4). The hemisphere is split into an
+// M (polar) x Naz (azimuthal) cosine-weighted grid (N ~= pi*M, M*N ~= samples) so
+// neighboring cells share a wall whose radiance difference and nearest-occluder
+// distance give the gradient analytically -- the same rays that estimate E also
+// estimate how E changes with translation and rotation, which is what lets the
+// interpolation vary smoothly between records instead of stepping per voxel.
+//
+// All gradient magnitudes are divided by pi: Ward's E = (pi/MN) sum L, while this
+// cache stores E = mean(L) (no 1/pi), so every derivative of E scales by 1/pi too.
+// Lc/rc are caller-owned scratch buffers (per-cell radiance and hit distance),
+// reused across records to avoid per-record allocation.
+inline void fillRecordStratified(IrradianceRecord& rec,
+                                 const IrradianceCacheParams& p, uint32_t ri,
+                                 std::vector<Vec3>& Lc, std::vector<float>& rc,
+                                 const IrradianceCache* prevCache) {
+  const float R = p.maxDistance;
+  const float Rmin = 0.25f * p.spacing;
+  // Cap the gradient grid at ~256 cells and average several rays per cell when
+  // more samples are available. A single ray per cell makes each cell radiance
+  // (and hence the finite-difference gradient between cells) very noisy on high-
+  // frequency occlusion geometry, which the linear extrapolation then turns into
+  // per-record speckle. Averaging spp rays per cell denoises the per-cell
+  // radiance so the gradient is stable, while the total ray count still ~= samples
+  // (so E_i quality is unchanged). Naz ~= pi*M (Ward's near-square cell aspect).
+  const int cellsTarget = std::min(p.samples, 256);
+  int M = static_cast<int>(std::lround(std::sqrt(cellsTarget / 3.14159265f)));
+  if (M < 1) M = 1;
+  int Naz = static_cast<int>(std::lround(static_cast<float>(cellsTarget) / M));
+  if (Naz < 1) Naz = 1;
+  const int total = M * Naz;
+  const int spp = std::max(1, p.samples / total);
+  Lc.assign(total, Vec3{0.0f, 0.0f, 0.0f});
+  rc.assign(total, R);
+
+  const Frame f = frameFromNormal(rec.normal);
+  const float eps = selfIntersectEps(rec.position, rec.normal, R);
+  const Vec3 O = rec.position + rec.normal * eps;
+  const uint32_t seed = hashU32(ri + 1u);
+
+  Vec3 E{0.0f, 0.0f, 0.0f};
+  Vec3 bentAccum{0.0f, 0.0f, 0.0f};
+  float invDistSum = 0.0f;
+  int nHit = 0;
+  const float invSpp = 1.0f / static_cast<float>(spp);
+  for (int j = 0; j < M; ++j) {
+    for (int k = 0; k < Naz; ++k) {
+      const int idx = j * Naz + k;
+      Vec3 Lsum{0.0f, 0.0f, 0.0f};
+      float rClose = R;  // nearest occluder in the cell (drives the 1/Min(r) term)
+      for (int sp = 0; sp < spp; ++sp) {
+        uint32_t s0 = seed;
+        uint32_t s1 = static_cast<uint32_t>(idx * spp + sp);
+        tea2(s0, s1);
+        // Stratified cosine sample: u2 = sin^2(theta) over the polar band
+        // [j,j+1)/M, u1 = phi over the sector [k,k+1)/Naz, jittered within the
+        // cell. Reusing cosineSampleHemisphere keeps the same cosine distribution.
+        const float u2 = (j + u32ToUnorm(s0)) / static_cast<float>(M);
+        const float u1 = (k + u32ToUnorm(s1)) / static_cast<float>(Naz);
+        const Vec3 wi = cosineSampleHemisphere(u1, u2, f);
+        const RTCRayHit rh = intersectFull(p.scene, O, wi, eps, R);
+        if (rh.hit.geomID != RTC_INVALID_GEOMETRY_ID) {
+          Lsum = Lsum + oneBounceRadiance(p, rh, O, wi, prevCache);
+          if (rh.ray.tfar > 0.0f) {
+            invDistSum += 1.0f / rh.ray.tfar;
+            rClose = std::fmin(rClose, rh.ray.tfar);
+          }
+          ++nHit;
+        } else {
+          Lsum = Lsum + environmentRadiance(p, wi);
+          bentAccum = bentAccum + wi;
+        }
+      }
+      Lc[idx] = Vec3{Lsum.x * invSpp, Lsum.y * invSpp, Lsum.z * invSpp};
+      rc[idx] = rClose;  // background stays at R (1/r small => no gradient)
+      E = E + Lc[idx];
+    }
+  }
+  const float invT = 1.0f / static_cast<float>(total);
+  const int totalRays = total * spp;
+  rec.irradiance = Vec3{E.x * invT, E.y * invT, E.z * invT};
+  rec.occlusion = static_cast<float>(nHit) / static_cast<float>(totalRays);
+  rec.bentNormal = safeNormalize(bentAccum, rec.normal);
+  float Ri = (invDistSum > 0.0f) ? static_cast<float>(totalRays) / invDistSum : R;
+  if (Ri < Rmin) Ri = Rmin;
+  if (Ri > R) Ri = R;
+  rec.radius = Ri;
+
+  // Tangent-plane direction at azimuth phi: cos(phi)*t + sin(phi)*b.
+  auto planeDir = [&](float phi) {
+    return f.t * std::cos(phi) + f.b * std::sin(phi);
+  };
+  const float twoPi = 6.2831853072f;
+  const float invPi = 1.0f / 3.14159265f;
+  Vec3 gR[3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+  Vec3 gT[3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+
+  for (int k = 0; k < Naz; ++k) {
+    const float phiCenter = twoPi * (k + 0.5f) / Naz;  // cell-center azimuth
+    const float phiWall = twoPi * k / Naz;             // boundary k|k-1
+    const Vec3 uHat = planeDir(phiCenter);             // radial (phi_k)
+    const Vec3 vHatRot = planeDir(phiCenter + 1.5707963f);  // phi_k + pi/2
+    const Vec3 vHatWall = planeDir(phiWall + 1.5707963f);   // phi_{k-} + pi/2
+    const int km1 = (k + Naz - 1) % Naz;               // azimuthal wrap
+
+    // Rotational gradient (Eq 3): sum_j -tan(theta_j) * L_{j,k}, steered by vHat.
+    float rotSum[3] = {0, 0, 0};
+    // Translational polar term (Eq 4, first sum, j=1..M-1), steered by uHat.
+    float polR[3] = {0, 0, 0};
+    // Translational azimuthal term (Eq 4, second sum, j=0..M-1), steered by vHatWall.
+    float aziR[3] = {0, 0, 0};
+    for (int j = 0; j < M; ++j) {
+      const int idx = j * Naz + k;
+      const float sin2c = (j + 0.5f) / M;  // sin^2(theta) at cell center
+      const float sinc = std::sqrt(sin2c);
+      const float cosc = std::sqrt(std::fmax(0.0f, 1.0f - sin2c));
+      const float tanc = (cosc > 1.0e-6f) ? (sinc / cosc) : 0.0f;
+      rotSum[0] += -tanc * Lc[idx].x;
+      rotSum[1] += -tanc * Lc[idx].y;
+      rotSum[2] += -tanc * Lc[idx].z;
+
+      if (j >= 1) {
+        const int idxm = (j - 1) * Naz + k;
+        const float sinLo = std::sqrt(static_cast<float>(j) / M);  // sin(theta_{j-})
+        const float cos2Lo = 1.0f - static_cast<float>(j) / M;     // cos^2(theta_{j-})
+        const float rmin = std::fmax(std::fmin(rc[idx], rc[idxm]), 1.0e-6f);
+        const float coef = (twoPi / Naz) * (sinLo * cos2Lo) / rmin;
+        polR[0] += coef * (Lc[idx].x - Lc[idxm].x);
+        polR[1] += coef * (Lc[idx].y - Lc[idxm].y);
+        polR[2] += coef * (Lc[idx].z - Lc[idxm].z);
+      }
+      const int idxk = j * Naz + km1;
+      const float sinHi = std::sqrt(static_cast<float>(j + 1) / M);  // sin(theta_{j+})
+      const float sinLo2 = std::sqrt(static_cast<float>(j) / M);     // sin(theta_{j-})
+      const float rmin2 = std::fmax(std::fmin(rc[idx], rc[idxk]), 1.0e-6f);
+      const float coef2 = (sinHi - sinLo2) / rmin2;
+      aziR[0] += coef2 * (Lc[idx].x - Lc[idxk].x);
+      aziR[1] += coef2 * (Lc[idx].y - Lc[idxk].y);
+      aziR[2] += coef2 * (Lc[idx].z - Lc[idxk].z);
+    }
+    for (int c = 0; c < 3; ++c) {
+      gR[c] = gR[c] + vHatRot * rotSum[c];
+      gT[c] = gT[c] + uHat * polR[c] + vHatWall * aziR[c];
+    }
+  }
+  // Ward prefactors converted to this cache's no-1/pi irradiance convention
+  // (E_umbreon = E_Ward/pi): rotational Eq 3 carries pi/(MN), so /pi leaves
+  // 1/(MN) = 1/total; translational Eq 4 has no MN prefactor (only the explicit
+  // per-term coefficients already accumulated), so it just gets the 1/pi.
+  const float rotScale = 1.0f / static_cast<float>(total);
+  // Clamp each gradient to the split-sphere upper bound (Jarosz Eq 3.12-3.14):
+  // a translation by dx changes E by at most (4/pi)(E/R)*dx, and a rotation by
+  // dphi by at most E*sin(dphi). The analytic gradient can far exceed this in
+  // dense geometry where a gather ray hits a neighbor at tiny distance r (the
+  // 1/Min(r) term explodes), so without this clamp the linear extrapolation
+  // overshoots into per-record speckle. Bounding |grad_t| <= (4/pi)E/R and
+  // |grad_r| <= E keeps the extrapolation within the physically possible range.
+  const float invRi = (Ri > 1.0e-6f) ? 1.0f / Ri : 0.0f;
+  const float Ec[3] = {std::fabs(rec.irradiance.x), std::fabs(rec.irradiance.y),
+                       std::fabs(rec.irradiance.z)};
+  auto clampMag = [](const Vec3& g, float maxMag) -> Vec3 {
+    const float m = length(g);
+    return (m > maxMag && m > 1.0e-12f) ? g * (maxMag / m) : g;
+  };
+  for (int c = 0; c < 3; ++c) {
+    rec.gradR[c] = clampMag(gR[c] * rotScale, Ec[c]);
+    rec.gradT[c] = clampMag(gT[c] * invPi, (4.0f * invPi) * Ec[c] * invRi);
+  }
+}
+
 // [C] Fill: gather irradiance at each record in parallel. Each record seeds its
 // RNG only from its index, so the result is independent of TBB thread count and
 // bit-reproducible. Writes E_i, bent normal and harmonic-mean radius. prevCache
@@ -361,10 +538,17 @@ inline void fillRecords(IrradianceCache& cache, const IrradianceCacheParams& p,
   tbb::parallel_for(
       tbb::blocked_range<std::size_t>(0, n),
       [&](const tbb::blocked_range<std::size_t>& rg) {
-        std::vector<uint32_t> tmp;
-        (void)tmp;
+        // Per-cell scratch for the stratified/gradient path, reused across the
+        // block's records (avoids per-record allocation in the hot loop).
+        std::vector<Vec3> Lc;
+        std::vector<float> rc;
         for (std::size_t ri = rg.begin(); ri != rg.end(); ++ri) {
           IrradianceRecord& rec = cache.records[ri];
+          if (p.gradients) {
+            fillRecordStratified(rec, p, static_cast<uint32_t>(ri), Lc, rc,
+                                 prevCache);
+            continue;
+          }
           const Frame f = frameFromNormal(rec.normal);
           const float eps = selfIntersectEps(rec.position, rec.normal, R);
           const Vec3 O = rec.position + rec.normal * eps;
@@ -472,6 +656,37 @@ inline bool interpolateIrradiance(const IrradianceCache& cache,
   // to the environment.
   uint32_t bestIdx = 0xFFFFFFFFu;
   float bestW = 0.0f;
+  // Ward gradient extrapolation (Eq 5): adjust a record's stored E by its
+  // translational gradient along the displacement and its rotational gradient
+  // along the normal-mismatch axis, so the blend varies smoothly between records
+  // instead of stepping per voxel. Clamp each channel to >= 0 (irradiance cannot
+  // be negative; the linear extrapolation can otherwise overshoot into dark halos
+  // at large displacements). A no-gradient record (gradients off) extrapolates to
+  // its plain irradiance.
+  auto extrapolate = [&](const IrradianceRecord& r) -> Vec3 {
+    if (!p.gradients) return r.irradiance;
+    const Vec3 disp = x - r.position;
+    const Vec3 rotAxis = cross(r.normal, nx);
+    const float d[3] = {dot(disp, r.gradT[0]) + dot(rotAxis, r.gradR[0]),
+                        dot(disp, r.gradT[1]) + dot(rotAxis, r.gradR[1]),
+                        dot(disp, r.gradT[2]) + dot(rotAxis, r.gradR[2])};
+    // Limit each channel's extrapolation to a fraction of the stored irradiance.
+    // The split-sphere bound at fill time is loose for small-radius (concave)
+    // records, so a single noisy gradient direction can still swing the value
+    // hard near a record's influence edge, producing per-cell speckle on bumpy
+    // surfaces. Capping the correction at +-kLim*E keeps gradients to their job
+    // (linearizing the piecewise-constant steps) without letting them dominate.
+    constexpr float kLim = 0.5f;
+    const float Ei[3] = {r.irradiance.x, r.irradiance.y, r.irradiance.z};
+    Vec3 e{0, 0, 0};
+    float* eo = &e.x;
+    for (int c = 0; c < 3; ++c) {
+      const float lim = kLim * std::fabs(Ei[c]);
+      const float dc = std::fmax(-lim, std::fmin(lim, d[c]));
+      eo[c] = std::fmax(0.0f, Ei[c] + dc);
+    }
+    return e;
+  };
   for (uint32_t i : cand) {
     const IrradianceRecord& r = cache.records[i];
     if (p.componentReject && componentX >= 0 &&
@@ -489,7 +704,7 @@ inline bool interpolateIrradiance(const IrradianceCache& cache,
     const float w = 1.0f / denom;
     if (w > bestW) { bestW = w; bestIdx = i; }
     if (w <= wMin) continue;
-    Esum = Esum + r.irradiance * w;
+    Esum = Esum + extrapolate(r) * w;
     occSum += r.occlusion * w;
     radSum += r.radius * w;
     wSum += w;
@@ -502,6 +717,10 @@ inline bool interpolateIrradiance(const IrradianceCache& cache,
   }
   if (bestIdx != 0xFFFFFFFFu) {  // nearest compatible record (no hole)
     const IrradianceRecord& r = cache.records[bestIdx];
+    // Plain value (no gradient) at the coverage edge: the fallback fires only when
+    // no record passes the weight cutoff, i.e. the point is poorly covered, where
+    // linear extrapolation is least trustworthy and would speckle. Gradients are
+    // applied only inside the trusted weighted blend above.
     outE = r.irradiance;
     if (outOcclusion) *outOcclusion = r.occlusion;
     if (outRadius) *outRadius = r.radius;

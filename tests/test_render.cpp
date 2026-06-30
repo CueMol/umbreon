@@ -1636,5 +1636,66 @@ int main() {
     s.check("GI multi-bounce: two giBounces=2 renders bit-identical", identical);
   }
 
+  // Irradiance gradients (giGradients): an enclosed well has strong spatial
+  // irradiance variation (bright floor, dark walls). With gradients off the
+  // floor reads piecewise-constant per record (Voronoi blocks); the Ward-
+  // Heckbert rotational/translational gradients let irradiance vary smoothly
+  // between records, so the interpolated result differs from plain blending.
+  // This locks two properties: (1) gradients are wired in and non-zero (the
+  // result changes vs gradients-off), and (2) the gradient stage stays
+  // deterministic (per-record seed => two renders bit-identical).
+  {
+    using umbreon::Vec3;
+    auto well = []() {
+      umbreon::Mesh m;
+      auto quad = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 n) {
+        Vec3 v[6] = {a, b, c, a, c, d};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(v[i]); m.normals.push_back(n);
+          m.colors.push_back({1, 1, 1, 1});
+        }
+      };
+      quad({-1,-1,0},{1,-1,0},{1,1,0},{-1,1,0},{0,0,1});  // floor
+      const float h = 3.0f;
+      quad({1,-1,0},{1,1,0},{1,1,h},{1,-1,h},{-1,0,0});
+      quad({-1,-1,0},{-1,1,h},{-1,1,0},{-1,-1,h},{1,0,0});
+      quad({-1,1,0},{1,1,0},{1,1,h},{-1,1,h},{0,-1,0});
+      quad({-1,-1,0},{-1,-1,h},{1,-1,h},{1,-1,0},{0,1,0});
+      m.material.ambient = 0.2f; m.material.diffuse = 0.8f;
+      return m;
+    };
+    auto render = [&](bool gradients) {
+      umbreon::Scene sc;
+      sc.mesh = well();
+      sc.camera = makeOrthoCam();
+      umbreon::DistantLight l;
+      l.direction = {0, 0, -1}; l.color = {1, 1, 1}; l.intensity = 0.8f;
+      sc.lights.push_back(l);
+      sc.ambientColor = {1, 1, 1}; sc.background = {0, 0, 0};
+      umbreon::RenderOptions o;
+      o.width = 7; o.height = 7;
+      o.gi = true; o.giSamples = 256; o.giMaxDistance = 10.0f;
+      o.giRecordSpacing = 0.3f; o.giAccuracy = 3.0f;  // overlap for gradients
+      o.giSeedPerVertex = true;
+      o.giGradients = gradients;
+      return umbreon::render(sc, o);
+    };
+    umbreon::FrameResult off = render(false);
+    umbreon::FrameResult on = render(true);
+    bool differs = off.color.size() == on.color.size();
+    bool anyDiff = false;
+    for (std::size_t i = 0; differs && i < off.color.size(); ++i)
+      if (off.color[i] != on.color[i]) anyDiff = true;
+    s.check("GI gradients: result differs from plain interpolation",
+            differs && anyDiff);
+    // Determinism: two gradient renders must be bit-identical.
+    umbreon::FrameResult a = render(true);
+    umbreon::FrameResult b = render(true);
+    bool identical = a.color.size() == b.color.size();
+    for (std::size_t i = 0; identical && i < a.color.size(); ++i)
+      if (a.color[i] != b.color[i]) identical = false;
+    s.check("GI gradients: two gradient renders bit-identical", identical);
+  }
+
   return s.report();
 }

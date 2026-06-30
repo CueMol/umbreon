@@ -367,7 +367,7 @@ struct RenderOptions {
                                 // term; surface bounce / color bleeding stay full.
   float giAccuracy = 0.15f;     // interpolation accuracy a (max influence = a*R_i)
   float giRecordSpacing = 0.0f; // voxel seed world spacing; 0 => auto (diag*0.007)
-  bool giGradients = false;     // gradient interpolation (later step; unused now)
+  bool giGradients = false;     // Ward-Heckbert rotational/translational gradients
   bool giAdaptive = false;      // adaptive voxel refinement (later step; unused now)
   float giNormalReject = 0.85f; // min dot(n_x, n_rec) to accept a record
   bool giComponentReject = true;// reject records of a different component (leak)

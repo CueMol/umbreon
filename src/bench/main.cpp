@@ -465,6 +465,7 @@ int main(int argc, char** argv) {
     ropt.giNormalReject = opt.giNormalReject;
     ropt.giComponentReject = opt.giComponentReject;
     ropt.giSeedPerVertex = opt.giSeedPerVertex;
+    ropt.giGradients = opt.giGradients;
     if (ropt.gi)
       std::printf(
           "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "
