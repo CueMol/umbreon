@@ -80,6 +80,16 @@ struct BuiltScene {
   std::vector<uint16_t> cylCapGroup;
   std::vector<float> cylCapOpacity1;
 
+  // Origin tag carried from Scene::{Sphere,Cylinder}::fromEdgeMacro through the
+  // build: 1 = baked NPR outline decoration (silhouette edge cylinder / joint
+  // dot), 0 = a REAL CSG primitive (CueMol VdW atom ball / chemical bond). The
+  // shader reads these to AO-darken only the real primitives and leave the
+  // outline geometry flat (see hit_shader.hpp). Always populated (independent of
+  // the edge tables) and indexed by primID exactly like the tables above.
+  std::vector<uint8_t> sphereFromEdge;
+  std::vector<uint8_t> cylFromEdge;
+  std::vector<uint8_t> cylCapFromEdge;
+
   // --- screen-space edges: per-primitive global material index side-tables ---
   // Phase-1 (doc 3.3 option b): a RAW per-primitive index per kind (no Material
   // dedup). The global materialId is offset by the running per-kind count so

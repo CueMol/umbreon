@@ -832,32 +832,59 @@ int main() {
             occF.color[kCenterRgba + 0] > 0.05f);
   }
 
-  // AO gate: flat outline primitives are NEVER AO-darkened. The same outline
-  // sphere with AO on vs off must be bit-identical (the primitive branch passes
-  // aoFactor == 1.0f literally), even though a lone sphere would have AO ~ 1.
+  // AO on REAL primitives vs the OUTLINE gate (current design). A REAL CSG sphere
+  // (fromEdgeMacro == false, e.g. a CPK atom ball) is AO-darkened exactly like
+  // the mesh, so an atom shadowed by neighbouring geometry darkens like the SES
+  // around it. A baked NPR OUTLINE primitive (fromEdgeMacro == true, silhouette
+  // decoration) keeps the original "never AO-darkened" gate. The occluder is
+  // always an outline sphere (it occludes via the BVH but never receives AO), so
+  // any AO on/off delta comes solely from the probed sphere. Ambient-only
+  // material (ambient 1 / diffuse 0) isolates AO's effect.
   {
-    umbreon::Scene sc;
-    sc.camera = makeOrthoCam();
-    sc.lights.push_back(makeKeyLight());
-    sc.background = {0.4f, 0.1f, 0.2f};
-    umbreon::Sphere sp;
-    sp.center = {0, 0, 0};
-    sp.radius = 1.0f;
-    sp.color = {0.3f, 0.4f, 0.5f, 1.0f};
-    sc.spheres.push_back(sp);
+    auto sphereScene = [](bool probedFromEdge) {
+      umbreon::Scene sc;
+      sc.camera = makeOrthoCam();
+      sc.ambientColor = {1, 1, 1};
+      sc.background = {0, 0, 0};
+      umbreon::Sphere sp;  // probed sphere, centered in view
+      sp.center = {0, 0, 0};
+      sp.radius = 1.0f;
+      sp.color = {1, 1, 1, 1};
+      sp.material.ambient = 1.0f;
+      sp.material.diffuse = 0.0f;
+      sp.fromEdgeMacro = probedFromEdge;
+      sc.spheres.push_back(sp);
+      umbreon::Sphere occ;  // big occluder beside it; ALWAYS outline (no AO recv)
+      occ.center = {0, 2.2f, 0};
+      occ.radius = 2.0f;
+      occ.color = {0, 0, 0, 1};
+      occ.material.ambient = 1.0f;
+      occ.material.diffuse = 0.0f;
+      occ.fromEdgeMacro = true;
+      sc.spheres.push_back(occ);
+      return sc;
+    };
     umbreon::RenderOptions off;
     off.width = 5; off.height = 5; off.aoSamples = 0;
     umbreon::RenderOptions on = off;
-    on.aoSamples = 64;
-    on.aoDistance = 100.0f;
-    umbreon::FrameResult fo = umbreon::render(sc, off);
-    umbreon::FrameResult fn = umbreon::render(sc, on);
-    s.check("AO gate: outline R identical on/off",
-            approx(fn.color[kCenterRgba + 0], fo.color[kCenterRgba + 0], 1e-6f));
-    s.check("AO gate: outline G identical on/off",
-            approx(fn.color[kCenterRgba + 1], fo.color[kCenterRgba + 1], 1e-6f));
-    s.check("AO gate: outline B identical on/off",
-            approx(fn.color[kCenterRgba + 2], fo.color[kCenterRgba + 2], 1e-6f));
+    on.aoSamples = 128;
+    on.aoDistance = 10.0f;
+    // Real sphere (fromEdgeMacro=false): AO must darken it (occluder blocks part
+    // of its hemisphere), so the image changes between AO on and off.
+    umbreon::FrameResult rOff = umbreon::render(sphereScene(false), off);
+    umbreon::FrameResult rOn = umbreon::render(sphereScene(false), on);
+    float diff = 0.0f;
+    for (std::size_t i = 0; i < rOff.color.size(); ++i)
+      diff += std::fabs(rOn.color[i] - rOff.color[i]);
+    s.check("AO real primitive: AO darkens a real CSG sphere", diff > 0.05f);
+    // Outline sphere (fromEdgeMacro=true): the gate holds -- AO on == off,
+    // bit-identical (nothing in the scene receives AO).
+    umbreon::FrameResult oOff = umbreon::render(sphereScene(true), off);
+    umbreon::FrameResult oOn = umbreon::render(sphereScene(true), on);
+    bool identical = oOff.color.size() == oOn.color.size();
+    for (std::size_t i = 0; identical && i < oOff.color.size(); ++i)
+      if (oOn.color[i] != oOff.color[i]) identical = false;
+    s.check("AO outline gate: outline sphere identical AO on/off", identical);
   }
 
   // AO determinism: the RNG is seeded only from (px, py, sample), so two renders

@@ -100,6 +100,7 @@ void buildSpheres(RTCDevice device, RTCScene rscene, const Scene& scene,
   out.sphereColor.reserve(n);
   out.sphereMat.reserve(n);
   out.sphereGroup.reserve(n);
+  out.sphereFromEdge.reserve(n);
   // Edge pass: raw per-primitive material index (phase-1, no dedup) so a pixel
   // can recover a global materialId. Only built when edges are enabled.
   if (buildEdgeTables) out.sphereMatIndex.reserve(n);
@@ -113,6 +114,7 @@ void buildSpheres(RTCDevice device, RTCScene rscene, const Scene& scene,
       out.sphereColor.push_back(s.color);
       out.sphereMat.push_back(s.material);
       out.sphereGroup.push_back(s.group);
+      out.sphereFromEdge.push_back(s.fromEdgeMacro ? 1 : 0);
       if (buildEdgeTables)
         out.sphereMatIndex.push_back(static_cast<uint32_t>(k));
       ++k;
