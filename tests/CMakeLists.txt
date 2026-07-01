@@ -29,6 +29,12 @@ if(TARGET umbreon)
   target_link_libraries(test_pt1_embree PRIVATE umbreon)
   add_test(NAME pt1_embree COMMAND test_pt1_embree)
 
+  # pt1 integration tests: direct-lighting parity between the cache and pt1
+  # integrator branches (and, from Phase 3 on, the Cornell color-bleeding check).
+  add_executable(test_pt1_render test_pt1_render.cpp)
+  target_link_libraries(test_pt1_render PRIVATE umbreon)
+  add_test(NAME pt1_render COMMAND test_pt1_render)
+
   add_executable(test_fog test_fog.cpp)
   target_link_libraries(test_fog PRIVATE umbreon)
   add_test(NAME fog COMMAND test_fog)
