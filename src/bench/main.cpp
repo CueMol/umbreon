@@ -2,9 +2,11 @@
 // render it with the umbreon Embree backend, and write the image. Also provides
 // PPM compare and PPM->PNG convert utility modes.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -630,8 +632,47 @@ int main(int argc, char** argv) {
         TBB_runtime_version(), TBB_runtime_interface_version(),
         tbb::global_control::active_value(
             tbb::global_control::max_allowed_parallelism));
+    const auto tRender0 = std::chrono::high_resolution_clock::now();
     umbreon::FrameResult frame = umbreon::render(scene, ropt);
+    const auto tRender1 = std::chrono::high_resolution_clock::now();
     std::printf("  render time:  %.3f s\n", frame.renderSeconds);
+
+    // pt1 stage timing: table to stdout + outputs/timing.json (plan Phase 6).
+    // `direct` is 0 by architecture (direct shading is fused into the primary
+    // loop, reported under `primary`); `total` is the wall time of render().
+    if (ropt.gi && ropt.giIntegrator == 1) {
+      umbreon::Pt1Timing t = frame.pt1Timing;
+      t.total = std::chrono::duration<double>(tRender1 - tRender0).count();
+      std::printf(
+          "  pt1 timing: bvh_build %.3f  primary %.3f  direct %.3f  gather "
+          "%.3f  denoise %.3f  upsample %.3f  total %.3f (s)\n",
+          t.bvhBuild, t.primary, t.direct, t.gather, t.denoise, t.upsample,
+          t.total);
+      try {
+        std::filesystem::create_directories("outputs");
+        if (std::FILE* jf = std::fopen("outputs/timing.json", "w")) {
+          std::fprintf(jf,
+                       "{\n"
+                       "  \"bvh_build\": %.6f,\n"
+                       "  \"primary\": %.6f,\n"
+                       "  \"direct\": %.6f,\n"
+                       "  \"gather\": %.6f,\n"
+                       "  \"denoise\": %.6f,\n"
+                       "  \"upsample\": %.6f,\n"
+                       "  \"total\": %.6f,\n"
+                       "  \"note\": \"direct shading is fused into the "
+                       "primary-ray loop; its cost is under 'primary'\"\n"
+                       "}\n",
+                       t.bvhBuild, t.primary, t.direct, t.gather, t.denoise,
+                       t.upsample, t.total);
+          std::fclose(jf);
+          std::printf("  wrote outputs/timing.json\n");
+        }
+      } catch (const std::exception& e) {
+        std::fprintf(stderr, "warning: could not write outputs/timing.json (%s)\n",
+                     e.what());
+      }
+    }
     if (scene.fog.enabled)
       std::printf("  applied linear fog (start %.3f, end %.3f)\n",
                   scene.fog.start, scene.fog.end);

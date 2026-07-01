@@ -92,3 +92,35 @@ umbreon_cli <scene>.pov -W 700 -H 700 \
 - 総二次レイ数 ≈ `supersample² ×（ao-samples + ライト数 × shadow-samples）`。
   品質とレンダ時間はこの式で見積もれる。
 - 並列度は `--threads`（`0` = 全コア, `1` = シリアル）。再ビルドなしで速度比較できる。
+
+## diffuse GI インテグレータ（--gi / --integrator）
+
+diffuse GI は 2 つのインテグレータを選べる(設計と規約は
+[pt1_design.md](pt1_design.md)、比較は `scripts/compare_integrators.sh`)。
+
+```sh
+# irradiance cache(既定)
+umbreon_cli <scene>.pov --gi on
+
+# pt1: パストレース per-pixel gather(実験的、cache の ground-truth 参照)
+umbreon_cli <scene>.pov --integrator pt1 --spp 8
+```
+
+| フラグ | 既定 | 効果 / 注意 |
+|---|---|---|
+| `--integrator <cache\|pt1>` | cache | 間接光インテグレータの選択。`pt1` は `--gi on` を含意 |
+| `--spp <int>` | 8 | pt1: ピクセルあたりの gather レイ数 |
+| `--indirect-res <full\|half>` | half | pt1: gather 解像度。half はレンダーグリッドの半分 + joint bilateral upsample |
+| `--denoise <on\|off>` | on | pt1: 間接照度バッファのみを OIDN デノイズ(direct/albedo は触らない) |
+| `--sky <uniform\|gradient>` | uniform | pt1: gather の sky モデル。gradient は天頂=`--sky-radiance`、地面=`--ao-ground` |
+| `--sky-radiance r,g,b` | 1,1,1 | pt1: sky のティント(ambient エネルギーに乗算) |
+| `--seed <int>` | 0 | pt1: 決定論的 per-pixel RNG シード |
+| `--gi-max-dist <world>` | 0 | gather レイの最大距離。cache: auto=0.1×対角 / pt1: auto=∞(意図的な差) |
+| `--pt1-upsample-normal-pow <f>` | 32 | upsample の法線 edge-stop 指数 |
+| `--pt1-upsample-depth-scale <f>` | 0.02 | upsample の深度 edge-stop スケール |
+
+注意:
+- pt1 と `--env-light` の併用は sky の二重計上(警告が出る)。GI の sky は
+  `--sky` / `--sky-radiance` / `--gi-env-intensity` で制御する。
+- ベンチ・A/B 比較は `--supersample 1` で行う(GI は supersample 後のグリッドで走るため)。
+- pt1 実行時は段階別時間が stdout と `outputs/timing.json` に出る。
