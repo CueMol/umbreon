@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -464,10 +465,86 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
                    " %d) double-counts the sky energy; use the gather sky "
                    "(--sky/--sky-radiance) instead\n",
                    opt.envLights);
-    // pt1 gather stub (plan Phase 1): dispatch + AOV plumbing only. The
-    // indirect AOV stays zero, so color equals the direct-only render.
-    std::fprintf(stderr, "pt1: integrator selected (stub) -- spp=%d res=%s\n",
-                 opt.pt1Spp, opt.pt1HalfRes ? "half" : "full");
+    const Aabb b = scene.mesh.bounds();
+    const float diag = b.valid() ? b.diagonal() : 1.0f;
+    detail::IrradianceCacheParams gp;
+    gp.scene = built.scene;
+    gp.built = &built;
+    gp.mesh = &m;
+    gp.lights = &lights;
+    gp.ambLight = ambLight;
+    gp.envUp = aoUpAxis;
+    // Gather sky: uniform (sky == ground == --sky-radiance; the all-white
+    // default matches the cache's environment exactly) or gradient (zenith =
+    // --sky-radiance, ground = --ao-ground). Radiance = this tint * ambLight *
+    // --gi-env-intensity, evaluated ONLY at gather misses (see pt1_design.md).
+    {
+      const Vec3 skyR{opt.pt1SkyRadiance[0], opt.pt1SkyRadiance[1],
+                      opt.pt1SkyRadiance[2]};
+      gp.skyColor = skyR;
+      gp.groundColor = (opt.pt1SkyMode == 1)
+                           ? Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1],
+                                  opt.aoGroundColor[2]}
+                           : skyR;
+    }
+    gp.envIntensity = opt.giEnvIntensity;
+    gp.samples = std::max(1, opt.pt1Spp);
+    gp.bounces = 1;
+    // Unlike the cache (which truncates at 0.1 * diag for concavity contrast),
+    // pt1 is the ground-truth reference: gather to infinity unless the user
+    // caps it explicitly.
+    gp.maxDistance = (opt.giMaxDistance > 0.0f)
+                         ? opt.giMaxDistance
+                         : std::numeric_limits<float>::infinity();
+    gp.spacing = diag * 0.007f;  // unused by the per-pixel gather; keep valid
+    gp.shadows = opt.shadows;
+    gp.shadowSamples = opt.shadowSamples;
+
+    const int spp = std::max(1, opt.pt1Spp);
+    const std::size_t npix = static_cast<std::size_t>(W) * H;
+    // Gather-eligible mask: first hit is a mesh (same gate as the cache; CSG
+    // outline primitives receive no indirect, matching the cache path).
+    std::vector<uint8_t> eligible(npix, 0);
+    for (std::size_t pix = 0; pix < npix; ++pix) {
+      const uint32_t g = giGeom[pix];
+      if (g != 0xFFFFFFFFu && built.records[g].kind == GeomKind::Mesh)
+        eligible[pix] = 1;
+    }
+
+    std::vector<float> Ebuf, occBuf;
+    const auto tg0 = std::chrono::high_resolution_clock::now();
+    detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
+                          /*geomNormal=*/nullptr, eligible.data(), spp,
+                          opt.pt1Seed, diag, Ebuf, occBuf);
+    const auto tg1 = std::chrono::high_resolution_clock::now();
+    res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+    // [E] composite -- same form as the cache path: L += giIntensity *
+    // (mat.diffuse * pigment) * E. The constant ambient was already dropped in
+    // the shade (gi path); occlusion lives inside E, counted exactly once.
+    const float gI = opt.giIntensity;
+    tbb::parallel_for(tbb::blocked_range<int>(0, H),
+                      [&](const tbb::blocked_range<int>& rows) {
+      for (int py = rows.begin(); py != rows.end(); ++py) {
+        for (int px = 0; px < W; ++px) {
+          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+          if (!eligible[pix]) continue;
+          const Vec3 ind{gI * giRefl[pix * 3 + 0] * Ebuf[pix * 3 + 0],
+                         gI * giRefl[pix * 3 + 1] * Ebuf[pix * 3 + 1],
+                         gI * giRefl[pix * 3 + 2] * Ebuf[pix * 3 + 2]};
+          res.color[pix * 4 + 0] += ind.x;
+          res.color[pix * 4 + 1] += ind.y;
+          res.color[pix * 4 + 2] += ind.z;
+          res.indirect[pix * 3 + 0] = ind.x;
+          res.indirect[pix * 3 + 1] = ind.y;
+          res.indirect[pix * 3 + 2] = ind.z;
+          res.giOcclusion[pix] = occBuf[pix];
+        }
+      }
+    });
+
+    std::fprintf(stderr, "pt1: full-res gather %dx%d spp=%d -> %.3fs\n", W, H,
+                 spp, res.pt1Timing.gather);
   } else if (opt.gi && meshPresent(built)) {
     // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
     // clamp, then [D] interpolation into the `indirect` (E_cached) and

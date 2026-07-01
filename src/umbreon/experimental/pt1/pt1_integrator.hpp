@@ -31,6 +31,8 @@
 
 #include <embree4/rtcore.h>
 
+#include <tbb/blocked_range2d.h>
+
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
@@ -147,6 +149,104 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
       }
     }
   });
+}
+
+// One-bounce indirect irradiance at shading point P with shading normal N and
+// geometric normal Ng, by brute-force cosine-hemisphere gather (the estimator
+// the irradiance cache approximates, evaluated per pixel).
+//
+// Returns E_stored = (1/spp) * sum(L_i) = E_true/pi (the cache's convention;
+// the composite multiplies by kd*pigment with no 1/pi). Per sample:
+//   hit  -> L_i = oneBounceRadiance (reflected shadow-tested direct light at
+//           the bounce point; black for non-mesh hits; NO emission -- source-
+//           to-receiver light is already counted by the direct pass)
+//   miss -> L_i = environmentRadiance (the sky lives ONLY in this miss term)
+// A sample below the geometric horizon (dot(wi, Ng) <= 0, possible when the
+// shading normal diverges from Ng) contributes 0 but still counts in the
+// divisor, and counts as occluded for `outOcclusion` (the surface itself
+// blocks that direction).
+//
+// epsT is a finite length scale for selfIntersectEps (e.g. the scene AABB
+// diagonal); it must NOT be the gather tfar, which pt1 defaults to infinity.
+// The RNG is tea2 seeded from (seed, sample index) only -- deterministic and
+// thread-count independent, no shared state.
+inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
+                           const Vec3& N, const Vec3& Ng, int spp,
+                           uint32_t seed, float epsT, float* outOcclusion) {
+  const Frame f = frameFromNormal(N);
+  const float eps = selfIntersectEps(P, N, epsT);
+  const Vec3 O = P + N * eps;
+  Vec3 E{0.0f, 0.0f, 0.0f};
+  int nOccluded = 0;
+  for (int s = 0; s < spp; ++s) {
+    uint32_t s0 = seed;
+    uint32_t s1 = static_cast<uint32_t>(s);
+    tea2(s0, s1);
+    const Vec3 wi = cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
+    if (dot(wi, Ng) <= 0.0f) {
+      ++nOccluded;
+      continue;
+    }
+    const RTCRayHit rh = intersectFull(p.scene, O, wi, eps, p.maxDistance);
+    if (rh.hit.geomID != RTC_INVALID_GEOMETRY_ID) {
+      E = E + oneBounceRadiance(p, rh, O, wi, nullptr);
+      ++nOccluded;
+    } else {
+      E = E + environmentRadiance(p, wi);
+    }
+  }
+  const float invN = 1.0f / static_cast<float>(spp > 0 ? spp : 1);
+  if (outOcclusion) *outOcclusion = static_cast<float>(nOccluded) * invN;
+  return Vec3{E.x * invN, E.y * invN, E.z * invN};
+}
+
+// Gather E_stored for every gather-eligible pixel of a W x H grid into `E`
+// (W*H*3) and the hit fraction into `occ` (W*H). position/normal are the
+// first-hit AOVs; geomNormal may be null (full-res mode: the render G-buffer
+// has no geometric normal, so the horizon guard degenerates to the shading
+// normal, which cosine sampling already satisfies) or the pt1 G-buffer's
+// geometric normal (half-res mode: the real guard). skip[pix] != 0 marks
+// gather-eligible (mesh-hit) pixels; others stay zero.
+//
+// TBB 16x16 tiles; each pixel is seeded from (pixel index, frameSeed) only, so
+// the image is deterministic across thread counts. Tiles write disjoint pixel
+// ranges (no locks).
+inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
+                          const float* position, const float* normal,
+                          const float* geomNormal, const uint8_t* eligible,
+                          int spp, uint32_t frameSeed, float epsT,
+                          std::vector<float>& E, std::vector<float>& occ) {
+  const std::size_t npix = static_cast<std::size_t>(W) * H;
+  E.assign(npix * 3, 0.0f);
+  occ.assign(npix, 0.0f);
+  const uint32_t seedMix = hashU32(frameSeed);
+  tbb::parallel_for(
+      tbb::blocked_range2d<int>(0, H, 16, 0, W, 16),
+      [&](const tbb::blocked_range2d<int>& r) {
+        for (int py = r.rows().begin(); py != r.rows().end(); ++py) {
+          for (int px = r.cols().begin(); px != r.cols().end(); ++px) {
+            const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+            if (!eligible[pix]) continue;
+            const Vec3 P{position[pix * 3 + 0], position[pix * 3 + 1],
+                         position[pix * 3 + 2]};
+            const Vec3 N{normal[pix * 3 + 0], normal[pix * 3 + 1],
+                         normal[pix * 3 + 2]};
+            const Vec3 Ng = geomNormal
+                                ? Vec3{geomNormal[pix * 3 + 0],
+                                       geomNormal[pix * 3 + 1],
+                                       geomNormal[pix * 3 + 2]}
+                                : N;
+            const uint32_t seed =
+                hashU32(static_cast<uint32_t>(pix) ^ seedMix);
+            float o = 0.0f;
+            const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, epsT, &o);
+            E[pix * 3 + 0] = e.x;
+            E[pix * 3 + 1] = e.y;
+            E[pix * 3 + 2] = e.z;
+            occ[pix] = o;
+          }
+        }
+      });
 }
 
 }  // namespace detail

@@ -74,6 +74,58 @@ umbreon::RenderOptions makeGiOptions(int integrator, float giIntensity) {
   return o;
 }
 
+// Open-top Cornell box (plan Phase 3 adaptation: the repo has distant lights
+// only, no area lights, so the box is lit from above through the missing
+// ceiling by a straight-down distant light). White floor and back wall, red
+// left wall, green right wall; bleeding shows on the floor next to each wall.
+namespace cornell {
+
+void addQuad(umbreon::Mesh& m, umbreon::Vec3 a, umbreon::Vec3 b,
+             umbreon::Vec3 c, umbreon::Vec3 d, umbreon::Vec3 n,
+             umbreon::Vec4 color) {
+  const umbreon::Vec3 corners[6] = {a, b, c, a, c, d};
+  for (int i = 0; i < 6; ++i) {
+    m.positions.push_back(corners[i]);
+    m.normals.push_back(n);
+    m.colors.push_back(color);
+  }
+}
+
+umbreon::Scene makeScene() {
+  using umbreon::Vec3;
+  using umbreon::Vec4;
+  const Vec4 white{0.75f, 0.75f, 0.75f, 1.0f};
+  const Vec4 red{0.75f, 0.05f, 0.05f, 1.0f};
+  const Vec4 green{0.05f, 0.75f, 0.05f, 1.0f};
+  umbreon::Mesh m;
+  // Box interior [-1,1]^2 x [0,2] in y, open top (no ceiling) and open front
+  // (+z, toward the camera). Normals face inward.
+  addQuad(m, {-1, 0, -1}, {1, 0, -1}, {1, 0, 1}, {-1, 0, 1}, {0, 1, 0}, white);
+  addQuad(m, {-1, 0, -1}, {-1, 2, -1}, {1, 2, -1}, {1, 0, -1}, {0, 0, 1}, white);
+  addQuad(m, {-1, 0, -1}, {-1, 0, 1}, {-1, 2, 1}, {-1, 2, -1}, {1, 0, 0}, red);
+  addQuad(m, {1, 0, -1}, {1, 2, -1}, {1, 2, 1}, {1, 0, 1}, {-1, 0, 0}, green);
+  m.material.ambient = 0.2f;
+  m.material.diffuse = 0.8f;
+
+  umbreon::Scene sc;
+  sc.mesh = std::move(m);
+  sc.camera.position = {0, 1, 3.2f};
+  sc.camera.direction = {0, 0, -1};
+  sc.camera.up = {0, 1, 0};
+  sc.camera.orthographic = false;
+  sc.camera.fovy = 45.0f;
+  umbreon::DistantLight l;
+  l.direction = {0, -1, 0};  // straight down through the open top
+  l.color = {1, 1, 1};
+  l.intensity = 1.0f;
+  sc.lights.push_back(l);
+  sc.background = {0, 0, 0};
+  sc.ambientColor = {0.25f, 0.25f, 0.25f};  // small sky fill via the open top
+  return sc;
+}
+
+}  // namespace cornell
+
 }  // namespace
 
 int main() {
@@ -112,6 +164,42 @@ int main() {
       }
     s.check("direct parity: color - indirect matches within 1e-5",
             directSame && maxDiff <= 1e-5f);
+  }
+
+  // --- Cornell color bleeding (plan Phase 3 acceptance 2): with the pt1
+  // full-res gather, the white floor next to the red wall must pick up red
+  // indirect light (R > 1.15 * G in the `indirect` AOV), mirrored for green,
+  // and the floor center must receive nonzero indirect.
+  {
+    const umbreon::Scene box = cornell::makeScene();
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 128;
+    o.pt1HalfRes = false;
+    o.pt1Denoise = false;
+    o.shadows = true;
+    const umbreon::FrameResult f = umbreon::render(box, o);
+
+    // Sample the floor in the lower image half: rows ~3/4 down look at the
+    // floor; columns near the left/right edges sit next to the red/green wall.
+    auto indirectAt = [&](int px, int py) {
+      const std::size_t pix = static_cast<std::size_t>(py) * f.width + px;
+      return umbreon::Vec3{f.indirect[pix * 3 + 0], f.indirect[pix * 3 + 1],
+                           f.indirect[pix * 3 + 2]};
+    };
+    const int floorRow = 52;
+    const umbreon::Vec3 nearRed = indirectAt(6, floorRow);
+    const umbreon::Vec3 nearGreen = indirectAt(57, floorRow);
+    const umbreon::Vec3 center = indirectAt(32, floorRow);
+    s.check("cornell: floor near red wall bleeds red (R > 1.15 G)",
+            nearRed.x > 1.15f * nearRed.y && nearRed.x > 0.0f);
+    s.check("cornell: floor near green wall bleeds green (G > 1.15 R)",
+            nearGreen.y > 1.15f * nearGreen.x && nearGreen.y > 0.0f);
+    s.check("cornell: floor center indirect > 0",
+            center.x > 0.0f && center.y > 0.0f && center.z > 0.0f);
   }
 
   return s.report();

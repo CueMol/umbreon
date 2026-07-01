@@ -35,6 +35,11 @@ if(TARGET umbreon)
   target_link_libraries(test_pt1_render PRIVATE umbreon)
   add_test(NAME pt1_render COMMAND test_pt1_render)
 
+  # pt1 numeric gather tests: estimator vs analytic irradiance values.
+  add_executable(test_pt1_gather test_pt1_gather.cpp)
+  target_link_libraries(test_pt1_gather PRIVATE umbreon)
+  add_test(NAME pt1_gather COMMAND test_pt1_gather)
+
   add_executable(test_fog test_fog.cpp)
   target_link_libraries(test_fog PRIVATE umbreon)
   add_test(NAME fog COMMAND test_fog)
