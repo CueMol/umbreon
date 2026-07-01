@@ -148,6 +148,7 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
           out.cylMat.push_back(c.material);
           out.cylGroup.push_back(c.group);
           out.cylOpacity1.push_back(c.opacity1);
+          out.cylFromEdge.push_back(c.fromEdgeMacro ? 1 : 0);
         }
       };
       // Open chains first (start = no predecessor), then any leftover cycles.
@@ -222,6 +223,7 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
         out.cylCapMat.push_back(c.material);
         out.cylCapGroup.push_back(c.group);
         out.cylCapOpacity1.push_back(c.opacity1);
+        out.cylCapFromEdge.push_back(c.fromEdgeMacro ? 1 : 0);
       }
     }
 

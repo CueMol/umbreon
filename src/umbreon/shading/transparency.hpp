@@ -45,6 +45,14 @@ struct PixelResult {
   float contactAo = 1.0f;
   float shapeAo = 1.0f;
   float avgHitDist = 0.0f;
+  // First-hit surface-irradiance-cache seed (only meaningful with
+  // RenderOptions::gi; kept at the background sentinels when the ray escapes).
+  // Color is unaffected. worldPos = org + rd*nearDepth; firstGroup/firstGeomID
+  // tag the record's component/geometry so leaks across sections are rejectable.
+  Vec3 worldPos{0.0f, 0.0f, 0.0f};
+  int firstGroup = -1;                  // CueMol section; -1 = background
+  uint32_t firstGeomID = 0xFFFFFFFFu;   // Embree geomID; sentinel = background
+  Vec3 giReflectance{0.0f, 0.0f, 0.0f}; // mat.diffuse * pigment (GI composite)
 };
 
 // Integrate one primary ray (origin `org`, direction `rd`) through the scene,
@@ -88,6 +96,10 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   float firstContact = 1.0f;
   float firstShape = 1.0f;
   float firstAvgHit = 0.0f;
+  Vec3 firstWorldPos{0.0f, 0.0f, 0.0f};
+  int firstGroup = -1;
+  uint32_t firstGeomID = 0xFFFFFFFFu;
+  Vec3 firstGiReflectance{0.0f, 0.0f, 0.0f};
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -142,6 +154,14 @@ inline PixelResult integratePixel(const ShadeContext& sc,
       firstContact = hs.contactAo;
       firstShape = hs.shapeAo;
       firstAvgHit = hs.avgHitDist;
+      // Surface-irradiance-cache seed: the world-space first hit plus the
+      // hit's component (group) and Embree geometry id. geomID lets the cache
+      // restrict placement to mesh hits (GI gate); the position seeds the voxel.
+      firstWorldPos = Vec3{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
+                           org.z + rd.z * rh.ray.tfar};
+      firstGroup = hs.group;
+      firstGeomID = rh.hit.geomID;
+      firstGiReflectance = hs.giReflectance;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -228,7 +248,11 @@ inline PixelResult integratePixel(const ShadeContext& sc,
                      firstBent,
                      firstContact,
                      firstShape,
-                     firstAvgHit};
+                     firstAvgHit,
+                     firstWorldPos,
+                     firstGroup,
+                     firstGeomID,
+                     firstGiReflectance};
 }
 
 }  // namespace detail

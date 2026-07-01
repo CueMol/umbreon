@@ -223,6 +223,73 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--ao-write-aov");
       if (o.ok && !parseBool(v, o.aoWriteAov))
         fail("--ao-write-aov expects on/off");
+    } else if (a == "--gi") {
+      std::string v = value("--gi");
+      if (o.ok && !parseBool(v, o.gi)) fail("--gi expects on/off");
+    } else if (a == "--gi-samples") {
+      o.giSamples = std::atoi(value("--gi-samples").c_str());
+    } else if (a == "--gi-bounces") {
+      o.giBounces = std::atoi(value("--gi-bounces").c_str());
+    } else if (a == "--gi-max-dist") {
+      o.giMaxDistance =
+          static_cast<float>(std::atof(value("--gi-max-dist").c_str()));
+    } else if (a == "--gi-intensity") {
+      o.giIntensity =
+          static_cast<float>(std::atof(value("--gi-intensity").c_str()));
+    } else if (a == "--gi-env-intensity") {
+      o.giEnvIntensity =
+          static_cast<float>(std::atof(value("--gi-env-intensity").c_str()));
+    } else if (a == "--gi-accuracy") {
+      o.giAccuracy =
+          static_cast<float>(std::atof(value("--gi-accuracy").c_str()));
+    } else if (a == "--gi-spacing") {
+      o.giRecordSpacing =
+          static_cast<float>(std::atof(value("--gi-spacing").c_str()));
+    } else if (a == "--gi-normal-reject") {
+      o.giNormalReject =
+          static_cast<float>(std::atof(value("--gi-normal-reject").c_str()));
+    } else if (a == "--gi-component-reject") {
+      std::string v = value("--gi-component-reject");
+      if (o.ok && !parseBool(v, o.giComponentReject))
+        fail("--gi-component-reject expects on/off");
+    } else if (a == "--gi-seed-per-vertex") {
+      std::string v = value("--gi-seed-per-vertex");
+      if (o.ok && !parseBool(v, o.giSeedPerVertex))
+        fail("--gi-seed-per-vertex expects on/off");
+    } else if (a == "--gi-gradients") {
+      std::string v = value("--gi-gradients");
+      if (o.ok && !parseBool(v, o.giGradients))
+        fail("--gi-gradients expects on/off");
+    } else if (a == "--gi-outlier-reject") {
+      std::string v = value("--gi-outlier-reject");
+      if (o.ok && !parseBool(v, o.giOutlierReject))
+        fail("--gi-outlier-reject expects on/off");
+    } else if (a == "--denoiser") {
+      std::string v = value("--denoiser");
+      if (v == "none")
+        o.denoiser = 0;
+      else if (v == "atrous")
+        o.denoiser = 1;
+      else if (v == "oidn")
+        o.denoiser = 2;
+      else
+        fail("--denoiser expects none/atrous/oidn");
+    } else if (a == "--denoise-iters") {
+      o.denoiseIters = std::atoi(value("--denoise-iters").c_str());
+    } else if (a == "--denoise-sigma-z") {
+      o.denoiseSigmaZ = static_cast<float>(std::atof(value("--denoise-sigma-z").c_str()));
+    } else if (a == "--denoise-sigma-n") {
+      o.denoiseSigmaN = static_cast<float>(std::atof(value("--denoise-sigma-n").c_str()));
+    } else if (a == "--denoise-sigma-l") {
+      o.denoiseSigmaL = static_cast<float>(std::atof(value("--denoise-sigma-l").c_str()));
+    } else if (a == "--denoise-demodulate") {
+      std::string v = value("--denoise-demodulate");
+      if (o.ok && !parseBool(v, o.denoiseDemodulateAlbedo))
+        fail("--denoise-demodulate expects on/off");
+    } else if (a == "--oidn-clean-aux") {
+      std::string v = value("--oidn-clean-aux");
+      if (o.ok && !parseBool(v, o.oidnCleanAux))
+        fail("--oidn-clean-aux expects on/off");
     } else if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -231,6 +298,16 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--light-radius") {
       o.lightRadius =
           static_cast<float>(std::atof(value("--light-radius").c_str()));
+    } else if (a == "--env-light") {
+      o.envLights = std::atoi(value("--env-light").c_str());
+    } else if (a == "--env-intensity") {
+      o.envIntensity =
+          static_cast<float>(std::atof(value("--env-intensity").c_str()));
+    } else if (a == "--env-key-scale") {
+      o.envKeyScale =
+          static_cast<float>(std::atof(value("--env-key-scale").c_str()));
+    } else if (a == "--env-angle") {
+      o.envAngle = static_cast<float>(std::atof(value("--env-angle").c_str()));
     } else if (a == "--pov-gain") {
       o.povGain = static_cast<float>(std::atof(value("--pov-gain").c_str()));
     } else if (a == "--outline-scale") {
@@ -535,6 +612,30 @@ void printUsage(const char* prog) {
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"
+      "  --env-light <int>        dome lights (0=off; ~32 = soft sky) [0]\n"
+      "  --env-intensity <float>  dome irradiance on exposed point    [1.0]\n"
+      "  --env-key-scale <float>  scale scene lights w/ dome (0=dome) [0]\n"
+      "  --env-angle <deg>        dome half-angle about camera        [90]\n"
+      "  --gi <on|off>            diffuse GI surface irradiance cache [off]\n"
+      "  --gi-samples <int>       hemisphere gather rays per record    [64]\n"
+      "  --gi-bounces <int>       indirect bounces (1 = one-bounce)     [1]\n"
+      "  --gi-gradients <on|off>  Ward-Heckbert gradient interpolation [off]\n"
+      "  --gi-outlier-reject <on|off> lift isolated dark cache records  [on]\n"
+      "  --denoiser <none|atrous|oidn> GI denoise backend  [atrous when --gi]\n"
+      "  --denoise-iters <int>    a-trous wavelet iterations            [5]\n"
+      "  --denoise-sigma-z <f>    depth edge-stop sigma                 [1]\n"
+      "  --denoise-sigma-n <f>    normal edge-stop exponent           [128]\n"
+      "  --denoise-sigma-l <f>    luminance edge-stop sigma             [4]\n"
+      "  --denoise-demodulate <on|off> denoise color/albedo            [on]\n"
+      "  --oidn-clean-aux <on|off> OIDN treats aux as noise-free        [on]\n"
+      "  --gi-max-dist <world>    gather ray max distance (0 = auto)    [0]\n"
+      "  --gi-intensity <float>   indirect gain (1.0 = physical)      [1.0]\n"
+      "  --gi-env-intensity <f>   ambient fill mult (auto-calibrated; <1 deeper) [1.0]\n"
+      "  --gi-accuracy <a>        interpolation accuracy a           [0.15]\n"
+      "  --gi-spacing <world>     record voxel spacing (0 = auto)       [0]\n"
+      "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
+      "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
+      "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
       "  --compare <a> <b>        print PSNR/SSIM between two PPM files\n"
       "  --convert <in> <out>     convert a PPM to PNG/PPM\n"
       "  -h, --help               show this help\n",

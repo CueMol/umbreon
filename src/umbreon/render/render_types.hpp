@@ -344,10 +344,71 @@ struct RenderOptions {
            aoMultibounce || aoLowDiscrepancy || aoDiffuseFactor > 0.0f;
   }
 
+  // --- diffuse GI: adaptive surface irradiance cache (mesh hits only) ---
+  // Default gi == false => no cache pass at all, byte-identical to the local-
+  // shading render. When on, a deterministic set of surface cache records is
+  // placed and filled by hemisphere gather (see
+  // experimental/irradiance_cache/irradiance_cache.hpp);
+  // the interpolated indirect irradiance is exposed as the `indirect` AOV.
+  // NOTE (steps 1-3): the gather + cache are built and visualized via AOVs, but
+  // the final composite ([E], L += gi*kd*E_cached) is NOT wired yet, so a gi==on
+  // render produces the SAME color as gi==off (only the AOVs differ).
+  bool gi = false;              // MASTER gate; false => no GI work, byte-identical
+  int giSamples = 64;           // hemisphere gather rays per cache record
+  int giBounces = 1;            // 1 = one-bounce; >1 = multi-bounce (later step)
+  float giMaxDistance = 0.0f;   // gather ray tfar; 0 => auto (scene diagonal)
+  float giIntensity = 1.0f;     // indirect gain (physical 1.0; user knob, no 1/pi)
+  float giEnvIntensity = 1.0f;  // MULTIPLIER on the environment (sky/ground miss)
+                                // radiance, which is scene.ambientColor * this.
+                                // scene.ambientColor carries the ambient light
+                                // ENERGY GI gathers occlusion-aware (the harness
+                                // sets it from the lighting energy balance when GI
+                                // is on); 1.0 uses it as-is, <1 deepens occlusion
+                                // contrast, >1 adds fill. Scales ONLY the miss
+                                // term; surface bounce / color bleeding stay full.
+  float giAccuracy = 0.15f;     // interpolation accuracy a (max influence = a*R_i)
+  float giRecordSpacing = 0.0f; // voxel seed world spacing; 0 => auto (diag*0.007)
+  bool giGradients = false;     // Ward-Heckbert rotational/translational gradients
+  bool giOutlierReject = true;  // lift isolated fully-occluded dark cache records
+  bool giAdaptive = false;      // adaptive voxel refinement (later step; unused now)
+  float giNormalReject = 0.85f; // min dot(n_x, n_rec) to accept a record
+  bool giComponentReject = true;// reject records of a different component (leak)
+  bool giSeedPerVertex = false; // true => seed from mesh vertices (view-independent)
+
+  // --- denoise (post-pass on the linear HDR color, after downsample / before
+  // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised
+  // render. AtrousBilateral (1) is the built-in, zero-dependency edge-avoiding
+  // a-trous (Dammertz 2010 + SVGF edge-stops); OIDN (2) is an optional backend
+  // (later step). The edge-stop guides are the GI/AO G-buffer (position, normal)
+  // plus the color's own luminance, so the smoothing follows the cache's residual
+  // noise without crossing depth/normal/illumination edges.
+  int denoiser = 0;             // DenoiserBackend: 0=None, 1=AtrousBilateral, 2=OIDN
+  int denoiseIters = 5;         // a-trous wavelet iterations (2^i dilation)
+  float denoiseSigmaZ = 1.0f;   // depth/position edge-stop sigma
+  float denoiseSigmaN = 128.0f; // normal edge-stop exponent
+  float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
+  bool denoiseDemodulateAlbedo = true;  // denoise color/albedo, then re-multiply
+  bool oidnCleanAux = true;     // OIDN: primary-hit albedo/normal are noise-free
+
   // --- shadows (per-light visibility; never applied to outline primitives) ---
   bool shadows = false;        // cast shadows from the lights; false = off
   int shadowSamples = 1;       // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;    // light angular radius (deg); >0 = soft shadows
+
+  // --- environment dome lighting (synthetic, computed in the renderer; NOT read
+  // from the scene/POV) --- A hemisphere of distant lights around the camera-
+  // forward axis approximating sky/environment illumination: exposed surfaces are
+  // lit softly from many directions (form-revealing, no frontal "flashlight"),
+  // while recesses and buried atoms darken via real shadows. This is the lighting
+  // route to the radiosity-like "clean exposed + dark recess" look without the
+  // muddiness of darkening direct diffuse by openness (aoDiffuseFactor). Opt-in:
+  // envLights == 0 leaves the scene's own lights untouched (byte-identical). When
+  // on, shadows are implicitly active and the dome lights are diffuse-only (no
+  // specular). The scene's own lights are scaled by envKeyScale (0 = dome only).
+  int envLights = 0;           // dome light count (0 = off; ~24-48 for smooth)
+  float envIntensity = 1.0f;   // diffuse irradiance on a fully-exposed (camera-facing) point
+  float envKeyScale = 0.0f;    // scale applied to the scene's own lights when the dome is on
+  float envAngle = 90.0f;      // dome half-angle around camera-forward (deg)
 
   // --- shading ---
   float specularScale = 1.0f;  // multiplies each material's specular weight
@@ -400,6 +461,16 @@ struct FrameResult {
   std::vector<float> shapeAo;     // width*height   mid+large-radius openness
   std::vector<float> bentNormal;  // width*height*3 average unoccluded direction
   std::vector<float> avgHitDist;  // width*height   mean occluder distance (world)
+  // Surface-irradiance-cache AOVs: sized and written ONLY when RenderOptions::gi
+  // is on (else empty, keeping the default path byte-identical). `position` is the
+  // world-space first hit (cache spatial key / denoise guide); `indirect` is the
+  // interpolated indirect irradiance E_cached (debug / denoise demodulation);
+  // `giRecordViz` is a debug false-color of the nearest cache record's effective
+  // radius R_i (bright = small radius = dense records, e.g. in concavities).
+  std::vector<float> position;    // width*height*3 world-space first-hit position
+  std::vector<float> indirect;    // width*height*3 interpolated E_cached
+  std::vector<float> giRecordViz; // width*height*3 record-radius (log R_i) heatmap
+  std::vector<float> giOcclusion; // width*height   gather occlusion fraction (AO-like)
   double renderSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
 };

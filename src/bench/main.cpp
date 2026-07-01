@@ -95,6 +95,26 @@ int main(int argc, char** argv) {
       const int W = opt.widthSet ? opt.width : 300;
       const int H = opt.heightSet ? opt.height : 300;
 
+      // GI energy balance: mirror the .pov's #ifdef(_radiosity) branch. The
+      // umbreon default lighting puts ALL energy in the direct lights
+      // (_amb_frac=0), so GI -- which only replaces the constant ambient with an
+      // occlusion-aware gather -- has nothing to occlude and is nearly a no-op
+      // (pixel-identical to the flat render). When GI is on, adopt the POV
+      // radiosity balance: move half the energy into the ambient the GI gathers
+      // and dim the direct lights to match (POV _radiosity: _light_inten=1.6,
+      // _amb_frac=0.5, _flash_frac=0.5). Only the non-rad DEFAULTS are bumped, so
+      // an explicit --declare still wins.
+      if (opt.gi) {
+        auto giDefault = [&](const char* k, double nonRad, double rad) {
+          auto it = opt.declares.find(k);
+          if (it == opt.declares.end() || it->second == nonRad)
+            opt.declares[k] = rad;
+        };
+        giDefault("_light_inten", 1.3, 1.6);
+        giDefault("_amb_frac", 0.0, 0.5);
+        giDefault("_flash_frac", 0.6, 0.5);
+      }
+
       umbreon::PovParseOptions popt;
       popt.imageWidth = W;
       popt.imageHeight = H;
@@ -213,12 +233,32 @@ int main(int argc, char** argv) {
       scene.background = ps.background;
       scene.fog = ps.fog;
 
-      scene.ambientColor = umbreon::Vec3{1.0f, 1.0f, 1.0f};
+      // Ambient light color/energy. Without GI this is the neutral white the
+      // material finish-ambient term multiplies. With GI it carries the ambient
+      // ENERGY the gather occludes: _light_inten * _amb_frac (the POV radiosity
+      // dome's emission), white, scaled by the same exposure gain as the direct
+      // lights so the direct/ambient split stays balanced. The GI environment
+      // radiance is this color * --gi-env-intensity; the constant-ambient term it
+      // would otherwise feed is dropped on the GI path (see hit_shader).
+      if (opt.gi) {
+        const double ambE =
+            opt.declares["_light_inten"] * opt.declares["_amb_frac"];
+        const float a = static_cast<float>(ambE) * opt.povGain;
+        scene.ambientColor = umbreon::Vec3{a, a, a};
+      } else {
+        scene.ambientColor = umbreon::Vec3{1.0f, 1.0f, 1.0f};
+      }
 
       for (umbreon::DistantLight& L : scene.lights) L.intensity *= opt.povGain;
       scene.ambientIntensity = opt.povGain;
 
-      scene.assumedGamma = ps.assumedGamma;
+      // Always display-encode with assumed_gamma 2.2, regardless of what the
+      // .pov declares (CueMol exports assumed_gamma 1.0 for the radiosity path
+      // and 2.2 elsewhere; the POV-Ray radiosity reference is tone-matched at
+      // 2.2). Overriding here keeps umbreon's output tone consistent across
+      // scenes instead of swinging brightness with the file's gamma tag.
+      scene.assumedGamma = 2.2f;
+      (void)ps.assumedGamma;
 
       const std::string camDesc =
           scene.camera.orthographic
@@ -411,6 +451,41 @@ int main(int argc, char** argv) {
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;
+    ropt.envLights = opt.envLights;
+    ropt.envIntensity = opt.envIntensity;
+    ropt.envKeyScale = opt.envKeyScale;
+    ropt.envAngle = opt.envAngle;
+
+    // Diffuse GI: surface irradiance cache (steps 1-3: cache build + fill +
+    // debug AOVs; the final composite is not wired yet, so color is unchanged).
+    ropt.gi = opt.gi;
+    ropt.giSamples = opt.giSamples;
+    ropt.giBounces = opt.giBounces;
+    ropt.giMaxDistance = opt.giMaxDistance;
+    ropt.giIntensity = opt.giIntensity;
+    ropt.giEnvIntensity = opt.giEnvIntensity;
+    ropt.giAccuracy = opt.giAccuracy;
+    ropt.giRecordSpacing = opt.giRecordSpacing;
+    ropt.giNormalReject = opt.giNormalReject;
+    ropt.giComponentReject = opt.giComponentReject;
+    ropt.giSeedPerVertex = opt.giSeedPerVertex;
+    ropt.giGradients = opt.giGradients;
+    ropt.giOutlierReject = opt.giOutlierReject;
+    // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
+    // None otherwise. An explicit --denoiser (0/1/2) is honored as-is.
+    ropt.denoiser = opt.denoiser >= 0 ? opt.denoiser : (ropt.gi ? 1 : 0);
+    ropt.denoiseIters = opt.denoiseIters;
+    ropt.denoiseSigmaZ = opt.denoiseSigmaZ;
+    ropt.denoiseSigmaN = opt.denoiseSigmaN;
+    ropt.denoiseSigmaL = opt.denoiseSigmaL;
+    ropt.denoiseDemodulateAlbedo = opt.denoiseDemodulateAlbedo;
+    ropt.oidnCleanAux = opt.oidnCleanAux;
+    if (ropt.gi)
+      std::printf(
+          "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "
+          "env %.2f%s\n",
+          ropt.giSamples, ropt.giIntensity, ropt.giEnvIntensity,
+          ropt.giSeedPerVertex ? " (per-vertex seed)" : "");
     if (ropt.aoSamples > 0)
       std::printf(
           "  ambient occlusion: %d samples, radius %.3f, intensity %.2f\n",
@@ -634,10 +709,72 @@ int main(int argc, char** argv) {
                     opt.dumpAovPrefix.c_str(), aw, ah);
         dumpedAny = true;
       }
+      // GI cache AOVs (final res): E_cached (indirect) auto-normalized for
+      // display, plus the record-density debug viz (bright = small radius =
+      // dense records, e.g. in concavities). Lets the cache be eyeballed before
+      // the final composite is wired.
+      if (ropt.gi && !frame.indirect.empty()) {
+        const int aw = frame.width, ah = frame.height;
+        const std::size_t np = static_cast<std::size_t>(aw) * ah;
+        // Luminance stats over MESH pixels only (indirect > 0). With a uniform
+        // white environment the open surface saturates near the env value, so a
+        // raw [0,max] map plus sRGB crushes the concavity gradient into a near-
+        // binary image. Contrast-stretch [lo,hi] (robust 2nd/98th percentile)
+        // instead, so the open-vs-concave variation fills the tonal range.
+        std::vector<float> lum;
+        lum.reserve(np);
+        float emin = 1e30f, emax = 0.0f;
+        for (std::size_t i = 0; i < np; ++i) {
+          const float L = (frame.indirect[i * 3 + 0] + frame.indirect[i * 3 + 1] +
+                           frame.indirect[i * 3 + 2]) / 3.0f;
+          if (L <= 0.0f) continue;  // background / non-mesh first hit
+          lum.push_back(L);
+          emin = std::min(emin, L);
+          emax = std::max(emax, L);
+        }
+        float lo = 0.0f, hi = (emax > 0.0f) ? emax : 1.0f;
+        if (!lum.empty()) {
+          std::sort(lum.begin(), lum.end());
+          lo = lum[static_cast<std::size_t>(lum.size() * 0.02f)];
+          hi = lum[static_cast<std::size_t>(lum.size() * 0.98f)];
+          if (hi <= lo) hi = lo + 1e-6f;
+        }
+        const float inv = 1.0f / (hi - lo);
+        std::vector<float> ind(np * 3), raw(np * 3);
+        for (std::size_t i = 0; i < np * 3; ++i) {
+          raw[i] = (emax > 0.0f) ? frame.indirect[i] / emax : 0.0f;  // [0,max]
+          float v = (frame.indirect[i] - lo) * inv;                  // stretched
+          ind[i] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        }
+        umbreon::writeImage(opt.dumpAovPrefix + "_indirect.png", aw, ah,
+                            ind.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_indirectRaw.png", aw, ah,
+                            raw.data(), 3);
+        umbreon::writeImage(opt.dumpAovPrefix + "_giRecords.png", aw, ah,
+                            frame.giRecordViz.data(), 3);
+        // Openness map (1 - gather occlusion fraction): env- and bounce-
+        // independent, so it shows concavity darkening cleanly even when a bright
+        // white environment fills the E_cached pits back in. White = open convex,
+        // dark = occluded concavity. Background / non-mesh stays white (open).
+        std::vector<float> opn(np * 3);
+        for (std::size_t i = 0; i < np; ++i) {
+          const float open = 1.0f - frame.giOcclusion[i];
+          opn[i * 3 + 0] = opn[i * 3 + 1] = opn[i * 3 + 2] = open;
+        }
+        umbreon::writeImage(opt.dumpAovPrefix + "_giOpenness.png", aw, ah,
+                            opn.data(), 3);
+        std::printf(
+            "  dumped GI AOVs: %s_{indirect,indirectRaw,giRecords,giOpenness}"
+            ".png (%dx%d)\n"
+            "    indirect luminance: min %.4g  max %.4g  stretch [%.4g, %.4g]\n",
+            opt.dumpAovPrefix.c_str(), aw, ah, emin, emax, lo, hi);
+        dumpedAny = true;
+      }
       if (!dumpedAny)
         std::fprintf(
             stderr,
-            "warning: --dump-aov ignored (needs --edges or --ao-write-aov on)\n");
+            "warning: --dump-aov ignored (needs --edges, --ao-write-aov or "
+            "--gi on)\n");
     }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

@@ -114,6 +114,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/scene_build.cpp
     src/umbreon/render/curve_build.cpp
     src/umbreon/render/pipeline.cpp
+    src/umbreon/experimental/irradiance_cache/denoise_atrous.cpp
     src/umbreon/postprocess/fog.cpp
     src/umbreon/postprocess/image_ops.cpp
     src/umbreon/edges/stroke_edges.cpp
@@ -135,6 +136,29 @@ if(EMBREE_LINK AND TBB_LINK)
   target_link_libraries(umbreon PUBLIC ${EMBREE_LINK} ${TBB_LINK})
   target_compile_options(umbreon PRIVATE ${UMBREON_WARNINGS})
   set_target_properties(umbreon PROPERTIES VERSION ${PROJECT_VERSION})
+
+  # Optional Intel Open Image Denoise backend (DenoiserBackend::OIDN). Provided by
+  # the CueMol deplibs bundle (oidn-2.5.0, static). Default OFF so a bare configure
+  # without the bundle still builds; the Taskfile's static path turns it ON and
+  # adds the OIDN prefix to CMAKE_PREFIX_PATH. find_package is QUIET + guarded so an
+  # ON build that cannot locate OIDN downgrades to a warning (the runtime then
+  # falls back to the built-in a-trous denoiser) instead of failing.
+  option(UMBREON_WITH_OIDN "Enable Intel OIDN denoiser backend" OFF)
+  if(UMBREON_WITH_OIDN)
+    find_package(OpenImageDenoise 2 CONFIG QUIET)
+    if(OpenImageDenoise_FOUND)
+      target_sources(umbreon PRIVATE
+        src/umbreon/experimental/irradiance_cache/denoise_oidn.cpp)
+      target_compile_definitions(umbreon PRIVATE UMBREON_HAVE_OIDN)
+      target_link_libraries(umbreon PUBLIC OpenImageDenoise)
+      message(STATUS
+        "umbreon: OIDN backend enabled (OpenImageDenoise ${OpenImageDenoise_VERSION})")
+    else()
+      message(WARNING
+        "umbreon: UMBREON_WITH_OIDN=ON but OpenImageDenoise not found; "
+        "OIDN backend disabled (runtime falls back to a-trous)")
+    endif()
+  endif()
 else()
   message(WARNING "Embree/TBB not found - 'umbreon' library not built")
 endif()

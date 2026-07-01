@@ -25,18 +25,48 @@ umbreon_cli <scene>.pov -W 700 -H 700 \
 |---|---|---|
 | `--supersample` | 3（.pov 既定）/ 大光源や最高品質は 4 | 最重要の denoise＋AA。コストは二乗 |
 | `--ao-samples` | 32（十分）〜64（とても綺麗） | hemisphere レイ数。supersample と乗算される |
-| `--ao-distance` | シーン依存（下記） | AO の届く半径（world 単位）。未指定だと auto = 0.7×bbox 対角＝大局的 |
-| `--ao-intensity` | 1.0（full）/ 控えめは 0.6–0.8 | AO の強さ |
+| `--ao-distance` | シーン依存（下記・奥行き節） | AO の届く半径（world 単位）。未指定だと auto = 0.7×bbox 対角＝大局的 |
+| `--ao-intensity` | 1.0（full）/ 控えめは 0.6–0.8 | ambient 減光の強さ。> 1 は過暗化 |
+| `--ao-diffuse` | 0（既定）/ 奥行き重視は 1.0 | 凹部の**直接 diffuse も減光**。陰影強度の本命レバー（下記・奥行き節） |
+| `--ao-falloff` | 0（binary・推奨）/ >0 で距離減衰 | 0 が最も谷を鋭く落とす。>0 は遠方遮蔽を緩め平坦化方向 |
+| `--ao-multiscale` | on（奥行き重視） | 3 段ネスト半径で接触影＋形状陰影を両立 |
+| `--ao-bent-normal` | on（方向性 ambient） | bent normal 沿いの sky/ground 勾配。形状感を補強 |
 | `--shadows` | on | 影を有効化 |
 | `--light-radius` | 2–6 度（自然なソフト影） | エリアライトの角半径（度・シーン非依存）。0＝ハード影。大きいほど penumbra が広くノイジー |
 | `--shadow-samples` | 16–32 | ソフト影のサンプル数（>1 でソフト化）。light-radius を上げたら増やす |
 
-## `--ao-distance` はシーンに合わせる（鍵）
+## 奥行きを強く出す（OpenGL GTAO 相当）
 
-- 未指定 = auto（0.7×bbox 対角）→ 大局的でぼんやり（scene6 では 54）。
-- 窪み・ポケットを際立たせるには小さめに：分子サイズのおおよそ 1〜2 割。
-  scene6（対角 ~77）なら 12〜20。
-- 起動時ログに auto 値（`ambient occlusion: ... radius XX`）が出るので、それを目安に調整する。
+分子表面で「凹は暗く・凸は明るく」をはっきり出すための実測レシピ。既定の AO
+（`--ao-diffuse 0`・auto 大半径）は AO OFF と全体の数%しか変わらず**陰影が弱い**ので、
+奥行き目的では以下を明示する。
+
+```sh
+umbreon_cli <scene>.pov -W 700 -H 700 --supersample 3 \
+  --ao-samples 256 --ao-multiscale on --ao-bent-normal on \
+  --ao-falloff 0 --ao-diffuse 1.0 --ao-distance 40
+```
+
+効くレバーの順（OpenGL GTAO 参照と並べた検証より）:
+
+1. **`--ao-diffuse 1.0`** — 本命。AO は既定で ambient 項しか減光しないが、CueMol 既定
+   ライティングはエネルギーの大半が direct light にあるため、direct diffuse も凹部で
+   減光して初めて深い陰影が出る。
+2. **`--ao-falloff 0`（binary）** — 谷を最も鋭く落とす。`>0` の距離減衰は遠方遮蔽を緩め、
+   コントラストを下げて平坦化する。
+3. **`--ao-distance` は大きめ** — このスケールの分子シーンでは**大半径ほど強い**
+   （シーン径の 0.5〜0.85 倍）。短半径は近傍に occluder が無く効かない（直感に反する）。
+   起動時ログの auto 値（`ambient occlusion: ... radius XX`）を基準に上下させて調整。
+4. 補助: `--ao-intensity` は 1.0 を基準に（>1 は過暗化）。淡色凹部の黒潰れが気になるときは
+   `--ao-multibounce on`。
+
+> **注意（ambient 配分は AO の効きを上げない）**: AO が弱いからと言って ambient のエネルギー
+> 配分（POV の `_amb_frac` 等）を上げても、その分は GI 専用に回り direct が減るだけで、AO
+> モードでは全体が暗くなりコントラストはむしろ下がる。強度は `--ao-diffuse` で上げること。
+
+> **CPK モデルも暗化する**: AO は SES メッシュだけでなく**実プリミティブ（VdW 原子球・bond
+> シリンダ）にも適用される**ので、ポケット内のリガンドも周囲の表面と同様に暗くなる。NPR の
+> outline 装飾（シルエットエッジ）はフラットのまま。
 
 ## バリエーション
 

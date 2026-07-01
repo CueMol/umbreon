@@ -32,6 +32,39 @@ struct Options {
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows
 
+  // --- environment dome lighting (synthetic; replaces flashlight look) ---
+  int envLights = 0;            // dome light count (0 = off; ~24-48 smooth)
+  float envIntensity = 1.0f;    // diffuse irradiance on a fully-exposed point
+  float envKeyScale = 0.0f;     // scale on the scene's own lights (0 = dome only)
+  float envAngle = 90.0f;       // dome half-angle around camera-forward (deg)
+
+  // --- diffuse GI: surface irradiance cache (--gi) ---
+  bool gi = false;              // master gate; off => byte-identical default
+  int giSamples = 64;           // hemisphere gather rays per record
+  int giBounces = 1;            // 1 = one-bounce; >1 = multi-bounce (later step)
+  float giMaxDistance = 0.0f;   // gather ray tfar; 0 => auto (scene diagonal)
+  float giIntensity = 1.0f;     // indirect gain (1.0 physical; user knob)
+  float giEnvIntensity = 1.0f;  // environment (sky/ground) fill scale (bounce stays full)
+  float giAccuracy = 0.15f;     // interpolation accuracy a
+  float giRecordSpacing = 0.0f; // voxel seed spacing; 0 => auto
+  float giNormalReject = 0.85f; // min dot(n_x, n_rec) to accept a record
+  bool giComponentReject = true;// reject cross-section records (leak guard)
+  bool giSeedPerVertex = false; // seed from mesh vertices (view-independent)
+  bool giGradients = false;     // Ward-Heckbert gradient interpolation
+  bool giOutlierReject = true;  // lift isolated fully-occluded dark records
+
+  // --- denoise ---
+  // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI
+  // renders stay byte-identical and GI renders denoise by default). An explicit
+  // --denoiser sets 0/1/2 and overrides the GI-conditional default.
+  int denoiser = -1;            // -1=unset, 0=None, 1=AtrousBilateral, 2=OIDN
+  int denoiseIters = 5;         // a-trous iterations
+  float denoiseSigmaZ = 1.0f;   // depth/position edge-stop sigma
+  float denoiseSigmaN = 128.0f; // normal edge-stop exponent
+  float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
+  bool denoiseDemodulateAlbedo = true;  // denoise color/albedo then re-multiply
+  bool oidnCleanAux = true;     // OIDN: treat primary-hit aux as noise-free
+
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults
   // matching the reference render and overridable with --declare.

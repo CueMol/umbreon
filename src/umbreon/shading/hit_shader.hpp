@@ -14,6 +14,7 @@
 
 #include <embree4/rtcore.h>
 
+#include "ao/ao_shade.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
@@ -41,6 +42,10 @@ struct HitShade {
   // reads them, so enabling them does not change the rendered color.
   Vec3 albedo{0.0f, 0.0f, 0.0f};   // pigment color (OIDN guide / cache albedo)
   Vec3 bentNormal{0.0f, 0.0f, 0.0f};  // average unoccluded direction
+  // Diffuse reflectance mat.diffuse * pigment of the FIRST mesh hit, captured
+  // for the GI composite L += giIntensity * giReflectance * E_cached (post-pass).
+  // Zero unless RenderOptions::gi is on and the hit is a mesh.
+  Vec3 giReflectance{0.0f, 0.0f, 0.0f};
   float contactAo = 1.0f;          // small-radius (contact) openness
   float shapeAo = 1.0f;            // mid+large-radius (shape) openness
   float avgHitDist = 0.0f;         // mean occluder distance (world units)
@@ -69,6 +74,10 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                          uint32_t py) {
   HitShade hs;
   RTCScene rscene = c.built.scene;
+  // The environment dome (opt.envLights > 0) only works if its lights cast
+  // shadows, so it implicitly turns shadows on (in addition to the explicit
+  // --shadows flag). Outline primitives are still excluded at their call site.
+  const bool shadowsActive = c.opt.shadows || c.opt.envLights > 0;
   const GeomRecord& rec = c.built.records[rh.hit.geomID];
   const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
   if (rec.kind == GeomKind::Mesh) {
@@ -111,68 +120,12 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // (aoEnhanced) the multi-scale/falloff estimator runs instead; otherwise the
     // legacy binary computeAO runs verbatim, keeping --ao-samples-only renders
     // bit-identical too.
-    Vec3 aoFactor{1.0f, 1.0f, 1.0f};
-    Vec3 ambLight = c.ambLight;
-    float diffuseAo = 1.0f;  // direct-diffuse AO scale (1 = POV ambient-only)
-    AOResult aoAov;          // captured for the AOVs (default = fully open)
-    if (c.opt.aoSamples > 0) {
-      float openness;
-      if (c.opt.aoEnhanced()) {
-        AOParams ap;
-        ap.nSamples = c.opt.aoSamples;
-        ap.radius = c.opt.aoDistance;
-        ap.falloffPower = c.opt.aoFalloffPower;
-        ap.multiScale = c.opt.aoMultiScale;
-        ap.lowDiscrepancy = c.opt.aoLowDiscrepancy;
-        aoAov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py,
-                                 c.opt.width);
-        openness = aoAov.openness;
-        // Directional ambient: a 2-color sky/ground hemisphere gradient sampled
-        // along the bent normal (the average unoccluded direction). A point that
-        // opens toward `aoUp` sees the sky tint, one facing away sees the ground
-        // tint. With the default white sky == ground this collapses to the plain
-        // scene ambient, so enabling only bent normal still looks neutral.
-        if (c.opt.aoBentNormal) {
-          const float w = 0.5f * (dot(aoAov.bent, c.aoUp) + 1.0f);
-          const float gx = c.opt.aoGroundColor[0], sx = c.opt.aoSkyColor[0];
-          const float gy = c.opt.aoGroundColor[1], sy = c.opt.aoSkyColor[1];
-          const float gz = c.opt.aoGroundColor[2], sz = c.opt.aoSkyColor[2];
-          ambLight = Vec3{c.ambLight.x * (gx + (sx - gx) * w),
-                          c.ambLight.y * (gy + (sy - gy) * w),
-                          c.ambLight.z * (gz + (sz - gz) * w)};
-        }
-      } else {
-        openness = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
-                             c.opt.aoDistance, px, py, c.opt.width);
-        // Color stays on the bit-exact legacy path; if AOVs are requested,
-        // derive the contact/shape/bent/avgHitDist channels with one extra
-        // (single-scale) quality pass that does NOT feed the color.
-        if (c.opt.aoWriteAov) {
-          AOParams ap;
-          ap.nSamples = c.opt.aoSamples;
-          ap.radius = c.opt.aoDistance;
-          aoAov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py,
-                                   c.opt.width);
-        }
-      }
-      if (c.opt.aoMultibounce) {
-        // Lift each channel by its pigment albedo so light cavities don't crush
-        // to black (single-bounce AO assumes a black surface).
-        const float ox = aoMultibounce(openness, C.x);
-        const float oy = aoMultibounce(openness, C.y);
-        const float oz = aoMultibounce(openness, C.z);
-        aoFactor = Vec3{1.0f - c.opt.aoIntensity * (1.0f - ox),
-                        1.0f - c.opt.aoIntensity * (1.0f - oy),
-                        1.0f - c.opt.aoIntensity * (1.0f - oz)};
-      } else {
-        const float s = 1.0f - c.opt.aoIntensity * (1.0f - openness);
-        aoFactor = Vec3{s, s, s};
-      }
-      // Optional indirect-shadowing approximation: also darken direct diffuse in
-      // cavities (off by default => diffuseAo == 1 => bit-exact).
-      if (c.opt.aoDiffuseFactor > 0.0f)
-        diffuseAo = 1.0f - c.opt.aoDiffuseFactor * (1.0f - openness);
-    }
+    AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
+                                secEps, px, py);
+    Vec3 aoFactor = ao.aoFactor;
+    Vec3 ambLight = ao.ambLight;
+    float diffuseAo = ao.diffuseAo;  // direct-diffuse AO scale (1 = ambient-only)
+    AOResult aoAov = ao.aov;         // captured for the AOVs (default = open)
     // Main-path AO / G-buffer AOVs (OIDN guide + surface-irradiance-cache input
     // + AO-tuning debug). Gated on aoWriteAov; the color computed above is
     // unchanged whether or not these are written.
@@ -183,10 +136,26 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       hs.contactAo = aoAov.contact;
       hs.shapeAo = aoAov.shape;
       hs.avgHitDist = aoAov.avgHitDist;
+    } else if (c.opt.gi) {
+      // GI cache seeds need the smooth shading normal and pigment at the first
+      // mesh hit even when the AO AOVs are off. This does not feed the color.
+      hs.albedo = C;
+      hs.normal = N;
+    }
+    // A-route GI composite: when GI is on, DROP the constant ambient term from
+    // the local shade (zero ambLight for this mesh hit) and instead add the
+    // gathered, occlusion-aware indirect in a post-pass. Folding the receiver's
+    // diffuse reflectance (mat.diffuse * pigment) here lets the post-pass do a
+    // plain L += giIntensity * giReflectance * E_cached. The outline/primitive
+    // path keeps its ambient (flat color) and gets no indirect.
+    if (c.opt.gi) {
+      hs.giReflectance =
+          Vec3{triMat.diffuse * C.x, triMat.diffuse * C.y, triMat.diffuse * C.z};
+      ambLight = Vec3{0.0f, 0.0f, 0.0f};
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
-                          rscene, c.opt.shadows, c.opt.shadowSamples, px, py);
+                          rscene, shadowsActive, c.opt.shadowSamples, px, py);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
     // Edge G-buffer (only when the stroke edge pass is on; otherwise the
@@ -231,15 +200,41 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     Vec3 N = faceForward(
         normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
     const Vec3 C = {fc.x, fc.y, fc.z};
-    // Outline / VdW primitives are flat silhouette geometry: never AO-darkened
-    // and never shadowed (aoFactor 1, shadowsOn false). This is the gate.
     const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
                  org.z + rd.z * rh.ray.tfar};
     const Vec3 Ng{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
     const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
-    hs.color = shadeLocal(pm, C, N, V, c.lights, c.ambLight, c.bg,
-                          c.opt.specularScale, Vec3{1.0f, 1.0f, 1.0f}, 1.0f, P,
-                          Ng, secEps, rscene, false, 1, px, py);
+    // Distinguish a REAL CSG primitive (CueMol VdW atom ball / chemical bond)
+    // from a baked NPR outline decoration (silhouette edge cylinder / joint dot)
+    // via the fromEdge side-tables. Real primitives receive AO AND cast/receive
+    // shadows exactly like the mesh (so a CPK atom buried in a pocket darkens
+    // like the SES around it instead of floating bright); outline decoration
+    // stays flat and unshadowed -- the original gate, now scoped to outline
+    // geometry only. With AO and shadows off (aoSamples == 0, shadows == false)
+    // the helper/shadow are neutral, so the flag-less render is byte-identical.
+    const bool fromEdge =
+        isSphere ? (!c.built.sphereFromEdge.empty() &&
+                    c.built.sphereFromEdge[rh.hit.primID])
+        : isCapped ? (!c.built.cylCapFromEdge.empty() &&
+                      c.built.cylCapFromEdge[rh.hit.primID])
+                   : (!c.built.cylFromEdge.empty() &&
+                      c.built.cylFromEdge[rh.hit.primID]);
+    Vec3 aoFactor{1.0f, 1.0f, 1.0f};
+    Vec3 ambLight = c.ambLight;
+    float diffuseAo = 1.0f;
+    if (!fromEdge) {
+      AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
+                                secEps, px, py);
+      aoFactor = ao.aoFactor;
+      ambLight = ao.ambLight;
+      diffuseAo = ao.diffuseAo;
+    }
+    // Real primitives receive light shadows (a buried atom is occluded from the
+    // lights); outline decoration is never shadowed (silhouette must not darken).
+    const bool primShadows = !fromEdge && shadowsActive;
+    hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
+                          c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
+                          rscene, primShadows, c.opt.shadowSamples, px, py);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]

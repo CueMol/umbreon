@@ -14,7 +14,9 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
+#include "ao/env_dome.hpp"
 #include "shading/hit_shader.hpp"
+#include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -117,6 +119,14 @@ void excludeFaceFilter(const RTCFilterFunctionNArguments* args) {
       }
     }
   }
+}
+
+// True if the built scene contains a triangle mesh (the GI / AO gate: indirect
+// is gathered for mesh hits only, never for flat outline primitives).
+bool meshPresent(const detail::BuiltScene& built) {
+  for (const detail::GeomRecord& r : built.records)
+    if (r.kind == detail::GeomKind::Mesh) return true;
+  return false;
 }
 
 }  // namespace
@@ -248,6 +258,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     l.radius = radians(opt.lightRadius);  // soft-shadow angular radius (0 = hard)
     lights.push_back(l);
   }
+  // Environment dome fill (opt.envLights > 0): a hemisphere of distant diffuse-
+  // only lights around the camera-forward axis, meant to be used together with
+  // AO. Appended to `lights` here; the estimator lives in ao/env_dome.hpp.
+  buildEnvDomeLights(lights, opt, dir, right, trueUp);
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
   // term is material.ambient * pigment, applied below via ambK.
   const Vec3 ambLight = scene.ambientColor;  // expected <1,1,1> on the embree path
@@ -275,12 +289,29 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // contact/shape split, bent normal, mean occluder distance) ride aoWriteAov.
     if (opt.strokeEdges.enable || opt.aoWriteAov)
       res.normal.assign(npix * 3, 0.0f);
+    // Albedo is the denoiser's demodulation guide as well as an AO AOV, so it is
+    // allocated whenever the GI denoise pass will demodulate by it (not only on an
+    // explicit AOV dump).
+    const bool wantAlbedoGuide =
+        opt.aoWriteAov ||
+        (opt.gi && opt.denoiser != 0 && opt.denoiseDemodulateAlbedo);
+    if (wantAlbedoGuide) res.albedo.assign(npix * 3, 0.0f);
     if (opt.aoWriteAov) {
-      res.albedo.assign(npix * 3, 0.0f);
       res.bentNormal.assign(npix * 3, 0.0f);
       res.contactAo.assign(npix, 1.0f);
       res.shapeAo.assign(npix, 1.0f);
       res.avgHitDist.assign(npix, 0.0f);
+    }
+    // GI cache AOVs: world-space first-hit position (cache seed key), the
+    // interpolated indirect (debug E_cached) and the record-density debug viz.
+    // The normal AOV is also needed as the cache seed normal, so allocate it for
+    // the GI path too (harmless: written from the same N, no color change).
+    if (opt.gi) {
+      if (res.normal.empty()) res.normal.assign(npix * 3, 0.0f);
+      res.position.assign(npix * 3, 0.0f);
+      res.indirect.assign(npix * 3, 0.0f);
+      res.giRecordViz.assign(npix * 3, 0.0f);
+      res.giOcclusion.assign(npix, 0.0f);
     }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
@@ -303,6 +334,19 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   for (uint16_t g : scene.veilGroups) {
     if (g >= isVeil.size()) isVeil.resize(static_cast<std::size_t>(g) + 1, 0);
     isVeil[g] = 1;
+  }
+
+  // Per-pixel GI cache seed side-channels (component id / Embree geomID of the
+  // first hit). Kept local to render() (not in FrameResult): the cache build
+  // reads them right below. Allocated only when GI is on.
+  std::vector<int> giGroup;
+  std::vector<uint32_t> giGeom;
+  std::vector<float> giRefl;  // per-pixel mat.diffuse * pigment (GI composite)
+  if (opt.gi) {
+    const std::size_t npix = static_cast<std::size_t>(W) * H;
+    giGroup.assign(npix, -1);
+    giGeom.assign(npix, 0xFFFFFFFFu);
+    giRefl.assign(npix * 3, 0.0f);
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -356,11 +400,27 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         res.objectId[pix] = pr.objectId;
         res.materialId[pix] = pr.materialId;
       }
-      // AO AOVs: albedo + contact/shape + bent normal + mean occluder distance.
-      if (opt.aoWriteAov) {
+      // GI cache seed: world-space first-hit position + per-pixel component /
+      // geomID side-channels read by the cache build below.
+      if (opt.gi) {
+        res.position[pix * 3 + 0] = pr.worldPos.x;
+        res.position[pix * 3 + 1] = pr.worldPos.y;
+        res.position[pix * 3 + 2] = pr.worldPos.z;
+        giGroup[pix] = pr.firstGroup;
+        giGeom[pix] = pr.firstGeomID;
+        giRefl[pix * 3 + 0] = pr.giReflectance.x;
+        giRefl[pix * 3 + 1] = pr.giReflectance.y;
+        giRefl[pix * 3 + 2] = pr.giReflectance.z;
+      }
+      // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
+      // buffer was allocated above (wantAlbedoGuide).
+      if (!res.albedo.empty()) {
         res.albedo[pix * 3 + 0] = pr.albedo.x;
         res.albedo[pix * 3 + 1] = pr.albedo.y;
         res.albedo[pix * 3 + 2] = pr.albedo.z;
+      }
+      // AO AOVs: contact/shape + bent normal + mean occluder distance.
+      if (opt.aoWriteAov) {
         res.bentNormal[pix * 3 + 0] = pr.bentNormal.x;
         res.bentNormal[pix * 3 + 1] = pr.bentNormal.y;
         res.bentNormal[pix * 3 + 2] = pr.bentNormal.z;
@@ -383,6 +443,126 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();
+
+  // --- diffuse GI: surface irradiance cache (post-pass on the live BVH) ---
+  // [B] placement + [C] gather/fill + neighbor clamp, then [D] interpolation
+  // into the debug `indirect` (E_cached) and `giRecordViz` (record-density) AOVs.
+  // The final color composite ([E]) is NOT wired in this step, so a gi==on render
+  // leaves res.color unchanged vs gi==off. Runs at the (supersampled) hi-res W*H.
+  if (opt.gi && meshPresent(built)) {
+    const Aabb b = scene.mesh.bounds();
+    const float diag = b.valid() ? b.diagonal() : 1.0f;
+    detail::IrradianceCacheParams gp;
+    gp.scene = built.scene;
+    gp.built = &built;
+    gp.mesh = &m;
+    gp.lights = &lights;
+    gp.ambLight = ambLight;
+    gp.envUp = aoUpAxis;
+    gp.skyColor = Vec3{opt.aoSkyColor[0], opt.aoSkyColor[1], opt.aoSkyColor[2]};
+    gp.groundColor =
+        Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1], opt.aoGroundColor[2]};
+    // Environment (sky/ground miss) radiance = scene.ambientColor (gp.ambLight)
+    // times the user gi-env-intensity multiplier. scene.ambientColor IS the
+    // ambient light energy the GI gathers occlusion-aware; GI is meaningful only
+    // when that ambient carries real energy, so the harness moves a fraction of
+    // the lighting energy into it when GI is on (the POV radiosity _amb_frac
+    // balance) -- otherwise an all-direct lighting starves GI to a near no-op.
+    gp.envIntensity = opt.giEnvIntensity;
+    gp.samples = std::max(1, opt.giSamples);
+    gp.bounces = std::max(1, opt.giBounces);
+    gp.gradients = opt.giGradients;
+    gp.outlierReject = opt.giOutlierReject;
+    // Auto gather distance: a fraction of the scene diagonal. Full-diagonal
+    // gather lets distant surfaces fill the hemisphere uniformly, washing out the
+    // concavity contrast (every point sees ~the same far geometry); a contact-
+    // scale fraction keeps near occluders dominant so pockets read darker, while
+    // still collecting the local one-bounce indirect. Tune with --gi-max-dist.
+    gp.maxDistance = (opt.giMaxDistance > 0.0f) ? opt.giMaxDistance : diag * 0.1f;
+    // Auto record spacing = a small fraction of the scene diagonal. k0 = 0.007
+    // (~140 records across the diagonal) is a balanced default: fine enough that
+    // the interpolated cache resolves surface concavities without the blocky look
+    // of the coarser k0 = 0.01, at ~2x the record count. Override with
+    // --gi-spacing; the adaptive step will later refine tight (small-R_i) regions.
+    gp.spacing = (opt.giRecordSpacing > 0.0f) ? opt.giRecordSpacing : diag * 0.007f;
+    if (gp.spacing <= 0.0f) gp.spacing = 1.0f;
+    gp.accuracy = opt.giAccuracy;
+    gp.normalReject = opt.giNormalReject;
+    gp.componentReject = opt.giComponentReject;
+    gp.shadows = opt.shadows;
+    gp.shadowSamples = opt.shadowSamples;
+
+    detail::IrradianceCache cache = detail::buildIrradianceCache(
+        gp, W, H, res.position.data(), res.normal.data(), giGroup.data(),
+        giGeom.data(), opt.giSeedPerVertex);
+
+    // Record-radius heatmap normalization. A record's harmonic-mean radius R_i
+    // is small in a concavity (nearby occluders dominate) and large on an open
+    // surface; the two extremes span orders of magnitude (Rmin .. maxDistance),
+    // so map log(R_i) linearly into [0,1]. Dark = small radius = tight/concave
+    // record, bright = large radius = open surface.
+    const float densRmin = std::fmax(0.25f * gp.spacing, 1.0e-6f);
+    const float densLogLo = std::log(densRmin);
+    const float densLogSpan =
+        std::fmax(std::log(std::fmax(gp.maxDistance, densRmin)) - densLogLo, 1.0e-6f);
+
+    // [D] per-pixel interpolation into the debug AOVs (parallel, read-only).
+    tbb::parallel_for(tbb::blocked_range<int>(0, H),
+                      [&](const tbb::blocked_range<int>& rows) {
+      for (int py = rows.begin(); py != rows.end(); ++py) {
+        for (int px = 0; px < W; ++px) {
+          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+          const uint32_t g = giGeom[pix];
+          if (g == 0xFFFFFFFFu) continue;
+          if (built.records[g].kind != GeomKind::Mesh) continue;
+          const Vec3 X{res.position[pix * 3 + 0], res.position[pix * 3 + 1],
+                       res.position[pix * 3 + 2]};
+          const Vec3 Nx{res.normal[pix * 3 + 0], res.normal[pix * 3 + 1],
+                        res.normal[pix * 3 + 2]};
+          Vec3 E{0.0f, 0.0f, 0.0f};
+          float occ = 0.0f;
+          float rad = gp.maxDistance;
+          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E, &occ,
+                                        &rad);
+          // [E] A-route composite: L += giIntensity * (mat.diffuse * pigment) *
+          // E_cached. The constant ambient was already dropped from res.color in
+          // the shade (gi path), and no AO multiplies here -- occlusion lives
+          // inside E_cached, so it is counted exactly once. indirect AOV stores
+          // this added term (for denoise demodulation / debug).
+          const float gI = opt.giIntensity;
+          const Vec3 ind{gI * giRefl[pix * 3 + 0] * E.x,
+                         gI * giRefl[pix * 3 + 1] * E.y,
+                         gI * giRefl[pix * 3 + 2] * E.z};
+          res.color[pix * 4 + 0] += ind.x;
+          res.color[pix * 4 + 1] += ind.y;
+          res.color[pix * 4 + 2] += ind.z;
+          res.indirect[pix * 3 + 0] = ind.x;
+          res.indirect[pix * 3 + 1] = ind.y;
+          res.indirect[pix * 3 + 2] = ind.z;
+          res.giOcclusion[pix] = occ;  // AO-like concavity map (env-independent)
+          // Trust-radius heatmap: the interpolated (smooth) record radius R_i.
+          // R_i is the harmonic-mean distance to surrounding geometry, so it is
+          // SMALL where the surface folds in on itself (a record there only
+          // covers a tight area => that is where adaptive seeding would add more
+          // records) and LARGE on open surfaces. log-mapped: dark = small R_i =
+          // tight concavity / contact, bright = large R_i = open.
+          if (rad > 0.0f) {
+            float h = (std::log(rad) - densLogLo) / densLogSpan;
+            if (h < 0.0f) h = 0.0f;
+            if (h > 1.0f) h = 1.0f;
+            res.giRecordViz[pix * 3 + 0] = h;
+            res.giRecordViz[pix * 3 + 1] = h;
+            res.giRecordViz[pix * 3 + 2] = h;
+          }
+        }
+      }
+    });
+
+    std::fprintf(stderr,
+                 "gi: irradiance cache built -- %zu records (spacing %.4g, "
+                 "samples %d, maxDist %.4g)\n",
+                 cache.records.size(), gp.spacing, gp.samples, gp.maxDistance);
+  }
 
   // Record the mesh geometry identity so occluded() can map an excluded
   // mesh-triangle id to an Embree (geomID, primID) hit for Freestyle self-face
