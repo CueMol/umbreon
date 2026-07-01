@@ -17,6 +17,7 @@
 #include "ao/env_dome.hpp"
 #include "shading/hit_shader.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
+#include "experimental/pt1/pt1_integrator.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -222,12 +223,14 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // releases the partial scene and throws; release the device too before
   // propagating so render() leaks neither handle.
   BuiltScene built;
+  const auto tBvh0 = std::chrono::high_resolution_clock::now();
   try {
     built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
   } catch (...) {
     rtcReleaseDevice(device);
     throw;
   }
+  const auto tBvh1 = std::chrono::high_resolution_clock::now();
 
   const Mesh& m = scene.mesh;
 
@@ -443,13 +446,32 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();
+  res.pt1Timing.bvhBuild = std::chrono::duration<double>(tBvh1 - tBvh0).count();
+  res.pt1Timing.primary = res.renderSeconds;
 
-  // --- diffuse GI: surface irradiance cache (post-pass on the live BVH) ---
-  // [B] placement + [C] gather/fill + neighbor clamp, then [D] interpolation
-  // into the debug `indirect` (E_cached) and `giRecordViz` (record-density) AOVs.
-  // The final color composite ([E]) is NOT wired in this step, so a gi==on render
-  // leaves res.color unchanged vs gi==off. Runs at the (supersampled) hi-res W*H.
-  if (opt.gi && meshPresent(built)) {
+  // --- diffuse GI post-pass on the live BVH, at the (supersampled) hi-res
+  // W*H. Two alternative indirect integrators share the seam: the surface
+  // irradiance cache (default) and the pt1 per-pixel path-traced gather
+  // (opt.giIntegrator == 1; experimental/pt1/). Both add giIntensity *
+  // giReflectance * E to res.color and fill the same `indirect` AOV, on top of
+  // the unchanged direct shading from the pixel loop above.
+  if (opt.gi && meshPresent(built) && opt.giIntegrator == 1) {
+    // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
+    // the sky through its miss term, so the combination counts the sky twice.
+    if (opt.envLights > 0)
+      std::fprintf(stderr,
+                   "warning: --integrator pt1 with env-dome lights (--env-light"
+                   " %d) double-counts the sky energy; use the gather sky "
+                   "(--sky/--sky-radiance) instead\n",
+                   opt.envLights);
+    // pt1 gather stub (plan Phase 1): dispatch + AOV plumbing only. The
+    // indirect AOV stays zero, so color equals the direct-only render.
+    std::fprintf(stderr, "pt1: integrator selected (stub) -- spp=%d res=%s\n",
+                 opt.pt1Spp, opt.pt1HalfRes ? "half" : "full");
+  } else if (opt.gi && meshPresent(built)) {
+    // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
+    // clamp, then [D] interpolation into the `indirect` (E_cached) and
+    // `giRecordViz` (record-density) AOVs and the [E] color composite.
     const Aabb b = scene.mesh.bounds();
     const float diag = b.valid() ? b.diagonal() : 1.0f;
     detail::IrradianceCacheParams gp;

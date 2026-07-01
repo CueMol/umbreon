@@ -48,6 +48,12 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  // --integrator pt1 implies the GI pipeline: the gi gate drives the ambient
+  // zeroing, the _amb_frac energy rebalance and the GI AOV plumbing, all of
+  // which pt1 shares with the cache. Without this a bare "--integrator pt1"
+  // would silently render with no GI at all.
+  if (opt.giIntegrator == 1) opt.gi = true;
+
   // Convert mode: read a PPM, write it in the requested format, and exit.
   if (opt.convertMode) {
     try {
@@ -471,16 +477,40 @@ int main(int argc, char** argv) {
     ropt.giSeedPerVertex = opt.giSeedPerVertex;
     ropt.giGradients = opt.giGradients;
     ropt.giOutlierReject = opt.giOutlierReject;
+    // pt1 integrator selection + knobs (giIntegrator == 0 leaves the cache
+    // path untouched; the pt1 fields are then never read).
+    ropt.giIntegrator = opt.giIntegrator;
+    ropt.pt1Spp = opt.pt1Spp;
+    ropt.pt1HalfRes = opt.pt1HalfRes;
+    ropt.pt1Denoise = opt.pt1Denoise;
+    ropt.pt1Seed = opt.pt1Seed;
+    ropt.pt1SkyMode = opt.pt1SkyMode;
+    for (int i = 0; i < 3; ++i) ropt.pt1SkyRadiance[i] = opt.pt1SkyRadiance[i];
+    ropt.pt1UpsampleNormalPow = opt.pt1UpsampleNormalPow;
+    ropt.pt1UpsampleDepthScale = opt.pt1UpsampleDepthScale;
     // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
-    // None otherwise. An explicit --denoiser (0/1/2) is honored as-is.
-    ropt.denoiser = opt.denoiser >= 0 ? opt.denoiser : (ropt.gi ? 1 : 0);
+    // None otherwise. An explicit --denoiser (0/1/2) is honored as-is. On the
+    // pt1 path the default is None: pt1 denoises its indirect irradiance
+    // buffer itself (--denoise, pre-composite), so a final-color denoise on
+    // top would smooth the same signal twice.
+    ropt.denoiser =
+        opt.denoiser >= 0
+            ? opt.denoiser
+            : ((ropt.gi && ropt.giIntegrator != 1) ? 1 : 0);
     ropt.denoiseIters = opt.denoiseIters;
     ropt.denoiseSigmaZ = opt.denoiseSigmaZ;
     ropt.denoiseSigmaN = opt.denoiseSigmaN;
     ropt.denoiseSigmaL = opt.denoiseSigmaL;
     ropt.denoiseDemodulateAlbedo = opt.denoiseDemodulateAlbedo;
     ropt.oidnCleanAux = opt.oidnCleanAux;
-    if (ropt.gi)
+    if (ropt.gi && ropt.giIntegrator == 1)
+      std::printf(
+          "  diffuse GI: pt1 path-traced gather, %d spp, %s res, denoise %s, "
+          "intensity %.2f, env %.2f\n",
+          ropt.pt1Spp, ropt.pt1HalfRes ? "half" : "full",
+          ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
+          ropt.giEnvIntensity);
+    else if (ropt.gi)
       std::printf(
           "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "
           "env %.2f%s\n",

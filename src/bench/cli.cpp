@@ -264,6 +264,49 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--gi-outlier-reject");
       if (o.ok && !parseBool(v, o.giOutlierReject))
         fail("--gi-outlier-reject expects on/off");
+    } else if (a == "--integrator") {
+      std::string v = value("--integrator");
+      if (v == "cache")
+        o.giIntegrator = 0;
+      else if (v == "pt1")
+        o.giIntegrator = 1;
+      else
+        fail("--integrator expects cache/pt1");
+    } else if (a == "--spp") {
+      o.pt1Spp = std::atoi(value("--spp").c_str());
+    } else if (a == "--indirect-res") {
+      std::string v = value("--indirect-res");
+      if (v == "full")
+        o.pt1HalfRes = false;
+      else if (v == "half")
+        o.pt1HalfRes = true;
+      else
+        fail("--indirect-res expects full/half");
+    } else if (a == "--denoise") {
+      std::string v = value("--denoise");
+      if (o.ok && !parseBool(v, o.pt1Denoise))
+        fail("--denoise expects on/off");
+    } else if (a == "--sky") {
+      std::string v = value("--sky");
+      if (v == "uniform")
+        o.pt1SkyMode = 0;
+      else if (v == "gradient")
+        o.pt1SkyMode = 1;
+      else
+        fail("--sky expects uniform/gradient");
+    } else if (a == "--sky-radiance") {
+      std::string v = value("--sky-radiance");
+      if (o.ok && !parseVec3(v, o.pt1SkyRadiance))
+        fail("--sky-radiance expects r,g,b");
+    } else if (a == "--seed") {
+      o.pt1Seed = static_cast<unsigned>(
+          std::strtoul(value("--seed").c_str(), nullptr, 10));
+    } else if (a == "--pt1-upsample-normal-pow") {
+      o.pt1UpsampleNormalPow = static_cast<float>(
+          std::atof(value("--pt1-upsample-normal-pow").c_str()));
+    } else if (a == "--pt1-upsample-depth-scale") {
+      o.pt1UpsampleDepthScale = static_cast<float>(
+          std::atof(value("--pt1-upsample-depth-scale").c_str()));
     } else if (a == "--denoiser") {
       std::string v = value("--denoiser");
       if (v == "none")
@@ -636,6 +679,16 @@ void printUsage(const char* prog) {
       "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
+      "  --integrator <cache|pt1> indirect GI integrator (pt1 implies --gi on)\n"
+      "                           [cache]\n"
+      "  --spp <int>              pt1 gather rays per pixel             [8]\n"
+      "  --indirect-res <full|half> pt1 gather resolution             [half]\n"
+      "  --denoise <on|off>       pt1 indirect-only OIDN denoise        [on]\n"
+      "  --sky <uniform|gradient> pt1 gather sky model            [uniform]\n"
+      "  --sky-radiance r,g,b     pt1 sky tint (x ambient energy)   [1,1,1]\n"
+      "  --seed <int>             pt1 per-pixel RNG seed                [0]\n"
+      "  --pt1-upsample-normal-pow <f> upsample normal edge-stop       [32]\n"
+      "  --pt1-upsample-depth-scale <f> upsample depth edge-stop     [0.02]\n"
       "  --compare <a> <b>        print PSNR/SSIM between two PPM files\n"
       "  --convert <in> <out>     convert a PPM to PNG/PPM\n"
       "  -h, --help               show this help\n",

@@ -53,6 +53,18 @@ struct Options {
   bool giGradients = false;     // Ward-Heckbert gradient interpolation
   bool giOutlierReject = true;  // lift isolated fully-occluded dark records
 
+  // --- pt1: experimental path-traced indirect integrator (--integrator pt1;
+  // implies --gi on so the GI plumbing/energy rebalance applies identically) ---
+  int giIntegrator = 0;         // 0 = irradiance cache (default), 1 = pt1
+  int pt1Spp = 8;               // --spp: gather rays per pixel
+  bool pt1HalfRes = true;       // --indirect-res half|full
+  bool pt1Denoise = true;       // --denoise on|off (indirect-only OIDN)
+  unsigned pt1Seed = 0;         // --seed: deterministic per-pixel RNG seed
+  int pt1SkyMode = 0;           // --sky uniform|gradient
+  float pt1SkyRadiance[3] = {1.0f, 1.0f, 1.0f};  // --sky-radiance r,g,b
+  float pt1UpsampleNormalPow = 32.0f;   // --pt1-upsample-normal-pow
+  float pt1UpsampleDepthScale = 0.02f;  // --pt1-upsample-depth-scale
+
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI
   // renders stay byte-identical and GI renders denoise by default). An explicit
