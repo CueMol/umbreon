@@ -519,6 +519,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     const auto tg1 = std::chrono::high_resolution_clock::now();
     res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
+    // Denoise the indirect irradiance ONLY (pre-composite; direct light and
+    // albedo are noise-free): OIDN on E with the reflectance/normal guides.
+    if (opt.pt1Denoise) {
+      const auto td0 = std::chrono::high_resolution_clock::now();
+      detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
+                          res.position.data(), opt);
+      const auto td1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.denoise = std::chrono::duration<double>(td1 - td0).count();
+    }
+
     // [E] composite -- same form as the cache path: L += giIntensity *
     // (mat.diffuse * pigment) * E. The constant ambient was already dropped in
     // the shade (gi path); occlusion lives inside E, counted exactly once.
@@ -543,8 +553,9 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       }
     });
 
-    std::fprintf(stderr, "pt1: full-res gather %dx%d spp=%d -> %.3fs\n", W, H,
-                 spp, res.pt1Timing.gather);
+    std::fprintf(stderr,
+                 "pt1: full-res gather %dx%d spp=%d -> %.3fs (denoise %.3fs)\n",
+                 W, H, spp, res.pt1Timing.gather, res.pt1Timing.denoise);
   } else if (opt.gi && meshPresent(built)) {
     // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
     // clamp, then [D] interpolation into the `indirect` (E_cached) and

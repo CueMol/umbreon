@@ -249,5 +249,16 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
       });
 }
 
+// Denoise the E buffer (w*h*3 indirect irradiance, pre-composite) in place:
+// NaN/Inf scrub, then OIDN with albedo/normal guides (a-trous fallback when
+// the build has no OIDN). albedo is the receiver reflectance kd*pigment in
+// [0,1] (the giRefl side-channel at full res, the pt1 G-buffer at half res);
+// normal marks background with zero vectors; position feeds the a-trous depth
+// edge-stop. Any guide may be null. Defined in pt1_denoise.cpp (NOT inline:
+// UMBREON_HAVE_OIDN is a target-private macro, see there).
+void denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
+                 const float* normal, const float* position,
+                 const RenderOptions& opt);
+
 }  // namespace detail
 }  // namespace umbreon

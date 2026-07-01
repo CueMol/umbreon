@@ -129,5 +129,42 @@ int main() {
             approxRel(occ, 0.5f, 0.03f));
   }
 
+  // --- 4. denoisePt1E sanity (plan Phase 4): a constant irradiance field must
+  // come back (approximately) constant, and a NaN-poisoned buffer must come
+  // back finite (the scrub runs before the backend).
+  {
+    const int w = 32, h = 32;
+    const std::size_t npix = static_cast<std::size_t>(w) * h;
+    std::vector<float> albedo(npix * 3, 0.7f);
+    std::vector<float> normal(npix * 3, 0.0f);
+    std::vector<float> pos(npix * 3, 0.0f);
+    for (std::size_t pix = 0; pix < npix; ++pix) {
+      normal[pix * 3 + 2] = 1.0f;  // flat +z plane
+      const std::size_t col = pix % static_cast<std::size_t>(w);
+      const std::size_t row = pix / static_cast<std::size_t>(w);
+      pos[pix * 3 + 0] = static_cast<float>(col) * 0.1f;
+      pos[pix * 3 + 1] = static_cast<float>(row) * 0.1f;
+    }
+    umbreon::RenderOptions opt;
+
+    std::vector<float> E(npix * 3, 0.5f);
+    umbreon::detail::denoisePt1E(w, h, E, albedo.data(), normal.data(),
+                                 pos.data(), opt);
+    float maxDev = 0.0f;
+    for (float v : E) maxDev = std::fmax(maxDev, std::fabs(v - 0.5f));
+    s.check("denoise: constant field stays constant (dev < 0.05)",
+            maxDev < 0.05f);
+
+    std::vector<float> Enan(npix * 3, 0.5f);
+    for (std::size_t i = 0; i < Enan.size(); i += 97)
+      Enan[i] = std::numeric_limits<float>::quiet_NaN();
+    Enan[5] = std::numeric_limits<float>::infinity();
+    umbreon::detail::denoisePt1E(w, h, Enan, albedo.data(), normal.data(),
+                                 pos.data(), opt);
+    bool allFinite = true;
+    for (float v : Enan) allFinite = allFinite && std::isfinite(v);
+    s.check("denoise: NaN/Inf input comes back finite", allFinite);
+  }
+
   return s.report();
 }
