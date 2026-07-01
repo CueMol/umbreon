@@ -19,6 +19,7 @@
 #include "shading/hit_shader.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_integrator.hpp"
+#include "experimental/pt1/pt1_upsample.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -512,21 +513,70 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     }
 
     std::vector<float> Ebuf, occBuf;
-    const auto tg0 = std::chrono::high_resolution_clock::now();
-    detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
-                          /*geomNormal=*/nullptr, eligible.data(), spp,
-                          opt.pt1Seed, diag, Ebuf, occBuf);
-    const auto tg1 = std::chrono::high_resolution_clock::now();
-    res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+    if (opt.pt1HalfRes) {
+      // Half of the RENDER grid (which is the supersampled hi-res W x H; use
+      // --supersample 1 for benchmarks so "half" means half the output). The
+      // half pass shoots its own primary rays at the half-pixel centers (=
+      // full-grid 2x2 block centers) into a private G-buffer, gathers and
+      // denoises there, then joint-bilateral-upsamples E to the render grid.
+      const int hw = (W + 1) / 2, hh = (H + 1) / 2;
+      detail::Pt1CameraBasis camb;
+      camb.position = cam.position;
+      camb.dir = dir;
+      camb.right = right;
+      camb.trueUp = trueUp;
+      camb.orthographic = cam.orthographic;
+      camb.halfW = halfW;
+      camb.halfH = halfH;
+      camb.persHalfW = persHalfW;
+      camb.persHalfH = persHalfH;
 
-    // Denoise the indirect irradiance ONLY (pre-composite; direct light and
-    // albedo are noise-free): OIDN on E with the reflectance/normal guides.
-    if (opt.pt1Denoise) {
-      const auto td0 = std::chrono::high_resolution_clock::now();
-      detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
-                          res.position.data(), opt);
-      const auto td1 = std::chrono::high_resolution_clock::now();
-      res.pt1Timing.denoise = std::chrono::duration<double>(td1 - td0).count();
+      detail::Pt1GBuffer g;
+      std::vector<float> Eh, occh;
+      const auto tg0 = std::chrono::high_resolution_clock::now();
+      detail::tracePt1GBuffer(gp, camb, hw, hh, g);
+      // The private G-buffer carries the geometric normal, so the gather's
+      // below-horizon guard is exact here (full-res mode approximates Ng = N).
+      detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
+                            g.geomNormal.data(), g.hit.data(), spp,
+                            opt.pt1Seed, diag, Eh, occh);
+      const auto tg1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      if (opt.pt1Denoise) {
+        const auto td0 = std::chrono::high_resolution_clock::now();
+        detail::denoisePt1E(hw, hh, Eh, g.albedo.data(), g.normal.data(),
+                            g.position.data(), opt);
+        const auto td1 = std::chrono::high_resolution_clock::now();
+        res.pt1Timing.denoise =
+            std::chrono::duration<double>(td1 - td0).count();
+      }
+
+      const auto tu0 = std::chrono::high_resolution_clock::now();
+      detail::upsampleJointBilateral(
+          W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
+          occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
+          occBuf);
+      const auto tu1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
+    } else {
+      const auto tg0 = std::chrono::high_resolution_clock::now();
+      detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
+                            /*geomNormal=*/nullptr, eligible.data(), spp,
+                            opt.pt1Seed, diag, Ebuf, occBuf);
+      const auto tg1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      // Denoise the indirect irradiance ONLY (pre-composite; direct light and
+      // albedo are noise-free): OIDN on E with the reflectance/normal guides.
+      if (opt.pt1Denoise) {
+        const auto td0 = std::chrono::high_resolution_clock::now();
+        detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
+                            res.position.data(), opt);
+        const auto td1 = std::chrono::high_resolution_clock::now();
+        res.pt1Timing.denoise =
+            std::chrono::duration<double>(td1 - td0).count();
+      }
     }
 
     // [E] composite -- same form as the cache path: L += giIntensity *
@@ -554,8 +604,11 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     });
 
     std::fprintf(stderr,
-                 "pt1: full-res gather %dx%d spp=%d -> %.3fs (denoise %.3fs)\n",
-                 W, H, spp, res.pt1Timing.gather, res.pt1Timing.denoise);
+                 "pt1: %s-res gather %dx%d spp=%d -> gather %.3fs denoise "
+                 "%.3fs upsample %.3fs\n",
+                 opt.pt1HalfRes ? "half" : "full", W, H, spp,
+                 res.pt1Timing.gather, res.pt1Timing.denoise,
+                 res.pt1Timing.upsample);
   } else if (opt.gi && meshPresent(built)) {
     // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
     // clamp, then [D] interpolation into the `indirect` (E_cached) and

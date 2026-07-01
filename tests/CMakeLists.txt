@@ -40,6 +40,11 @@ if(TARGET umbreon)
   target_link_libraries(test_pt1_gather PRIVATE umbreon)
   add_test(NAME pt1_gather COMMAND test_pt1_gather)
 
+  # pt1 joint bilateral upsample unit tests.
+  add_executable(test_pt1_upsample test_pt1_upsample.cpp)
+  target_link_libraries(test_pt1_upsample PRIVATE umbreon)
+  add_test(NAME pt1_upsample COMMAND test_pt1_upsample)
+
   add_executable(test_fog test_fog.cpp)
   target_link_libraries(test_fog PRIVATE umbreon)
   add_test(NAME fog COMMAND test_fog)
