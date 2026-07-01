@@ -23,6 +23,12 @@ add_test(
 # Tests that need the rendering library (fog, image helpers, the render pipeline)
 # are built only when the umbreon target exists (Embree + TBB available).
 if(TARGET umbreon)
+  # pt1 Phase 0 smoke test: raw Embree 4 triangle hit/miss (no umbreon code,
+  # but requires the Embree dependency the umbreon target implies).
+  add_executable(test_pt1_embree test_pt1_embree.cpp)
+  target_link_libraries(test_pt1_embree PRIVATE umbreon)
+  add_test(NAME pt1_embree COMMAND test_pt1_embree)
+
   add_executable(test_fog test_fog.cpp)
   target_link_libraries(test_fog PRIVATE umbreon)
   add_test(NAME fog COMMAND test_fog)
