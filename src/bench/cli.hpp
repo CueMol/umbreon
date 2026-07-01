@@ -32,6 +32,12 @@ struct Options {
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows
 
+  // --- environment dome lighting (synthetic; replaces flashlight look) ---
+  int envLights = 0;            // dome light count (0 = off; ~24-48 smooth)
+  float envIntensity = 1.0f;    // diffuse irradiance on a fully-exposed point
+  float envKeyScale = 0.0f;     // scale on the scene's own lights (0 = dome only)
+  float envAngle = 90.0f;       // dome half-angle around camera-forward (deg)
+
   // --- diffuse GI: surface irradiance cache (--gi) ---
   bool gi = false;              // master gate; off => byte-identical default
   int giSamples = 64;           // hemisphere gather rays per record

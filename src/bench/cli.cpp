@@ -298,6 +298,16 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--light-radius") {
       o.lightRadius =
           static_cast<float>(std::atof(value("--light-radius").c_str()));
+    } else if (a == "--env-light") {
+      o.envLights = std::atoi(value("--env-light").c_str());
+    } else if (a == "--env-intensity") {
+      o.envIntensity =
+          static_cast<float>(std::atof(value("--env-intensity").c_str()));
+    } else if (a == "--env-key-scale") {
+      o.envKeyScale =
+          static_cast<float>(std::atof(value("--env-key-scale").c_str()));
+    } else if (a == "--env-angle") {
+      o.envAngle = static_cast<float>(std::atof(value("--env-angle").c_str()));
     } else if (a == "--pov-gain") {
       o.povGain = static_cast<float>(std::atof(value("--pov-gain").c_str()));
     } else if (a == "--outline-scale") {
@@ -602,6 +612,10 @@ void printUsage(const char* prog) {
       "  --shadows <on|off>       cast shadows from lights           [off]\n"
       "  --shadow-samples <int>   shadow rays/light (>1 = soft)       [1]\n"
       "  --light-radius <float>   light angular radius deg (soft)     [0]\n"
+      "  --env-light <int>        dome lights (0=off; ~32 = soft sky) [0]\n"
+      "  --env-intensity <float>  dome irradiance on exposed point    [1.0]\n"
+      "  --env-key-scale <float>  scale scene lights w/ dome (0=dome) [0]\n"
+      "  --env-angle <deg>        dome half-angle about camera        [90]\n"
       "  --gi <on|off>            diffuse GI surface irradiance cache [off]\n"
       "  --gi-samples <int>       hemisphere gather rays per record    [64]\n"
       "  --gi-bounces <int>       indirect bounces (1 = one-bounce)     [1]\n"

@@ -451,6 +451,10 @@ int main(int argc, char** argv) {
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;
+    ropt.envLights = opt.envLights;
+    ropt.envIntensity = opt.envIntensity;
+    ropt.envKeyScale = opt.envKeyScale;
+    ropt.envAngle = opt.envAngle;
 
     // Diffuse GI: surface irradiance cache (steps 1-3: cache build + fill +
     // debug AOVs; the final composite is not wired yet, so color is unchanged).
