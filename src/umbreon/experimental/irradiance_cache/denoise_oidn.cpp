@@ -2,7 +2,7 @@
 // located OpenImageDenoise (CMake: UMBREON_WITH_OIDN=ON => UMBREON_HAVE_OIDN). The
 // pipeline guards the call with the same macro, so this translation unit is absent
 // from the link when OIDN is unavailable.
-#include "render/denoise.hpp"
+#include "experimental/irradiance_cache/denoise.hpp"
 
 #ifdef UMBREON_HAVE_OIDN
 

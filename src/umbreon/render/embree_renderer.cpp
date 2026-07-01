@@ -14,8 +14,9 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
+#include "ao/env_dome.hpp"
 #include "shading/hit_shader.hpp"
-#include "render/irradiance_cache.hpp"
+#include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -257,6 +258,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     l.radius = radians(opt.lightRadius);  // soft-shadow angular radius (0 = hard)
     lights.push_back(l);
   }
+  // Environment dome fill (opt.envLights > 0): a hemisphere of distant diffuse-
+  // only lights around the camera-forward axis, meant to be used together with
+  // AO. Appended to `lights` here; the estimator lives in ao/env_dome.hpp.
+  buildEnvDomeLights(lights, opt, dir, right, trueUp);
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
   // term is material.ambient * pigment, applied below via ambK.
   const Vec3 ambLight = scene.ambientColor;  // expected <1,1,1> on the embree path

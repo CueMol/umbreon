@@ -12,8 +12,8 @@
 #include "test_util.hpp"
 #include "umbreon.hpp"
 
-#include "render/irradiance_cache.hpp"  // detail::rejectDarkOutliers unit test
-#include "render/denoise.hpp"           // denoiseAtrous unit test
+#include "experimental/irradiance_cache/irradiance_cache.hpp"  // detail::rejectDarkOutliers unit test
+#include "experimental/irradiance_cache/denoise.hpp"           // denoiseAtrous unit test
 
 namespace {
 

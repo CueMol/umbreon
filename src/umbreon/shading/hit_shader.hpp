@@ -14,6 +14,7 @@
 
 #include <embree4/rtcore.h>
 
+#include "ao/ao_shade.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
@@ -65,83 +66,6 @@ struct ShadeContext {
   Vec3 aoUp{0.0f, 1.0f, 0.0f};
 };
 
-// AO shading factors for one hit, shared by the mesh branch and the real-
-// primitive (atom/bond) branch so both darken identically. Encapsulates the
-// openness gather -> per-channel aoFactor (ambient term), the bent-normal
-// sky/ground ambient, and the optional direct-diffuse darkening (diffuseAo).
-// Returns neutral factors (no darkening, ambLight == c.ambLight) when AO is off
-// (aoSamples == 0), so a flag-less render is byte-identical. P/Ng/N/secEps are
-// the hit point, geometric normal, face-forwarded shading normal and secondary-
-// ray epsilon; C is the pigment (for the albedo-aware multibounce lift).
-struct AoShade {
-  Vec3 aoFactor{1.0f, 1.0f, 1.0f};
-  Vec3 ambLight;
-  float diffuseAo = 1.0f;
-  AOResult aov;  // captured for the G-buffer AOVs (default = fully open)
-};
-
-inline AoShade computeAoShade(RTCScene rscene, const ShadeContext& c,
-                              const Vec3& P, const Vec3& Ng, const Vec3& N,
-                              const Vec3& C, float secEps, uint32_t px,
-                              uint32_t py) {
-  AoShade r;
-  r.ambLight = c.ambLight;
-  if (c.opt.aoSamples <= 0) return r;
-  float openness;
-  if (c.opt.aoEnhanced()) {
-    AOParams ap;
-    ap.nSamples = c.opt.aoSamples;
-    ap.radius = c.opt.aoDistance;
-    ap.falloffPower = c.opt.aoFalloffPower;
-    ap.multiScale = c.opt.aoMultiScale;
-    ap.lowDiscrepancy = c.opt.aoLowDiscrepancy;
-    r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, c.opt.width);
-    openness = r.aov.openness;
-    // Directional ambient: a 2-color sky/ground hemisphere gradient sampled along
-    // the bent normal (the average unoccluded direction). White sky == ground
-    // collapses to the plain scene ambient (neutral).
-    if (c.opt.aoBentNormal) {
-      const float w = 0.5f * (dot(r.aov.bent, c.aoUp) + 1.0f);
-      const float gx = c.opt.aoGroundColor[0], sx = c.opt.aoSkyColor[0];
-      const float gy = c.opt.aoGroundColor[1], sy = c.opt.aoSkyColor[1];
-      const float gz = c.opt.aoGroundColor[2], sz = c.opt.aoSkyColor[2];
-      r.ambLight = Vec3{c.ambLight.x * (gx + (sx - gx) * w),
-                        c.ambLight.y * (gy + (sy - gy) * w),
-                        c.ambLight.z * (gz + (sz - gz) * w)};
-    }
-  } else {
-    openness = computeAO(rscene, P, Ng, N, secEps, c.opt.aoSamples,
-                         c.opt.aoDistance, px, py, c.opt.width);
-    // Color stays on the bit-exact legacy path; if AOVs are requested, derive the
-    // contact/shape/bent/avgHitDist channels with one extra (single-scale)
-    // quality pass that does NOT feed the color.
-    if (c.opt.aoWriteAov) {
-      AOParams ap;
-      ap.nSamples = c.opt.aoSamples;
-      ap.radius = c.opt.aoDistance;
-      r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, c.opt.width);
-    }
-  }
-  if (c.opt.aoMultibounce) {
-    // Lift each channel by its pigment albedo so light cavities don't crush to
-    // black (single-bounce AO assumes a black surface).
-    const float ox = aoMultibounce(openness, C.x);
-    const float oy = aoMultibounce(openness, C.y);
-    const float oz = aoMultibounce(openness, C.z);
-    r.aoFactor = Vec3{1.0f - c.opt.aoIntensity * (1.0f - ox),
-                      1.0f - c.opt.aoIntensity * (1.0f - oy),
-                      1.0f - c.opt.aoIntensity * (1.0f - oz)};
-  } else {
-    const float s = 1.0f - c.opt.aoIntensity * (1.0f - openness);
-    r.aoFactor = Vec3{s, s, s};
-  }
-  // Optional indirect-shadowing approximation: also darken direct diffuse in
-  // cavities (off by default => diffuseAo == 1 => bit-exact).
-  if (c.opt.aoDiffuseFactor > 0.0f)
-    r.diffuseAo = 1.0f - c.opt.aoDiffuseFactor * (1.0f - openness);
-  return r;
-}
-
 // Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
 // the ray origin, and (px, py) the hi-res pixel (for deterministic AO/shadow
 // sampling).
@@ -150,6 +74,10 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                          uint32_t py) {
   HitShade hs;
   RTCScene rscene = c.built.scene;
+  // The environment dome (opt.envLights > 0) only works if its lights cast
+  // shadows, so it implicitly turns shadows on (in addition to the explicit
+  // --shadows flag). Outline primitives are still excluded at their call site.
+  const bool shadowsActive = c.opt.shadows || c.opt.envLights > 0;
   const GeomRecord& rec = c.built.records[rh.hit.geomID];
   const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
   if (rec.kind == GeomKind::Mesh) {
@@ -192,7 +120,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // (aoEnhanced) the multi-scale/falloff estimator runs instead; otherwise the
     // legacy binary computeAO runs verbatim, keeping --ao-samples-only renders
     // bit-identical too.
-    AoShade ao = computeAoShade(rscene, c, P, Ng, N, C, secEps, px, py);
+    AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
+                                secEps, px, py);
     Vec3 aoFactor = ao.aoFactor;
     Vec3 ambLight = ao.ambLight;
     float diffuseAo = ao.diffuseAo;  // direct-diffuse AO scale (1 = ambient-only)
@@ -226,7 +155,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
-                          rscene, c.opt.shadows, c.opt.shadowSamples, px, py);
+                          rscene, shadowsActive, c.opt.shadowSamples, px, py);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
     // Edge G-buffer (only when the stroke edge pass is on; otherwise the
@@ -277,12 +206,12 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     const float secEps = selfIntersectEps(P, rd, rh.ray.tfar);
     // Distinguish a REAL CSG primitive (CueMol VdW atom ball / chemical bond)
     // from a baked NPR outline decoration (silhouette edge cylinder / joint dot)
-    // via the fromEdge side-tables. Real primitives receive AO exactly like the
-    // mesh (so a CPK atom in a pocket darkens like the SES around it); outline
-    // decoration stays flat -- the original "never AO-darkened" gate, now scoped
-    // to outline geometry only. Shadows remain off for all primitives.
-    // With AO off (aoSamples == 0) computeAoShade returns neutral factors, so
-    // the flag-less render is byte-identical to before.
+    // via the fromEdge side-tables. Real primitives receive AO AND cast/receive
+    // shadows exactly like the mesh (so a CPK atom buried in a pocket darkens
+    // like the SES around it instead of floating bright); outline decoration
+    // stays flat and unshadowed -- the original gate, now scoped to outline
+    // geometry only. With AO and shadows off (aoSamples == 0, shadows == false)
+    // the helper/shadow are neutral, so the flag-less render is byte-identical.
     const bool fromEdge =
         isSphere ? (!c.built.sphereFromEdge.empty() &&
                     c.built.sphereFromEdge[rh.hit.primID])
@@ -294,14 +223,18 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     Vec3 ambLight = c.ambLight;
     float diffuseAo = 1.0f;
     if (!fromEdge) {
-      AoShade ao = computeAoShade(rscene, c, P, Ng, N, C, secEps, px, py);
+      AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
+                                secEps, px, py);
       aoFactor = ao.aoFactor;
       ambLight = ao.ambLight;
       diffuseAo = ao.diffuseAo;
     }
+    // Real primitives receive light shadows (a buried atom is occluded from the
+    // lights); outline decoration is never shadowed (silhouette must not darken).
+    const bool primShadows = !fromEdge && shadowsActive;
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
-                          c.opt.specularScale, aoFactor, diffuseAo, P,
-                          Ng, secEps, rscene, false, 1, px, py);
+                          c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
+                          rscene, primShadows, c.opt.shadowSamples, px, py);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]

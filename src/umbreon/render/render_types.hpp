@@ -347,7 +347,8 @@ struct RenderOptions {
   // --- diffuse GI: adaptive surface irradiance cache (mesh hits only) ---
   // Default gi == false => no cache pass at all, byte-identical to the local-
   // shading render. When on, a deterministic set of surface cache records is
-  // placed and filled by hemisphere gather (see render/irradiance_cache.hpp);
+  // placed and filled by hemisphere gather (see
+  // experimental/irradiance_cache/irradiance_cache.hpp);
   // the interpolated indirect irradiance is exposed as the `indirect` AOV.
   // NOTE (steps 1-3): the gather + cache are built and visualized via AOVs, but
   // the final composite ([E], L += gi*kd*E_cached) is NOT wired yet, so a gi==on
@@ -393,6 +394,21 @@ struct RenderOptions {
   bool shadows = false;        // cast shadows from the lights; false = off
   int shadowSamples = 1;       // shadow rays per light (>1 = soft area light)
   float lightRadius = 0.0f;    // light angular radius (deg); >0 = soft shadows
+
+  // --- environment dome lighting (synthetic, computed in the renderer; NOT read
+  // from the scene/POV) --- A hemisphere of distant lights around the camera-
+  // forward axis approximating sky/environment illumination: exposed surfaces are
+  // lit softly from many directions (form-revealing, no frontal "flashlight"),
+  // while recesses and buried atoms darken via real shadows. This is the lighting
+  // route to the radiosity-like "clean exposed + dark recess" look without the
+  // muddiness of darkening direct diffuse by openness (aoDiffuseFactor). Opt-in:
+  // envLights == 0 leaves the scene's own lights untouched (byte-identical). When
+  // on, shadows are implicitly active and the dome lights are diffuse-only (no
+  // specular). The scene's own lights are scaled by envKeyScale (0 = dome only).
+  int envLights = 0;           // dome light count (0 = off; ~24-48 for smooth)
+  float envIntensity = 1.0f;   // diffuse irradiance on a fully-exposed (camera-facing) point
+  float envKeyScale = 0.0f;    // scale applied to the scene's own lights when the dome is on
+  float envAngle = 90.0f;      // dome half-angle around camera-forward (deg)
 
   // --- shading ---
   float specularScale = 1.0f;  // multiplies each material's specular weight

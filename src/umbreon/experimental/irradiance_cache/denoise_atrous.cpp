@@ -1,4 +1,4 @@
-#include "render/denoise.hpp"
+#include "experimental/irradiance_cache/denoise.hpp"
 
 #include <algorithm>
 #include <cmath>

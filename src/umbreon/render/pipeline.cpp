@@ -10,7 +10,7 @@
 #include "edges/stroke_edges.hpp"
 #include "postprocess/fog.hpp"
 #include "postprocess/image_ops.hpp"
-#include "render/denoise.hpp"
+#include "experimental/irradiance_cache/denoise.hpp"
 #include "render/embree_renderer.hpp"
 
 namespace umbreon {

@@ -114,7 +114,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/scene_build.cpp
     src/umbreon/render/curve_build.cpp
     src/umbreon/render/pipeline.cpp
-    src/umbreon/render/denoise_atrous.cpp
+    src/umbreon/experimental/irradiance_cache/denoise_atrous.cpp
     src/umbreon/postprocess/fog.cpp
     src/umbreon/postprocess/image_ops.cpp
     src/umbreon/edges/stroke_edges.cpp
@@ -147,7 +147,8 @@ if(EMBREE_LINK AND TBB_LINK)
   if(UMBREON_WITH_OIDN)
     find_package(OpenImageDenoise 2 CONFIG QUIET)
     if(OpenImageDenoise_FOUND)
-      target_sources(umbreon PRIVATE src/umbreon/render/denoise_oidn.cpp)
+      target_sources(umbreon PRIVATE
+        src/umbreon/experimental/irradiance_cache/denoise_oidn.cpp)
       target_compile_definitions(umbreon PRIVATE UMBREON_HAVE_OIDN)
       target_link_libraries(umbreon PUBLIC OpenImageDenoise)
       message(STATUS
