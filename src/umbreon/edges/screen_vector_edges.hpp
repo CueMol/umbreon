@@ -103,4 +103,42 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
                           const ScreenProj& sp,
                           const ScreenClassifyParams& params);
 
+// One traced chain vertex, in STROKE pixel coordinates: the pixel-corner
+// lattice node (cx,cy), cx in [0..W], cy in [0..H], maps to (cx-0.5, cy-0.5)
+// (pixel (x,y) center == stroke coordinate (x,y)). vz is the mean owner-pixel
+// linear view-z of the vertex's adjacent edgels (0 when the tracer was given
+// no viewZ buffer).
+struct ScreenChainVert {
+  float x = 0.0f, y = 0.0f;
+  float vz = 0.0f;
+};
+
+// One traced chain: an ordered corner-lattice polyline. A closed loop
+// duplicates the seed vertex at the end (pts.front() == pts.back()). Per
+// EDGEL (pts.size()-1 entries): the CrackClass and the owner pixel's section
+// group (objectId >> 2; 0 when the tracer was given no objectId buffer).
+struct ScreenChain {
+  std::vector<ScreenChainVert> pts;
+  std::vector<std::uint8_t> edgeClass;
+  std::vector<std::uint16_t> edgeGroup;
+  bool closed = false;
+};
+
+// Stage 2: trace the classified cracks into maximal continuous chains,
+// deterministically. Corners are lattice nodes of active-crack degree <= 4; a
+// corner of degree 1, 3 or 4 is a TERMINAL (chain endpoint / junction), a
+// degree-2 corner is interior. Pass 1 scans corners in row-major id order and
+// walks every unconsumed crack incident to a terminal (fixed direction order
+// E, S, W, N), producing maximal junction-to-junction open chains; pass 2
+// scans the remaining cracks in array order (right plane, then down) -- all on
+// pure degree-2 cycles -- and emits closed loops. Every active crack is
+// consumed exactly once (the consumed bit in `cf` is set; class bits are
+// preserved). viewZ / objectId are the SAME hi-res buffers given to
+// classifyCracks, used to attribute per-edgel owner vz / group; either may be
+// null (attributes then stay 0).
+std::vector<ScreenChain> traceCrackChains(CrackField& cf,
+                                          const float* viewZ = nullptr,
+                                          const std::uint32_t* objectId =
+                                              nullptr);
+
 }  // namespace umbreon
