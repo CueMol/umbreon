@@ -1,15 +1,12 @@
-// Integration test for the SCREEN-SPACE vector edge source
-// (--stroke-source screen): render a real tube scene end-to-end with
-// strokeEdges.enable + StrokeSource::Screen and verify
+// Integration test for the screen-space vector edge source
+// (--edges): render a real tube scene end-to-end with
+// strokeEdges.enable and verify
 //   (a) the screen source INKS: the frame gains dark stroke pixels over the
 //       no-edges render of the same scene;
 //   (b) the extraction invariants hold on the frame's own AOVs: re-running
 //       classifyCracks + traceCrackChains consumes every active crack exactly
 //       once, and every open chain terminates at a lattice junction (degree
-//       1, 3 or 4) -- the continuity-by-construction contract on real data;
-//   (c) the mesh source still renders under the same options object (the
-//       dispatch does not disturb it; byte-level mesh-path equivalence is
-//       locked separately by test_edge_regression).
+//       1, 3 or 4) -- the continuity-by-construction contract on real data.
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -84,7 +81,6 @@ int main(int argc, char** argv) {
 
   umbreon::RenderOptions ropt = base;
   ropt.strokeEdges.enable = true;
-  ropt.strokeEdges.source = umbreon::StrokeSource::Screen;
   umbreon::FrameResult fScreen = umbreon::render(scene, ropt);
 
   // (a) the screen source inks.
@@ -120,13 +116,6 @@ int main(int argc, char** argv) {
   s.check_eq("every active crack consumed exactly once", edgels,
              static_cast<std::size_t>(active));
   s.check("open chains terminate at junctions (degree != 2)", endpointsOk);
-
-  // (c) the mesh source still renders under the same options object.
-  umbreon::RenderOptions mopt = ropt;
-  mopt.strokeEdges.source = umbreon::StrokeSource::Mesh;
-  umbreon::FrameResult fMesh = umbreon::render(scene, mopt);
-  s.check("mesh source still inks under the dispatch",
-          darkPixels(fMesh, 0.1f) > darkPixels(fPlain, 0.1f) + 50);
 
   return s.report();
 }

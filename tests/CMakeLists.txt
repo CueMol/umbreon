@@ -61,25 +61,9 @@ if(TARGET umbreon)
   target_link_libraries(test_mesh_indexed PRIVATE umbreon)
   add_test(NAME mesh_indexed COMMAND test_mesh_indexed)
 
-  add_executable(test_edges_default test_edges_default.cpp)
-  target_link_libraries(test_edges_default PRIVATE umbreon)
-  add_test(NAME edges_default COMMAND test_edges_default)
-
   add_executable(test_object_space_edges test_object_space_edges.cpp)
   target_link_libraries(test_object_space_edges PRIVATE umbreon)
   add_test(NAME object_space_edges COMMAND test_object_space_edges)
-
-  add_executable(test_edge_visibility test_edge_visibility.cpp)
-  target_link_libraries(test_edge_visibility PRIVATE umbreon)
-  add_test(NAME edge_visibility COMMAND test_edge_visibility)
-
-  add_executable(test_stroke_edges test_stroke_edges.cpp)
-  target_link_libraries(test_stroke_edges PRIVATE umbreon)
-  add_test(NAME stroke_edges COMMAND test_stroke_edges)
-
-  add_executable(test_stroke_analytic test_stroke_analytic.cpp)
-  target_link_libraries(test_stroke_analytic PRIVATE umbreon)
-  add_test(NAME stroke_analytic COMMAND test_stroke_analytic)
 
   add_executable(test_screen_vector_edges test_screen_vector_edges.cpp)
   target_link_libraries(test_screen_vector_edges PRIVATE umbreon)
@@ -93,16 +77,4 @@ if(TARGET umbreon)
            COMMAND test_screen_vector_integration
                    ${CMAKE_SOURCE_DIR}/data/edges/edge_tube1.pov)
 
-  # Real-data edge-pass equivalence: indexed vs de-indexed mesh must render the
-  # same with stroke edges on. Loads .pov scenes via bench_core, renders via
-  # umbreon. Screen-space tube/ribbon edge-validation scenes + a ribbon scene.
-  add_executable(test_edge_regression test_edge_regression.cpp)
-  target_link_libraries(test_edge_regression PRIVATE umbreon bench_core)
-  add_test(
-    NAME edge_regression
-    COMMAND test_edge_regression
-            ${CMAKE_SOURCE_DIR}/data/edges/edge_tube1.pov
-            ${CMAKE_SOURCE_DIR}/data/edges/edge_ribbon1.pov
-            ${CMAKE_SOURCE_DIR}/data/edges/edge_ribbon2.pov
-            ${CMAKE_SOURCE_DIR}/data/1ab0_scene1.pov)
 endif()

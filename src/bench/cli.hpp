@@ -257,12 +257,7 @@ struct Options {
   // Default 6 stops a twisted ribbon over-hiding its own silhouette; 0 = legacy.
   int strokeSelfExcludeRings = 6;
   bool strokeSelfExcludeRingsSet = false;
-  // --stroke-source <mesh|screen>: chain extractor. mesh (default) = the
-  // Freestyle topology pipeline; screen = AOV crack tracing (tessellation-
-  // independent, z-buffer visibility, no QI). Style flags apply to both;
-  // the --edge-qi-* flags are mesh-only.
-  bool strokeSourceScreen = false;
-  // --- screen-source tuning (--stroke-source screen only) ---
+  // --- screen-source tuning ---
   float strokeDepthGap = 12.0f;     // --stroke-depth-gap, world units / px
   float strokeScreenSimplify = 0.4f;  // --stroke-screen-simplify, FINAL px
   int strokeScreenSmooth = 2;         // --stroke-screen-smooth, Chaikin iters

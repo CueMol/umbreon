@@ -49,15 +49,6 @@ struct EdgeStyle {
   EdgeClassStyle cls[static_cast<int>(EdgeClass::Count)];
 };
 
-// Which extractor produces the stroke chains (--stroke-source). Mesh (default)
-// is the Freestyle-faithful topology pipeline below; Screen vectorizes the
-// per-pixel edge AOVs (viewZ/objectId/normal) by crack tracing
-// (edges/screen_vector_edges.hpp) -- tessellation-independent, continuous by
-// construction, visibility exact from the z-buffer (no QI rays). Both sources
-// share the stylization + rasterization back half (edges/stroke_render.hpp),
-// so all style flags apply to either.
-enum class StrokeSource : uint8_t { Mesh = 0, Screen = 1 };
-
 // --- Freestyle-style stroke edge rendering (--edges) ----------------------
 // Options for the STROKE edge pipeline (render/stroke_edges.cpp), the
 // Freestyle-faithful replacement for the retired per-pixel screen-space pass.
@@ -72,15 +63,7 @@ enum class StrokeSource : uint8_t { Mesh = 0, Screen = 1 };
 struct StrokeEdgeOptions {
   bool enable = false;  // MASTER gate; false => zero new work, byte-identical
 
-  // Chain extractor (--stroke-source <mesh|screen>). Mesh keeps the pipeline
-  // documented below byte-identical; Screen swaps the extraction/visibility
-  // stages for the AOV crack tracer and skips all QI machinery (the
-  // --edge-qi-* debug/tuning flags are mesh-only). The nature toggles keep
-  // their meaning: silhouette gates the fg/bg contour AND the same-id depth
-  // gap, border gates the object-id boundary, crease gates the normal fold.
-  StrokeSource source = StrokeSource::Mesh;
-
-  // --- screen-source (crack tracer) tuning; unused under mesh ---
+  // --- screen-source (crack tracer) tuning ---
   // DepthGap threshold, world units per lateral pixel (a slope cutoff; the
   // one-sided planar extrapolation makes it curvature-tolerant). See
   // ScreenClassifyParams::depthGapPx.
