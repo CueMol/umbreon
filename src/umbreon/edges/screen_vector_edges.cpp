@@ -6,6 +6,7 @@
 #include <limits>
 #include <cstdlib>
 #include <cstdint>
+#include <string>
 
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
@@ -88,14 +89,17 @@ inline bool nearBackground(const std::uint32_t* objectId, int W, int H, int x,
 // Classify ONE crack between pixel indices ia (first: left/top) and ib
 // (second: right/bottom). iOutA / iOutB are the outer straight-line neighbors
 // (a's far side, b's far side) with validity flags. Returns the packed crack
-// byte (0 = no edge).
+// byte (0 = no edge). `dbg`, when non-null, receives the same-id DepthGap
+// branch diagnostics at cell `dbgCell` (dump path only).
 inline std::uint8_t classifyPair(const float* viewZ,
                                  const std::uint32_t* objectId,
                                  const float* normal, int W, int H, int ia,
                                  int ib, int iOutA,
                                  bool outAValid, int iOutB, bool outBValid,
                                  const ScreenProj& sp, float cosCreaseBase,
-                                 const ScreenClassifyParams& p) {
+                                 const ScreenClassifyParams& p,
+                                 ScreenCrackDebugPlane* dbg = nullptr,
+                                 std::size_t dbgCell = 0) {
   const bool bgA = objectId[ia] == kBackground;
   const bool bgB = objectId[ib] == kBackground;
   if (bgA && bgB) return 0;
@@ -166,12 +170,20 @@ inline std::uint8_t classifyPair(const float* viewZ,
     const float vzNear = std::min(vzA, vzB);
     const float px = pixelSizeAt(sp, vzNear);
     const float clampS = p.slopeClampPx * px;
-    const float predA =
-        vzA + sideSlope(viewZ, objectId, ia, iOutA, outAValid, clampS);
-    const float predB =
-        vzB + sideSlope(viewZ, objectId, ib, iOutB, outBValid, clampS);
+    const float sA = sideSlope(viewZ, objectId, ia, iOutA, outAValid, clampS);
+    const float sB = sideSlope(viewZ, objectId, ib, iOutB, outBValid, clampS);
+    const float predA = vzA + sA;
+    const float predB = vzB + sB;
     const float gapA = std::fabs(vzB - predA);
     const float gapB = std::fabs(vzA - predB);
+    if (dbg) {
+      dbg->gapA[dbgCell] = gapA;
+      dbg->gapB[dbgCell] = gapB;
+      dbg->sA[dbgCell] = sA;
+      dbg->sB[dbgCell] = sB;
+      dbg->g0[dbgCell] = std::fabs(vzB - vzA);
+      dbg->reason[dbgCell] = ScreenCrackDebug::kSubThreshold;
+    }
     if (std::min(gapA, gapB) > p.depthGapPx * px) {
       const float g0 = std::fabs(vzB - vzA);
       // Parallel-pair strength on a's far side (pair outA-a) and b's far side
@@ -196,9 +208,13 @@ inline std::uint8_t classifyPair(const float* viewZ,
         if (p.bgClearancePx <= 0 ||
             (!nearBackground(objectId, W, H, ax, ay, p.bgClearancePx) &&
              !nearBackground(objectId, W, H, bx, by, p.bgClearancePx))) {
+          if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kInked;
           const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
           return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner;
         }
+        if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kBgKilled;
+      } else if (dbg) {
+        dbg->reason[dbgCell] = ScreenCrackDebug::kNmsSuppressed;
       }
     }
   }
@@ -237,13 +253,25 @@ inline std::uint8_t classifyPair(const float* viewZ,
 CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
                           const ScreenProj& sp,
-                          const ScreenClassifyParams& params) {
+                          const ScreenClassifyParams& params,
+                          ScreenCrackDebug* dbg) {
   CrackField cf;
   cf.W = W;
   cf.H = H;
   if (W <= 0 || H <= 0) return cf;
-  cf.right.assign(static_cast<std::size_t>(W) * H, 0);
-  cf.down.assign(static_cast<std::size_t>(W) * H, 0);
+  const std::size_t cells = static_cast<std::size_t>(W) * H;
+  cf.right.assign(cells, 0);
+  cf.down.assign(cells, 0);
+  if (dbg) {
+    for (ScreenCrackDebugPlane* pl : {&dbg->right, &dbg->down}) {
+      pl->gapA.assign(cells, 0.0f);
+      pl->gapB.assign(cells, 0.0f);
+      pl->sA.assign(cells, 0.0f);
+      pl->sB.assign(cells, 0.0f);
+      pl->g0.assign(cells, 0.0f);
+      pl->reason.assign(cells, ScreenCrackDebug::kNotEvaluated);
+    }
+  }
   if (W < 2 && H < 2) return cf;
 
   const float cosCreaseBase =
@@ -258,16 +286,18 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
           const int row = y * W;
           for (int x = 0; x < W; ++x) {
             const int ia = row + x;
+            const std::size_t cell = static_cast<std::size_t>(ia);
             if (x + 1 < W) {  // right crack (x,y)-(x+1,y)
-              cf.right[static_cast<std::size_t>(ia)] = classifyPair(
+              cf.right[cell] = classifyPair(
                   viewZ, objectId, normal, W, H, ia, ia + 1, ia - 1,
-                  x - 1 >= 0, ia + 2, x + 2 < W, sp, cosCreaseBase, params);
+                  x - 1 >= 0, ia + 2, x + 2 < W, sp, cosCreaseBase, params,
+                  dbg ? &dbg->right : nullptr, cell);
             }
             if (y + 1 < H) {  // down crack (x,y)-(x,y+1)
-              cf.down[static_cast<std::size_t>(ia)] = classifyPair(
+              cf.down[cell] = classifyPair(
                   viewZ, objectId, normal, W, H, ia, ia + W, ia - W,
                   y - 1 >= 0, ia + 2 * W, y + 2 < H, sp, cosCreaseBase,
-                  params);
+                  params, dbg ? &dbg->down : nullptr, cell);
             }
           }
         }
@@ -729,6 +759,202 @@ void mergeShortClassRuns(std::vector<std::uint8_t>& cls, int minLen) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Debug dump (UMBREON_SCREEN_EDGE_DUMP=<prefix>): writes <prefix>_cracks.ppm
+// (crack lattice colorized by class / kill reason over a viewZ gray base) and
+// <prefix>_cracks.csv (per-crack DepthGap diagnostics, px-normalized).
+// Optional UMBREON_SCREEN_EDGE_DUMP_ROI=x0,y0,x1,y1 restricts both outputs
+// to a hi-res pixel rectangle. Diagnostic-only; never on in normal runs.
+
+// Crack color by class byte, or by kill reason for un-inked candidates whose
+// min gap exceeds `noiseFloor` (world units at that crack). Returns false for
+// "draw nothing".
+inline bool crackColor(std::uint8_t byte, std::uint8_t reason, float gapA,
+                       float gapB, float noiseFloor, std::uint8_t rgb[3]) {
+  switch (static_cast<CrackClass>(byte & kCrackClassMask)) {
+    case CrackClass::Silhouette:
+      rgb[0] = rgb[1] = rgb[2] = 255;  // white
+      return true;
+    case CrackClass::ObjectId:
+      rgb[0] = 255, rgb[1] = 160, rgb[2] = 0;  // orange
+      return true;
+    case CrackClass::DepthGap:
+      rgb[0] = 255, rgb[1] = 0, rgb[2] = 0;  // red
+      return true;
+    case CrackClass::Crease:
+      rgb[0] = 160, rgb[1] = 0, rgb[2] = 255;  // violet
+      return true;
+    default:
+      break;
+  }
+  if (std::min(gapA, gapB) <= noiseFloor) return false;
+  switch (reason) {
+    case ScreenCrackDebug::kNmsSuppressed:
+      rgb[0] = 0, rgb[1] = 255, rgb[2] = 255;  // cyan
+      return true;
+    case ScreenCrackDebug::kBgKilled:
+      rgb[0] = 255, rgb[1] = 255, rgb[2] = 0;  // yellow
+      return true;
+    case ScreenCrackDebug::kSubThreshold:
+      rgb[0] = 0, rgb[1] = 160, rgb[2] = 0;  // green
+      return true;
+    default:
+      return false;
+  }
+}
+
+void writeCrackDump(const char* prefix, const CrackField& cf,
+                    const ScreenCrackDebug& dbg, const float* viewZ,
+                    const std::uint32_t* objectId, const float* normal,
+                    const ScreenProj& sp, const ScreenClassifyParams& p) {
+  const int W = cf.W, H = cf.H;
+  int x0 = 0, y0 = 0, x1 = W - 1, y1 = H - 1;
+  if (const char* roi = std::getenv("UMBREON_SCREEN_EDGE_DUMP_ROI")) {
+    int rx0, ry0, rx1, ry1;
+    if (std::sscanf(roi, "%d,%d,%d,%d", &rx0, &ry0, &rx1, &ry1) == 4) {
+      x0 = std::max(0, rx0);
+      y0 = std::max(0, ry0);
+      x1 = std::min(W - 1, rx1);
+      y1 = std::min(H - 1, ry1);
+    }
+  }
+  if (x1 < x0 || y1 < y0) return;
+
+  // viewZ gray range over the ROI's foreground pixels.
+  float vzMin = std::numeric_limits<float>::max(), vzMax = -vzMin;
+  for (int y = y0; y <= y1; ++y)
+    for (int x = x0; x <= x1; ++x) {
+      const int i = y * W + x;
+      if (objectId[i] == kBackground) continue;
+      vzMin = std::min(vzMin, viewZ[i]);
+      vzMax = std::max(vzMax, viewZ[i]);
+    }
+  const float vzSpan = vzMax > vzMin ? vzMax - vzMin : 1.0f;
+
+  const std::string base = std::string(prefix) + "_cracks";
+
+  // PPM: pixel (x,y) cell at (2(x-x0)+1, 2(y-y0)+1); right crack of (x,y) at
+  // (+1,0) from its cell, down crack at (0,+1); corner lattice nodes stay
+  // black.
+  {
+    const int PW = 2 * (x1 - x0 + 1) + 1, PH = 2 * (y1 - y0 + 1) + 1;
+    std::vector<std::uint8_t> img(static_cast<std::size_t>(PW) * PH * 3, 0);
+    auto put = [&](int ix, int iy, std::uint8_t r, std::uint8_t g,
+                   std::uint8_t b) {
+      std::uint8_t* q =
+          &img[(static_cast<std::size_t>(iy) * PW + ix) * 3];
+      q[0] = r, q[1] = g, q[2] = b;
+    };
+    for (int y = y0; y <= y1; ++y) {
+      for (int x = x0; x <= x1; ++x) {
+        const int i = y * W + x;
+        const int ix = 2 * (x - x0) + 1, iy = 2 * (y - y0) + 1;
+        if (objectId[i] != kBackground) {
+          const float t = (viewZ[i] - vzMin) / vzSpan;
+          const std::uint8_t g =
+              static_cast<std::uint8_t>(64.0f + 144.0f * (1.0f - t));
+          put(ix, iy, g, g, g);
+        }
+        const float px =
+            pixelSizeAt(sp, viewZ[i] > 0.0f ? viewZ[i] : vzMin);
+        const float noiseFloor = 0.25f * p.depthGapPx * px;
+        std::uint8_t rgb[3];
+        const std::size_t cell = static_cast<std::size_t>(i);
+        if (x + 1 < W &&
+            crackColor(cf.right[cell], dbg.right.reason[cell],
+                       dbg.right.gapA[cell], dbg.right.gapB[cell], noiseFloor,
+                       rgb) &&
+            ix + 1 < PW)
+          put(ix + 1, iy, rgb[0], rgb[1], rgb[2]);
+        if (y + 1 < H &&
+            crackColor(cf.down[cell], dbg.down.reason[cell],
+                       dbg.down.gapA[cell], dbg.down.gapB[cell], noiseFloor,
+                       rgb) &&
+            iy + 1 < PH)
+          put(ix, iy + 1, rgb[0], rgb[1], rgb[2]);
+      }
+    }
+    const std::string path = base + ".ppm";
+    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+      std::fprintf(f, "P6\n%d %d\n255\n", PW, PH);
+      std::fwrite(img.data(), 1, img.size(), f);
+      std::fclose(f);
+      std::fprintf(stderr, "[screen-edges] dumped %s (%dx%d)\n", path.c_str(),
+                   PW, PH);
+    }
+  }
+
+  // Raw AOV planes (full frame, not ROI-cropped): viewZ as float32 and
+  // objectId as uint32, for offline ground-truth analysis.
+  {
+    const std::size_t n = static_cast<std::size_t>(W) * H;
+    const std::string zPath = base + "_viewz.f32";
+    if (std::FILE* f = std::fopen(zPath.c_str(), "wb")) {
+      std::fwrite(viewZ, sizeof(float), n, f);
+      std::fclose(f);
+    }
+    const std::string idPath = base + "_objid.u32";
+    if (std::FILE* f = std::fopen(idPath.c_str(), "wb")) {
+      std::fwrite(objectId, sizeof(std::uint32_t), n, f);
+      std::fclose(f);
+    }
+  }
+
+  // CSV: every evaluated same-id DepthGap candidate above the noise floor.
+  // Values normalized to px units at the pair's near depth; ndotv is the
+  // facing cosine per side, ndelta = 1 - dot(unit normals).
+  {
+    const std::string path = base + ".csv";
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) return;
+    std::fprintf(f,
+                 "plane,x,y,reason,gapA_px,gapB_px,sA_px,sB_px,g0_px,"
+                 "slopesum_px,ndotvA,ndotvB,ndelta\n");
+    std::size_t rows = 0;
+    for (int plane = 0; plane < 2; ++plane) {
+      const ScreenCrackDebugPlane& d = plane == 0 ? dbg.right : dbg.down;
+      for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+          const std::size_t cell = static_cast<std::size_t>(y) * W + x;
+          if (d.reason[cell] == ScreenCrackDebug::kNotEvaluated) continue;
+          const int ib = plane == 0 ? static_cast<int>(cell) + 1
+                                    : static_cast<int>(cell) + W;
+          const float vzNear = std::min(viewZ[cell], viewZ[ib]);
+          const float px = pixelSizeAt(sp, vzNear);
+          if (px <= 0.0f) continue;
+          if (std::min(d.gapA[cell], d.gapB[cell]) <=
+              0.25f * p.depthGapPx * px)
+            continue;
+          float nvA = 0.0f, nvB = 0.0f, nd = 0.0f;
+          if (normal) {
+            nvA = facingCos(normal, sp, static_cast<int>(cell));
+            nvB = facingCos(normal, sp, ib);
+            const float* na = normal + 3 * cell;
+            const float* nb = normal + 3 * static_cast<std::size_t>(ib);
+            const float la = std::sqrt(na[0] * na[0] + na[1] * na[1] +
+                                       na[2] * na[2]);
+            const float lb = std::sqrt(nb[0] * nb[0] + nb[1] * nb[1] +
+                                       nb[2] * nb[2]);
+            if (la > 1.0e-6f && lb > 1.0e-6f)
+              nd = 1.0f - (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]) /
+                              (la * lb);
+          }
+          std::fprintf(f, "%c,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,"
+                          "%.4f,%.5f\n",
+                       plane == 0 ? 'r' : 'd', x, y, d.reason[cell],
+                       d.gapA[cell] / px, d.gapB[cell] / px, d.sA[cell] / px,
+                       d.sB[cell] / px, d.g0[cell] / px,
+                       std::fabs(d.sA[cell] + d.sB[cell]) / px, nvA, nvB, nd);
+          ++rows;
+        }
+      }
+    }
+    std::fclose(f);
+    std::fprintf(stderr, "[screen-edges] dumped %s (%zu rows)\n", path.c_str(),
+                 rows);
+  }
+}
+
 }  // namespace
 
 void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
@@ -754,8 +980,14 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   cp.bgClearancePx = static_cast<int>(std::lround(ssScale));
   const float* normalPtr = frame.normal.empty() ? nullptr : frame.normal.data();
   if (cp.crease && !normalPtr) cp.crease = false;
+  const char* dumpPrefix = std::getenv("UMBREON_SCREEN_EDGE_DUMP");
+  ScreenCrackDebug dbg;
   CrackField cf = classifyCracks(W, H, frame.viewZ.data(),
-                                 frame.objectId.data(), normalPtr, sp, cp);
+                                 frame.objectId.data(), normalPtr, sp, cp,
+                                 dumpPrefix ? &dbg : nullptr);
+  if (dumpPrefix)
+    writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
+                   frame.objectId.data(), normalPtr, sp, cp);
 
   // Stage 2: trace.
   const std::vector<ScreenChain> traced =

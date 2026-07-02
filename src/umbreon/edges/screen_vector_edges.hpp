@@ -70,6 +70,26 @@ struct CrackField {
   std::vector<std::uint8_t> down;
 };
 
+// Per-crack Stage-1 diagnostics for the same-id DepthGap branch, filled only
+// when a debug sink is passed to classifyCracks (the UMBREON_SCREEN_EDGE_DUMP
+// path in applyScreenVectorEdges). Plane layout mirrors CrackField (right /
+// down, W*H cells each); values are in world units -- divide by the pair's
+// pixelSize for px units. reason records the FIRST decision that applied.
+struct ScreenCrackDebugPlane {
+  std::vector<float> gapA, gapB, sA, sB, g0;
+  std::vector<std::uint8_t> reason;
+};
+struct ScreenCrackDebug {
+  enum Reason : std::uint8_t {
+    kNotEvaluated = 0,   // other branch (bg / id boundary) or gate off
+    kSubThreshold = 1,   // min(gapA, gapB) <= depthGapPx * px
+    kNmsSuppressed = 2,  // lost the perpendicular 3-pair NMS
+    kBgKilled = 3,       // within bgClearancePx of background
+    kInked = 4,          // classified DepthGap
+  };
+  ScreenCrackDebugPlane right, down;
+};
+
 // Stage-1 parameters. The class gates mirror the stroke master nature toggles
 // (silhouette gates Silhouette + DepthGap, objectBoundary gates ObjectId --
 // wired from the border toggle -- and crease gates Crease). Thresholds are in
@@ -122,11 +142,14 @@ struct ScreenClassifyParams {
 // (3 floats per pixel; only read when params.crease). `sp` supplies the
 // projection half-extents for pixelSize (build with makeScreenProj at the SAME
 // W x H as the buffers). Buffers must not alias the returned field. Runs
-// TBB-parallel over rows; the result is deterministic.
+// TBB-parallel over rows; the result is deterministic. `dbg`, when non-null,
+// is resized to the planes and filled with per-crack DepthGap diagnostics
+// (debug/dump path only; the normal path passes nullptr at zero cost).
 CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
                           const ScreenProj& sp,
-                          const ScreenClassifyParams& params);
+                          const ScreenClassifyParams& params,
+                          ScreenCrackDebug* dbg = nullptr);
 
 // One traced chain vertex, in STROKE pixel coordinates: the pixel-corner
 // lattice node (cx,cy), cx in [0..W], cy in [0..H], maps to (cx-0.5, cy-0.5)
