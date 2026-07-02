@@ -71,8 +71,15 @@ inline std::uint8_t classifyPair(const float* viewZ,
     return static_cast<std::uint8_t>(CrackClass::Silhouette) | owner;
   }
 
-  // 2. ObjectId boundary: both foreground, different id; nearer side owns.
+  // 2. Object boundary: both foreground, ids differ.
   if (objectId[ia] != objectId[ib]) {
+    // Same CueMol section (group), different primitive kind (a sphere,
+    // cylinder and mesh mixed in one section): the section renders as a
+    // SINGLE seamless object -- never ink an internal boundary between its
+    // primitives, and do NOT fall through to the depth-gap / crease tests
+    // either (a bond embedded in an atom is continuous by construction).
+    // objectId == (group << 2) | kind, so equal high bits mean same section.
+    if ((objectId[ia] >> 2) == (objectId[ib] >> 2)) return 0;
     if (!p.objectBoundary) return 0;
     const std::uint8_t owner = viewZ[ia] <= viewZ[ib] ? 0 : kCrackOwnerBit;
     return static_cast<std::uint8_t>(CrackClass::ObjectId) | owner;

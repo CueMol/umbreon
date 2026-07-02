@@ -731,16 +731,16 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       });
 }
 
-// STEP 4: variable-width ribbon strokes. Extract topology-tagged feature edges,
-// chain them per nature into continuous polylines, mark each backbone vertex
-// visible/hidden by ray-cast QI against the live Embree BVH (via `occluded`),
-// project + arc-length resample, hand the visibility-tagged 2D polylines to the
-// shared draw stage (stroke_render.hpp:renderStrokeChains) which builds a
-// miter-joined offset RIBBON per maximal visible run and hard-fills the
-// triangle strips composited over frame.color in LINEAR space at hi-res (the
-// box downsample antialiases). Rasterization is row-tiled with TBB and is
-// deterministic. The default (edges off) path never reaches here, so the
-// no-edge render stays byte-identical.
+// STEP 4: variable-width ribbon strokes. Extraction is delegated to the screen
+// vector source (screen_vector_edges.cpp:applyScreenVectorEdges): it classifies
+// the per-pixel edge AOVs into cracks, traces them into continuous 2D polylines
+// and hands them to the shared draw stage (stroke_render.hpp:renderStrokeChains)
+// which builds a miter-joined offset RIBBON per run and hard-fills the triangle
+// strips composited over frame.color in LINEAR space at hi-res (the box
+// downsample antialiases). The default (edges off) path never reaches here, so
+// the no-edge render stays byte-identical. The occluded/occludedRaw QI queries
+// are unused by the screen source (its visibility is exact from the z-buffer)
+// and are kept only for signature stability.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
                       const OcclusionQuery& occludedRaw) {

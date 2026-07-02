@@ -1,13 +1,13 @@
 // libumbreon INTERNAL header -- not installed, not part of the public API.
 // Implementation detail; may change without notice. Do not include downstream.
 // Shared stroke DRAW stage: style resolution + parametric-stroke stylization +
-// ribbon rasterization, factored out of the Freestyle mesh path
+// ribbon rasterization, factored out of the Freestyle stroke path
 // (edges/stroke_edges.cpp:applyStrokeEdges) so that any edge-chain SOURCE can
-// feed it:
-//   * the MESH source (--edges, default): topology feature edges -> chaining ->
-//     QI visibility -> projected 2D polylines (stroke_edges.cpp);
-//   * the SCREEN source (--stroke-source screen): AOV crack tracing -> 2D
-//     polylines (screen_vector_edges.cpp), visibility exact from the z-buffer.
+// feed it. The stroke edge pass (--edges on) is driven by the SCREEN source:
+// AOV crack tracing -> 2D polylines (screen_vector_edges.cpp), visibility exact
+// from the z-buffer. (The retired mesh-topology source -- feature edges ->
+// chaining -> QI visibility -> projected polylines -- fed this same stage; the
+// draw half stays source-agnostic.)
 //
 // A source produces StrokeChainInput chains (2D pixel-space backbone points at
 // the HI-RES frame resolution + per-chain style key); renderStrokeChains then

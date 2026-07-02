@@ -85,7 +85,11 @@ struct StrokeEdgeOptions {
   // sheet body (the n.v silhouette already outlines it). Enable with
   // --stroke-crease on when a faceted crease look is wanted.
   bool crease = false;
-  bool border = true;      // open boundary edges (one incident face)
+  // Screen source: gates the CROSS-section object-id boundary (a line between
+  // two different CueMol sections). Same-section primitive boundaries are always
+  // suppressed and have no toggle; set this off to also drop the between-section
+  // lines, leaving only the fg/bg silhouette and same-section depth/crease.
+  bool border = true;
 
   // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
   // Ray-cast visibility is analytic, so no 3D lift is needed (raise == 0).

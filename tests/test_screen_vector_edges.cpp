@@ -204,18 +204,59 @@ int main() {
                countClass(cf, CrackClass::DepthGap), 16);
   }
 
-  // ---- (5) abutting ids at equal depth: ObjectId class --------------------
+  // ---- (5) abutting sections at equal depth: ObjectId class ---------------
   {
     Buffers b(16, 16);
+    // Two DIFFERENT sections (groups 1 and 2). objectId == (group << 2) | kind,
+    // so use (1<<2) and (2<<2); a cross-section boundary still inks.
     for (int y = 0; y < 16; ++y)
-      for (int x = 0; x < 16; ++x) b.set(x, y, x < 8 ? 1 : 2, 10.0f);
+      for (int x = 0; x < 16; ++x) b.set(x, y, x < 8 ? (1u << 2) : (2u << 2),
+                                         10.0f);
     const CrackField cf = classify(b, defaults);
-    s.check_eq("id boundary: one ObjectId crack per row",
+    s.check_eq("section boundary: one ObjectId crack per row",
                countClass(cf, CrackClass::ObjectId), 16);
     ScreenClassifyParams off = defaults;
     off.objectBoundary = false;
-    s.check_eq("id boundary: border gate off => 0 cracks",
+    s.check_eq("section boundary: border gate off => 0 cracks",
                countActive(classify(b, off)), 0);
+  }
+
+  // ---- (5b) same section, mixed primitive kind: no internal edge ----------
+  {
+    Buffers b(16, 16);
+    // Group 5, kind Sphere(1) vs Cylinder(2): objectId (5<<2)|1 vs (5<<2)|2.
+    // A ball and a stick embedded in one CueMol section join seamlessly, so
+    // their equal-depth boundary must NOT ink.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), 10.0f);
+    s.check_eq("same section, mixed kind, equal depth: no cracks",
+               countActive(classify(b, defaults)), 0);
+  }
+
+  // ---- (5c) same section, mixed kind, depth step: still no edge -----------
+  {
+    Buffers b(16, 16);
+    // A big view-z step at the kind boundary must NOT ink: same section means
+    // seamless, and the mixed-kind pair never falls through to DepthGap.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), x < 8 ? 10.0f : 60.0f);
+    s.check_eq("same section, mixed kind, depth step: no cracks",
+               countActive(classify(b, defaults)), 0);
+  }
+
+  // ---- (5d) same section AND same kind: depth step still inks (unchanged) --
+  {
+    Buffers b(16, 16);
+    // Two primitives of the SAME kind in one section share objectId entirely
+    // (no per-primitive id in screen space), so a genuine occlusion step still
+    // fires DepthGap -- same as mesh self-occlusion, preserved by this change.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (5u << 2) | 1u, x < 8 ? 10.0f : 60.0f);
+    s.check("same section, same kind, depth step: DepthGap fires",
+            countClass(classify(b, defaults), CrackClass::DepthGap) > 0);
   }
 
   // ---- tracer helpers ------------------------------------------------------

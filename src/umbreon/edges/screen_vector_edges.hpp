@@ -1,6 +1,7 @@
 // libumbreon INTERNAL header -- not installed, not part of the public API.
 // Implementation detail; may change without notice. Do not include downstream.
-// SCREEN-SPACE VECTOR edge extraction (--stroke-source screen).
+// SCREEN-SPACE VECTOR edge extraction: the stroke edge pass chain source
+// (--edges on).
 //
 // Extracts stroke chains from the per-pixel edge G-buffer AOVs (viewZ /
 // objectId / normal, FrameResult) instead of from mesh topology. Edges are
@@ -181,7 +182,7 @@ void chaikinSmooth(std::vector<ScreenChainVert>& pts, bool closed, int iters);
 // simplified, and the seam re-duplicated.
 void simplifyRdp(std::vector<ScreenChainVert>& pts, bool closed, float eps);
 
-// Stage 4 driver (--stroke-source screen): classify the frame's edge AOVs,
+// Stage 4 driver (--edges on): classify the frame's edge AOVs,
 // trace the cracks, split each chain into same-class runs (with the short-run
 // relabel filter), clean up each run's geometry (collapse + Chaikin + RDP;
 // whole chains below the speck length are dropped first), map classes onto
