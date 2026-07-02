@@ -14,6 +14,23 @@ umbreon_cli <scene>.pov -W 1200 -H 1200 \
 This gives physically-grounded indirect diffuse illumination in about 0.9 s for a
 97k-triangle molecular surface at 1200x1200 (vs ~13 s for the irradiance cache).
 
+## Quality presets
+
+`--quality <draft|high|ultra>` expands to a pt1 configuration at the point of
+appearance; put it FIRST so later explicit flags override individual values.
+Measured on the 97k-triangle scene at 1200x1200, `--supersample 1`:
+
+| Preset | Expansion | pt1 time | Character |
+|---|---|---|---|
+| `draft` | 8 spp, half res, 1 bounce | ~0.6 s | interactive checks |
+| `high` | 64 spp, full res, 2 bounces | ~11 s | full-res detail + multi-bounce fill |
+| `ultra` | 256 spp, full res, 3 bounces | ~48 s | near-converged reference |
+
+All presets imply `--integrator pt1` (and therefore `--gi on`). Multi-bounce
+(`--gi-bounces`) routes light around corners, so deep pockets brighten
+physically instead of staying pitch black; Russian roulette keeps 3-bounce
+paths unbiased without tracing every one.
+
 
 ## How the energy balance works
 

@@ -272,6 +272,29 @@ Options parseCli(int argc, char** argv) {
         o.giIntegrator = 1;
       else
         fail("--integrator expects cache/pt1");
+    } else if (a == "--quality") {
+      // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
+      // bounces at the point of appearance, so later explicit flags override
+      // individual values (put --quality first).
+      std::string v = value("--quality");
+      if (v == "draft") {
+        o.giIntegrator = 1;
+        o.pt1HalfRes = true;
+        o.pt1Spp = 8;
+        o.giBounces = 1;
+      } else if (v == "high") {
+        o.giIntegrator = 1;
+        o.pt1HalfRes = false;
+        o.pt1Spp = 64;
+        o.giBounces = 2;
+      } else if (v == "ultra") {
+        o.giIntegrator = 1;
+        o.pt1HalfRes = false;
+        o.pt1Spp = 256;
+        o.giBounces = 3;
+      } else {
+        fail("--quality expects draft/high/ultra");
+      }
     } else if (a == "--spp") {
       o.pt1Spp = std::atoi(value("--spp").c_str());
     } else if (a == "--indirect-res") {
@@ -680,6 +703,9 @@ void printUsage(const char* prog) {
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
       "  --integrator <cache|pt1> indirect GI integrator (pt1 implies --gi on)\n"
+      "  --quality <draft|high|ultra> pt1 preset: 8spp half 1-bounce /\n"
+      "                           64spp full 2-bounce / 256spp full 3-bounce\n"
+      "                           (put it FIRST; later flags override)\n"
       "                           [cache]\n"
       "  --spp <int>              pt1 gather rays per pixel             [8]\n"
       "  --indirect-res <full|half> pt1 gather resolution             [half]\n"
