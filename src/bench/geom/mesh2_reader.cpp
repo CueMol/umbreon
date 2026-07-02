@@ -192,8 +192,12 @@ class Reader {
 
   // ----- expression evaluator (advances pos_) -----------------------------
   PovValue evalPrimary() {
-    if (isPunct("-")) { advance(); PovValue v = evalPrimary();
-      for (int i = 0; i < v.n; ++i) v.c[i] = -v.c[i]; return v; }
+    if (isPunct("-")) {
+      advance();
+      PovValue v = evalPrimary();
+      for (int i = 0; i < v.n; ++i) v.c[i] = -v.c[i];
+      return v;
+    }
     if (isPunct("+")) { advance(); return evalPrimary(); }
     if (isPunct("(")) {
       advance();

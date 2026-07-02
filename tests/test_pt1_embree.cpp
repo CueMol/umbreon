@@ -4,6 +4,7 @@
 #include <embree4/rtcore.h>
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 #include "test_util.hpp"
