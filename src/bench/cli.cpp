@@ -567,16 +567,6 @@ Options parseCli(int argc, char** argv) {
       o.strokeSelfExcludeRings =
           std::atoi(value("--stroke-self-exclude-rings").c_str());
       o.strokeSelfExcludeRingsSet = true;
-    } else if (a == "--stroke-source") {
-      std::string v = value("--stroke-source");
-      if (o.ok) {
-        if (v == "mesh")
-          o.strokeSourceScreen = false;
-        else if (v == "screen")
-          o.strokeSourceScreen = true;
-        else
-          fail("--stroke-source expects mesh|screen");
-      }
     } else if (a == "--stroke-depth-gap") {
       o.strokeDepthGap =
           static_cast<float>(std::atof(value("--stroke-depth-gap").c_str()));
@@ -684,8 +674,6 @@ void printUsage(const char* prog) {
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
       "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
       "  --stroke-self-exclude-rings <int> QI self-occlusion exclude radius  [6]\n"
-      "  --stroke-source <mesh|screen> chain extractor: mesh topology or AOV\n"
-      "                           crack tracing (--edge-qi-* are mesh-only) [mesh]\n"
       "  --stroke-depth-gap <float> screen: depth-gap slope cutoff, world/px [12]\n"
       "  --stroke-screen-simplify <float> screen: Douglas-Peucker eps, px [0.4]\n"
       "  --stroke-screen-smooth <int> screen: Chaikin corner-cut iterations [2]\n"
