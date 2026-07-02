@@ -174,9 +174,12 @@ automatically when present in the scene file.
 
 ## Known limitations
 
-- **CSG primitives** (atoms/bonds rendered as spheres/cylinders) receive no
-  indirect illumination. Only mesh-hit pixels go through the gather; CSG hits
-  keep direct shading only, matching the irradiance cache behaviour.
+- **Outline decoration primitives** (baked NPR silhouette cylinders / joint
+  dots) receive no indirect illumination and act as black occluders for gather
+  rays, matching the AO behaviour. REAL CSG primitives (spacefill atom balls,
+  bond cylinders) participate fully under pt1: they receive gathered indirect
+  in place of their constant ambient and scatter light onto nearby surfaces.
+  The irradiance cache remains mesh-only.
 - **Environment dome lights** (`--env-light`) count the sky as direct light.
   Using them with `--integrator pt1` double-counts the sky (the gather miss term
   also sees it). Use `--sky` / `--sky-radiance` for the GI sky instead.

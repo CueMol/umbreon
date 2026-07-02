@@ -46,6 +46,10 @@ struct HitShade {
   // for the GI composite L += giIntensity * giReflectance * E_cached (post-pass).
   // Zero unless RenderOptions::gi is on and the hit is a mesh.
   Vec3 giReflectance{0.0f, 0.0f, 0.0f};
+  // Gather-eligible flag for the pt1 per-pixel GI: 1 = this hit receives the
+  // indirect composite (mesh hit, or a REAL CSG primitive under pt1). The cache
+  // integrator keeps its own mesh-only geomID gate and never reads this.
+  uint8_t giEligible = 0;
   float contactAo = 1.0f;          // small-radius (contact) openness
   float shapeAo = 1.0f;            // mid+large-radius (shape) openness
   float avgHitDist = 0.0f;         // mean occluder distance (world units)
@@ -151,6 +155,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     if (c.opt.gi) {
       hs.giReflectance =
           Vec3{triMat.diffuse * C.x, triMat.diffuse * C.y, triMat.diffuse * C.z};
+      hs.giEligible = 1;
       ambLight = Vec3{0.0f, 0.0f, 0.0f};
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
@@ -228,6 +233,19 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       aoFactor = ao.aoFactor;
       ambLight = ao.ambLight;
       diffuseAo = ao.diffuseAo;
+      // pt1 only (giIntegrator == 1): a REAL CSG primitive receives gathered
+      // indirect exactly like the mesh -- drop its constant ambient and record
+      // the reflectance for the post-pass composite. Gated on the integrator so
+      // the cache path stays byte-identical (its GI remains mesh-only). The
+      // normal/albedo AOVs feed the full-res gather and the OIDN guides.
+      if (c.opt.gi && c.opt.giIntegrator == 1) {
+        hs.giReflectance =
+            Vec3{pm.diffuse * C.x, pm.diffuse * C.y, pm.diffuse * C.z};
+        hs.giEligible = 1;
+        hs.albedo = C;
+        hs.normal = N;
+        ambLight = Vec3{0.0f, 0.0f, 0.0f};
+      }
     }
     // Real primitives receive light shadows (a buried atom is occluded from the
     // lights); outline decoration is never shadowed (silhouette must not darken).

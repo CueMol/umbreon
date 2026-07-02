@@ -48,8 +48,10 @@ struct TestScene {
   umbreon::detail::BuiltScene built;
   std::vector<umbreon::detail::Light> lights;  // empty: sky-only tests
 
-  explicit TestScene(umbreon::Mesh mesh) {
+  explicit TestScene(umbreon::Mesh mesh,
+                     std::vector<umbreon::Sphere> spheres = {}) {
     scene.mesh = std::move(mesh);
+    scene.spheres = std::move(spheres);
     device = rtcNewDevice(nullptr);
     built = umbreon::detail::buildEmbreeScene(device, scene, false);
   }
@@ -127,6 +129,56 @@ int main() {
             approxRel(E.x, 0.5f, 0.03f));
     s.check("half occluded: occlusion = 0.5 within 3%",
             approxRel(occ, 0.5f, 0.03f));
+  }
+
+  // --- 3b. CSG primitives in the gather (Phase 1 of the quality plan).
+  // A sphere (center {0,2,0}, radius 1) hangs over the shading point under a
+  // uniform sky = 1. Seen from the origin its half-angle is asin(1/2), and the
+  // cosine-weighted measure of a zenith cap with half-angle t is sin^2(t), so
+  // it blocks exactly 1/4 of the gather:
+  //   unlit real sphere / outline sphere -> pure occluder, E ~= 0.75
+  //   lit real sphere (horizontal light) -> bounces extra light, E > unlit
+  //   lit OUTLINE sphere                 -> must stay a black occluder
+  {
+    auto makeSphere = [](bool fromEdge) {
+      umbreon::Sphere sp;
+      sp.center = Vec3{0.0f, 2.0f, 0.0f};
+      sp.radius = 1.0f;
+      sp.color = Vec4{0.75f, 0.75f, 0.75f, 1.0f};
+      sp.material.ambient = 0.0f;
+      sp.material.diffuse = 0.8f;
+      sp.fromEdgeMacro = fromEdge;
+      return sp;
+    };
+    const umbreon::detail::Light sideLight{
+        Vec3{1.0f, 0.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, true, 0.0f};
+    const int csgSpp = 8192;
+
+    TestScene real(umbreon::Mesh{}, {makeSphere(false)});
+    umbreon::detail::IrradianceCacheParams p = real.params();
+    p.skyColor = p.groundColor = Vec3{1.0f, 1.0f, 1.0f};
+    const Vec3 Eunlit =
+        umbreon::detail::pt1GatherPoint(p, P, N, N, csgSpp, 12345u, epsT,
+                                        nullptr);
+    s.check("csg occluder: unlit real sphere gives E = 0.75 within 3%",
+            approxRel(Eunlit.x, 0.75f, 0.03f));
+
+    real.lights.push_back(sideLight);
+    const Vec3 Elit =
+        umbreon::detail::pt1GatherPoint(p, P, N, N, csgSpp, 12345u, epsT,
+                                        nullptr);
+    s.check("csg scatterer: lit real sphere bounces light (E > unlit + 1%)",
+            Elit.x > Eunlit.x * 1.01f);
+
+    TestScene outline(umbreon::Mesh{}, {makeSphere(true)});
+    outline.lights.push_back(sideLight);
+    umbreon::detail::IrradianceCacheParams po = outline.params();
+    po.skyColor = po.groundColor = Vec3{1.0f, 1.0f, 1.0f};
+    const Vec3 Eoutline =
+        umbreon::detail::pt1GatherPoint(po, P, N, N, csgSpp, 12345u, epsT,
+                                        nullptr);
+    s.check("csg outline: lit outline sphere stays a black occluder",
+            approxRel(Eoutline.x, 0.75f, 0.03f) && Eoutline.x < Elit.x);
   }
 
   // --- 4. denoisePt1E sanity (plan Phase 4): a constant irradiance field must

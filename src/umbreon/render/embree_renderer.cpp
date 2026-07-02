@@ -132,6 +132,22 @@ bool meshPresent(const detail::BuiltScene& built) {
   return false;
 }
 
+// True if the built scene contains a REAL CSG primitive (VdW atom ball /
+// chemical bond, fromEdge == 0). The pt1 integrator gathers indirect for these
+// too, so a mesh-less all-primitive scene still runs the GI post-pass; outline
+// decoration (fromEdge == 1) never counts.
+bool realCsgPresent(const detail::BuiltScene& built) {
+  auto anyReal = [](const std::vector<uint8_t>& fromEdge, std::size_t count) {
+    if (fromEdge.empty()) return count > 0;
+    for (uint8_t fe : fromEdge)
+      if (!fe) return true;
+    return false;
+  };
+  return anyReal(built.sphereFromEdge, built.sphereColor.size()) ||
+         anyReal(built.cylFromEdge, built.cylColor.size()) ||
+         anyReal(built.cylCapFromEdge, built.cylCapColor.size());
+}
+
 }  // namespace
 
 EmbreeRenderer::~EmbreeRenderer() { releaseEmbree(); }
@@ -347,11 +363,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   std::vector<int> giGroup;
   std::vector<uint32_t> giGeom;
   std::vector<float> giRefl;  // per-pixel mat.diffuse * pigment (GI composite)
+  std::vector<uint8_t> giElig;  // per-pixel pt1 gather-eligible flag (shader-set)
   if (opt.gi) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     giGroup.assign(npix, -1);
     giGeom.assign(npix, 0xFFFFFFFFu);
     giRefl.assign(npix * 3, 0.0f);
+    giElig.assign(npix, 0);
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -416,6 +434,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         giRefl[pix * 3 + 0] = pr.giReflectance.x;
         giRefl[pix * 3 + 1] = pr.giReflectance.y;
         giRefl[pix * 3 + 2] = pr.giReflectance.z;
+        giElig[pix] = pr.giEligible;
       }
       // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
       // buffer was allocated above (wantAlbedoGuide).
@@ -457,7 +476,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // (opt.giIntegrator == 1; experimental/pt1/). Both add giIntensity *
   // giReflectance * E to res.color and fill the same `indirect` AOV, on top of
   // the unchanged direct shading from the pixel loop above.
-  if (opt.gi && meshPresent(built) && opt.giIntegrator == 1) {
+  if (opt.gi && (meshPresent(built) || realCsgPresent(built)) &&
+      opt.giIntegrator == 1) {
     // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
     // the sky through its miss term, so the combination counts the sky twice.
     if (opt.envLights > 0)
@@ -502,15 +522,11 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     gp.shadowSamples = opt.shadowSamples;
 
     const int spp = std::max(1, opt.pt1Spp);
-    const std::size_t npix = static_cast<std::size_t>(W) * H;
-    // Gather-eligible mask: first hit is a mesh (same gate as the cache; CSG
-    // outline primitives receive no indirect, matching the cache path).
-    std::vector<uint8_t> eligible(npix, 0);
-    for (std::size_t pix = 0; pix < npix; ++pix) {
-      const uint32_t g = giGeom[pix];
-      if (g != 0xFFFFFFFFu && built.records[g].kind == GeomKind::Mesh)
-        eligible[pix] = 1;
-    }
+    // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
+    // REAL CSG primitives (atom balls / bonds); outline decoration and the
+    // background stay 0. Unlike the cache's geomID/kind gate this is primID-
+    // aware, which the fromEdge distinction requires.
+    const std::vector<uint8_t>& eligible = giElig;
 
     std::vector<float> Ebuf, occBuf;
     if (opt.pt1HalfRes) {

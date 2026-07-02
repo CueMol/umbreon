@@ -4,8 +4,16 @@
 // the direct shading comes from the exact same pixel loop as the cache path.
 // Rendering the same GI scene with both integrators at giIntensity = 0 (the
 // composite then adds exactly 0.0f) must therefore produce bitwise-identical
-// color -- this locks the "direct matches the existing renderer" acceptance
-// criterion by construction and guards the dispatch seam against divergence.
+// color on mesh and background pixels -- this locks the "direct matches the
+// existing renderer" acceptance criterion by construction and guards the
+// dispatch seam against divergence.
+//
+// REAL CSG primitives (atom balls / bonds) are the one intended divergence:
+// under pt1 they become GI receivers, so their constant ambient is dropped
+// from the direct shade (replaced by the gathered indirect); under the cache
+// they keep the flat ambient. At giIntensity = 0 a CSG pixel is therefore
+// DARKER (never brighter) in the pt1 render, and at full strength it must
+// carry a nonzero `indirect` AOV.
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -132,38 +140,71 @@ int main() {
   umbreon::test::Suite s("pt1_render");
   const umbreon::Scene sc = makeGiScene();
 
-  // --- direct-lighting parity: giIntensity = 0 makes both integrators add
-  // exactly +0.0f indirect, so color must match the shared direct pass bitwise.
+  // --- direct-lighting parity at giIntensity = 0 (both integrators add
+  // exactly +0.0f indirect). Mesh/background pixels must match bitwise; the
+  // pixels covered by the REAL CSG sphere are the intended exception -- pt1
+  // drops their constant ambient (the gather replaces it), so they are darker,
+  // never brighter. The per-pixel divergence mask feeds the next check.
+  const std::size_t npix =
+      static_cast<std::size_t>(48) * 36;  // makeGiOptions dimensions
+  std::vector<uint8_t> diverged(npix, 0);
   {
     const umbreon::FrameResult a = umbreon::render(sc, makeGiOptions(0, 0.0f));
     const umbreon::FrameResult b = umbreon::render(sc, makeGiOptions(1, 0.0f));
-    bool colorSame = a.color.size() == b.color.size();
-    if (colorSame)
-      for (std::size_t i = 0; i < a.color.size(); ++i)
-        if (a.color[i] != b.color[i]) {
-          colorSame = false;
-          break;
-        }
-    s.check("direct parity: cache and pt1 color bitwise-identical at gi*0",
-            colorSame);
+    bool sizeSame = a.color.size() == b.color.size() &&
+                    a.color.size() == npix * 4;
+    bool csgOnlyDarker = sizeSame;
+    std::size_t nDiverged = 0;
+    for (std::size_t p = 0; sizeSame && p < npix; ++p) {
+      bool same = true, darker = true;
+      for (int c = 0; c < 3; ++c) {
+        const float va = a.color[p * 4 + c];
+        const float vb = b.color[p * 4 + c];
+        if (va != vb) same = false;
+        if (vb > va) darker = false;
+      }
+      if (!same) {
+        diverged[p] = 1;
+        ++nDiverged;
+        if (!darker) csgOnlyDarker = false;
+      }
+    }
+    s.check("direct parity: divergence only where pt1 dropped CSG ambient "
+            "(darker, never brighter)",
+            sizeSame && csgOnlyDarker);
+    // The sphere is visible, so SOME pixels must diverge; and it covers a
+    // minority of the frame, so most pixels (floor/background) must not.
+    s.check("direct parity: CSG divergence present but bounded",
+            nDiverged > 0 && nDiverged < npix / 2);
   }
 
-  // --- direct component parity at full GI strength: color - indirect must
-  // agree within float rounding (the indirect add/subtract costs <= 1 ulp).
+  // --- direct component parity at full GI strength: on non-CSG pixels,
+  // color - indirect must agree within float rounding (the indirect
+  // add/subtract costs <= 1 ulp). CSG pixels (diverged mask) must now carry
+  // nonzero indirect under pt1 -- they are receivers, not flat ambient.
   {
     const umbreon::FrameResult a = umbreon::render(sc, makeGiOptions(0, 1.0f));
     const umbreon::FrameResult b = umbreon::render(sc, makeGiOptions(1, 1.0f));
-    const std::size_t npix = static_cast<std::size_t>(a.width) * a.height;
     bool directSame = b.indirect.size() == npix * 3;
     float maxDiff = 0.0f;
-    for (std::size_t p = 0; p < npix && directSame; ++p)
+    bool csgHasIndirect = directSame;
+    for (std::size_t p = 0; p < npix && directSame; ++p) {
+      if (diverged[p]) {
+        const float ind = b.indirect[p * 3 + 0] + b.indirect[p * 3 + 1] +
+                          b.indirect[p * 3 + 2];
+        if (!(ind > 0.0f)) csgHasIndirect = false;
+        continue;
+      }
       for (int c = 0; c < 3; ++c) {
         const float da = a.color[p * 4 + c] - a.indirect[p * 3 + c];
         const float db = b.color[p * 4 + c] - b.indirect[p * 3 + c];
         maxDiff = std::fmax(maxDiff, std::fabs(da - db));
       }
-    s.check("direct parity: color - indirect matches within 1e-5",
+    }
+    s.check("direct parity: color - indirect matches within 1e-5 off-CSG",
             directSame && maxDiff <= 1e-5f);
+    s.check("csg receiver: every CSG pixel gets indirect > 0 under pt1",
+            csgHasIndirect);
   }
 
   // --- Cornell color bleeding (plan Phase 3 acceptance 2): with the pt1

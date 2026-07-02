@@ -69,8 +69,12 @@ pt1 は独立したレンダラではなく、既存 GI ポストパス
 - **乱数**: 既存 `tea2` ハッシュ。seed はピクセル index と `--seed` から決定的に生成、
   サンプル index を counter として混合。スレッド間共有なし(TBB スレッド数非依存)。
 - **自己交差**: 既存 `selfIntersectEps()`(OSPRay 式スケール適応)。
-- **CSG プリミティブ**(原子球・結合円柱): gather レイのヒットは黒のオクルーダ
-  (cache と同一、`oneBounceRadiance` が非メッシュで 0 を返す)。将来の改善候補。
+- **CSG プリミティブ**(原子球・結合円柱): pt1 では**実体プリミティブ
+  (fromEdge=0)は mesh と同格の GI 参加者**。受光(eligibility はシェーダが
+  per-pixel の `giEligible` で判定、ambient は gather 置換のためゼロ化)と散乱
+  (`pt1VertexRadiance` が side-table の法線/色/材質で mesh と同じ反射式を評価)の
+  両方に対応する。輪郭線装飾(fromEdge=1)は AO と同じく永久除外で、gather レイの
+  ヒットでは黒のオクルーダ。cache は従来通り mesh のみ(バイト同一を維持)。
 - **透明面**: 間接光は最初のメッシュヒットにのみ合成される(両インテグレータ共通の制限)。
 - **supersample**: GI ポストパスは supersample 後の hi-res グリッドで走る。pt1 の
   「半解像度」はこのレンダーグリッドの半分。ベンチ・比較は `--supersample 1` で行う。
