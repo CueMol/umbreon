@@ -23,6 +23,28 @@ add_test(
 # Tests that need the rendering library (fog, image helpers, the render pipeline)
 # are built only when the umbreon target exists (Embree + TBB available).
 if(TARGET umbreon)
+  # pt1 Phase 0 smoke test: raw Embree 4 triangle hit/miss (no umbreon code,
+  # but requires the Embree dependency the umbreon target implies).
+  add_executable(test_pt1_embree test_pt1_embree.cpp)
+  target_link_libraries(test_pt1_embree PRIVATE umbreon)
+  add_test(NAME pt1_embree COMMAND test_pt1_embree)
+
+  # pt1 integration tests: direct-lighting parity between the cache and pt1
+  # integrator branches (and, from Phase 3 on, the Cornell color-bleeding check).
+  add_executable(test_pt1_render test_pt1_render.cpp)
+  target_link_libraries(test_pt1_render PRIVATE umbreon)
+  add_test(NAME pt1_render COMMAND test_pt1_render)
+
+  # pt1 numeric gather tests: estimator vs analytic irradiance values.
+  add_executable(test_pt1_gather test_pt1_gather.cpp)
+  target_link_libraries(test_pt1_gather PRIVATE umbreon)
+  add_test(NAME pt1_gather COMMAND test_pt1_gather)
+
+  # pt1 joint bilateral upsample unit tests.
+  add_executable(test_pt1_upsample test_pt1_upsample.cpp)
+  target_link_libraries(test_pt1_upsample PRIVATE umbreon)
+  add_test(NAME pt1_upsample COMMAND test_pt1_upsample)
+
   add_executable(test_fog test_fog.cpp)
   target_link_libraries(test_fog PRIVATE umbreon)
   add_test(NAME fog COMMAND test_fog)

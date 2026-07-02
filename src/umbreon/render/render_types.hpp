@@ -375,6 +375,30 @@ struct RenderOptions {
   bool giComponentReject = true;// reject records of a different component (leak)
   bool giSeedPerVertex = false; // true => seed from mesh vertices (view-independent)
 
+  // --- pt1: experimental path-traced indirect integrator (per-pixel brute-
+  // force one-bounce gather; see experimental/pt1/pt1_integrator.hpp). An
+  // ALTERNATIVE to the irradiance cache selected by giIntegrator; only active
+  // when gi is on, and giIntegrator == 0 keeps the cache path byte-identical.
+  int giIntegrator = 0;         // 0 = irradiance cache (default), 1 = pt1
+  int pt1Spp = 8;               // gather rays per pixel
+  bool pt1HalfRes = true;       // gather at half the render grid + joint
+                                // bilateral upsample (false = full-res gather)
+  bool pt1Denoise = true;       // OIDN denoise of the indirect irradiance
+                                // buffer (pre-composite, at gather resolution)
+  unsigned pt1Seed = 0;         // deterministic per-pixel RNG seed
+  int pt1SkyMode = 0;           // 0 = uniform sky; 1 = gradient (zenith =
+                                // pt1SkyRadiance, ground = aoGroundColor)
+  float pt1SkyRadiance[3] = {1.0f, 1.0f, 1.0f};  // sky tint (x ambient energy)
+  // Joint bilateral upsample edge-stops (half-res mode): normal weight
+  // max(0,dot(Nf,Nh))^pow and depth weight exp(-|zf-zh|/(scale*zf+1e-6)).
+  float pt1UpsampleNormalPow = 32.0f;
+  float pt1UpsampleDepthScale = 0.02f;
+  // Stratified first-bounce sampling (Hammersley + per-pixel Cranley-Patterson
+  // shift, the AO sampler's scheme) and per-sample luminance firefly clamp
+  // (0 = off). Both default off so the flag-less pt1 render is unchanged.
+  bool pt1Ld = false;
+  float pt1Clamp = 0.0f;
+
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised
   // render. AtrousBilateral (1) is the built-in, zero-dependency edge-avoiding
@@ -440,6 +464,22 @@ struct RenderOptions {
   ObjectSpaceEdgeOptions objectSpaceEdges;
 };
 
+// Per-stage wall-clock seconds of the pt1 integrator pipeline. bvhBuild and
+// primary are filled on every render (cheap timers around existing stages);
+// gather/denoise/upsample only when the pt1 integrator runs. direct stays 0 in
+// this architecture: direct shading is fused into the primary-ray loop, so its
+// cost is reported under `primary` (the stage split the pt1 plan asks for
+// cannot separate them without restructuring the shared pixel loop).
+struct Pt1Timing {
+  double bvhBuild = 0.0;
+  double primary = 0.0;   // primary rays + fused direct shading
+  double direct = 0.0;    // always 0 (see above)
+  double gather = 0.0;
+  double denoise = 0.0;
+  double upsample = 0.0;
+  double total = 0.0;     // filled by the caller (wall time around render())
+};
+
 // Rendered frame: linear HDR color plus AOV channels, top-left pixel origin.
 struct FrameResult {
   int width = 0;
@@ -473,6 +513,9 @@ struct FrameResult {
   std::vector<float> giOcclusion; // width*height   gather occlusion fraction (AO-like)
   double renderSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
+  // pt1 stage timing (zero-filled unless the pt1 integrator ran; bvhBuild and
+  // primary are recorded on every render since the timers are free).
+  Pt1Timing pt1Timing;
 };
 
 }  // namespace umbreon

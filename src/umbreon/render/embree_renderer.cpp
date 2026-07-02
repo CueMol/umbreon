@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -17,6 +18,8 @@
 #include "ao/env_dome.hpp"
 #include "shading/hit_shader.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
+#include "experimental/pt1/pt1_integrator.hpp"
+#include "experimental/pt1/pt1_upsample.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -129,6 +132,22 @@ bool meshPresent(const detail::BuiltScene& built) {
   return false;
 }
 
+// True if the built scene contains a REAL CSG primitive (VdW atom ball /
+// chemical bond, fromEdge == 0). The pt1 integrator gathers indirect for these
+// too, so a mesh-less all-primitive scene still runs the GI post-pass; outline
+// decoration (fromEdge == 1) never counts.
+bool realCsgPresent(const detail::BuiltScene& built) {
+  auto anyReal = [](const std::vector<uint8_t>& fromEdge, std::size_t count) {
+    if (fromEdge.empty()) return count > 0;
+    for (uint8_t fe : fromEdge)
+      if (!fe) return true;
+    return false;
+  };
+  return anyReal(built.sphereFromEdge, built.sphereColor.size()) ||
+         anyReal(built.cylFromEdge, built.cylColor.size()) ||
+         anyReal(built.cylCapFromEdge, built.cylCapColor.size());
+}
+
 }  // namespace
 
 EmbreeRenderer::~EmbreeRenderer() { releaseEmbree(); }
@@ -222,12 +241,14 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // releases the partial scene and throws; release the device too before
   // propagating so render() leaks neither handle.
   BuiltScene built;
+  const auto tBvh0 = std::chrono::high_resolution_clock::now();
   try {
     built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
   } catch (...) {
     rtcReleaseDevice(device);
     throw;
   }
+  const auto tBvh1 = std::chrono::high_resolution_clock::now();
 
   const Mesh& m = scene.mesh;
 
@@ -342,11 +363,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   std::vector<int> giGroup;
   std::vector<uint32_t> giGeom;
   std::vector<float> giRefl;  // per-pixel mat.diffuse * pigment (GI composite)
+  std::vector<uint8_t> giElig;  // per-pixel pt1 gather-eligible flag (shader-set)
   if (opt.gi) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     giGroup.assign(npix, -1);
     giGeom.assign(npix, 0xFFFFFFFFu);
     giRefl.assign(npix * 3, 0.0f);
+    giElig.assign(npix, 0);
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -411,6 +434,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         giRefl[pix * 3 + 0] = pr.giReflectance.x;
         giRefl[pix * 3 + 1] = pr.giReflectance.y;
         giRefl[pix * 3 + 2] = pr.giReflectance.z;
+        giElig[pix] = pr.giEligible;
       }
       // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
       // buffer was allocated above (wantAlbedoGuide).
@@ -443,13 +467,173 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();
+  res.pt1Timing.bvhBuild = std::chrono::duration<double>(tBvh1 - tBvh0).count();
+  res.pt1Timing.primary = res.renderSeconds;
 
-  // --- diffuse GI: surface irradiance cache (post-pass on the live BVH) ---
-  // [B] placement + [C] gather/fill + neighbor clamp, then [D] interpolation
-  // into the debug `indirect` (E_cached) and `giRecordViz` (record-density) AOVs.
-  // The final color composite ([E]) is NOT wired in this step, so a gi==on render
-  // leaves res.color unchanged vs gi==off. Runs at the (supersampled) hi-res W*H.
-  if (opt.gi && meshPresent(built)) {
+  // --- diffuse GI post-pass on the live BVH, at the (supersampled) hi-res
+  // W*H. Two alternative indirect integrators share the seam: the surface
+  // irradiance cache (default) and the pt1 per-pixel path-traced gather
+  // (opt.giIntegrator == 1; experimental/pt1/). Both add giIntensity *
+  // giReflectance * E to res.color and fill the same `indirect` AOV, on top of
+  // the unchanged direct shading from the pixel loop above.
+  if (opt.gi && (meshPresent(built) || realCsgPresent(built)) &&
+      opt.giIntegrator == 1) {
+    // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
+    // the sky through its miss term, so the combination counts the sky twice.
+    if (opt.envLights > 0)
+      std::fprintf(stderr,
+                   "warning: --integrator pt1 with env-dome lights (--env-light"
+                   " %d) double-counts the sky energy; use the gather sky "
+                   "(--sky/--sky-radiance) instead\n",
+                   opt.envLights);
+    const Aabb b = scene.mesh.bounds();
+    const float diag = b.valid() ? b.diagonal() : 1.0f;
+    detail::IrradianceCacheParams gp;
+    gp.scene = built.scene;
+    gp.built = &built;
+    gp.mesh = &m;
+    gp.lights = &lights;
+    gp.ambLight = ambLight;
+    gp.envUp = aoUpAxis;
+    // Gather sky: uniform (sky == ground == --sky-radiance; the all-white
+    // default matches the cache's environment exactly) or gradient (zenith =
+    // --sky-radiance, ground = --ao-ground). Radiance = this tint * ambLight *
+    // --gi-env-intensity, evaluated ONLY at gather misses (see pt1_design.md).
+    {
+      const Vec3 skyR{opt.pt1SkyRadiance[0], opt.pt1SkyRadiance[1],
+                      opt.pt1SkyRadiance[2]};
+      gp.skyColor = skyR;
+      gp.groundColor = (opt.pt1SkyMode == 1)
+                           ? Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1],
+                                  opt.aoGroundColor[2]}
+                           : skyR;
+    }
+    gp.envIntensity = opt.giEnvIntensity;
+    gp.samples = std::max(1, opt.pt1Spp);
+    // Path length for the pt1 gather walk (--gi-bounces; 1 = classic
+    // one-bounce). Unlike the cache's prevCache interpolation stages, pt1
+    // continues each path with one cosine-sampled ray per vertex.
+    gp.bounces = std::max(1, opt.giBounces);
+    // Unlike the cache (which truncates at 0.1 * diag for concavity contrast),
+    // pt1 is the ground-truth reference: gather to infinity unless the user
+    // caps it explicitly.
+    gp.maxDistance = (opt.giMaxDistance > 0.0f)
+                         ? opt.giMaxDistance
+                         : std::numeric_limits<float>::infinity();
+    gp.spacing = diag * 0.007f;  // unused by the per-pixel gather; keep valid
+    gp.shadows = opt.shadows;
+    gp.shadowSamples = opt.shadowSamples;
+
+    const int spp = std::max(1, opt.pt1Spp);
+    // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
+    // REAL CSG primitives (atom balls / bonds); outline decoration and the
+    // background stay 0. Unlike the cache's geomID/kind gate this is primID-
+    // aware, which the fromEdge distinction requires.
+    const std::vector<uint8_t>& eligible = giElig;
+
+    std::vector<float> Ebuf, occBuf;
+    if (opt.pt1HalfRes) {
+      // Half of the RENDER grid (which is the supersampled hi-res W x H; use
+      // --supersample 1 for benchmarks so "half" means half the output). The
+      // half pass shoots its own primary rays at the half-pixel centers (=
+      // full-grid 2x2 block centers) into a private G-buffer, gathers and
+      // denoises there, then joint-bilateral-upsamples E to the render grid.
+      const int hw = (W + 1) / 2, hh = (H + 1) / 2;
+      detail::Pt1CameraBasis camb;
+      camb.position = cam.position;
+      camb.dir = dir;
+      camb.right = right;
+      camb.trueUp = trueUp;
+      camb.orthographic = cam.orthographic;
+      camb.halfW = halfW;
+      camb.halfH = halfH;
+      camb.persHalfW = persHalfW;
+      camb.persHalfH = persHalfH;
+
+      detail::Pt1GBuffer g;
+      std::vector<float> Eh, occh;
+      const auto tg0 = std::chrono::high_resolution_clock::now();
+      detail::tracePt1GBuffer(gp, camb, hw, hh, g);
+      // The private G-buffer carries the geometric normal, so the gather's
+      // below-horizon guard is exact here (full-res mode approximates Ng = N).
+      detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
+                            g.geomNormal.data(), g.hit.data(), spp,
+                            opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
+                            opt.pt1Clamp);
+      const auto tg1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      if (opt.pt1Denoise) {
+        const auto td0 = std::chrono::high_resolution_clock::now();
+        detail::denoisePt1E(hw, hh, Eh, g.albedo.data(), g.normal.data(),
+                            g.position.data(), opt);
+        const auto td1 = std::chrono::high_resolution_clock::now();
+        res.pt1Timing.denoise =
+            std::chrono::duration<double>(td1 - td0).count();
+      }
+
+      const auto tu0 = std::chrono::high_resolution_clock::now();
+      detail::upsampleJointBilateral(
+          W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
+          occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
+          occBuf);
+      const auto tu1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
+    } else {
+      const auto tg0 = std::chrono::high_resolution_clock::now();
+      detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
+                            /*geomNormal=*/nullptr, eligible.data(), spp,
+                            opt.pt1Seed, diag, Ebuf, occBuf, opt.pt1Ld,
+                            opt.pt1Clamp);
+      const auto tg1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      // Denoise the indirect irradiance ONLY (pre-composite; direct light and
+      // albedo are noise-free): OIDN on E with the reflectance/normal guides.
+      if (opt.pt1Denoise) {
+        const auto td0 = std::chrono::high_resolution_clock::now();
+        detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
+                            res.position.data(), opt);
+        const auto td1 = std::chrono::high_resolution_clock::now();
+        res.pt1Timing.denoise =
+            std::chrono::duration<double>(td1 - td0).count();
+      }
+    }
+
+    // [E] composite -- same form as the cache path: L += giIntensity *
+    // (mat.diffuse * pigment) * E. The constant ambient was already dropped in
+    // the shade (gi path); occlusion lives inside E, counted exactly once.
+    const float gI = opt.giIntensity;
+    tbb::parallel_for(tbb::blocked_range<int>(0, H),
+                      [&](const tbb::blocked_range<int>& rows) {
+      for (int py = rows.begin(); py != rows.end(); ++py) {
+        for (int px = 0; px < W; ++px) {
+          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+          if (!eligible[pix]) continue;
+          const Vec3 ind{gI * giRefl[pix * 3 + 0] * Ebuf[pix * 3 + 0],
+                         gI * giRefl[pix * 3 + 1] * Ebuf[pix * 3 + 1],
+                         gI * giRefl[pix * 3 + 2] * Ebuf[pix * 3 + 2]};
+          res.color[pix * 4 + 0] += ind.x;
+          res.color[pix * 4 + 1] += ind.y;
+          res.color[pix * 4 + 2] += ind.z;
+          res.indirect[pix * 3 + 0] = ind.x;
+          res.indirect[pix * 3 + 1] = ind.y;
+          res.indirect[pix * 3 + 2] = ind.z;
+          res.giOcclusion[pix] = occBuf[pix];
+        }
+      }
+    });
+
+    std::fprintf(stderr,
+                 "pt1: %s-res gather %dx%d spp=%d -> gather %.3fs denoise "
+                 "%.3fs upsample %.3fs\n",
+                 opt.pt1HalfRes ? "half" : "full", W, H, spp,
+                 res.pt1Timing.gather, res.pt1Timing.denoise,
+                 res.pt1Timing.upsample);
+  } else if (opt.gi && meshPresent(built)) {
+    // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
+    // clamp, then [D] interpolation into the `indirect` (E_cached) and
+    // `giRecordViz` (record-density) AOVs and the [E] color composite.
     const Aabb b = scene.mesh.bounds();
     const float diag = b.valid() ? b.diagonal() : 1.0f;
     detail::IrradianceCacheParams gp;

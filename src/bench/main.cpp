@@ -2,9 +2,11 @@
 // render it with the umbreon Embree backend, and write the image. Also provides
 // PPM compare and PPM->PNG convert utility modes.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -47,6 +49,12 @@ int main(int argc, char** argv) {
     umbreon::printUsage(argv[0]);
     return 2;
   }
+
+  // --integrator pt1 implies the GI pipeline: the gi gate drives the ambient
+  // zeroing, the _amb_frac energy rebalance and the GI AOV plumbing, all of
+  // which pt1 shares with the cache. Without this a bare "--integrator pt1"
+  // would silently render with no GI at all.
+  if (opt.giIntegrator == 1) opt.gi = true;
 
   // Convert mode: read a PPM, write it in the requested format, and exit.
   if (opt.convertMode) {
@@ -471,16 +479,42 @@ int main(int argc, char** argv) {
     ropt.giSeedPerVertex = opt.giSeedPerVertex;
     ropt.giGradients = opt.giGradients;
     ropt.giOutlierReject = opt.giOutlierReject;
+    // pt1 integrator selection + knobs (giIntegrator == 0 leaves the cache
+    // path untouched; the pt1 fields are then never read).
+    ropt.giIntegrator = opt.giIntegrator;
+    ropt.pt1Spp = opt.pt1Spp;
+    ropt.pt1HalfRes = opt.pt1HalfRes;
+    ropt.pt1Denoise = opt.pt1Denoise;
+    ropt.pt1Seed = opt.pt1Seed;
+    ropt.pt1SkyMode = opt.pt1SkyMode;
+    for (int i = 0; i < 3; ++i) ropt.pt1SkyRadiance[i] = opt.pt1SkyRadiance[i];
+    ropt.pt1UpsampleNormalPow = opt.pt1UpsampleNormalPow;
+    ropt.pt1UpsampleDepthScale = opt.pt1UpsampleDepthScale;
+    ropt.pt1Ld = opt.pt1Ld;
+    ropt.pt1Clamp = opt.pt1Clamp;
     // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
-    // None otherwise. An explicit --denoiser (0/1/2) is honored as-is.
-    ropt.denoiser = opt.denoiser >= 0 ? opt.denoiser : (ropt.gi ? 1 : 0);
+    // None otherwise. An explicit --denoiser (0/1/2) is honored as-is. On the
+    // pt1 path the default is None: pt1 denoises its indirect irradiance
+    // buffer itself (--denoise, pre-composite), so a final-color denoise on
+    // top would smooth the same signal twice.
+    ropt.denoiser =
+        opt.denoiser >= 0
+            ? opt.denoiser
+            : ((ropt.gi && ropt.giIntegrator != 1) ? 1 : 0);
     ropt.denoiseIters = opt.denoiseIters;
     ropt.denoiseSigmaZ = opt.denoiseSigmaZ;
     ropt.denoiseSigmaN = opt.denoiseSigmaN;
     ropt.denoiseSigmaL = opt.denoiseSigmaL;
     ropt.denoiseDemodulateAlbedo = opt.denoiseDemodulateAlbedo;
     ropt.oidnCleanAux = opt.oidnCleanAux;
-    if (ropt.gi)
+    if (ropt.gi && ropt.giIntegrator == 1)
+      std::printf(
+          "  diffuse GI: pt1 path-traced gather, %d spp, %d bounce%s, %s res, "
+          "denoise %s, intensity %.2f, env %.2f\n",
+          ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
+          ropt.pt1HalfRes ? "half" : "full", ropt.pt1Denoise ? "on" : "off",
+          ropt.giIntensity, ropt.giEnvIntensity);
+    else if (ropt.gi)
       std::printf(
           "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "
           "env %.2f%s\n",
@@ -600,8 +634,47 @@ int main(int argc, char** argv) {
         TBB_runtime_version(), TBB_runtime_interface_version(),
         tbb::global_control::active_value(
             tbb::global_control::max_allowed_parallelism));
+    const auto tRender0 = std::chrono::high_resolution_clock::now();
     umbreon::FrameResult frame = umbreon::render(scene, ropt);
+    const auto tRender1 = std::chrono::high_resolution_clock::now();
     std::printf("  render time:  %.3f s\n", frame.renderSeconds);
+
+    // pt1 stage timing: table to stdout + outputs/timing.json (plan Phase 6).
+    // `direct` is 0 by architecture (direct shading is fused into the primary
+    // loop, reported under `primary`); `total` is the wall time of render().
+    if (ropt.gi && ropt.giIntegrator == 1) {
+      umbreon::Pt1Timing t = frame.pt1Timing;
+      t.total = std::chrono::duration<double>(tRender1 - tRender0).count();
+      std::printf(
+          "  pt1 timing: bvh_build %.3f  primary %.3f  direct %.3f  gather "
+          "%.3f  denoise %.3f  upsample %.3f  total %.3f (s)\n",
+          t.bvhBuild, t.primary, t.direct, t.gather, t.denoise, t.upsample,
+          t.total);
+      try {
+        std::filesystem::create_directories("outputs");
+        if (std::FILE* jf = std::fopen("outputs/timing.json", "w")) {
+          std::fprintf(jf,
+                       "{\n"
+                       "  \"bvh_build\": %.6f,\n"
+                       "  \"primary\": %.6f,\n"
+                       "  \"direct\": %.6f,\n"
+                       "  \"gather\": %.6f,\n"
+                       "  \"denoise\": %.6f,\n"
+                       "  \"upsample\": %.6f,\n"
+                       "  \"total\": %.6f,\n"
+                       "  \"note\": \"direct shading is fused into the "
+                       "primary-ray loop; its cost is under 'primary'\"\n"
+                       "}\n",
+                       t.bvhBuild, t.primary, t.direct, t.gather, t.denoise,
+                       t.upsample, t.total);
+          std::fclose(jf);
+          std::printf("  wrote outputs/timing.json\n");
+        }
+      } catch (const std::exception& e) {
+        std::fprintf(stderr, "warning: could not write outputs/timing.json (%s)\n",
+                     e.what());
+      }
+    }
     if (scene.fog.enabled)
       std::printf("  applied linear fog (start %.3f, end %.3f)\n",
                   scene.fog.start, scene.fog.end);

@@ -26,3 +26,6 @@ data/umbreon*.png
 .DS_Store
 *.swp
 *~
+
+# pt1 integrator outputs (renders, timing.json, compare runs)
+outputs/

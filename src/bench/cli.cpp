@@ -264,6 +264,77 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--gi-outlier-reject");
       if (o.ok && !parseBool(v, o.giOutlierReject))
         fail("--gi-outlier-reject expects on/off");
+    } else if (a == "--integrator") {
+      std::string v = value("--integrator");
+      if (v == "cache")
+        o.giIntegrator = 0;
+      else if (v == "pt1")
+        o.giIntegrator = 1;
+      else
+        fail("--integrator expects cache/pt1");
+    } else if (a == "--quality") {
+      // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
+      // bounces at the point of appearance, so later explicit flags override
+      // individual values (put --quality first).
+      std::string v = value("--quality");
+      if (v == "draft") {
+        o.giIntegrator = 1;
+        o.pt1HalfRes = true;
+        o.pt1Spp = 8;
+        o.giBounces = 1;
+      } else if (v == "high") {
+        o.giIntegrator = 1;
+        o.pt1HalfRes = false;
+        o.pt1Spp = 64;
+        o.giBounces = 2;
+      } else if (v == "ultra") {
+        o.giIntegrator = 1;
+        o.pt1HalfRes = false;
+        o.pt1Spp = 256;
+        o.giBounces = 3;
+      } else {
+        fail("--quality expects draft/high/ultra");
+      }
+    } else if (a == "--spp") {
+      o.pt1Spp = std::atoi(value("--spp").c_str());
+    } else if (a == "--indirect-res") {
+      std::string v = value("--indirect-res");
+      if (v == "full")
+        o.pt1HalfRes = false;
+      else if (v == "half")
+        o.pt1HalfRes = true;
+      else
+        fail("--indirect-res expects full/half");
+    } else if (a == "--denoise") {
+      std::string v = value("--denoise");
+      if (o.ok && !parseBool(v, o.pt1Denoise))
+        fail("--denoise expects on/off");
+    } else if (a == "--sky") {
+      std::string v = value("--sky");
+      if (v == "uniform")
+        o.pt1SkyMode = 0;
+      else if (v == "gradient")
+        o.pt1SkyMode = 1;
+      else
+        fail("--sky expects uniform/gradient");
+    } else if (a == "--sky-radiance") {
+      std::string v = value("--sky-radiance");
+      if (o.ok && !parseVec3(v, o.pt1SkyRadiance))
+        fail("--sky-radiance expects r,g,b");
+    } else if (a == "--seed") {
+      o.pt1Seed = static_cast<unsigned>(
+          std::strtoul(value("--seed").c_str(), nullptr, 10));
+    } else if (a == "--pt1-ld") {
+      std::string v = value("--pt1-ld");
+      if (o.ok && !parseBool(v, o.pt1Ld)) fail("--pt1-ld expects on/off");
+    } else if (a == "--pt1-clamp") {
+      o.pt1Clamp = static_cast<float>(std::atof(value("--pt1-clamp").c_str()));
+    } else if (a == "--pt1-upsample-normal-pow") {
+      o.pt1UpsampleNormalPow = static_cast<float>(
+          std::atof(value("--pt1-upsample-normal-pow").c_str()));
+    } else if (a == "--pt1-upsample-depth-scale") {
+      o.pt1UpsampleDepthScale = static_cast<float>(
+          std::atof(value("--pt1-upsample-depth-scale").c_str()));
     } else if (a == "--denoiser") {
       std::string v = value("--denoiser");
       if (v == "none")
@@ -636,6 +707,21 @@ void printUsage(const char* prog) {
       "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
+      "  --integrator <cache|pt1> indirect GI integrator (pt1 implies --gi on)\n"
+      "  --quality <draft|high|ultra> pt1 preset: 8spp half 1-bounce /\n"
+      "                           64spp full 2-bounce / 256spp full 3-bounce\n"
+      "                           (put it FIRST; later flags override)\n"
+      "                           [cache]\n"
+      "  --spp <int>              pt1 gather rays per pixel             [8]\n"
+      "  --indirect-res <full|half> pt1 gather resolution             [half]\n"
+      "  --denoise <on|off>       pt1 indirect-only OIDN denoise        [on]\n"
+      "  --sky <uniform|gradient> pt1 gather sky model            [uniform]\n"
+      "  --sky-radiance r,g,b     pt1 sky tint (x ambient energy)   [1,1,1]\n"
+      "  --seed <int>             pt1 per-pixel RNG seed                [0]\n"
+      "  --pt1-ld <on|off>        pt1 stratified 1st-bounce sampling   [off]\n"
+      "  --pt1-clamp <f>          pt1 per-sample luminance clamp      [0=off]\n"
+      "  --pt1-upsample-normal-pow <f> upsample normal edge-stop       [32]\n"
+      "  --pt1-upsample-depth-scale <f> upsample depth edge-stop     [0.02]\n"
       "  --compare <a> <b>        print PSNR/SSIM between two PPM files\n"
       "  --convert <in> <out>     convert a PPM to PNG/PPM\n"
       "  -h, --help               show this help\n",
