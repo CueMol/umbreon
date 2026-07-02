@@ -54,6 +54,10 @@ struct PixelResult {
   uint32_t firstGeomID = 0xFFFFFFFFu;   // Embree geomID; sentinel = background
   Vec3 giReflectance{0.0f, 0.0f, 0.0f}; // mat.diffuse * pigment (GI composite)
   uint8_t giEligible = 0;               // 1 = pt1 gather-eligible first hit
+  // First-hit fragment opacity (surface alpha) for the edge G-buffer; keeps
+  // its opaque default when the ray escapes. Only consumed when strokeEdges
+  // is enabled.
+  float firstOpacity = 1.0f;
 };
 
 // Integrate one primary ray (origin `org`, direction `rd`) through the scene,
@@ -102,6 +106,7 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   uint32_t firstGeomID = 0xFFFFFFFFu;
   Vec3 firstGiReflectance{0.0f, 0.0f, 0.0f};
   uint8_t firstGiEligible = 0;
+  float firstOpacity = 1.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -165,6 +170,7 @@ inline PixelResult integratePixel(const ShadeContext& sc,
       firstGeomID = rh.hit.geomID;
       firstGiReflectance = hs.giReflectance;
       firstGiEligible = hs.giEligible;
+      firstOpacity = hs.opacity;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -256,7 +262,8 @@ inline PixelResult integratePixel(const ShadeContext& sc,
                      firstGroup,
                      firstGeomID,
                      firstGiReflectance,
-                     firstGiEligible};
+                     firstGiEligible,
+                     firstOpacity};
 }
 
 }  // namespace detail
