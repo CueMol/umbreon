@@ -29,6 +29,8 @@ using umbreon::CrackClass;
 using umbreon::CrackField;
 using umbreon::kCrackClassMask;
 using umbreon::kCrackOwnerBit;
+using umbreon::kCrackStrongBit;
+using umbreon::ScreenChain;
 using umbreon::ScreenClassifyParams;
 using umbreon::ScreenProj;
 
@@ -651,6 +653,126 @@ int main() {
     const CrackField cf = classify(b, on);
     s.check_eq("crease: 90-degree fold fires per row",
                countClass(cf, CrackClass::Crease), 16);
+  }
+
+  // ---- (7) step dominance: sliver on a grazing ramp weak, flat step strong -
+  // A coarse mesh at grazing incidence throws off facet-horizon slivers: a
+  // sight line skims a facet edge and lands a few pixels' worth of the SAME
+  // grazing ramp deeper. The step is real and above the absolute threshold,
+  // but it does not dominate the near side's own recession, so it must stay
+  // WEAK (drawable only with chain support). A same-magnitude-class step on a
+  // flat surface is a true occlusion contour and is STRONG.
+  {
+    Buffers b(24, 8);
+    for (int y = 0; y < 8; ++y)
+      for (int x = 0; x < 24; ++x) {
+        float vz = 100.0f + 10.0f * x;  // grazing ramp, 10 per px
+        if (x >= 12) vz += 45.0f;       // sliver: ~4.5 px of ramp
+        b.set(x, y, 9, vz);
+      }
+    const CrackField cf = classify(b, defaults);
+    const std::uint8_t byte = cf.right[b.idx(11, 4)];
+    s.check("sliver on ramp: DepthGap fires",
+            (byte & kCrackClassMask) ==
+                static_cast<std::uint8_t>(CrackClass::DepthGap));
+    s.check("sliver on ramp: weak (step does not dominate the ramp)",
+            (byte & kCrackStrongBit) == 0);
+  }
+  {
+    Buffers b(16, 8);
+    for (int y = 0; y < 8; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 100.0f : 500.0f);  // step 400 over flat
+    const CrackField cf = classify(b, defaults);
+    const std::uint8_t byte = cf.right[b.idx(7, 4)];
+    s.check("flat step: DepthGap strong",
+            (byte & kCrackClassMask) ==
+                    static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+                (byte & kCrackStrongBit) != 0);
+  }
+
+  // ---- (8) Stage 2.5: weak survives only when bridging interior support ---
+  // Two strong vertical steps with (a) a weak horizontal connector between
+  // them (both ends junction into strong chains -> KEPT: this is the
+  // near-cusp tail / chopped-fragment case) and (b) a weak line from the
+  // right step to the image border (a free end -> pruned sliver). After
+  // pruneWeakChains the connector's cracks survive, the spur's are erased.
+  {
+    Buffers b(20, 20);
+    for (int y = 0; y < 20; ++y)
+      for (int x = 0; x < 20; ++x) {
+        float vz;
+        if (x < 7)
+          vz = 100.0f;
+        else if (x < 14)
+          vz = 600.0f + (y >= 10 ? 30.0f : 0.0f);   // weak connector at y 9|10
+        else
+          vz = 1500.0f + (y >= 15 ? 30.0f : 0.0f);  // weak spur at y 14|15
+        b.set(x, y, 9, vz);
+      }
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    int weakKept = 0, strongKept = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t i = 0; i < ch.edgeClass.size(); ++i) {
+        if (ch.edgeClass[i] !=
+            static_cast<std::uint8_t>(CrackClass::DepthGap))
+          continue;
+        if (ch.edgeFlags[i] & 1)
+          ++strongKept;
+        else
+          ++weakKept;
+      }
+    s.check_eq("prune: both strong steps fully kept", strongKept, 40);
+    s.check_eq("prune: bridging weak connector kept, free-end spur pruned",
+               weakKept, 7);
+    // Determinism: prune of an identically classified field gives the same
+    // chain set.
+    CrackField cf2 = classify(b, defaults);
+    std::vector<ScreenChain> chains2 =
+        umbreon::traceCrackChains(cf2, b.viewZ.data(), b.objectId.data());
+    chains2 = umbreon::pruneWeakChains(cf2, std::move(chains2),
+                                       b.viewZ.data(), b.objectId.data());
+    bool same = chains2.size() == chains.size();
+    for (std::size_t i = 0; same && i < chains.size(); ++i) {
+      same = chains[i].pts.size() == chains2[i].pts.size() &&
+             chains[i].edgeClass == chains2[i].edgeClass;
+      for (std::size_t v = 0; same && v < chains[i].pts.size(); ++v)
+        same = chains[i].pts[v].x == chains2[i].pts[v].x &&
+               chains[i].pts[v].y == chains2[i].pts[v].y;
+    }
+    s.check("prune: deterministic", same);
+  }
+
+  // ---- (9) bg clearance: terminal weak cracks reach the outline -----------
+  // A weak step line PERPENDICULAR to the outline is a contour terminal: its
+  // cracks inside the clearance radius have background in their along-crack
+  // strip and survive. A weak line PARALLEL to the outline at a 2 px offset
+  // is grazing rim noise: its interior cracks are killed (its ends, which do
+  // land on the side outline, survive as terminals).
+  {
+    Buffers b(16, 16);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x)
+        b.set(x, y, 9, x >= 8 ? 130.0f : 100.0f);  // step 30 into the outline
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("perpendicular weak line: every crack reaches the outline",
+               countClass(cf, CrackClass::DepthGap), 8);
+  }
+  {
+    Buffers b(16, 16);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x)
+        b.set(x, y, 9, y >= 6 ? 130.0f : 100.0f);  // line 2 px below outline
+    const CrackField cf = classify(b, defaults);
+    s.check("parallel weak line: interior crack killed by clearance",
+            (cf.down[b.idx(7, 5)] & kCrackClassMask) == 0);
+    s.check("parallel weak line: terminal crack at the side outline survives",
+            (cf.down[b.idx(4, 5)] & kCrackClassMask) ==
+                static_cast<std::uint8_t>(CrackClass::DepthGap));
   }
 
   return s.report();

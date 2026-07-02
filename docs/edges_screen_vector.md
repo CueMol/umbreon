@@ -36,7 +36,20 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      grazing surface is predicted by at least one side; a pure slope change
      -- a facet kink -- is predicted exactly by the steep side), plus
      non-maximum suppression across the crack so the boundary stays one
-     crack thin, plus a background-clearance kill near the outline,
+     crack thin. DepthGap cracks carry a STRONG/weak hysteresis tier: strong
+     needs the full `--stroke-depth-gap` threshold AND step dominance -- the
+     raw step must exceed `stepDominanceK` (default 250) times the near
+     side's wide-baseline recession slope. This kills the facet-horizon
+     slivers a coarse mesh throws off at grazing incidence (a sight line
+     skims a facet edge and lands a few pixels' worth of the same grazing
+     ramp deeper -- a real micro-occlusion, measured ratios <= ~200 on
+     mesh4, that the smooth-shaded reference does not draw), while a true
+     contour (ratios >= ~500) stays strong even where the surface it sits
+     on is steep. Weak cracks (above `weakGapRatio` = 0.5 of the threshold)
+     trace normally but survive only with chain support (Stage 2.5). The
+     background-clearance kill applies to weak cracks only, and spares a
+     crack whose along-crack strip reaches the background (the terminal
+     piece of a contour landing on the outline),
    - `Crease`     -- shading-normal fold (off by default, `--stroke-crease`).
 2. **Crack tracing** (`traceCrackChains`): cracks form paths/loops on the
    pixel-corner lattice; region boundaries are traced into maximal chains
@@ -44,6 +57,15 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    loops or junction-to-junction paths, no voting, no chaining tolerance.
    Visibility is exact and free (the AOVs are the z-buffered first hit); no
    QI rays run.
+   **Stage 2.5** (`pruneWeakChains`): hysteresis prune + retrace. A chain
+   survives with any non-DepthGap edgel or ~2 final px of strong DepthGap
+   edgels; a pure-weak chain survives only when BOTH its endpoint corners
+   junction into kept chains with interior (non-silhouette) support on at
+   least one side -- the near-cusp tail of a contour bridging the strong
+   contour body and the silhouette outline. Everything else (isolated
+   slivers, spurs with a free end, weak lines hugging the outline with both
+   ends on it) is erased and the field is retraced, so survivors re-merge
+   across the dissolved junctions into maximal chains again.
 3. **Cleanup**: collinear collapse, Chaikin corner cutting (endpoints pinned
    at junctions), Douglas-Peucker simplification, junction-aware speck
    filter (isolated specks and free-end spurs drop; short junction-to-
@@ -75,8 +97,17 @@ section, a bond embedded in an atom -- are always suppressed, thresholded by
 `--stroke-silhouette`. The `--edge-qi-*` flags are inert here
 (no QI runs; visibility is exact from the z-buffer).
 
-`UMBREON_SCREEN_EDGE_DEBUG=1` prints one stats line per frame (traced chains,
-edgels per class, drawn chains) for tuning.
+`UMBREON_SCREEN_EDGE_DEBUG=1` prints one stats line per frame (raw/kept
+chains, edgels per class, strong DepthGap count, drawn chains) for tuning;
+`=2` also lists every kept chain (bbox, class mix, strong count).
+`UMBREON_SCREEN_EDGE_DUMP=<prefix>` writes Stage-1 diagnostics: a colorized
+crack-lattice PPM (silhouette white, ObjectId orange, DepthGap strong red /
+weak blue, NMS-suppressed cyan, bg-killed yellow, near-threshold green), a
+per-crack CSV (gaps, slopes, raw step, kill reason, px-normalized) and the
+raw viewZ/objectId planes. `UMBREON_SCREEN_EDGE_DUMP_ROI=x0,y0,x1,y1`
+restricts the PPM/CSV to a hi-res pixel rectangle. The hysteresis internals
+(`weakGapRatio`, `stepDominanceK`) are `ScreenClassifyParams` struct
+defaults, deliberately not CLI flags.
 
 ## Limitations
 
