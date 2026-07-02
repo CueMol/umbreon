@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "edges/mesh_feature_edges.hpp"
+#include "render/render_types.hpp"
 
 namespace umbreon {
 
@@ -79,10 +80,17 @@ struct ScreenClassifyParams {
   // this is the second-derivative form of the Mol*-style curvature veto -- a
   // smooth surface satisfies at least one extrapolation, a grazing plane is
   // predicted exactly, a true occlusion step fails both).
-  float depthGapPx = 2.0f;
+  float depthGapPx = 12.0f;
   // One-sided slope clamp in pixelSize units, so extreme grazing noise cannot
   // extrapolate across a genuine fold.
-  float slopeClampPx = 30.0f;
+  float slopeClampPx = 300.0f;
+  // Suppress a DepthGap crack when either pixel lies within this Chebyshev
+  // radius (hi-res px) of a background pixel: the last pixels before the
+  // silhouette are grazing-dominated (a near-edge-on facet there is
+  // indistinguishable from an occlusion step) and the Silhouette class
+  // already inks that boundary. 0 = off. The Stage-4 driver scales this with
+  // the supersample factor.
+  int bgClearancePx = 3;
   // Crease: fire when dot(nA, nB) < cos(effective angle), where the effective
   // angle widens at grazing incidence: creaseAngleDeg * (1 + grazeK * (1 -
   // min(|nA.V|, |nB.V|))) with V the view forward axis.
@@ -117,11 +125,17 @@ struct ScreenChainVert {
 // duplicates the seed vertex at the end (pts.front() == pts.back()). Per
 // EDGEL (pts.size()-1 entries): the CrackClass and the owner pixel's section
 // group (objectId >> 2; 0 when the tracer was given no objectId buffer).
+// deg0/deg1 are the lattice active-crack degrees of the first/last corner
+// (2 for a closed loop): a short chain whose ends are BOTH junctions
+// (degree >= 3) is a piece of a larger boundary chopped by side-branches and
+// must survive the speck filter; a short chain with a free end (degree 1) or
+// a tiny loop is an isolated speckle/spur.
 struct ScreenChain {
   std::vector<ScreenChainVert> pts;
   std::vector<std::uint8_t> edgeClass;
   std::vector<std::uint16_t> edgeGroup;
   bool closed = false;
+  int deg0 = 0, deg1 = 0;
 };
 
 // Stage 2: trace the classified cracks into maximal continuous chains,
@@ -166,5 +180,16 @@ void chaikinSmooth(std::vector<ScreenChainVert>& pts, bool closed, int iters);
 // approximate-diameter vertex pair (deterministic two-sweep pick), each half
 // simplified, and the seam re-duplicated.
 void simplifyRdp(std::vector<ScreenChainVert>& pts, bool closed, float eps);
+
+// Stage 4 driver (--stroke-source screen): classify the frame's edge AOVs,
+// trace the cracks, split each chain into same-class runs (with the short-run
+// relabel filter), clean up each run's geometry (collapse + Chaikin + RDP;
+// whole chains below the speck length are dropped first), map classes onto
+// the EdgeStyle slots, and hand the chains to the shared draw stage
+// (stroke_render.hpp:renderStrokeChains). Requires the edge AOVs (viewZ /
+// objectId / normal) at the frame's (hi-res) resolution -- they are captured
+// whenever strokeEdges.enable is on. No QI machinery runs under this source.
+void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
+                            const RenderOptions& opt);
 
 }  // namespace umbreon

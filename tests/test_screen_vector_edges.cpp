@@ -165,7 +165,7 @@ int main() {
     Buffers b(16, 16);
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x)
-        b.set(x, y, 9, x < 8 ? 10.0f : 15.0f);  // step of 5 > gap 2
+        b.set(x, y, 9, x < 8 ? 10.0f : 60.0f);  // step of 50 > gap 12
     const CrackField cf = classify(b, defaults);
     s.check_eq("z-step: one DepthGap crack per row",
                countClass(cf, CrackClass::DepthGap), 16);
@@ -173,6 +173,35 @@ int main() {
     // Boundary crack (7,y)-(8,y): first pixel vz 10 (nearer) -> owner bit 0.
     s.check("z-step: nearer (first) side owns",
             (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
+  }
+
+  // ---- (4b) facet kink: a pure slope change never fires --------------------
+  // Piecewise-linear depth (flat, then a steep ramp) models the facet boundary
+  // of a coarse mesh seen at grazing incidence: the steep side's one-sided
+  // extrapolation predicts the flat side's edge pixel exactly, so DepthGap
+  // stays silent no matter how steep the ramp (only a true DISCONTINUITY, not
+  // a slope change, is an occlusion boundary).
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 100.0f : 100.0f + 30.0f * (x - 7));
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("facet kink: slope change never fires", countActive(cf), 0);
+  }
+
+  // ---- (4c) DepthGap NMS: a smeared step fires once, not as a band --------
+  {
+    Buffers b(16, 16);
+    // Depth 10 -> 50 -> 60: a big jump followed by a smaller one (a step
+    // smeared over two pixel pairs). Only the strongest pair may fire per row
+    // (non-maximum suppression keeps the boundary one crack thin).
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 10.0f : (x == 8 ? 50.0f : 60.0f));
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("z-step NMS: exactly one crack per row",
+               countClass(cf, CrackClass::DepthGap), 16);
   }
 
   // ---- (5) abutting ids at equal depth: ObjectId class --------------------

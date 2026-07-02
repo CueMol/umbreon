@@ -85,6 +85,14 @@ if(TARGET umbreon)
   target_link_libraries(test_screen_vector_edges PRIVATE umbreon)
   add_test(NAME screen_vector_edges COMMAND test_screen_vector_edges)
 
+  add_executable(test_screen_vector_integration
+                 test_screen_vector_integration.cpp)
+  target_link_libraries(test_screen_vector_integration PRIVATE umbreon
+                                                               bench_core)
+  add_test(NAME screen_vector_integration
+           COMMAND test_screen_vector_integration
+                   ${CMAKE_SOURCE_DIR}/data/edges/edge_tube1.pov)
+
   # Real-data edge-pass equivalence: indexed vs de-indexed mesh must render the
   # same with stroke edges on. Loads .pov scenes via bench_core, renders via
   # umbreon. Screen-space tube/ribbon edge-validation scenes + a ribbon scene.

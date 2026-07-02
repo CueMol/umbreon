@@ -49,6 +49,15 @@ struct EdgeStyle {
   EdgeClassStyle cls[static_cast<int>(EdgeClass::Count)];
 };
 
+// Which extractor produces the stroke chains (--stroke-source). Mesh (default)
+// is the Freestyle-faithful topology pipeline below; Screen vectorizes the
+// per-pixel edge AOVs (viewZ/objectId/normal) by crack tracing
+// (edges/screen_vector_edges.hpp) -- tessellation-independent, continuous by
+// construction, visibility exact from the z-buffer (no QI rays). Both sources
+// share the stylization + rasterization back half (edges/stroke_render.hpp),
+// so all style flags apply to either.
+enum class StrokeSource : uint8_t { Mesh = 0, Screen = 1 };
+
 // --- Freestyle-style stroke edge rendering (--edges) ----------------------
 // Options for the STROKE edge pipeline (render/stroke_edges.cpp), the
 // Freestyle-faithful replacement for the retired per-pixel screen-space pass.
@@ -62,6 +71,28 @@ struct EdgeStyle {
 // stays byte-identical to the no-edge path.
 struct StrokeEdgeOptions {
   bool enable = false;  // MASTER gate; false => zero new work, byte-identical
+
+  // Chain extractor (--stroke-source <mesh|screen>). Mesh keeps the pipeline
+  // documented below byte-identical; Screen swaps the extraction/visibility
+  // stages for the AOV crack tracer and skips all QI machinery (the
+  // --edge-qi-* debug/tuning flags are mesh-only). The nature toggles keep
+  // their meaning: silhouette gates the fg/bg contour AND the same-id depth
+  // gap, border gates the object-id boundary, crease gates the normal fold.
+  StrokeSource source = StrokeSource::Mesh;
+
+  // --- screen-source (crack tracer) tuning; unused under mesh ---
+  // DepthGap threshold, world units per lateral pixel (a slope cutoff; the
+  // one-sided planar extrapolation makes it curvature-tolerant). See
+  // ScreenClassifyParams::depthGapPx.
+  float screenDepthGapPx = 12.0f;
+  float screenSlopeClampPx = 300.0f;  // extrapolation slope clamp, px units
+  float screenSimplifyPx = 0.4f;     // Douglas-Peucker eps, FINAL px
+  int screenSmoothIters = 2;         // Chaikin corner-cut iterations
+  float screenMinLenPx = 4.0f;       // drop chains shorter than this, FINAL px
+  // Relabel a class run shorter than this (FINAL px) when bracketed by two
+  // runs of one same class (style-flicker suppression; geometry unchanged).
+  int screenClassMergeLen = 2;
+  float screenGrazeK = 1.0f;  // crease grazing-angle widening factor
 
   // --- which natures to extract/draw ---
   bool silhouette = true;  // smooth n.v==0 contour + hard-edge straddle

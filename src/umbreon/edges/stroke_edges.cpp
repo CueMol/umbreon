@@ -14,6 +14,7 @@
 
 #include "edges/analytic_silhouette.hpp"
 #include "edges/mesh_feature_edges.hpp"
+#include "edges/screen_vector_edges.hpp"
 #include "edges/stroke_render.hpp"
 
 namespace umbreon {
@@ -1821,6 +1822,13 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const OcclusionQuery& occludedRaw) {
   const StrokeEdgeOptions& se = opt.strokeEdges;
   if (!se.enable) return;
+  // SCREEN source: vectorize the per-pixel edge AOVs instead of the mesh
+  // topology (edges/screen_vector_edges.hpp). Visibility is exact from the
+  // z-buffer, so none of the QI machinery below runs.
+  if (se.source == StrokeSource::Screen) {
+    applyScreenVectorEdges(frame, scene, opt);
+    return;
+  }
   const int W = frame.width, H = frame.height;
   if (W <= 0 || H <= 0) return;
 

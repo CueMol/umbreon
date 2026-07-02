@@ -333,6 +333,14 @@ int main(int argc, char** argv) {
             static_cast<int>(opt.strokeResample + 0.5f);
       if (opt.strokeCreaseDegSet)
         ropt.strokeEdges.creaseAngleDeg = opt.strokeCreaseDeg;
+      // Screen-source (--stroke-source screen) chain extraction + tuning.
+      ropt.strokeEdges.source = opt.strokeSourceScreen
+                                    ? umbreon::StrokeSource::Screen
+                                    : umbreon::StrokeSource::Mesh;
+      ropt.strokeEdges.screenDepthGapPx = opt.strokeDepthGap;
+      ropt.strokeEdges.screenSimplifyPx = opt.strokeScreenSimplify;
+      ropt.strokeEdges.screenSmoothIters = opt.strokeScreenSmooth;
+      ropt.strokeEdges.screenMinLenPx = opt.strokeScreenMinLen;
 
       // Per-section STROKE styling. The stroke pass (applyStrokeEdges) maps each
       // EdgeNature onto an EdgeStyle::cls[] slot (Silhouette->Silhouette,

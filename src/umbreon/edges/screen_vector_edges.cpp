@@ -2,10 +2,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <limits>
+#include <cstdlib>
 #include <cstdint>
 
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
+
+#include "edges/stroke_render.hpp"
 
 namespace umbreon {
 namespace {
@@ -29,13 +34,29 @@ inline float sideSlope(const float* viewZ, const std::uint32_t* objectId,
   return std::max(-clampS, std::min(clampS, s));
 }
 
+// True when any pixel within Chebyshev distance `r` of (x,y) is background.
+// Used to suppress DepthGap cracks hugging the outline: a grazing surface
+// (tube rim, near-edge-on facet) piles huge depth slopes into the last few
+// pixels before the silhouette, indistinguishable there from an occlusion
+// step -- and the silhouette class already inks that boundary.
+inline bool nearBackground(const std::uint32_t* objectId, int W, int H, int x,
+                           int y, int r) {
+  const int x0 = std::max(0, x - r), x1 = std::min(W - 1, x + r);
+  const int y0 = std::max(0, y - r), y1 = std::min(H - 1, y + r);
+  for (int yy = y0; yy <= y1; ++yy)
+    for (int xx = x0; xx <= x1; ++xx)
+      if (objectId[yy * W + xx] == kBackground) return true;
+  return false;
+}
+
 // Classify ONE crack between pixel indices ia (first: left/top) and ib
 // (second: right/bottom). iOutA / iOutB are the outer straight-line neighbors
 // (a's far side, b's far side) with validity flags. Returns the packed crack
 // byte (0 = no edge).
 inline std::uint8_t classifyPair(const float* viewZ,
                                  const std::uint32_t* objectId,
-                                 const float* normal, int ia, int ib, int iOutA,
+                                 const float* normal, int W, int H, int ia,
+                                 int ib, int iOutA,
                                  bool outAValid, int iOutB, bool outBValid,
                                  const ScreenProj& sp, float cosCreaseBase,
                                  const ScreenClassifyParams& p) {
@@ -58,7 +79,15 @@ inline std::uint8_t classifyPair(const float* viewZ,
   }
 
   // 3. DepthGap: same id, both one-sided planar extrapolations miss the far
-  // pixel (slope-adaptive second-derivative test; see header).
+  // pixel (slope-adaptive second-derivative test; see header), AND the raw
+  // |dvz| is the LOCAL MAX among the three parallel pixel pairs (non-maximum
+  // suppression perpendicular to the crack). Without the NMS a grazing rim --
+  // where the surface depth rises tangentially over a 1-2 px annulus (e.g. a
+  // tube edge) -- fires a dense band of cracks that T-junctions the silhouette
+  // into confetti; with it only the strongest pair on the profile fires, so
+  // the boundary is one crack thin. A parallel pair that is itself a fg/bg
+  // boundary counts as infinitely strong (the silhouette class owns the
+  // profile there), which kills the rim annulus next to the outline.
   const float vzA = viewZ[ia], vzB = viewZ[ib];
   if (p.silhouette) {
     const float vzNear = std::min(vzA, vzB);
@@ -71,8 +100,33 @@ inline std::uint8_t classifyPair(const float* viewZ,
     const float gapA = std::fabs(vzB - predA);
     const float gapB = std::fabs(vzA - predB);
     if (std::min(gapA, gapB) > p.depthGapPx * px) {
-      const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
-      return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner;
+      const float g0 = std::fabs(vzB - vzA);
+      // Parallel-pair strength on a's far side (pair outA-a) and b's far side
+      // (pair b-outB): bg neighbor => that pair is a silhouette boundary =>
+      // +inf (suppress); off-image => no pair => 0. STRICT on the a side to
+      // break plateau ties (a near-edge-on facet gives a run of equal-gap
+      // pairs; >= on both sides would fire the whole run as a band).
+      const float inf = std::numeric_limits<float>::infinity();
+      float gLeft = 0.0f, gRight = 0.0f;
+      if (outAValid)
+        gLeft = objectId[iOutA] == kBackground ? inf
+                                               : std::fabs(vzA - viewZ[iOutA]);
+      if (outBValid)
+        gRight = objectId[iOutB] == kBackground ? inf
+                                                : std::fabs(viewZ[iOutB] - vzB);
+      if (g0 > gLeft && g0 >= gRight) {
+        // Silhouette-clearance kill: within bgClearancePx of the outline the
+        // depth signal is grazing-dominated and the silhouette class already
+        // inks the boundary.
+        const int ax = ia % W, ay = ia / W;
+        const int bx = ib % W, by = ib / W;
+        if (p.bgClearancePx <= 0 ||
+            (!nearBackground(objectId, W, H, ax, ay, p.bgClearancePx) &&
+             !nearBackground(objectId, W, H, bx, by, p.bgClearancePx))) {
+          const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
+          return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner;
+        }
+      }
     }
   }
 
@@ -133,13 +187,14 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
             const int ia = row + x;
             if (x + 1 < W) {  // right crack (x,y)-(x+1,y)
               cf.right[static_cast<std::size_t>(ia)] = classifyPair(
-                  viewZ, objectId, normal, ia, ia + 1, ia - 1, x - 1 >= 0,
-                  ia + 2, x + 2 < W, sp, cosCreaseBase, params);
+                  viewZ, objectId, normal, W, H, ia, ia + 1, ia - 1,
+                  x - 1 >= 0, ia + 2, x + 2 < W, sp, cosCreaseBase, params);
             }
             if (y + 1 < H) {  // down crack (x,y)-(x,y+1)
               cf.down[static_cast<std::size_t>(ia)] = classifyPair(
-                  viewZ, objectId, normal, ia, ia + W, ia - W, y - 1 >= 0,
-                  ia + 2 * W, y + 2 < H, sp, cosCreaseBase, params);
+                  viewZ, objectId, normal, W, H, ia, ia + W, ia - W,
+                  y - 1 >= 0, ia + 2 * W, y + 2 < H, sp, cosCreaseBase,
+                  params);
             }
           }
         }
@@ -338,7 +393,12 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
         if (!e.valid) continue;
         const std::uint8_t b = crackByte(cf, e);
         if (!(b & kCrackClassMask) || (b & kCrackConsumedBit)) continue;
-        chains.push_back(walkChain(cf, cx, cy, e, -1, viewZ, objectId));
+        ScreenChain ch = walkChain(cf, cx, cy, e, -1, viewZ, objectId);
+        ch.deg0 = deg;
+        const int lx = static_cast<int>(ch.pts.back().x + 0.5f);
+        const int ly = static_cast<int>(ch.pts.back().y + 0.5f);
+        ch.deg1 = cornerDegree(cf, lx, ly);
+        chains.push_back(std::move(ch));
       }
     }
   }
@@ -358,7 +418,9 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
       const int cy = pass == 0 ? y : y + 1;
       const CornerEdge e = cornerEdge(cf, cx, cy, pass == 0 ? 1 : 0);
       const long seed = static_cast<long>(cy) * (W + 1) + cx;
-      chains.push_back(walkChain(cf, cx, cy, e, seed, viewZ, objectId));
+      ScreenChain ch = walkChain(cf, cx, cy, e, seed, viewZ, objectId);
+      ch.deg0 = ch.deg1 = 2;
+      chains.push_back(std::move(ch));
     }
   }
   return chains;
@@ -532,6 +594,189 @@ void simplifyRdp(std::vector<ScreenChainVert>& pts, bool closed, float eps) {
   for (std::size_t i = 0; i < ring.size(); ++i)
     if (keep[i]) out.push_back(ring[i]);
   pts.swap(out);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4: class runs -> style slots -> shared draw stage.
+
+namespace {
+
+// Style slot (EdgeStyle::cls[] index) and paint precedence for a crack class.
+// The screen analogue of the mesh path's natureStyleSlot/naturePrecedence:
+// Silhouette and DepthGap paint on top (precedence 2), the object-id boundary
+// like the mesh Border (1), Crease underneath (0). DepthGap draws with the
+// Disconnected slot -- unreachable from the mesh path -- and applyScreen
+// VectorEdges falls back to the Silhouette slot when a section leaves
+// Disconnected unconfigured.
+inline int classStyleSlot(CrackClass c) {
+  switch (c) {
+    case CrackClass::ObjectId:
+      return static_cast<int>(EdgeClass::Object);
+    case CrackClass::DepthGap:
+      return static_cast<int>(EdgeClass::Disconnected);
+    case CrackClass::Crease:
+      return static_cast<int>(EdgeClass::Crease);
+    default:
+      return static_cast<int>(EdgeClass::Silhouette);
+  }
+}
+
+inline int classPrecedence(CrackClass c) {
+  switch (c) {
+    case CrackClass::Crease:
+      return 0;
+    case CrackClass::ObjectId:
+      return 1;
+    default:
+      return 2;  // Silhouette, DepthGap
+  }
+}
+
+// Relabel a class run shorter than minLen edgels when bracketed by two runs
+// of one same class (style-flicker suppression along a boundary whose
+// classification alternates, e.g. silhouette <-> depth gap where an object
+// edge grazes the background). Geometry is untouched -- only the labels move,
+// so the continuity guarantee is intact. Linear scan; a closed chain's
+// seam-straddling run pair is left as-is (harmless: one extra style split).
+void mergeShortClassRuns(std::vector<std::uint8_t>& cls, int minLen) {
+  if (minLen <= 1 || cls.size() < 3) return;
+  std::size_t i = 0;
+  while (i < cls.size()) {
+    std::size_t j = i;
+    while (j < cls.size() && cls[j] == cls[i]) ++j;
+    const std::size_t runLen = j - i;
+    if (i > 0 && j < cls.size() && runLen < static_cast<std::size_t>(minLen) &&
+        cls[i - 1] == cls[j]) {
+      for (std::size_t k = i; k < j; ++k) cls[k] = cls[i - 1];
+      // Re-scan from the previous run start would be quadratic; extending the
+      // left run and continuing forward keeps the pass linear and the result
+      // deterministic.
+    }
+    i = j;
+  }
+}
+
+}  // namespace
+
+void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
+                            const RenderOptions& opt) {
+  const StrokeEdgeOptions& se = opt.strokeEdges;
+  const int W = frame.width, H = frame.height;
+  if (W <= 0 || H <= 0) return;
+  if (frame.viewZ.empty() || frame.objectId.empty()) return;
+
+  const ScreenProj sp = makeScreenProj(scene.camera, W, H);
+  const float ssScale = static_cast<float>(std::max(1, opt.supersample));
+
+  // Stage 1: classify. The nature master toggles gate the classes here (the
+  // shared draw stage applies only the per-section style table).
+  ScreenClassifyParams cp;
+  cp.silhouette = se.silhouette;
+  cp.objectBoundary = se.border;
+  cp.crease = se.crease;
+  cp.depthGapPx = se.screenDepthGapPx;
+  cp.slopeClampPx = se.screenSlopeClampPx;
+  cp.creaseAngleDeg = se.creaseAngleDeg;
+  cp.grazeK = se.screenGrazeK;
+  cp.bgClearancePx = static_cast<int>(std::lround(ssScale));
+  const float* normalPtr = frame.normal.empty() ? nullptr : frame.normal.data();
+  if (cp.crease && !normalPtr) cp.crease = false;
+  CrackField cf = classifyCracks(W, H, frame.viewZ.data(),
+                                 frame.objectId.data(), normalPtr, sp, cp);
+
+  // Stage 2: trace.
+  const std::vector<ScreenChain> traced =
+      traceCrackChains(cf, frame.viewZ.data(), frame.objectId.data());
+
+  // Stage 3+4 per chain: speck filter (whole chain), class-run relabel +
+  // split, per-run geometry cleanup, slot mapping.
+  const float minChainLen = se.screenMinLenPx * ssScale;
+  const int mergeLen = std::max(
+      0, static_cast<int>(std::lround(se.screenClassMergeLen * ssScale)));
+  const float rdpEps = se.screenSimplifyPx * ssScale;
+  const bool perSection = !scene.groupEdgeStyle.empty();
+
+  std::vector<StrokeChainInput> drawChains;
+  for (const ScreenChain& ch : traced) {
+    if (ch.pts.size() < 2 || ch.edgeClass.empty()) continue;
+    // Speck filter on the RAW chain: every edgel is one hi-res px long, so the
+    // edgel count IS the arc length. JUNCTION-AWARE: a short chain whose ends
+    // are both junctions (degree >= 3) is a piece of a larger boundary chopped
+    // by side-branches (e.g. grazing-rim depth-gap spurs T-ing into the
+    // silhouette) and is KEPT -- dropping it would dash the outline. Only a
+    // short chain with a free end (a spur) or a tiny closed loop is an
+    // isolated speckle and is dropped.
+    if (minChainLen > 0.0f &&
+        static_cast<float>(ch.edgeClass.size()) < minChainLen &&
+        !(ch.deg0 >= 3 && ch.deg1 >= 3))
+      continue;
+
+    // Class-run relabel (labels only), then split into maximal same-class
+    // runs. Adjacent runs share their boundary vertex, so the drawn geometry
+    // stays continuous across a style change.
+    std::vector<std::uint8_t> cls = ch.edgeClass;
+    mergeShortClassRuns(cls, mergeLen);
+
+    std::size_t e0 = 0;
+    while (e0 < cls.size()) {
+      std::size_t e1 = e0;
+      while (e1 < cls.size() && cls[e1] == cls[e0]) ++e1;
+      const CrackClass runClass = static_cast<CrackClass>(cls[e0]);
+      // A run spanning the whole closed loop keeps the cyclic treatment.
+      const bool runClosed = ch.closed && e0 == 0 && e1 == cls.size();
+
+      StrokeChainInput in;
+      in.group = ch.edgeGroup[e0];
+      in.precedence = classPrecedence(runClass);
+      in.styleSlot = classStyleSlot(runClass);
+      // DepthGap falls back to the Silhouette slot when the section never
+      // configured the Disconnected class (the default style table ships all
+      // slots disabled except those the CLI enables; without the fallback a
+      // same-id occlusion boundary would silently vanish).
+      if (perSection &&
+          runClass == CrackClass::DepthGap) {
+        float h, c[3], o;
+        if (!resolveStrokeStyle(scene, se, ssScale, in.styleSlot, in.group, h,
+                                c, o))
+          in.styleSlot = static_cast<int>(EdgeClass::Silhouette);
+      }
+
+      // Geometry cleanup on the run's vertex slice [e0, e1].
+      std::vector<ScreenChainVert> pts(ch.pts.begin() + e0,
+                                       ch.pts.begin() + e1 + 1);
+      collapseCollinear(pts, runClosed);
+      chaikinSmooth(pts, runClosed, se.screenSmoothIters);
+      simplifyRdp(pts, runClosed, rdpEps);
+      if (pts.size() < 2) {
+        e0 = e1;
+        continue;
+      }
+      in.pts.reserve(pts.size());
+      for (const ScreenChainVert& v : pts)
+        in.pts.push_back({v.x, v.y, v.vz, true});
+      drawChains.push_back(std::move(in));
+      e0 = e1;
+    }
+  }
+
+  // Tuning aid (env-gated, zero-cost when unset): one stats line per frame.
+  if (std::getenv("UMBREON_SCREEN_EDGE_DEBUG")) {
+    std::size_t nEdgels = 0, nPts = 0;
+    int clsCount[5] = {0, 0, 0, 0, 0};
+    for (const ScreenChain& ch : traced) {
+      nEdgels += ch.edgeClass.size();
+      for (std::uint8_t c : ch.edgeClass)
+        if (c < 5) ++clsCount[c];
+    }
+    for (const StrokeChainInput& in : drawChains) nPts += in.pts.size();
+    std::fprintf(stderr,
+                 "[screen-edges] traced=%zu edgels=%zu (sil=%d obj=%d gap=%d "
+                 "crease=%d) drawn=%zu pts=%zu\n",
+                 traced.size(), nEdgels, clsCount[1], clsCount[2], clsCount[3],
+                 clsCount[4], drawChains.size(), nPts);
+  }
+
+  renderStrokeChains(frame, scene, opt, drawChains);
 }
 
 }  // namespace umbreon
