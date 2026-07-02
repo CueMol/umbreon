@@ -241,6 +241,21 @@ int main() {
             nearGreen.y > 1.15f * nearGreen.x && nearGreen.y > 0.0f);
     s.check("cornell: floor center indirect > 0",
             center.x > 0.0f && center.y > 0.0f && center.z > 0.0f);
+
+    // Multi-bounce (quality plan Phase 2): a second bounce routes additional
+    // light into the box (wall -> wall -> floor), so the floor-center indirect
+    // must strictly grow versus the 1-bounce render above.
+    o.giBounces = 2;
+    const umbreon::FrameResult f2 = umbreon::render(box, o);
+    auto indirectAt2 = [&](int px, int py) {
+      const std::size_t pix = static_cast<std::size_t>(py) * f2.width + px;
+      return umbreon::Vec3{f2.indirect[pix * 3 + 0], f2.indirect[pix * 3 + 1],
+                           f2.indirect[pix * 3 + 2]};
+    };
+    const umbreon::Vec3 center2 = indirectAt2(32, floorRow);
+    s.check("cornell: 2-bounce floor center indirect > 1-bounce",
+            center2.x > center.x && center2.y > center.y &&
+                center2.z > center.z);
   }
 
   return s.report();

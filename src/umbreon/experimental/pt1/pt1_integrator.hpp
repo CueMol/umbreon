@@ -25,6 +25,7 @@
 //     point would double-count it. oneBounceRadiance implements exactly this.
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -182,40 +183,63 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
   });
 }
 
-// Outgoing radiance of a gather-ray hit toward the gather origin: the pt1
-// counterpart of oneBounceRadiance with REAL CSG primitives as scatterers.
-//   Mesh hit          -> oneBounceRadiance verbatim (numerically identical)
-//   real CSG hit      -> the same reflected-direct-light formula, with the
-//                        analytic Ng as the normal and the primID side-table
-//                        color/material (an atom ball bounces light like the
-//                        SES mesh around it, instead of absorbing it)
-//   outline decoration-> black occluder (never a light interaction, like AO)
+// One path vertex of the pt1 gather walk: the NEE radiance it reflects toward
+// the previous vertex, plus what the walk needs to continue the path there.
+struct Pt1Vertex {
+  Vec3 radiance{0.0f, 0.0f, 0.0f};  // kd*C * shadow-tested direct irradiance
+  Vec3 albedo{0.0f, 0.0f, 0.0f};    // kd*C (continuation throughput factor)
+  Vec3 P{0.0f, 0.0f, 0.0f};         // world position
+  Vec3 N{0.0f, 0.0f, 0.0f};         // shading normal, faced toward the ray origin
+  float tfar = 0.0f;                // hit distance (self-intersect eps scale)
+};
+
+// Evaluate a gather-ray hit as a path vertex. Mesh hits reproduce
+// oneBounceRadiance bit-for-bit (same interpolation, faceforward, RNG seeding
+// and shadow test -- keep the two in sync); REAL CSG primitives (atom balls /
+// bonds, fromEdge == 0) use the identical formula with the analytic Ng and the
+// primID side-table color/material, so an atom ball bounces light like the SES
+// mesh around it instead of absorbing it. Returns false for outline decoration
+// (a black occluder that ends the path; never a light interaction, like AO).
 // The cache keeps calling oneBounceRadiance directly, so its mesh-only
 // behavior (and byte-identical output) is untouched.
-inline Vec3 pt1VertexRadiance(const IrradianceCacheParams& p,
-                              const RTCRayHit& rh, const Vec3& O,
-                              const Vec3& wi) {
+inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
+                          const Vec3& O, const Vec3& wi, Pt1Vertex& v) {
   const GeomRecord& rec = p.built->records[rh.hit.geomID];
-  if (rec.kind == GeomKind::Mesh)
-    return oneBounceRadiance(p, rh, O, wi, nullptr);
-
-  const BuiltScene& b = *p.built;
-  const bool isSphere = (rec.kind == GeomKind::Sphere);
-  const bool isCapped = (rec.kind == GeomKind::CylinderCapped);
-  const bool fromEdge =
-      isSphere ? (!b.sphereFromEdge.empty() && b.sphereFromEdge[rh.hit.primID])
-      : isCapped ? (!b.cylCapFromEdge.empty() &&
-                    b.cylCapFromEdge[rh.hit.primID])
-                 : (!b.cylFromEdge.empty() && b.cylFromEdge[rh.hit.primID]);
-  if (fromEdge) return Vec3{0.0f, 0.0f, 0.0f};
-
-  const Vec4& fc = isSphere ? b.sphereColor[rh.hit.primID]
-                   : isCapped ? b.cylCapColor[rh.hit.primID]
-                              : b.cylColor[rh.hit.primID];
-  const Material& pm = isSphere ? b.sphereMat[rh.hit.primID]
-                       : isCapped ? b.cylCapMat[rh.hit.primID]
-                                  : b.cylMat[rh.hit.primID];
-  Vec3 Ny = safeNormalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z});
+  Vec3 Ny, Cy, NgShadow;
+  float kd;
+  if (rec.kind == GeomKind::Mesh) {
+    float nbuf[3] = {0, 0, 0};
+    float cbuf[4] = {0, 0, 0, 1};
+    rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                    RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, nbuf, 3);
+    rtcInterpolate0(rec.geom, rh.hit.primID, rh.hit.u, rh.hit.v,
+                    RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
+    Ny = normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
+    Cy = Vec3{cbuf[0], cbuf[1], cbuf[2]};
+    kd = p.mesh->materialForTri(rh.hit.primID).diffuse;
+    NgShadow = Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
+  } else {
+    const BuiltScene& b = *p.built;
+    const bool isSphere = (rec.kind == GeomKind::Sphere);
+    const bool isCapped = (rec.kind == GeomKind::CylinderCapped);
+    const bool fromEdge =
+        isSphere ? (!b.sphereFromEdge.empty() &&
+                    b.sphereFromEdge[rh.hit.primID])
+        : isCapped ? (!b.cylCapFromEdge.empty() &&
+                      b.cylCapFromEdge[rh.hit.primID])
+                   : (!b.cylFromEdge.empty() && b.cylFromEdge[rh.hit.primID]);
+    if (fromEdge) return false;
+    const Vec4& fc = isSphere ? b.sphereColor[rh.hit.primID]
+                     : isCapped ? b.cylCapColor[rh.hit.primID]
+                                : b.cylColor[rh.hit.primID];
+    const Material& pm = isSphere ? b.sphereMat[rh.hit.primID]
+                         : isCapped ? b.cylCapMat[rh.hit.primID]
+                                    : b.cylMat[rh.hit.primID];
+    Ny = safeNormalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z});
+    Cy = Vec3{fc.x, fc.y, fc.z};
+    kd = pm.diffuse;
+    NgShadow = Ny;
+  }
   // Face the normal toward the gather origin (same rule as oneBounceRadiance).
   if (dot(Ny, wi) > 0.0f) Ny = Vec3{-Ny.x, -Ny.y, -Ny.z};
 
@@ -223,72 +247,128 @@ inline Vec3 pt1VertexRadiance(const IrradianceCacheParams& p,
                 O.z + wi.z * rh.ray.tfar};
   const float eps = selfIntersectEps(Py, wi, rh.ray.tfar);
 
-  // Shadow-tested direct irradiance at the bounce point, then the diffuse
-  // reflectance -- the identical formula and RNG seeding oneBounceRadiance
-  // uses for mesh hits (no emission; the direct pass owns source-to-receiver).
+  // Shadow-tested direct irradiance at the vertex (NEE; no emission -- the
+  // direct pass owns source-to-receiver light), then the diffuse reflectance.
   Vec3 E{0.0f, 0.0f, 0.0f};
   uint32_t s0 = hashU32(rh.hit.primID),
            s1 = hashU32(rh.hit.geomID + 0x9E3779B9u);
   for (const Light& l : *p.lights) {
     const float ndl = dot(Ny, l.L);
     if (ndl <= 0.0f) continue;
-    const float sh = computeShadow(p.scene, Py, Ny, Ny, eps, l, 1, s0, s1);
+    const float sh = computeShadow(p.scene, Py, NgShadow, Ny, eps, l, 1, s0, s1);
     E.x += ndl * l.color.x * sh;
     E.y += ndl * l.color.y * sh;
     E.z += ndl * l.color.z * sh;
   }
-  const float kd = pm.diffuse;
-  return Vec3{kd * fc.x * E.x, kd * fc.y * E.y, kd * fc.z * E.z};
+  v.radiance = Vec3{kd * Cy.x * E.x, kd * Cy.y * E.y, kd * Cy.z * E.z};
+  v.albedo = Vec3{kd * Cy.x, kd * Cy.y, kd * Cy.z};
+  v.P = Py;
+  v.N = Ny;
+  v.tfar = rh.ray.tfar;
+  return true;
 }
 
-// One-bounce indirect irradiance at shading point P with shading normal N and
-// geometric normal Ng, by brute-force cosine-hemisphere gather (the estimator
-// the irradiance cache approximates, evaluated per pixel).
+// Indirect irradiance at shading point P with shading normal N and geometric
+// normal Ng, by brute-force cosine-hemisphere path tracing (the estimator the
+// irradiance cache approximates, evaluated per pixel). p.bounces sets the path
+// length: 1 = the classic one-bounce gather, >1 continues each path with one
+// cosine-sampled continuation ray per vertex (path tracing with NEE at every
+// vertex; POV radiosity's recursion_limit analogue).
 //
 // Returns E_stored = (1/spp) * sum(L_i) = E_true/pi (the cache's convention;
-// the composite multiplies by kd*pigment with no 1/pi). Per sample:
-//   hit  -> L_i = pt1VertexRadiance (reflected shadow-tested direct light at
-//           the bounce point, for mesh AND real CSG hits; black for outline
-//           decoration; NO emission -- source-to-receiver light is already
-//           counted by the direct pass)
-//   miss -> L_i = environmentRadiance (the sky lives ONLY in this miss term)
-// A sample below the geometric horizon (dot(wi, Ng) <= 0, possible when the
-// shading normal diverges from Ng) contributes 0 but still counts in the
-// divisor, and counts as occluded for `outOcclusion` (the surface itself
-// blocks that direction).
+// the composite multiplies by kd*pigment with no 1/pi). Per path:
+//   vertex b -> L += throughput_b * pt1EvalVertex().radiance (shadow-tested
+//           direct light reflected at the vertex, for mesh AND real CSG hits;
+//           outline decoration absorbs the path; NO emission -- source-to-
+//           receiver light is already counted by the direct pass), then
+//           throughput_{b+1} = throughput_b * albedo_b
+//   miss -> L += throughput * environmentRadiance (the sky lives ONLY in this
+//           miss term, evaluated once where the path escapes)
+// The cosine sampling at every vertex absorbs the cos/pi of the diffuse BRDF,
+// so the no-1/pi convention holds at every bounce, and with bounces == 1 the
+// sample stream and arithmetic are IDENTICAL to the original gather.
+// From the second vertex on, Russian roulette (survival = max component of
+// the throughput, clamped to [0.05, 0.95]) keeps long paths unbiased without
+// tracing every one to the bounce cap.
+//
+// A first-bounce sample below the geometric horizon (dot(wi, Ng) <= 0,
+// possible when the shading normal diverges from Ng) contributes 0 but still
+// counts in the divisor, and counts as occluded for `outOcclusion` (the
+// surface itself blocks that direction). `outOcclusion` stays the FIRST-bounce
+// hit fraction regardless of p.bounces.
 //
 // epsT is a finite length scale for selfIntersectEps (e.g. the scene AABB
 // diagonal); it must NOT be the gather tfar, which pt1 defaults to infinity.
-// The RNG is tea2 seeded from (seed, sample index) only -- deterministic and
-// thread-count independent, no shared state.
+// The RNG is tea2 seeded from (seed, sample index) only and re-mixed per draw
+// -- deterministic and thread-count independent, no shared state.
 inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
                            const Vec3& N, const Vec3& Ng, int spp,
                            uint32_t seed, float epsT, float* outOcclusion) {
   const Frame f = frameFromNormal(N);
   const float eps = selfIntersectEps(P, N, epsT);
   const Vec3 O = P + N * eps;
-  Vec3 E{0.0f, 0.0f, 0.0f};
+  const int maxB = (p.bounces < 1) ? 1 : p.bounces;
+  Vec3 Esum{0.0f, 0.0f, 0.0f};
   int nOccluded = 0;
   for (int s = 0; s < spp; ++s) {
     uint32_t s0 = seed;
     uint32_t s1 = static_cast<uint32_t>(s);
     tea2(s0, s1);
-    const Vec3 wi = cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
+    Vec3 wi = cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
     if (dot(wi, Ng) <= 0.0f) {
       ++nOccluded;
       continue;
     }
-    const RTCRayHit rh = intersectFull(p.scene, O, wi, eps, p.maxDistance);
-    if (rh.hit.geomID != RTC_INVALID_GEOMETRY_ID) {
-      E = E + pt1VertexRadiance(p, rh, O, wi);
-      ++nOccluded;
-    } else {
-      E = E + environmentRadiance(p, wi);
+    Vec3 org = O;
+    float tnear = eps;
+    Vec3 throughput{1.0f, 1.0f, 1.0f};
+    for (int b = 1; b <= maxB; ++b) {
+      const RTCRayHit rh = intersectFull(p.scene, org, wi, tnear,
+                                         p.maxDistance);
+      if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID) {
+        const Vec3 env = environmentRadiance(p, wi);
+        Esum.x += throughput.x * env.x;
+        Esum.y += throughput.y * env.y;
+        Esum.z += throughput.z * env.z;
+        break;
+      }
+      if (b == 1) ++nOccluded;
+      Pt1Vertex v;
+      if (!pt1EvalVertex(p, rh, org, wi, v)) break;  // outline: absorbed
+      Esum.x += throughput.x * v.radiance.x;
+      Esum.y += throughput.y * v.radiance.y;
+      Esum.z += throughput.z * v.radiance.z;
+      if (b == maxB) break;
+      throughput.x *= v.albedo.x;
+      throughput.y *= v.albedo.y;
+      throughput.z *= v.albedo.z;
+      if (b >= 2) {
+        // Russian roulette on the continuation to vertex b+1 (>= 3).
+        tea2(s0, s1);
+        float pc = std::fmax(throughput.x,
+                             std::fmax(throughput.y, throughput.z));
+        pc = std::fmin(0.95f, std::fmax(0.05f, pc));
+        if (u32ToUnorm(s0) >= pc) break;
+        const float inv = 1.0f / pc;
+        throughput.x *= inv;
+        throughput.y *= inv;
+        throughput.z *= inv;
+      }
+      // Continue the path from the vertex with a fresh cosine sample around
+      // its shading normal (the horizon guard is first-bounce only: Ng is not
+      // tracked past the G-buffer, and cosine sampling keeps dot(wi, N) > 0).
+      tea2(s0, s1);
+      const Frame fv = frameFromNormal(v.N);
+      wi = cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), fv);
+      const float epsV = selfIntersectEps(v.P, wi, v.tfar);
+      org = Vec3{v.P.x + v.N.x * epsV, v.P.y + v.N.y * epsV,
+                 v.P.z + v.N.z * epsV};
+      tnear = epsV;
     }
   }
   const float invN = 1.0f / static_cast<float>(spp > 0 ? spp : 1);
   if (outOcclusion) *outOcclusion = static_cast<float>(nOccluded) * invN;
-  return Vec3{E.x * invN, E.y * invN, E.z * invN};
+  return Vec3{Esum.x * invN, Esum.y * invN, Esum.z * invN};
 }
 
 // Gather E_stored for every gather-eligible pixel of a W x H grid into `E`

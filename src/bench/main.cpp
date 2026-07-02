@@ -507,11 +507,11 @@ int main(int argc, char** argv) {
     ropt.oidnCleanAux = opt.oidnCleanAux;
     if (ropt.gi && ropt.giIntegrator == 1)
       std::printf(
-          "  diffuse GI: pt1 path-traced gather, %d spp, %s res, denoise %s, "
-          "intensity %.2f, env %.2f\n",
-          ropt.pt1Spp, ropt.pt1HalfRes ? "half" : "full",
-          ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
-          ropt.giEnvIntensity);
+          "  diffuse GI: pt1 path-traced gather, %d spp, %d bounce%s, %s res, "
+          "denoise %s, intensity %.2f, env %.2f\n",
+          ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
+          ropt.pt1HalfRes ? "half" : "full", ropt.pt1Denoise ? "on" : "off",
+          ropt.giIntensity, ropt.giEnvIntensity);
     else if (ropt.gi)
       std::printf(
           "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "

@@ -510,7 +510,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     }
     gp.envIntensity = opt.giEnvIntensity;
     gp.samples = std::max(1, opt.pt1Spp);
-    gp.bounces = 1;
+    // Path length for the pt1 gather walk (--gi-bounces; 1 = classic
+    // one-bounce). Unlike the cache's prevCache interpolation stages, pt1
+    // continues each path with one cosine-sampled ray per vertex.
+    gp.bounces = std::max(1, opt.giBounces);
     // Unlike the cache (which truncates at 0.1 * diag for concavity contrast),
     // pt1 is the ground-truth reference: gather to infinity unless the user
     // caps it explicitly.

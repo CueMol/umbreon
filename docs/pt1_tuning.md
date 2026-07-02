@@ -183,7 +183,7 @@ automatically when present in the scene file.
 - **Environment dome lights** (`--env-light`) count the sky as direct light.
   Using them with `--integrator pt1` double-counts the sky (the gather miss term
   also sees it). Use `--sky` / `--sky-radiance` for the GI sky instead.
-- **One bounce only**. Indirect light from a secondary bounce (e.g. light
-  bouncing off a red wall onto a green floor) is not captured. The architecture
-  supports extension by iterating `pt1GatherPoint` with the bounce point as the
-  new shading point.
+- **Default is one bounce**. Pass `--gi-bounces 2` (or 3) for multi-bounce
+  path continuation with Russian roulette from the third segment; deep pockets
+  brighten physically (light routed around corners) at roughly +50% gather
+  cost per extra bounce at 8 spp.

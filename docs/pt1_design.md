@@ -82,10 +82,21 @@ pt1 は独立したレンダラではなく、既存 GI ポストパス
   (`--denoise`、albedo 乗算前 = demodulation 相当)。最終色の `--denoiser` は
   pt1 時は既定 none(明示指定は尊重)。二重デノイズ防止。
 
-## Multi-bounce 拡張の方針(将来)
+## Multi-bounce(パス継続 + Russian roulette)
 
-1 バウンス固定は `pt1GatherPoint` の「ヒット時 `L = oneBounceRadiance(...)`」の 1 段に
-閉じている。multi-bounce 化はこの評価を再帰(またはループでレイを続けて throughput
-`ρ` を掛け合わせる標準のパストレース形)に延長すればよい。cache 側の
-`prevCache` 渡し(前バウンスの補間値を加算)を pt1 の full-res E バッファで模倣する
-ハイブリッドも可能。
+`--gi-bounces N`(`IrradianceCacheParams::bounces`)でパス長を指定する。cache の
+prevCache 補間ステージ方式とは異なり、pt1 は**真のパス継続**: 各サンプルはヒット頂点
+から cosine サンプルの継続レイを 1 本ずつ伸ばし、各頂点で NEE(shadow-tested 直接光
+× kd·pigment)を throughput 込みで加算、ミスした所で sky を 1 回だけ評価する。
+
+- 頂点評価は `pt1EvalVertex`(mesh は `oneBounceRadiance` とビット同一の式、実体 CSG
+  は side-table 版、輪郭線はパス吸収)。
+- cosine サンプリングが各バウンスで cos/π を吸収するため、`E_stored = mean(L)`
+  (1/π なし)の規約は任意バウンス数で保たれる。
+- **bounces=1 の乱数列・演算は旧実装と完全一致**(サンプル毎の最初の tea2 が同じ)。
+  既定出力は不変。
+- 3 頂点目以降の継続は Russian roulette(生存率 = throughput の最大成分を
+  [0.05, 0.95] にクランプ)で不偏に打ち切る。
+- sky はミス項のみ・頂点に emission なし、という二重計上ガードは各バウンスで維持。
+- 実測(ao_test1_hi 1200²): half-res 8spp が 1→2 バウンスで gather 0.23→0.33 s、
+  full-res 64spp 2 バウンスで合計 ~11 s。

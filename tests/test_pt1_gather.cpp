@@ -23,20 +23,47 @@ bool approxRel(float got, float expected, float relTol) {
   return std::fabs(got - expected) <= relTol * std::fabs(expected);
 }
 
+// Append one quad (two triangles) with a constant normal and color.
+void addQuad(umbreon::Mesh& m, Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 n,
+             Vec4 color) {
+  const Vec3 corners[6] = {a, b, c, a, c, d};
+  for (int i = 0; i < 6; ++i) {
+    m.positions.push_back(corners[i]);
+    m.normals.push_back(n);
+    m.colors.push_back(color);
+  }
+}
+
 // A large vertical wall in the x = -0.5 plane (normal +x), spanning
 // [-2000, 2000] in y and z. Big enough that every gather direction with
 // wi.x < 0 from the origin hits it except a negligible grazing sliver.
 umbreon::Mesh makeWall() {
   umbreon::Mesh m;
   const float d = -0.5f, B = 2000.0f;
-  const Vec3 p00{d, -B, -B}, p10{d, -B, B}, p11{d, B, B}, p01{d, B, -B};
-  const Vec3 corners[6] = {p00, p10, p11, p00, p11, p01};
-  const Vec3 n{1, 0, 0};
-  for (int i = 0; i < 6; ++i) {
-    m.positions.push_back(corners[i]);
-    m.normals.push_back(n);
-    m.colors.push_back(Vec4{0.0f, 0.0f, 0.0f, 1.0f});  // black (and unlit)
-  }
+  addQuad(m, Vec3{d, -B, -B}, Vec3{d, -B, B}, Vec3{d, B, B}, Vec3{d, B, -B},
+          Vec3{1, 0, 0}, Vec4{0.0f, 0.0f, 0.0f, 1.0f});  // black (and unlit)
+  m.material.ambient = 0.0f;
+  m.material.diffuse = 0.8f;
+  return m;
+}
+
+// A tall white corridor: floor strip x in [-1, 1] at y = 0 plus two facing
+// walls at x = -1 (normal +x) and x = +1 (normal -x), all spanning z in
+// [-B, B], walls up to y = B. Under a straight-down light the FLOOR is the
+// only lit surface (vertical walls get N.L = 0), so from a floor point:
+//   1 bounce : gather rays only see unlit walls (or the black sky)  -> E = 0
+//   2 bounces: floor -> wall -> lit floor carries light             -> E > 0
+//   3 bounces: adds floor -> wallA -> wallB -> lit floor            -> E grows
+umbreon::Mesh makeCorridor() {
+  umbreon::Mesh m;
+  const float B = 2000.0f;
+  const Vec4 white{0.75f, 0.75f, 0.75f, 1.0f};
+  addQuad(m, Vec3{-1, 0, -B}, Vec3{1, 0, -B}, Vec3{1, 0, B}, Vec3{-1, 0, B},
+          Vec3{0, 1, 0}, white);
+  addQuad(m, Vec3{-1, 0, -B}, Vec3{-1, 0, B}, Vec3{-1, B, B}, Vec3{-1, B, -B},
+          Vec3{1, 0, 0}, white);
+  addQuad(m, Vec3{1, 0, -B}, Vec3{1, B, -B}, Vec3{1, B, B}, Vec3{1, 0, B},
+          Vec3{-1, 0, 0}, white);
   m.material.ambient = 0.0f;
   m.material.diffuse = 0.8f;
   return m;
@@ -179,6 +206,60 @@ int main() {
                                         nullptr);
     s.check("csg outline: lit outline sphere stays a black occluder",
             approxRel(Eoutline.x, 0.75f, 0.03f) && Eoutline.x < Elit.x);
+  }
+
+  // --- 3c. pt1EvalVertex reproduces oneBounceRadiance bit-for-bit on a mesh
+  // hit (the multi-bounce walk must not drift from the 1-bounce estimator the
+  // A/B tests and the cache convention are locked to).
+  {
+    umbreon::Mesh wall = makeWall();
+    for (Vec4& c : wall.colors) c = Vec4{0.75f, 0.6f, 0.5f, 1.0f};
+    TestScene ts(std::move(wall));
+    ts.lights.push_back(umbreon::detail::Light{
+        Vec3{1.0f, 0.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, true, 0.0f});
+    umbreon::detail::IrradianceCacheParams p = ts.params();
+    const Vec3 wi{-1.0f, 0.0f, 0.0f};  // straight at the wall
+    const RTCRayHit rh = umbreon::detail::intersectFull(
+        p.scene, P, wi, 0.0f, std::numeric_limits<float>::infinity());
+    umbreon::detail::Pt1Vertex v;
+    const bool scattered = umbreon::detail::pt1EvalVertex(p, rh, P, wi, v);
+    const Vec3 ref = umbreon::detail::oneBounceRadiance(p, rh, P, wi, nullptr);
+    s.check("eval vertex: mesh radiance bitwise-equal to oneBounceRadiance",
+            scattered && v.radiance.x == ref.x && v.radiance.y == ref.y &&
+                v.radiance.z == ref.z && ref.x > 0.0f);
+  }
+
+  // --- 3d. multi-bounce path continuation (quality plan Phase 2). In the
+  // corridor (see makeCorridor) with a straight-down light and a black sky,
+  // indirect light needs at least two bounces to reach a floor point, and a
+  // third adds the wall-to-wall path, so E must grow with p.bounces.
+  {
+    TestScene ts(makeCorridor());
+    ts.lights.push_back(umbreon::detail::Light{
+        Vec3{0.0f, 1.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, true, 0.0f});
+    umbreon::detail::IrradianceCacheParams p = ts.params();
+    p.skyColor = p.groundColor = Vec3{0.0f, 0.0f, 0.0f};  // black sky
+    const int mbSpp = 16384;
+    auto gatherB = [&](int bounces, uint32_t seed) {
+      p.bounces = bounces;
+      return umbreon::detail::pt1GatherPoint(p, P, N, N, mbSpp, seed, epsT,
+                                             nullptr);
+    };
+    const Vec3 E1 = gatherB(1, 12345u);
+    const Vec3 E2 = gatherB(2, 12345u);
+    const Vec3 E3 = gatherB(3, 12345u);
+    s.check("multibounce: 1 bounce sees only unlit walls (E = 0)",
+            E1.x == 0.0f && E1.y == 0.0f && E1.z == 0.0f);
+    s.check("multibounce: 2 bounces route light around the wall (E > 0)",
+            E2.x > 0.0f);
+    s.check("multibounce: 3rd bounce adds wall-to-wall energy (> 2%)",
+            E3.x > E2.x * 1.02f);
+    // Russian roulette starts on the 3rd path segment; the estimator must stay
+    // seed-stable (unbiased compensation), so two independent streams agree.
+    const Vec3 Ea = gatherB(4, 12345u);
+    const Vec3 Eb = gatherB(4, 987654321u);
+    s.check("multibounce: RR estimate seed-stable within 3%",
+            std::fabs(Ea.x - Eb.x) <= 0.03f * std::fmax(Ea.x, Eb.x));
   }
 
   // --- 4. denoisePt1E sanity (plan Phase 4): a constant irradiance field must
