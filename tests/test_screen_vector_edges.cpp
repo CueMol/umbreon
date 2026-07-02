@@ -29,6 +29,8 @@ using umbreon::CrackClass;
 using umbreon::CrackField;
 using umbreon::kCrackClassMask;
 using umbreon::kCrackOwnerBit;
+using umbreon::kCrackStrongBit;
+using umbreon::ScreenChain;
 using umbreon::ScreenClassifyParams;
 using umbreon::ScreenProj;
 
@@ -204,18 +206,173 @@ int main() {
                countClass(cf, CrackClass::DepthGap), 16);
   }
 
-  // ---- (5) abutting ids at equal depth: ObjectId class --------------------
+  // ---- (5) abutting sections at EQUAL depth: contact, not inked -----------
+  {
+    Buffers b(16, 16);
+    // Two DIFFERENT sections (groups 1 and 2). objectId == (group << 2) | kind,
+    // so use (1<<2) and (2<<2). At equal depth the two surfaces are in contact
+    // (a tangential touch), NOT an occlusion step, so the cross-section border
+    // is deliberately seamless -- only a genuine depth discontinuity inks.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) b.set(x, y, x < 8 ? (1u << 2) : (2u << 2),
+                                         10.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("section contact (equal depth): no ObjectId crack",
+               countClass(cf, CrackClass::ObjectId), 0);
+    s.check_eq("section contact (equal depth): nothing fires",
+               countActive(cf), 0);
+    ScreenClassifyParams off = defaults;
+    off.objectBoundary = false;
+    s.check_eq("section boundary: border gate off => 0 cracks",
+               countActive(classify(b, off)), 0);
+  }
+
+  // ---- (5e) cross-section DEPTH STEP: ObjectId fires (occlusion) -----------
+  {
+    Buffers b(16, 16);
+    // Section 1 in front (vz 10) of section 2 (vz 60): a real occlusion step
+    // (50 > gap 12), so the between-section border is inked with the nearer
+    // side as owner.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, x < 8 ? (1u << 2) : (2u << 2), x < 8 ? 10.0f : 60.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("cross-section step: one ObjectId crack per row",
+               countClass(cf, CrackClass::ObjectId), 16);
+    s.check_eq("cross-section step: nothing else fires", countActive(cf), 16);
+    // Boundary crack (7,y)-(8,y): first pixel vz 10 (nearer) -> owner bit 0.
+    s.check("cross-section step: nearer (first) side owns",
+            (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
+  }
+
+  // ---- (5f) slope-adaptive contact: a grazing surface meeting a flat one ---
+  // The two sections MEET (viewZ continuous across the crack) but at a slope:
+  // an intersection contour, not an occlusion. The one-sided extrapolation of
+  // the ramping side predicts the flat side within threshold, so it reads as
+  // contact and is NOT inked -- for any ramp steepness. A naive |vzA - vzB|
+  // test would ink the steep case; taking the min of the two one-sided gaps
+  // does not.
+  {
+    for (float slope : {5.0f, 30.0f}) {
+      Buffers b(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          b.set(x, y, x < 8 ? (1u << 2) : (2u << 2),
+                x < 8 ? 100.0f : 100.0f + slope * (x - 7));
+      const CrackField cf = classify(b, defaults);
+      s.check_eq("cross-section grazing contact: no ObjectId crack",
+                 countClass(cf, CrackClass::ObjectId), 0);
+      s.check_eq("cross-section grazing contact: nothing fires",
+                 countActive(cf), 0);
+    }
+  }
+
+  // ---- (5h) grazing rim in front of a farther section: still inks ---------
+  // Section 1's surface curls away toward its own silhouette (slope grows
+  // 4 -> 12 -> 48 like a sphere rim); section 2 is a flat plane behind at
+  // exactly the depth the rim's TANGENT extrapolation lands on (164 + 48 =
+  // 212). With a viewer-facing normal at the rim pixel the veto follows the
+  // tangent and calls it contact (control case: this is how a genuinely
+  // continuous steep surface must behave). With the physically correct
+  // EDGE-ON normal there, the facing gate degrades the rim side to flat
+  // extrapolation (|212 - 164| = 48 > 12), the sheet side predicts its own
+  // continuation (gap 48), and the occlusion border inks.
+  {
+    for (bool grazingRim : {false, true}) {
+      Buffers b(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x) {
+          float vz;
+          if (x <= 4) vz = 100.0f;
+          else if (x == 5) vz = 104.0f;
+          else if (x == 6) vz = 116.0f;
+          else if (x == 7) vz = 164.0f;
+          else vz = 212.0f;
+          if (x == 7 && grazingRim)
+            b.set(x, y, 1u << 2, vz, 1.0f, 0.0f, 0.1f);  // edge-on normal
+          else
+            b.set(x, y, x < 8 ? (1u << 2) : (2u << 2), vz);
+        }
+      const CrackField cf = classify(b, defaults);
+      if (grazingRim) {
+        s.check_eq("grazing rim occlusion: one ObjectId crack per row",
+                   countClass(cf, CrackClass::ObjectId), 16);
+        s.check_eq("grazing rim occlusion: nothing else fires",
+                   countActive(cf), 16);
+      } else {
+        s.check_eq("facing steep surface: tangent reads as contact",
+                   countActive(cf), 0);
+      }
+    }
+  }
+
+  // ---- (5g) cross-section outer-neighbor guard (regression) ---------------
+  // Near a boundary the outer straight-line neighbor can belong to a THIRD
+  // section at a depth whose (bogus) one-sided slope makes the extrapolation
+  // land exactly on the far pixel -- a FALSE contact that would suppress a real
+  // occlusion border. sideSlopeSameSection zeroes cross-section outer slopes,
+  // degrading to a flat |vzA - vzB| step. Layout per row: grp3 vz110 (x<=6) |
+  // grp2 vz60 (x==7) | grp1 vz10 (x>=8), two real occlusion steps. Both
+  // between-section cracks must ink; without the guard each side's extrapolation
+  // (grp3 through grp2, or grp1 through grp2) predicts the far pixel exactly and
+  // both would be wrongly vetoed as contact.
   {
     Buffers b(16, 16);
     for (int y = 0; y < 16; ++y)
-      for (int x = 0; x < 16; ++x) b.set(x, y, x < 8 ? 1 : 2, 10.0f);
+      for (int x = 0; x < 16; ++x) {
+        std::uint32_t id = x <= 6 ? (3u << 2) : (x == 7 ? (2u << 2) : (1u << 2));
+        float vz = x <= 6 ? 110.0f : (x == 7 ? 60.0f : 10.0f);
+        b.set(x, y, id, vz);
+      }
     const CrackField cf = classify(b, defaults);
-    s.check_eq("id boundary: one ObjectId crack per row",
-               countClass(cf, CrackClass::ObjectId), 16);
-    ScreenClassifyParams off = defaults;
-    off.objectBoundary = false;
-    s.check_eq("id boundary: border gate off => 0 cracks",
-               countActive(classify(b, off)), 0);
+    // Two cross-section boundaries per row (grp3|grp2 at x6-7, grp2|grp1 at
+    // x7-8), both genuine steps.
+    s.check_eq("outer-neighbor guard: both occlusion borders ink",
+               countClass(cf, CrackClass::ObjectId), 32);
+    s.check_eq("outer-neighbor guard: nothing else fires", countActive(cf), 32);
+  }
+
+  // ---- (5b) same section, mixed primitive kind: no internal edge ----------
+  {
+    Buffers b(16, 16);
+    // Group 5, kind Sphere(1) vs Cylinder(2): objectId (5<<2)|1 vs (5<<2)|2.
+    // A ball and a stick embedded in one CueMol section are in CONTACT at
+    // their equal-depth boundary, which must NOT ink.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), 10.0f);
+    s.check_eq("same section, mixed kind, equal depth: no cracks",
+               countActive(classify(b, defaults)), 0);
+  }
+
+  // ---- (5c) same section, mixed kind, depth step: self-occlusion inks -----
+  {
+    Buffers b(16, 16);
+    // A genuine view-z step at the kind boundary is a SELF-OCCLUSION (e.g. a
+    // sphere of one residue in front of a distant cylinder of the same stick
+    // section) and inks as DepthGap; only depth-continuous contact (5b) is
+    // seamless.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), x < 8 ? 10.0f : 60.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("same section, mixed kind, depth step: DepthGap per row",
+               countClass(cf, CrackClass::DepthGap), 16);
+    s.check_eq("same section, mixed kind, depth step: nothing else",
+               countActive(cf), 16);
+  }
+
+  // ---- (5d) same section AND same kind: depth step still inks (unchanged) --
+  {
+    Buffers b(16, 16);
+    // Two primitives of the SAME kind in one section share objectId entirely
+    // (no per-primitive id in screen space), so a genuine occlusion step still
+    // fires DepthGap -- same as mesh self-occlusion, preserved by this change.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (5u << 2) | 1u, x < 8 ? 10.0f : 60.0f);
+    s.check("same section, same kind, depth step: DepthGap fires",
+            countClass(classify(b, defaults), CrackClass::DepthGap) > 0);
   }
 
   // ---- tracer helpers ------------------------------------------------------
@@ -287,9 +444,11 @@ int main() {
   {
     Buffers b(20, 20);
     // Far square B first, then near square A paints over the overlap (the AOV
-    // keeps the first hit == nearer surface).
+    // keeps the first hit == nearer surface). The depth step across the A|B
+    // border (10 vs 40) exceeds the contact threshold, so it inks as an
+    // occlusion border and the T-junctions split the chains.
     for (int y = 6; y < 17; ++y)
-      for (int x = 6; x < 17; ++x) b.set(x, y, 2 << 2, 20.0f);
+      for (int x = 6; x < 17; ++x) b.set(x, y, 2 << 2, 40.0f);
     for (int y = 2; y < 10; ++y)
       for (int x = 2; x < 10; ++x) b.set(x, y, 1 << 2, 10.0f);
     CrackField cfCount = classify(b, defaults);
@@ -494,6 +653,126 @@ int main() {
     const CrackField cf = classify(b, on);
     s.check_eq("crease: 90-degree fold fires per row",
                countClass(cf, CrackClass::Crease), 16);
+  }
+
+  // ---- (7) step dominance: sliver on a grazing ramp weak, flat step strong -
+  // A coarse mesh at grazing incidence throws off facet-horizon slivers: a
+  // sight line skims a facet edge and lands a few pixels' worth of the SAME
+  // grazing ramp deeper. The step is real and above the absolute threshold,
+  // but it does not dominate the near side's own recession, so it must stay
+  // WEAK (drawable only with chain support). A same-magnitude-class step on a
+  // flat surface is a true occlusion contour and is STRONG.
+  {
+    Buffers b(24, 8);
+    for (int y = 0; y < 8; ++y)
+      for (int x = 0; x < 24; ++x) {
+        float vz = 100.0f + 10.0f * x;  // grazing ramp, 10 per px
+        if (x >= 12) vz += 45.0f;       // sliver: ~4.5 px of ramp
+        b.set(x, y, 9, vz);
+      }
+    const CrackField cf = classify(b, defaults);
+    const std::uint8_t byte = cf.right[b.idx(11, 4)];
+    s.check("sliver on ramp: DepthGap fires",
+            (byte & kCrackClassMask) ==
+                static_cast<std::uint8_t>(CrackClass::DepthGap));
+    s.check("sliver on ramp: weak (step does not dominate the ramp)",
+            (byte & kCrackStrongBit) == 0);
+  }
+  {
+    Buffers b(16, 8);
+    for (int y = 0; y < 8; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 100.0f : 500.0f);  // step 400 over flat
+    const CrackField cf = classify(b, defaults);
+    const std::uint8_t byte = cf.right[b.idx(7, 4)];
+    s.check("flat step: DepthGap strong",
+            (byte & kCrackClassMask) ==
+                    static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+                (byte & kCrackStrongBit) != 0);
+  }
+
+  // ---- (8) Stage 2.5: weak survives only when bridging interior support ---
+  // Two strong vertical steps with (a) a weak horizontal connector between
+  // them (both ends junction into strong chains -> KEPT: this is the
+  // near-cusp tail / chopped-fragment case) and (b) a weak line from the
+  // right step to the image border (a free end -> pruned sliver). After
+  // pruneWeakChains the connector's cracks survive, the spur's are erased.
+  {
+    Buffers b(20, 20);
+    for (int y = 0; y < 20; ++y)
+      for (int x = 0; x < 20; ++x) {
+        float vz;
+        if (x < 7)
+          vz = 100.0f;
+        else if (x < 14)
+          vz = 600.0f + (y >= 10 ? 30.0f : 0.0f);   // weak connector at y 9|10
+        else
+          vz = 1500.0f + (y >= 15 ? 30.0f : 0.0f);  // weak spur at y 14|15
+        b.set(x, y, 9, vz);
+      }
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    int weakKept = 0, strongKept = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t i = 0; i < ch.edgeClass.size(); ++i) {
+        if (ch.edgeClass[i] !=
+            static_cast<std::uint8_t>(CrackClass::DepthGap))
+          continue;
+        if (ch.edgeFlags[i] & 1)
+          ++strongKept;
+        else
+          ++weakKept;
+      }
+    s.check_eq("prune: both strong steps fully kept", strongKept, 40);
+    s.check_eq("prune: bridging weak connector kept, free-end spur pruned",
+               weakKept, 7);
+    // Determinism: prune of an identically classified field gives the same
+    // chain set.
+    CrackField cf2 = classify(b, defaults);
+    std::vector<ScreenChain> chains2 =
+        umbreon::traceCrackChains(cf2, b.viewZ.data(), b.objectId.data());
+    chains2 = umbreon::pruneWeakChains(cf2, std::move(chains2),
+                                       b.viewZ.data(), b.objectId.data());
+    bool same = chains2.size() == chains.size();
+    for (std::size_t i = 0; same && i < chains.size(); ++i) {
+      same = chains[i].pts.size() == chains2[i].pts.size() &&
+             chains[i].edgeClass == chains2[i].edgeClass;
+      for (std::size_t v = 0; same && v < chains[i].pts.size(); ++v)
+        same = chains[i].pts[v].x == chains2[i].pts[v].x &&
+               chains[i].pts[v].y == chains2[i].pts[v].y;
+    }
+    s.check("prune: deterministic", same);
+  }
+
+  // ---- (9) bg clearance: terminal weak cracks reach the outline -----------
+  // A weak step line PERPENDICULAR to the outline is a contour terminal: its
+  // cracks inside the clearance radius have background in their along-crack
+  // strip and survive. A weak line PARALLEL to the outline at a 2 px offset
+  // is grazing rim noise: its interior cracks are killed (its ends, which do
+  // land on the side outline, survive as terminals).
+  {
+    Buffers b(16, 16);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x)
+        b.set(x, y, 9, x >= 8 ? 130.0f : 100.0f);  // step 30 into the outline
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("perpendicular weak line: every crack reaches the outline",
+               countClass(cf, CrackClass::DepthGap), 8);
+  }
+  {
+    Buffers b(16, 16);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x)
+        b.set(x, y, 9, y >= 6 ? 130.0f : 100.0f);  // line 2 px below outline
+    const CrackField cf = classify(b, defaults);
+    s.check("parallel weak line: interior crack killed by clearance",
+            (cf.down[b.idx(7, 5)] & kCrackClassMask) == 0);
+    s.check("parallel weak line: terminal crack at the side outline survives",
+            (cf.down[b.idx(4, 5)] & kCrackClassMask) ==
+                static_cast<std::uint8_t>(CrackClass::DepthGap));
   }
 
   return s.report();
