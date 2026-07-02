@@ -204,29 +204,138 @@ int main() {
                countClass(cf, CrackClass::DepthGap), 16);
   }
 
-  // ---- (5) abutting sections at equal depth: ObjectId class ---------------
+  // ---- (5) abutting sections at EQUAL depth: contact, not inked -----------
   {
     Buffers b(16, 16);
     // Two DIFFERENT sections (groups 1 and 2). objectId == (group << 2) | kind,
-    // so use (1<<2) and (2<<2); a cross-section boundary still inks.
+    // so use (1<<2) and (2<<2). At equal depth the two surfaces are in contact
+    // (a tangential touch), NOT an occlusion step, so the cross-section border
+    // is deliberately seamless -- only a genuine depth discontinuity inks.
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x) b.set(x, y, x < 8 ? (1u << 2) : (2u << 2),
                                          10.0f);
     const CrackField cf = classify(b, defaults);
-    s.check_eq("section boundary: one ObjectId crack per row",
-               countClass(cf, CrackClass::ObjectId), 16);
+    s.check_eq("section contact (equal depth): no ObjectId crack",
+               countClass(cf, CrackClass::ObjectId), 0);
+    s.check_eq("section contact (equal depth): nothing fires",
+               countActive(cf), 0);
     ScreenClassifyParams off = defaults;
     off.objectBoundary = false;
     s.check_eq("section boundary: border gate off => 0 cracks",
                countActive(classify(b, off)), 0);
   }
 
+  // ---- (5e) cross-section DEPTH STEP: ObjectId fires (occlusion) -----------
+  {
+    Buffers b(16, 16);
+    // Section 1 in front (vz 10) of section 2 (vz 60): a real occlusion step
+    // (50 > gap 12), so the between-section border is inked with the nearer
+    // side as owner.
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, x < 8 ? (1u << 2) : (2u << 2), x < 8 ? 10.0f : 60.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("cross-section step: one ObjectId crack per row",
+               countClass(cf, CrackClass::ObjectId), 16);
+    s.check_eq("cross-section step: nothing else fires", countActive(cf), 16);
+    // Boundary crack (7,y)-(8,y): first pixel vz 10 (nearer) -> owner bit 0.
+    s.check("cross-section step: nearer (first) side owns",
+            (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
+  }
+
+  // ---- (5f) slope-adaptive contact: a grazing surface meeting a flat one ---
+  // The two sections MEET (viewZ continuous across the crack) but at a slope:
+  // an intersection contour, not an occlusion. The one-sided extrapolation of
+  // the ramping side predicts the flat side within threshold, so it reads as
+  // contact and is NOT inked -- for any ramp steepness. A naive |vzA - vzB|
+  // test would ink the steep case; taking the min of the two one-sided gaps
+  // does not.
+  {
+    for (float slope : {5.0f, 30.0f}) {
+      Buffers b(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          b.set(x, y, x < 8 ? (1u << 2) : (2u << 2),
+                x < 8 ? 100.0f : 100.0f + slope * (x - 7));
+      const CrackField cf = classify(b, defaults);
+      s.check_eq("cross-section grazing contact: no ObjectId crack",
+                 countClass(cf, CrackClass::ObjectId), 0);
+      s.check_eq("cross-section grazing contact: nothing fires",
+                 countActive(cf), 0);
+    }
+  }
+
+  // ---- (5h) grazing rim in front of a farther section: still inks ---------
+  // Section 1's surface curls away toward its own silhouette (slope grows
+  // 4 -> 12 -> 48 like a sphere rim); section 2 is a flat plane behind at
+  // exactly the depth the rim's TANGENT extrapolation lands on (164 + 48 =
+  // 212). With a viewer-facing normal at the rim pixel the veto follows the
+  // tangent and calls it contact (control case: this is how a genuinely
+  // continuous steep surface must behave). With the physically correct
+  // EDGE-ON normal there, the facing gate degrades the rim side to flat
+  // extrapolation (|212 - 164| = 48 > 12), the sheet side predicts its own
+  // continuation (gap 48), and the occlusion border inks.
+  {
+    for (bool grazingRim : {false, true}) {
+      Buffers b(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x) {
+          float vz;
+          if (x <= 4) vz = 100.0f;
+          else if (x == 5) vz = 104.0f;
+          else if (x == 6) vz = 116.0f;
+          else if (x == 7) vz = 164.0f;
+          else vz = 212.0f;
+          if (x == 7 && grazingRim)
+            b.set(x, y, 1u << 2, vz, 1.0f, 0.0f, 0.1f);  // edge-on normal
+          else
+            b.set(x, y, x < 8 ? (1u << 2) : (2u << 2), vz);
+        }
+      const CrackField cf = classify(b, defaults);
+      if (grazingRim) {
+        s.check_eq("grazing rim occlusion: one ObjectId crack per row",
+                   countClass(cf, CrackClass::ObjectId), 16);
+        s.check_eq("grazing rim occlusion: nothing else fires",
+                   countActive(cf), 16);
+      } else {
+        s.check_eq("facing steep surface: tangent reads as contact",
+                   countActive(cf), 0);
+      }
+    }
+  }
+
+  // ---- (5g) cross-section outer-neighbor guard (regression) ---------------
+  // Near a boundary the outer straight-line neighbor can belong to a THIRD
+  // section at a depth whose (bogus) one-sided slope makes the extrapolation
+  // land exactly on the far pixel -- a FALSE contact that would suppress a real
+  // occlusion border. sideSlopeSameSection zeroes cross-section outer slopes,
+  // degrading to a flat |vzA - vzB| step. Layout per row: grp3 vz110 (x<=6) |
+  // grp2 vz60 (x==7) | grp1 vz10 (x>=8), two real occlusion steps. Both
+  // between-section cracks must ink; without the guard each side's extrapolation
+  // (grp3 through grp2, or grp1 through grp2) predicts the far pixel exactly and
+  // both would be wrongly vetoed as contact.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        std::uint32_t id = x <= 6 ? (3u << 2) : (x == 7 ? (2u << 2) : (1u << 2));
+        float vz = x <= 6 ? 110.0f : (x == 7 ? 60.0f : 10.0f);
+        b.set(x, y, id, vz);
+      }
+    const CrackField cf = classify(b, defaults);
+    // Two cross-section boundaries per row (grp3|grp2 at x6-7, grp2|grp1 at
+    // x7-8), both genuine steps.
+    s.check_eq("outer-neighbor guard: both occlusion borders ink",
+               countClass(cf, CrackClass::ObjectId), 32);
+    s.check_eq("outer-neighbor guard: nothing else fires", countActive(cf), 32);
+  }
+
   // ---- (5b) same section, mixed primitive kind: no internal edge ----------
   {
     Buffers b(16, 16);
     // Group 5, kind Sphere(1) vs Cylinder(2): objectId (5<<2)|1 vs (5<<2)|2.
-    // A ball and a stick embedded in one CueMol section join seamlessly, so
-    // their equal-depth boundary must NOT ink.
+    // A ball and a stick embedded in one CueMol section are in CONTACT at
+    // their equal-depth boundary, which must NOT ink.
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x)
         b.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), 10.0f);
@@ -234,16 +343,21 @@ int main() {
                countActive(classify(b, defaults)), 0);
   }
 
-  // ---- (5c) same section, mixed kind, depth step: still no edge -----------
+  // ---- (5c) same section, mixed kind, depth step: self-occlusion inks -----
   {
     Buffers b(16, 16);
-    // A big view-z step at the kind boundary must NOT ink: same section means
-    // seamless, and the mixed-kind pair never falls through to DepthGap.
+    // A genuine view-z step at the kind boundary is a SELF-OCCLUSION (e.g. a
+    // sphere of one residue in front of a distant cylinder of the same stick
+    // section) and inks as DepthGap; only depth-continuous contact (5b) is
+    // seamless.
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x)
         b.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), x < 8 ? 10.0f : 60.0f);
-    s.check_eq("same section, mixed kind, depth step: no cracks",
-               countActive(classify(b, defaults)), 0);
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("same section, mixed kind, depth step: DepthGap per row",
+               countClass(cf, CrackClass::DepthGap), 16);
+    s.check_eq("same section, mixed kind, depth step: nothing else",
+               countActive(cf), 16);
   }
 
   // ---- (5d) same section AND same kind: depth step still inks (unchanged) --
@@ -328,9 +442,11 @@ int main() {
   {
     Buffers b(20, 20);
     // Far square B first, then near square A paints over the overlap (the AOV
-    // keeps the first hit == nearer surface).
+    // keeps the first hit == nearer surface). The depth step across the A|B
+    // border (10 vs 40) exceeds the contact threshold, so it inks as an
+    // occlusion border and the T-junctions split the chains.
     for (int y = 6; y < 17; ++y)
-      for (int x = 6; x < 17; ++x) b.set(x, y, 2 << 2, 20.0f);
+      for (int x = 6; x < 17; ++x) b.set(x, y, 2 << 2, 40.0f);
     for (int y = 2; y < 10; ++y)
       for (int x = 2; x < 10; ++x) b.set(x, y, 1 << 2, 10.0f);
     CrackField cfCount = classify(b, defaults);

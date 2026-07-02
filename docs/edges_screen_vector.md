@@ -65,9 +65,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 
 The nature toggles keep their meaning under the screen source:
 `--stroke-silhouette` gates the fg/bg contour AND the same-id depth gap,
-`--stroke-border` gates the CROSS-section object-id boundary (same-section
-primitive boundaries are always suppressed and have no toggle),
-`--stroke-crease` gates the normal fold. The `--edge-qi-*` flags are inert here
+`--stroke-border` gates the CROSS-section object-id boundary,
+`--stroke-crease` gates the normal fold. Every ID-keyed boundary (between
+sections, and between mixed primitive kinds of one section) is depth-aware:
+it inks only across a genuine depth step (occlusion), while depth-continuous
+contact/intersection contours -- a stick penetrating a ribbon of another
+section, a bond embedded in an atom -- are always suppressed, thresholded by
+`--stroke-depth-gap`. Same-section steps ink as depth-gap lines under
+`--stroke-silhouette`. The `--edge-qi-*` flags are inert here
 (no QI runs; visibility is exact from the z-buffer).
 
 `UMBREON_SCREEN_EDGE_DEBUG=1` prints one stats line per frame (traced chains,

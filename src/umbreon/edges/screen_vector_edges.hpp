@@ -43,8 +43,12 @@ namespace umbreon {
 enum class CrackClass : std::uint8_t {
   None = 0,
   Silhouette = 1,  // exactly one side is background
-  ObjectId = 2,    // both foreground, objectId differs
-  DepthGap = 3,    // same objectId, slope-adaptive view-z discontinuity
+  ObjectId = 2,    // both foreground, cross-section objectId differs across a
+                   // depth step; depth-continuous contact/intersection
+                   // contours are suppressed (surface contact, not occlusion)
+  DepthGap = 3,    // same-id slope-adaptive view-z discontinuity, or a
+                   // same-section mixed-kind boundary across a depth step
+                   // (self-occlusion between primitives of one section)
   Crease = 4,      // same objectId, shading-normal fold
 };
 
@@ -80,11 +84,23 @@ struct ScreenClassifyParams {
   // pixel by more than depthGapPx * pixelSize (world units per lateral pixel;
   // this is the second-derivative form of the Mol*-style curvature veto -- a
   // smooth surface satisfies at least one extrapolation, a grazing plane is
-  // predicted exactly, a true occlusion step fails both).
+  // predicted exactly, a true occlusion step fails both). Also thresholds the
+  // ObjectId contact veto: a cross-section boundary within this depth
+  // continuity is treated as surface contact (intersection contour) and not
+  // inked; only a genuine depth step draws a border.
   float depthGapPx = 12.0f;
   // One-sided slope clamp in pixelSize units, so extreme grazing noise cannot
   // extrapolate across a genuine fold.
   float slopeClampPx = 300.0f;
+  // ObjectId contact veto only: a side's slope is credited toward the
+  // depth-continuity extrapolation only while its shading normal still faces
+  // the viewer (|n.v|/|n| >= this). At a rim curling toward its own
+  // silhouette |n.v| -> 0 and the steep tangent could land on a farther
+  // object by coincidence, faking a contact; degrading such a side to flat
+  // extrapolation keeps the occlusion border inked. A true contact stays
+  // vetoed through the OTHER (continuing, viewer-facing) surface's
+  // extrapolation. 0 disables the gate.
+  float borderGrazeCos = 0.3f;
   // Suppress a DepthGap crack when either pixel lies within this Chebyshev
   // radius (hi-res px) of a background pixel: the last pixels before the
   // silhouette are grazing-dominated (a near-edge-on facet there is

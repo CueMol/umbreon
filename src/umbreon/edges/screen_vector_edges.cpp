@@ -34,6 +34,42 @@ inline float sideSlope(const float* viewZ, const std::uint32_t* objectId,
   return std::max(-clampS, std::min(clampS, s));
 }
 
+// |n . viewdir| / |n| at pixel `idx`, i.e. how front-facing the surface is
+// (1 = facing the camera, 0 = edge-on / at its silhouette). Zero for a
+// degenerate normal.
+inline float facingCos(const float* normal, const ScreenProj& sp, int idx) {
+  const float* n = normal + 3 * static_cast<std::size_t>(idx);
+  const float len2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+  if (len2 <= 1.0e-12f) return 0.0f;
+  const float d = n[0] * sp.dir.x + n[1] * sp.dir.y + n[2] * sp.dir.z;
+  return std::fabs(d) / std::sqrt(len2);
+}
+
+// One-sided slope for the contact veto on ID-keyed boundaries. Differs from
+// sideSlope in two ways. (1) An outer neighbor with a DIFFERENT objectId is
+// invalid (flat extrapolation): near an intersection contour / occlusion
+// boundary the outer straight-line neighbor can belong to the other primitive
+// or object, and its depth must not leak into this surface's extrapolation.
+// (2) The slope is credited only while the side FACES the viewer (facingCos
+// >= grazeCos). A grazing rim (a sphere/cylinder curling away toward its own
+// silhouette in front of a farther surface) has a steep slope whose tangent
+// extrapolation can coincidentally land on the far surface and fake a
+// contact; but its shading normal is edge-on, so the slope degrades to flat
+// there and the |vzA - vzB| occlusion step stays inked. A genuinely
+// continuous surface (tilted or intersecting) still faces the viewer at the
+// crack, so its slope keeps extrapolating.
+inline float contactSideSlope(const float* viewZ,
+                              const std::uint32_t* objectId,
+                              const float* normal, const ScreenProj& sp,
+                              int idxA, int idxOuter, bool outerValid,
+                              float clampS, float grazeCos) {
+  if (!outerValid || objectId[idxOuter] != objectId[idxA]) return 0.0f;
+  if (normal && facingCos(normal, sp, idxA) < grazeCos)
+    return 0.0f;  // grazing rim
+  const float s = viewZ[idxA] - viewZ[idxOuter];
+  return std::max(-clampS, std::min(clampS, s));
+}
+
 // True when any pixel within Chebyshev distance `r` of (x,y) is background.
 // Used to suppress DepthGap cracks hugging the outline: a grazing surface
 // (tube rim, near-edge-on facet) piles huge depth slopes into the last few
@@ -71,18 +107,48 @@ inline std::uint8_t classifyPair(const float* viewZ,
     return static_cast<std::uint8_t>(CrackClass::Silhouette) | owner;
   }
 
-  // 2. Object boundary: both foreground, ids differ.
+  // 2. ID-keyed boundary: both foreground, ids differ. Covers BOTH a
+  // cross-section boundary (different CueMol sections) and a same-section
+  // mixed-kind boundary (a sphere, cylinder and mesh mixed in one section;
+  // objectId == (group << 2) | kind, so equal high bits mean same section).
+  // Either way the ink decision is the same: surfaces in CONTACT (a
+  // sphere/cylinder penetrating a mesh, a bond embedded in an atom) have
+  // CONTINUOUS viewZ across the crack at the 3D intersection contour and are
+  // never inked; only a genuine occlusion step draws. The two cases differ
+  // only in class/gate: cross-section inks as ObjectId under the border
+  // toggle, same-section as DepthGap under the silhouette toggle (it is a
+  // self-occlusion, exactly like the same-id depth gap below -- do NOT fall
+  // through to it, though: its plain sideSlope would leak the other
+  // primitive's depth across the kind boundary).
+  //
+  // Contact veto: same slope-adaptive one-sided-extrapolation form and
+  // depthGapPx threshold as the DepthGap test below, so a grazing surface
+  // meeting a flat one still reads as contact: the flatter side's
+  // extrapolation predicts the far pixel within threshold. Taking the min of
+  // the two one-sided gaps means one well-behaved side suffices, which
+  // handles the grazing-vs-flat asymmetry that a naive |vzA - vzB| test
+  // fails. The slope of a side is credited only while that side FACES the
+  // viewer (see contactSideSlope); a rim curling toward its own silhouette in
+  // front of a farther surface must not tangent-extrapolate onto it and fake
+  // a contact.
   if (objectId[ia] != objectId[ib]) {
-    // Same CueMol section (group), different primitive kind (a sphere,
-    // cylinder and mesh mixed in one section): the section renders as a
-    // SINGLE seamless object -- never ink an internal boundary between its
-    // primitives, and do NOT fall through to the depth-gap / crease tests
-    // either (a bond embedded in an atom is continuous by construction).
-    // objectId == (group << 2) | kind, so equal high bits mean same section.
-    if ((objectId[ia] >> 2) == (objectId[ib] >> 2)) return 0;
-    if (!p.objectBoundary) return 0;
-    const std::uint8_t owner = viewZ[ia] <= viewZ[ib] ? 0 : kCrackOwnerBit;
-    return static_cast<std::uint8_t>(CrackClass::ObjectId) | owner;
+    const bool sameSection = (objectId[ia] >> 2) == (objectId[ib] >> 2);
+    if (sameSection ? !p.silhouette : !p.objectBoundary) return 0;
+    const float vzA = viewZ[ia], vzB = viewZ[ib];
+    const float px = pixelSizeAt(sp, std::min(vzA, vzB));
+    const float clampS = p.slopeClampPx * px;
+    const float tol = p.depthGapPx * px;
+    const float gapA = std::fabs(
+        vzB - (vzA + contactSideSlope(viewZ, objectId, normal, sp, ia, iOutA,
+                                      outAValid, clampS, p.borderGrazeCos)));
+    const float gapB = std::fabs(
+        vzA - (vzB + contactSideSlope(viewZ, objectId, normal, sp, ib, iOutB,
+                                      outBValid, clampS, p.borderGrazeCos)));
+    if (std::min(gapA, gapB) <= tol) return 0;  // contact
+    const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
+    return static_cast<std::uint8_t>(sameSection ? CrackClass::DepthGap
+                                                 : CrackClass::ObjectId) |
+           owner;
   }
 
   // 3. DepthGap: same id, both one-sided planar extrapolations miss the far

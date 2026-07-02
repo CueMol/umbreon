@@ -86,9 +86,12 @@ struct StrokeEdgeOptions {
   // --stroke-crease on when a faceted crease look is wanted.
   bool crease = false;
   // Screen source: gates the CROSS-section object-id boundary (a line between
-  // two different CueMol sections). Same-section primitive boundaries are always
-  // suppressed and have no toggle; set this off to also drop the between-section
-  // lines, leaving only the fg/bg silhouette and same-section depth/crease.
+  // two different CueMol sections). When on, borders are drawn only across a
+  // depth step (occlusion); depth-continuous contact/intersection contours
+  // (e.g. a stick penetrating a ribbon of another section, a bond embedded in
+  // an atom) are always suppressed. Same-section primitive boundaries follow
+  // the same depth rule but ink as depth-gap lines under the silhouette
+  // toggle, not this one.
   bool border = true;
 
   // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
