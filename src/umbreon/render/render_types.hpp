@@ -514,6 +514,13 @@ struct FrameResult {
   std::vector<float> viewZ;          // width*height   linear view-z (edge-only)
   std::vector<std::uint32_t> objectId;    // width*height   per-pixel object id
   std::vector<std::uint32_t> materialId;  // width*height   per-pixel material id
+  // First-hit surface opacity (fragment alpha, including any group alpha
+  // override baked into the scene colors). Sized and written ONLY when
+  // strokeEdges is enabled. The stroke edge pass multiplies each chain
+  // vertex's stroke opacity by this value, so an edge derived from a
+  // transparent surface inks with that surface's transparency (per-vertex
+  // alpha varies linearly along the stroke via the standard lerp).
+  std::vector<float> surfAlpha;           // width*height   first-hit opacity
   // AO / surface-irradiance-cache AOVs: sized and written ONLY when
   // RenderOptions::aoWriteAov is on (else left empty, keeping the default path
   // byte-identical). albedo/normal above are the OIDN guide; these are the AO

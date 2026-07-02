@@ -70,10 +70,12 @@ inline void compositeOver(float* rgba, const float color[3], float a) {
 }
 
 // One projected, resampled backbone vertex of a chain: 2D pixel position, linear
-// view-z (carried for future depth use) and a visibility flag.
+// view-z (carried for future depth use), the surface alpha multiplier (first-
+// hit fragment opacity under the vertex; 1 = opaque) and a visibility flag.
 struct Pt2 {
   Vec2 p;
   float vz = 0.0f;
+  float surfA = 1.0f;
   bool visible = true;
 };
 
@@ -83,11 +85,15 @@ using Strip = std::vector<Vec2>;
 
 // A strip plus the resolved (per-section) style to ink it with: linear RGB color
 // and opacity. The strip geometry already baked in the per-section half-width, so
-// only color/opacity travel here.
+// only color/opacity travel here. `alphas` (one entry per backbone vertex ==
+// strip pair) carries a per-vertex effective opacity when the run's alpha
+// varies along it (surface-alpha gradient under the edge); EMPTY means the
+// constant `opacity` applies to the whole strip -- the exact legacy path.
 struct StyledStrip {
   Strip strip;
   float color[3] = {0.0f, 0.0f, 0.0f};
   float opacity = 1.0f;
+  std::vector<float> alphas;
   int precedence = 0;     // nature tie-break key (lower paints first)
   float depthKey = 0.0f;  // min view-z over the run (FARTHER = larger); primary sort
 };
@@ -228,19 +234,68 @@ void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
   }
 }
 
+// As fillTriangle, but with a PER-VERTEX opacity (aA at `a`, aB at `b`, aC at
+// `c`) interpolated barycentrically per pixel -- the alpha-gradient path for a
+// stroke whose surface alpha varies along the backbone. The constant-alpha
+// strips keep the fillTriangle path above (bit-identical legacy output).
+void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
+                       int rowEnd, const Vec2& a, const Vec2& b, const Vec2& c,
+                       const float col[3], float aA, float aB, float aC) {
+  if (notValid(a) || notValid(b) || notValid(c)) return;
+  float minXf = std::min({a.x, b.x, c.x});
+  float maxXf = std::max({a.x, b.x, c.x});
+  float minYf = std::min({a.y, b.y, c.y});
+  float maxYf = std::max({a.y, b.y, c.y});
+  int minX = std::max(0, static_cast<int>(std::floor(minXf)));
+  int maxX = std::min(W - 1, static_cast<int>(std::ceil(maxXf)));
+  int minY = std::max(rowBegin, static_cast<int>(std::floor(minYf)));
+  int maxY = std::min(rowEnd - 1, static_cast<int>(std::ceil(maxYf)));
+  if (minX > maxX || minY > maxY) return;
+
+  const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  if (std::fabs(area) < 1.0e-7f) return;
+  const float inv = 1.0f / area;
+
+  for (int y = minY; y <= maxY; ++y) {
+    const float py = static_cast<float>(y);
+    for (int x = minX; x <= maxX; ++x) {
+      const float px = static_cast<float>(x);
+      const float w0 =
+          ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) * inv;
+      const float w1 =
+          ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
+      const float w2 = 1.0f - w0 - w1;
+      if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
+      const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
+      compositeOver(&color[idx], col, w0 * aA + w1 * aB + w2 * aC);
+    }
+  }
+}
+
 // Rasterize one ribbon strip (2*N border vertices, pairs per backbone vertex) as
 // a triangle strip, restricted to rows [rowBegin,rowEnd). Two triangles per quad
-// between consecutive backbone vertices.
+// between consecutive backbone vertices. `alphas`, when non-null, holds one
+// opacity per backbone vertex (strip pair) and switches the quad to the
+// alpha-interpolating fill; null keeps the constant-opacity legacy fill.
 void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
-                    const Strip& strip, const float col[3], float opacity) {
+                    const Strip& strip, const float col[3], float opacity,
+                    const float* alphas = nullptr) {
   const std::size_t pairs = strip.size() / 2;
   for (std::size_t k = 0; k + 1 < pairs; ++k) {
     const Vec2& l0 = strip[2 * k];
     const Vec2& r0 = strip[2 * k + 1];
     const Vec2& l1 = strip[2 * (k + 1)];
     const Vec2& r1 = strip[2 * (k + 1) + 1];
-    fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity);
-    fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity);
+    if (alphas) {
+      const float a0 = alphas[k], a1 = alphas[k + 1];
+      fillTriangleAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, col, a0, a0,
+                        a1);
+      fillTriangleAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, col, a0, a1,
+                        a1);
+    } else {
+      fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity);
+      fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity);
+    }
   }
 }
 
@@ -263,12 +318,16 @@ struct StrokeAttribute {
 };
 
 // One backbone vertex = 2D geometry + curvilinear abscissa + attribute (Freestyle
-// StrokeVertex, Stroke.h:310-458). p/vz/visible mirror Pt2; `ca` is the 2D arc
-// length from the stroke start and `u = ca/length2d` in [0,1] is the shader
+// StrokeVertex, Stroke.h:310-458). p/vz/surfA/visible mirror Pt2; `ca` is the 2D
+// arc length from the stroke start and `u = ca/length2d` in [0,1] is the shader
 // parameter. `visible` stays on the vertex (not in attr) to match the run-split.
+// `surfA` is the surface alpha multiplier sampled under the vertex; it stays
+// OUTSIDE attr so the constant color/alpha shaders cannot clobber it -- the
+// effective ink opacity is attr.alpha * surfA at rep-build time.
 struct StrokeVertex {
   Vec2 p;
   float vz = 0.0f;
+  float surfA = 1.0f;
   bool visible = true;
   float u = 0.0f, ca = 0.0f;
   StrokeAttribute attr;
@@ -482,6 +541,7 @@ Stroke buildStroke(const std::vector<Pt2>& proj, const StrokeAttribute& def,
     StrokeVertex v;
     v.p = proj[i].p;
     v.vz = proj[i].vz;
+    v.surfA = proj[i].surfA;
     v.visible = proj[i].visible;
     v.ca = ca;
     v.attr = def;
@@ -503,6 +563,7 @@ StrokeVertex lerpStrokeVertex(const StrokeVertex& a, const StrokeVertex& b,
   StrokeVertex q;
   q.p = a.p + (b.p - a.p) * t;
   q.vz = a.vz + (b.vz - a.vz) * t;
+  q.surfA = a.surfA + (b.surfA - a.surfA) * t;
   q.u = a.u + (b.u - a.u) * t;
   q.ca = a.ca + (b.ca - a.ca) * t;
   q.visible = a.visible;
@@ -550,12 +611,16 @@ void resampleStroke(Stroke& s, float stepPx) {
 // 837-867), each built from the per-vertex left/right thickness via the array
 // buildStrip. Color/opacity are taken per run from its first vertex's attribute
 // (constant per chain today; a future color shader makes them per-vertex in the
-// rasterizer). precedence keys the nature for the overlap sort.
+// rasterizer). The EFFECTIVE opacity of a vertex is attr.alpha * surfA (style
+// opacity times the sampled surface alpha); when it varies along the run the
+// per-vertex values ride StyledStrip::alphas and the rasterizer interpolates,
+// otherwise the constant path is kept (bit-identical opaque output).
+// precedence keys the nature for the overlap sort.
 void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
   const int precedence = s.precedence;
   const std::size_t minRun = 2;
   std::vector<Vec2> pos;
-  std::vector<float> lw, rw;
+  std::vector<float> lw, rw, av;
   float col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
   float depthMin = 0.0f;  // min view-z over the current run
   auto flush = [&]() {
@@ -566,6 +631,17 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
       ss.color[1] = col[1];
       ss.color[2] = col[2];
       ss.opacity = opacity;
+      bool uniform = true;
+      for (float a : av)
+        if (a != av.front()) {
+          uniform = false;
+          break;
+        }
+      if (uniform) {
+        ss.opacity = av.front();  // constant path (== legacy when surfA == 1)
+      } else {
+        ss.alphas = av;  // per-vertex gradient path
+      }
       ss.precedence = precedence;
       ss.depthKey = depthMin;
       out.push_back(std::move(ss));
@@ -573,6 +649,7 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
     pos.clear();
     lw.clear();
     rw.clear();
+    av.clear();
   };
   for (const StrokeVertex& v : s.verts) {
     if (!v.visible) {
@@ -591,6 +668,7 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
     pos.push_back(v.p);
     lw.push_back(v.attr.leftThick);
     rw.push_back(v.attr.rightThick);
+    av.push_back(v.attr.alpha * v.surfA);
   }
   flush();
 }
@@ -662,6 +740,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       Pt2 q;
       q.p = {sp.x, sp.y};
       q.vz = sp.vz;
+      q.surfA = sp.alpha;
       q.visible = sp.visible;
       proj.push_back(q);
     }
@@ -727,7 +806,8 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
         const int rb = rows.begin(), re = rows.end();
         for (const StyledStrip& ss : strips)
           rasterizeStrip(frame.color, W, rb, re, ss.strip, ss.color,
-                         ss.opacity);
+                         ss.opacity,
+                         ss.alphas.empty() ? nullptr : ss.alphas.data());
       });
 }
 

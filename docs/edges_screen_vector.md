@@ -1,7 +1,8 @@
 # Screen-Space Vector Edges
 
 The chain extractor for the stroke edge pass (`--edges on`). It vectorizes the
-per-pixel edge G-buffer AOVs (`viewZ` / `objectId` / `normal`) by crack tracing.
+per-pixel edge G-buffer AOVs (`viewZ` / `objectId` / `normal` / `surfAlpha`)
+by crack tracing.
 It shares the stylization and rasterization back half (`edges/stroke_render.hpp`)
 with the retired mesh-topology source, so all style flags
 (`--stroke-thickness`, `--stroke-taper`, `--stroke-smooth`, `--edge ID=spec`,
@@ -116,7 +117,14 @@ defaults, deliberately not CLI flags.
   refinement from the viewZ gradients is a possible later step.
 - The AOVs are captured from the FIRST hit including transparent surfaces,
   so the screen source outlines a front transparent veil where the mesh QI
-  path would see through it.
+  path would see through it. The ink does follow the veil's transparency,
+  though: each chain vertex samples the first hit's fragment opacity from the
+  `surfAlpha` AOV (mesh vertex-color alpha barycentric-interpolated at the
+  hit, sphere/cylinder color alpha incl. the edge_line2 gradient, any --alpha
+  group override baked in), and the stroke opacity is the per-section style
+  opacity TIMES that per-vertex surface alpha, lerped along the stroke. A
+  fully transparent section's outline vanishes with it; a vertex-alpha fade
+  (CueMol fadeout) fades its edge linearly in step.
 - Junctions are exact T-vertices, but the chains meeting there are smoothed
   independently (endpoints pinned), which can leave a small kink.
 - Hidden lines cannot be drawn (the z-buffer only sees visible surfaces).

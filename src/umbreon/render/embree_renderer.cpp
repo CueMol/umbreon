@@ -304,6 +304,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     if (opt.strokeEdges.enable) {
       res.objectId.assign(npix, 0xFFFFFFFFu);
       res.materialId.assign(npix, 0xFFFFFFFFu);
+      res.surfAlpha.assign(npix, 1.0f);
     }
     // normal doubles as the OIDN guide / cache spatial key, so it is allocated
     // for the edge pass OR the AO AOV dump. The remaining AO AOVs (albedo, the
@@ -422,6 +423,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       if (opt.strokeEdges.enable) {
         res.objectId[pix] = pr.objectId;
         res.materialId[pix] = pr.materialId;
+        res.surfAlpha[pix] = pr.firstOpacity;
       }
       // GI cache seed: world-space first-hit position + per-pixel component /
       // geomID side-channels read by the cache build below.

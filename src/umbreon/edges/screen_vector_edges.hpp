@@ -180,10 +180,14 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
 // lattice node (cx,cy), cx in [0..W], cy in [0..H], maps to (cx-0.5, cy-0.5)
 // (pixel (x,y) center == stroke coordinate (x,y)). vz is the mean owner-pixel
 // linear view-z of the vertex's adjacent edgels (0 when the tracer was given
-// no viewZ buffer).
+// no viewZ buffer). alpha is the mean owner-pixel first-hit surface opacity
+// of the adjacent edgels (1 when the tracer was given no surfAlpha buffer):
+// the draw stage multiplies the stroke opacity by it, so an edge traced on a
+// transparent surface inks with that surface's transparency.
 struct ScreenChainVert {
   float x = 0.0f, y = 0.0f;
   float vz = 0.0f;
+  float alpha = 1.0f;
 };
 
 // One traced chain: an ordered corner-lattice polyline. A closed loop
@@ -216,11 +220,13 @@ struct ScreenChain {
 // consumed exactly once (the consumed bit in `cf` is set; class bits are
 // preserved). viewZ / objectId are the SAME hi-res buffers given to
 // classifyCracks, used to attribute per-edgel owner vz / group; either may be
-// null (attributes then stay 0).
+// null (attributes then stay 0). surfAlpha is the optional first-hit surface
+// opacity plane (same layout); null keeps every vertex alpha at 1 (opaque).
 std::vector<ScreenChain> traceCrackChains(CrackField& cf,
                                           const float* viewZ = nullptr,
                                           const std::uint32_t* objectId =
-                                              nullptr);
+                                              nullptr,
+                                          const float* surfAlpha = nullptr);
 
 // Stage 2.5 self-support predicate: true when the chain contains any
 // non-DepthGap edgel or at least `minStrong` STRONG DepthGap edgels (a lone
@@ -232,8 +238,12 @@ bool keepScreenChain(const ScreenChain& ch, int minStrong = 1);
 
 // Zero every crack cell traversed by `ch` in the field (class bits and all).
 // Used by the Stage-2.5 prune: dropped chains stop chopping their neighbors
-// into junction fragments on the next trace.
+// into junction fragments on the next trace. The range overload erases only
+// the edgels [e0, e1) (edgel i spans pts[i] -> pts[i+1]) -- the run-level
+// weak-tail trim's partial erase.
 void eraseChainCracks(CrackField& cf, const ScreenChain& ch);
+void eraseChainCracks(CrackField& cf, const ScreenChain& ch, std::size_t e0,
+                      std::size_t e1);
 
 // Stage 2.5: hysteresis prune + retrace. Keeps every self-supported chain
 // (keepScreenChain), then propagates support to pure-weak OPEN chains whose
@@ -242,15 +252,25 @@ void eraseChainCracks(CrackField& cf, const ScreenChain& ch);
 // contour between the strong contour body and the silhouette outline, or a
 // piece of boundary chopped by side branches). Unsupported chains (isolated
 // facet-horizon slivers, grazing speckles, pure-weak loops, and clusters of
-// weak chains that only support each other) are erased from the field, the
+// weak chains that only support each other) are erased from the field.
+// RUN-LEVEL weak-tail trim: on a kept OPEN chain, a leading/trailing run of
+// WEAK DepthGap edgels whose outer endpoint corner does NOT junction into
+// another kept chain is erased too -- chain-level support (a non-DepthGap
+// or strong edgel elsewhere in the chain) must not extend to a weak sliver
+// dangling toward a free end. Without this, the SAME weak cracks would be
+// kept or pruned depending on whether a junction happens to coincide with
+// the class transition (e.g. a mesh strand's grazing-fade line rides a
+// stick's cross-section ObjectId run when the stick touches the strand, but
+// is pruned as a free-end spur when nothing splits it off). After erases the
 // consumed bits are cleared and the field is retraced so survivors re-merge
 // across the dissolved junctions; this repeats until stable. Deterministic.
-// viewZ / objectId are the same buffers given to traceCrackChains.
+// viewZ / objectId / surfAlpha are the same buffers given to traceCrackChains.
 std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
                                          std::vector<ScreenChain> traced,
                                          const float* viewZ,
                                          const std::uint32_t* objectId,
-                                         int minStrong = 1);
+                                         int minStrong = 1,
+                                         const float* surfAlpha = nullptr);
 
 // ---------------------------------------------------------------------------
 // Stage 3: geometry cleanup. These operate on a bare vertex polyline (the

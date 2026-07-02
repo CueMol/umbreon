@@ -28,11 +28,15 @@ namespace umbreon {
 
 // One backbone vertex of a source-produced chain: 2D pixel position at the
 // HI-RES frame resolution (pixel (x,y) center == coordinate (x,y)), linear
-// view-z (depth sort key / future depth cues) and a visibility flag (the mesh
-// source marks QI-hidden vertices; the screen source is always visible).
+// view-z (depth sort key / future depth cues), the surface alpha multiplier
+// (first-hit fragment opacity of the owner surface; the ribbon opacity is the
+// resolved style opacity times this, lerped per vertex so a vertex-color alpha
+// gradient fades the edge with it) and a visibility flag (the mesh source
+// marks QI-hidden vertices; the screen source is always visible).
 struct StrokePoint {
   float x = 0.0f, y = 0.0f;
   float vz = 0.0f;
+  float alpha = 1.0f;
   bool visible = true;
 };
 
