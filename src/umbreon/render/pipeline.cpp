@@ -70,7 +70,13 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
   // `renderer` through this pass (see EmbreeRenderer) for ray-cast visibility.
   // Gated on the master flag; with edges off this is never entered, keeping the
   // default render path byte-identical. --edges drives the stroke pipeline.
-  if (opt.strokeEdges.enable) {
+  if (opt.strokeEdges.enable &&
+      opt.strokeEdges.source == StrokeSource::Screen) {
+    // SCREEN source: the crack tracer reads the AOVs and needs no ray-cast
+    // visibility; skip the QI machinery (mean-edge scan + occlusion lambdas)
+    // entirely. applyStrokeEdges dispatches on the source internally.
+    applyStrokeEdges(frame, scene, opt, OcclusionQuery{}, OcclusionQuery{});
+  } else if (opt.strokeEdges.enable) {
     // Bind the ray-cast visibility query to the live BVH kept alive in
     // `renderer` (see EmbreeRenderer): occluded(P, target, selfFaces) is the QI
     // test, excluding the edge's own incident mesh faces (Freestyle self-face
