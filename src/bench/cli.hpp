@@ -64,6 +64,8 @@ struct Options {
   float pt1SkyRadiance[3] = {1.0f, 1.0f, 1.0f};  // --sky-radiance r,g,b
   float pt1UpsampleNormalPow = 32.0f;   // --pt1-upsample-normal-pow
   float pt1UpsampleDepthScale = 0.02f;  // --pt1-upsample-depth-scale
+  bool pt1Ld = false;                   // --pt1-ld on|off (stratified sampling)
+  float pt1Clamp = 0.0f;                // --pt1-clamp (luminance; 0 = off)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI

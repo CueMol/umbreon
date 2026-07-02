@@ -132,6 +132,8 @@ dominates in tight cavities; the gradient adds shape cue on open surfaces.
 | `--gi-max-dist <f>` | inf | Gather ray tfar. Default is physical (infinite); lower values (e.g. `--gi-max-dist 5`) give cache-like local contrast. |
 | `--gi-env-intensity <f>` | 1.0 | Scale on the sky/ground radiance seen by gather misses. |
 | `--seed N` | 0 | Deterministic RNG seed. Different seeds give independent noise patterns. |
+| `--pt1-ld on\|off` | off | Stratified first-bounce sampling (Hammersley + per-pixel Cranley-Patterson shift). Lower variance at the same spp; recommended on. |
+| `--pt1-clamp <L>` | 0 (off) | Per-sample luminance clamp; suppresses rare bright fireflies on multi-bounce paths at a small bias cost. |
 
 
 ## Path tracing: what the integrator does

@@ -324,6 +324,11 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--seed") {
       o.pt1Seed = static_cast<unsigned>(
           std::strtoul(value("--seed").c_str(), nullptr, 10));
+    } else if (a == "--pt1-ld") {
+      std::string v = value("--pt1-ld");
+      if (o.ok && !parseBool(v, o.pt1Ld)) fail("--pt1-ld expects on/off");
+    } else if (a == "--pt1-clamp") {
+      o.pt1Clamp = static_cast<float>(std::atof(value("--pt1-clamp").c_str()));
     } else if (a == "--pt1-upsample-normal-pow") {
       o.pt1UpsampleNormalPow = static_cast<float>(
           std::atof(value("--pt1-upsample-normal-pow").c_str()));
@@ -713,6 +718,8 @@ void printUsage(const char* prog) {
       "  --sky <uniform|gradient> pt1 gather sky model            [uniform]\n"
       "  --sky-radiance r,g,b     pt1 sky tint (x ambient energy)   [1,1,1]\n"
       "  --seed <int>             pt1 per-pixel RNG seed                [0]\n"
+      "  --pt1-ld <on|off>        pt1 stratified 1st-bounce sampling   [off]\n"
+      "  --pt1-clamp <f>          pt1 per-sample luminance clamp      [0=off]\n"
       "  --pt1-upsample-normal-pow <f> upsample normal edge-stop       [32]\n"
       "  --pt1-upsample-depth-scale <f> upsample depth edge-stop     [0.02]\n"
       "  --compare <a> <b>        print PSNR/SSIM between two PPM files\n"

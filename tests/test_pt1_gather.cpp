@@ -262,6 +262,56 @@ int main() {
             std::fabs(Ea.x - Eb.x) <= 0.03f * std::fmax(Ea.x, Eb.x));
   }
 
+  // --- 3e. stratified first-bounce sampling (--pt1-ld, quality plan Phase 4):
+  // the Hammersley + Cranley-Patterson estimator must stay unbiased (gradient-
+  // sky analytic value within the same tolerance) and cut the estimator
+  // variance versus the white-noise stream at the same spp.
+  {
+    TestScene ts(umbreon::Mesh{});
+    umbreon::detail::IrradianceCacheParams p = ts.params();
+    p.skyColor = Vec3{1.0f, 1.0f, 1.0f};
+    p.groundColor = Vec3{0.0f, 0.0f, 0.0f};
+    const Vec3 Eld = umbreon::detail::pt1GatherPoint(
+        p, P, N, N, spp, 12345u, epsT, nullptr, /*ld=*/true);
+    s.check("ld: gradient sky E_stored = 5/6 within 1%",
+            approxRel(Eld.x, 5.0f / 6.0f, 0.01f));
+
+    // Variance across 64 independent 64-spp estimates (seed = pixel stand-in).
+    const float ref = 5.0f / 6.0f;
+    const int trials = 64, tspp = 64;
+    double sseLd = 0.0, sseWhite = 0.0;
+    for (int t = 0; t < trials; ++t) {
+      const uint32_t seed = 777u + static_cast<uint32_t>(t) * 7919u;
+      const Vec3 a = umbreon::detail::pt1GatherPoint(p, P, N, N, tspp, seed,
+                                                     epsT, nullptr, true);
+      const Vec3 b = umbreon::detail::pt1GatherPoint(p, P, N, N, tspp, seed,
+                                                     epsT, nullptr, false);
+      sseLd += (a.x - ref) * (a.x - ref);
+      sseWhite += (b.x - ref) * (b.x - ref);
+    }
+    s.check("ld: stratified variance < 0.5x white noise at 64 spp",
+            sseLd < 0.5 * sseWhite);
+  }
+
+  // --- 3f. per-sample luminance clamp (--pt1-clamp): under a uniform sky of
+  // radiance 10, every sample carries luminance 10, so a clamp of 1 must pull
+  // E_stored to exactly 1.0 (each sample scaled by 1/10 before averaging);
+  // clamp = 0 leaves the estimator untouched.
+  {
+    TestScene ts(umbreon::Mesh{});
+    umbreon::detail::IrradianceCacheParams p = ts.params();
+    p.skyColor = p.groundColor = Vec3{10.0f, 10.0f, 10.0f};
+    const Vec3 Eoff = umbreon::detail::pt1GatherPoint(
+        p, P, N, N, spp, 12345u, epsT, nullptr, false, 0.0f);
+    const Vec3 Eclamp = umbreon::detail::pt1GatherPoint(
+        p, P, N, N, spp, 12345u, epsT, nullptr, false, 1.0f);
+    s.check("clamp off: bright sky passes through (E = 10)",
+            approxRel(Eoff.x, 10.0f, 0.01f));
+    s.check("clamp 1.0: every sample clamped (E = 1.0 exactly)",
+            std::fabs(Eclamp.x - 1.0f) < 1e-5f && Eclamp.x == Eclamp.y &&
+                Eclamp.y == Eclamp.z);
+  }
+
   // --- 4. denoisePt1E sanity (plan Phase 4): a constant irradiance field must
   // come back (approximately) constant, and a NaN-poisoned buffer must come
   // back finite (the scrub runs before the backend).

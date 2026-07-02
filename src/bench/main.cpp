@@ -490,6 +490,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 3; ++i) ropt.pt1SkyRadiance[i] = opt.pt1SkyRadiance[i];
     ropt.pt1UpsampleNormalPow = opt.pt1UpsampleNormalPow;
     ropt.pt1UpsampleDepthScale = opt.pt1UpsampleDepthScale;
+    ropt.pt1Ld = opt.pt1Ld;
+    ropt.pt1Clamp = opt.pt1Clamp;
     // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
     // None otherwise. An explicit --denoiser (0/1/2) is honored as-is. On the
     // pt1 path the default is None: pt1 denoises its indirect irradiance

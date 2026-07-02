@@ -34,6 +34,7 @@
 
 #include <tbb/blocked_range2d.h>
 
+#include "ao/ambient_occlusion.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
@@ -301,20 +302,48 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
 // diagonal); it must NOT be the gather tfar, which pt1 defaults to infinity.
 // The RNG is tea2 seeded from (seed, sample index) only and re-mixed per draw
 // -- deterministic and thread-count independent, no shared state.
+//
+// ld = true stratifies the FIRST-bounce direction with the Hammersley set
+// (i/spp, radicalInverse2(i)) under a per-point Cranley-Patterson toroidal
+// shift derived from `seed` (the AO sampler's scheme, see aoSample2d) --
+// lower variance at the same spp, still fully deterministic. Continuation
+// bounces and Russian roulette keep the tea2 stream (standard practice: the
+// low-discrepancy set pays off in the first, dominant dimension).
+// clampLum > 0 clamps each sample's path contribution to that luminance
+// (Rec.709), scaling RGB uniformly -- a firefly suppressor for multi-bounce
+// paths; 0 keeps the estimator unbiased.
 inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
                            const Vec3& N, const Vec3& Ng, int spp,
-                           uint32_t seed, float epsT, float* outOcclusion) {
+                           uint32_t seed, float epsT, float* outOcclusion,
+                           bool ld = false, float clampLum = 0.0f) {
   const Frame f = frameFromNormal(N);
   const float eps = selfIntersectEps(P, N, epsT);
   const Vec3 O = P + N * eps;
   const int maxB = (p.bounces < 1) ? 1 : p.bounces;
+  float cpx = 0.0f, cpy = 0.0f;
+  if (ld) {
+    uint32_t c0 = seed, c1 = 0x9E3779B9u;
+    tea2(c0, c1);
+    cpx = u32ToUnorm(c0);
+    cpy = u32ToUnorm(c1);
+  }
   Vec3 Esum{0.0f, 0.0f, 0.0f};
   int nOccluded = 0;
   for (int s = 0; s < spp; ++s) {
     uint32_t s0 = seed;
     uint32_t s1 = static_cast<uint32_t>(s);
     tea2(s0, s1);
-    Vec3 wi = cosineSampleHemisphere(u32ToUnorm(s0), u32ToUnorm(s1), f);
+    float u1, u2;
+    if (ld) {
+      u1 = static_cast<float>(s) / static_cast<float>(spp) + cpx;
+      u2 = radicalInverse2(static_cast<uint32_t>(s)) + cpy;
+      if (u1 >= 1.0f) u1 -= 1.0f;
+      if (u2 >= 1.0f) u2 -= 1.0f;
+    } else {
+      u1 = u32ToUnorm(s0);
+      u2 = u32ToUnorm(s1);
+    }
+    Vec3 wi = cosineSampleHemisphere(u1, u2, f);
     if (dot(wi, Ng) <= 0.0f) {
       ++nOccluded;
       continue;
@@ -322,22 +351,23 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     Vec3 org = O;
     float tnear = eps;
     Vec3 throughput{1.0f, 1.0f, 1.0f};
+    Vec3 L{0.0f, 0.0f, 0.0f};
     for (int b = 1; b <= maxB; ++b) {
       const RTCRayHit rh = intersectFull(p.scene, org, wi, tnear,
                                          p.maxDistance);
       if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID) {
         const Vec3 env = environmentRadiance(p, wi);
-        Esum.x += throughput.x * env.x;
-        Esum.y += throughput.y * env.y;
-        Esum.z += throughput.z * env.z;
+        L.x += throughput.x * env.x;
+        L.y += throughput.y * env.y;
+        L.z += throughput.z * env.z;
         break;
       }
       if (b == 1) ++nOccluded;
       Pt1Vertex v;
       if (!pt1EvalVertex(p, rh, org, wi, v)) break;  // outline: absorbed
-      Esum.x += throughput.x * v.radiance.x;
-      Esum.y += throughput.y * v.radiance.y;
-      Esum.z += throughput.z * v.radiance.z;
+      L.x += throughput.x * v.radiance.x;
+      L.y += throughput.y * v.radiance.y;
+      L.z += throughput.z * v.radiance.z;
       if (b == maxB) break;
       throughput.x *= v.albedo.x;
       throughput.y *= v.albedo.y;
@@ -365,6 +395,18 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
                  v.P.z + v.N.z * epsV};
       tnear = epsV;
     }
+    if (clampLum > 0.0f) {
+      const float lum = 0.2126f * L.x + 0.7152f * L.y + 0.0722f * L.z;
+      if (lum > clampLum) {
+        const float k = clampLum / lum;
+        L.x *= k;
+        L.y *= k;
+        L.z *= k;
+      }
+    }
+    Esum.x += L.x;
+    Esum.y += L.y;
+    Esum.z += L.z;
   }
   const float invN = 1.0f / static_cast<float>(spp > 0 ? spp : 1);
   if (outOcclusion) *outOcclusion = static_cast<float>(nOccluded) * invN;
@@ -381,12 +423,14 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
 //
 // TBB 16x16 tiles; each pixel is seeded from (pixel index, frameSeed) only, so
 // the image is deterministic across thread counts. Tiles write disjoint pixel
-// ranges (no locks).
+// ranges (no locks). ld / clampLum forward to pt1GatherPoint (stratified
+// first-bounce sampling / per-sample luminance clamp).
 inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                           const float* position, const float* normal,
                           const float* geomNormal, const uint8_t* eligible,
                           int spp, uint32_t frameSeed, float epsT,
-                          std::vector<float>& E, std::vector<float>& occ) {
+                          std::vector<float>& E, std::vector<float>& occ,
+                          bool ld = false, float clampLum = 0.0f) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   E.assign(npix * 3, 0.0f);
   occ.assign(npix, 0.0f);
@@ -410,7 +454,8 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
             const uint32_t seed =
                 hashU32(static_cast<uint32_t>(pix) ^ seedMix);
             float o = 0.0f;
-            const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, epsT, &o);
+            const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, epsT, &o,
+                                          ld, clampLum);
             E[pix * 3 + 0] = e.x;
             E[pix * 3 + 1] = e.y;
             E[pix * 3 + 2] = e.z;

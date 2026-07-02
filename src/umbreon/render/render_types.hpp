@@ -393,6 +393,11 @@ struct RenderOptions {
   // max(0,dot(Nf,Nh))^pow and depth weight exp(-|zf-zh|/(scale*zf+1e-6)).
   float pt1UpsampleNormalPow = 32.0f;
   float pt1UpsampleDepthScale = 0.02f;
+  // Stratified first-bounce sampling (Hammersley + per-pixel Cranley-Patterson
+  // shift, the AO sampler's scheme) and per-sample luminance firefly clamp
+  // (0 = off). Both default off so the flag-less pt1 render is unchanged.
+  bool pt1Ld = false;
+  float pt1Clamp = 0.0f;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised

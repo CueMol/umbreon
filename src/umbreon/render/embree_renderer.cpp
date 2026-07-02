@@ -558,7 +558,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), spp,
-                            opt.pt1Seed, diag, Eh, occh);
+                            opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
+                            opt.pt1Clamp);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -582,7 +583,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       const auto tg0 = std::chrono::high_resolution_clock::now();
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(), spp,
-                            opt.pt1Seed, diag, Ebuf, occBuf);
+                            opt.pt1Seed, diag, Ebuf, occBuf, opt.pt1Ld,
+                            opt.pt1Clamp);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
