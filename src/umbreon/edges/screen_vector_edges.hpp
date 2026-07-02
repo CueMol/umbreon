@@ -141,4 +141,30 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf,
                                           const std::uint32_t* objectId =
                                               nullptr);
 
+// ---------------------------------------------------------------------------
+// Stage 3: geometry cleanup. These operate on a bare vertex polyline (the
+// Stage-4 class-run split happens BEFORE cleanup, so a run is uniform in
+// class/group and the per-edgel attribute arrays need no maintenance here).
+// `closed` polylines carry the duplicated seam vertex (front()==back())
+// throughout. vz is carried: interpolated by Chaikin, subset-kept by RDP.
+
+// Total 2D arc length (the Stage-4 speck filter's key).
+float polylineLength2d(const std::vector<ScreenChainVert>& pts);
+
+// Merge consecutive collinear same-direction steps (exact staircase
+// reduction; removes interior vertices only, so a closed seam vertex may
+// survive mid-segment -- harmless).
+void collapseCollinear(std::vector<ScreenChainVert>& pts, bool closed);
+
+// Chaikin corner cutting, `iters` iterations. Open polylines pin both
+// endpoints (junction continuity across separately-smoothed chains); closed
+// polylines are cut cyclically and keep the duplicated seam.
+void chaikinSmooth(std::vector<ScreenChainVert>& pts, bool closed, int iters);
+
+// Douglas-Peucker simplification with tolerance `eps` (same pixel units as
+// the points). Endpoints are always kept. A closed polyline is split at an
+// approximate-diameter vertex pair (deterministic two-sweep pick), each half
+// simplified, and the seam re-duplicated.
+void simplifyRdp(std::vector<ScreenChainVert>& pts, bool closed, float eps);
+
 }  // namespace umbreon

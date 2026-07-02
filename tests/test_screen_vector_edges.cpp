@@ -335,6 +335,116 @@ int main() {
                 chains[0].pts.size() == 5);
   }
 
+  // ---- (C1) collinear collapse: staircase runs merge exactly --------------
+  {
+    using umbreon::ScreenChainVert;
+    std::vector<ScreenChainVert> pts = {{0, 0, 1}, {1, 0, 2}, {2, 0, 3},
+                                        {2, 1, 4}, {2, 2, 5}};
+    umbreon::collapseCollinear(pts, false);
+    s.check("collapse: 5 -> 3 vertices",
+            pts.size() == 3 && pts[0].x == 0 && pts[1].x == 2 &&
+                pts[1].y == 0 && pts[2].y == 2);
+  }
+
+  // ---- (C2) Chaikin: staircase converges to the diagonal, endpoints exact -
+  {
+    using umbreon::ScreenChainVert;
+    std::vector<ScreenChainVert> pts;
+    // Unit staircase from (0,0) to (4,4): E,S alternating.
+    float vz = 0.0f;
+    pts.push_back({0, 0, vz});
+    for (int i = 0; i < 4; ++i) {
+      pts.push_back({static_cast<float>(i + 1), static_cast<float>(i),
+                     vz += 1.0f});
+      pts.push_back({static_cast<float>(i + 1), static_cast<float>(i + 1),
+                     vz += 1.0f});
+    }
+    umbreon::chaikinSmooth(pts, false, 2);
+    s.check("chaikin: endpoints pinned",
+            pts.front().x == 0.0f && pts.front().y == 0.0f &&
+                pts.back().x == 4.0f && pts.back().y == 4.0f);
+    // The unit staircase oscillates symmetrically (+-0.354) around its true
+    // boundary MIDLINE y = x - 0.5, not around y = x. Chaikin shrinks the
+    // interior ripple well below the original amplitude; the pinned endpoints
+    // (0.354 off the midline by construction) are excluded.
+    float dMax = 0.0f;
+    bool vzMonotone = true;
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+      if (i >= 3 && i + 3 < pts.size())
+        dMax = std::max(dMax, std::fabs(pts[i].x - pts[i].y - 0.5f) /
+                                  std::sqrt(2.0f));
+      if (i > 0 && pts[i].vz < pts[i - 1].vz) vzMonotone = false;
+    }
+    s.check("chaikin: interior ripple shrinks toward the boundary midline",
+            dMax < 0.25f);
+    s.check("chaikin: monotone vz stays monotone", vzMonotone);
+  }
+
+  // ---- (C3) Chaikin closed: seam kept, corners cut within the box ---------
+  {
+    using umbreon::ScreenChainVert;
+    std::vector<ScreenChainVert> pts = {
+        {0, 0, 1}, {4, 0, 1}, {4, 4, 1}, {0, 4, 1}, {0, 0, 1}};
+    umbreon::chaikinSmooth(pts, true, 2);
+    bool inBox = true;
+    for (const auto& v : pts)
+      if (v.x < 0 || v.x > 4 || v.y < 0 || v.y > 4) inBox = false;
+    s.check("chaikin closed: seam duplicated and inside the hull",
+            pts.front().x == pts.back().x && pts.front().y == pts.back().y &&
+                inBox);
+    bool cornersCut = true;
+    for (const auto& v : pts) {
+      const bool atCorner = (v.x == 0 || v.x == 4) && (v.y == 0 || v.y == 4);
+      if (atCorner) cornersCut = false;
+    }
+    s.check("chaikin closed: sharp corners removed", cornersCut);
+  }
+
+  // ---- (C4) RDP: near-collinear collapses, endpoints/vz preserved ---------
+  {
+    using umbreon::ScreenChainVert;
+    std::vector<ScreenChainVert> pts = {
+        {0, 0, 7}, {1, 0.1f, 8}, {2, -0.1f, 9}, {3, 0.05f, 10}, {4, 0, 11}};
+    std::vector<ScreenChainVert> loose = pts;
+    umbreon::simplifyRdp(loose, false, 0.4f);
+    s.check("rdp: eps 0.4 collapses the wiggle to the chord",
+            loose.size() == 2 && loose.front().vz == 7 &&
+                loose.back().vz == 11);
+    std::vector<ScreenChainVert> tight = pts;
+    umbreon::simplifyRdp(tight, false, 0.05f);
+    s.check("rdp: eps 0.05 keeps interior detail", tight.size() > 2);
+  }
+
+  // ---- (C5) RDP closed: square survives with its 4 corners ----------------
+  {
+    using umbreon::ScreenChainVert;
+    // Square ring with collinear mid-edge vertices.
+    std::vector<ScreenChainVert> pts;
+    auto edge = [&](float x0, float y0, float x1, float y1) {
+      for (int k = 0; k < 4; ++k) {
+        const float t = static_cast<float>(k) / 4.0f;
+        pts.push_back({x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, 1.0f});
+      }
+    };
+    edge(0, 0, 4, 0);
+    edge(4, 0, 4, 4);
+    edge(4, 4, 0, 4);
+    edge(0, 4, 0, 0);
+    pts.push_back(pts.front());  // seam
+    umbreon::simplifyRdp(pts, true, 0.3f);
+    s.check("rdp closed: seam kept",
+            pts.front().x == pts.back().x && pts.front().y == pts.back().y);
+    // 4 corners + duplicated seam = 5 vertices.
+    s.check_eq("rdp closed: square reduces to its corners", pts.size(),
+               static_cast<std::size_t>(5));
+    int corners = 0;
+    for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
+      const auto& v = pts[i];
+      if ((v.x == 0 || v.x == 4) && (v.y == 0 || v.y == 4)) ++corners;
+    }
+    s.check_eq("rdp closed: all 4 corners survive", corners, 4);
+  }
+
   // ---- (6) crease: normal fold fires only with the crease gate ------------
   {
     Buffers b(16, 16);
