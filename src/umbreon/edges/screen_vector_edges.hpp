@@ -55,10 +55,14 @@ enum class CrackClass : std::uint8_t {
 // Crack byte layout: [0..2] CrackClass, [3] owner side (0 = the FIRST pixel of
 // the pair -- left for a right-crack, top for a down-crack -- is the nearer
 // "owner" whose viewZ/group the edge carries; 1 = the second pixel), [4] a
-// consumed scratch bit used by the Stage-2 tracer.
+// consumed scratch bit used by the Stage-2 tracer, [5] the hysteresis
+// STRONG bit (DepthGap only): the crack passed the full strong gate, not just
+// the weak candidate threshold. A traced chain survives the Stage-2.5 prune
+// only with strong (or non-DepthGap) support; see keepScreenChain.
 constexpr std::uint8_t kCrackClassMask = 0x07;
 constexpr std::uint8_t kCrackOwnerBit = 0x08;
 constexpr std::uint8_t kCrackConsumedBit = 0x10;
+constexpr std::uint8_t kCrackStrongBit = 0x20;
 
 // The classified crack lattice of a W x H pixel buffer. right[y*W+x] is the
 // crack between pixels (x,y) and (x+1,y) (valid for x < W-1; the x == W-1
@@ -82,10 +86,11 @@ struct ScreenCrackDebugPlane {
 struct ScreenCrackDebug {
   enum Reason : std::uint8_t {
     kNotEvaluated = 0,   // other branch (bg / id boundary) or gate off
-    kSubThreshold = 1,   // min(gapA, gapB) <= depthGapPx * px
+    kSubThreshold = 1,   // min(gapA, gapB) <= weak threshold
     kNmsSuppressed = 2,  // lost the perpendicular 3-pair NMS
-    kBgKilled = 3,       // within bgClearancePx of background
-    kInked = 4,          // classified DepthGap
+    kBgKilled = 3,       // weak within bgClearancePx of background
+    kInked = 4,          // classified DepthGap STRONG
+    kInkedWeak = 5,      // classified DepthGap weak (hysteresis candidate)
   };
   ScreenCrackDebugPlane right, down;
 };
@@ -112,6 +117,23 @@ struct ScreenClassifyParams {
   // One-sided slope clamp in pixelSize units, so extreme grazing noise cannot
   // extrapolate across a genuine fold.
   float slopeClampPx = 300.0f;
+  // DepthGap hysteresis: a crack is a WEAK candidate when min(gapA, gapB)
+  // exceeds weakGapRatio * depthGapPx * pixelSize; it is STRONG when it also
+  // clears the full depthGapPx threshold AND the step-dominance gate below.
+  // Weak cracks trace like any crack but survive only in chains with strong
+  // (or non-DepthGap) support (Stage 2.5, keepScreenChain). 1 = weak equals
+  // strong threshold (hysteresis effectively off).
+  float weakGapRatio = 0.5f;
+  // Step-dominance gate for STRONG DepthGap cracks: the raw step |dvz| must
+  // exceed stepDominanceK * max(recession, pixelSize), where recession is the
+  // near side's wide-baseline (up to 6 px) one-sided depth slope per pixel.
+  // Discriminates a true occlusion contour (step huge relative to how fast
+  // the near surface itself recedes) from the facet-horizon slivers a coarse
+  // mesh throws off at grazing incidence: a sight line skims a facet edge and
+  // lands a few pixels' worth of the same grazing ramp deeper -- a real but
+  // unwanted micro-occlusion (measured on mesh4: sliver ratios <= ~200,
+  // contour ratios >= ~500). 0 disables the gate (every inked crack strong).
+  float stepDominanceK = 250.0f;
   // ObjectId contact veto only: a side's slope is credited toward the
   // depth-continuity extrapolation only while its shading normal still faces
   // the viewer (|n.v|/|n| >= this). At a rim curling toward its own
@@ -121,12 +143,15 @@ struct ScreenClassifyParams {
   // vetoed through the OTHER (continuing, viewer-facing) surface's
   // extrapolation. 0 disables the gate.
   float borderGrazeCos = 0.3f;
-  // Suppress a DepthGap crack when either pixel lies within this Chebyshev
-  // radius (hi-res px) of a background pixel: the last pixels before the
-  // silhouette are grazing-dominated (a near-edge-on facet there is
-  // indistinguishable from an occlusion step) and the Silhouette class
-  // already inks that boundary. 0 = off. The Stage-4 driver scales this with
-  // the supersample factor.
+  // Suppress a WEAK DepthGap crack when either pixel lies within this
+  // Chebyshev radius (hi-res px) of a background pixel: the last pixels
+  // before the silhouette are grazing-dominated and the Silhouette class
+  // already inks that boundary. STRONG cracks are exempt (a step-dominant
+  // discontinuity is a real occlusion even at the rim), and so is a weak
+  // crack whose ALONG-CRACK strip reaches the background (the terminal piece
+  // of a contour landing on the outline runs into it; the rim noise this
+  // kill targets hugs the outline side-on). 0 = off. The Stage-4 driver
+  // scales this with the supersample factor.
   int bgClearancePx = 3;
   // Crease: fire when dot(nA, nB) < cos(effective angle), where the effective
   // angle widens at grazing incidence: creaseAngleDeg * (1 + grazeK * (1 -
@@ -174,6 +199,8 @@ struct ScreenChain {
   std::vector<ScreenChainVert> pts;
   std::vector<std::uint8_t> edgeClass;
   std::vector<std::uint16_t> edgeGroup;
+  // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis).
+  std::vector<std::uint8_t> edgeFlags;
   bool closed = false;
   int deg0 = 0, deg1 = 0;
 };
@@ -194,6 +221,36 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf,
                                           const float* viewZ = nullptr,
                                           const std::uint32_t* objectId =
                                               nullptr);
+
+// Stage 2.5 self-support predicate: true when the chain contains any
+// non-DepthGap edgel or at least `minStrong` STRONG DepthGap edgels (a lone
+// borderline-strong crack inside a weak sliver must not resurrect it as an
+// isolated dash). Pure-weak chains have no support of their own;
+// pruneWeakChains may still keep one when BOTH its endpoint corners junction
+// into kept chains (support propagation).
+bool keepScreenChain(const ScreenChain& ch, int minStrong = 1);
+
+// Zero every crack cell traversed by `ch` in the field (class bits and all).
+// Used by the Stage-2.5 prune: dropped chains stop chopping their neighbors
+// into junction fragments on the next trace.
+void eraseChainCracks(CrackField& cf, const ScreenChain& ch);
+
+// Stage 2.5: hysteresis prune + retrace. Keeps every self-supported chain
+// (keepScreenChain), then propagates support to pure-weak OPEN chains whose
+// BOTH endpoint corners coincide with an endpoint of an already-kept chain
+// (a weak fragment bridging kept boundaries -- e.g. the near-cusp tail of a
+// contour between the strong contour body and the silhouette outline, or a
+// piece of boundary chopped by side branches). Unsupported chains (isolated
+// facet-horizon slivers, grazing speckles, pure-weak loops, and clusters of
+// weak chains that only support each other) are erased from the field, the
+// consumed bits are cleared and the field is retraced so survivors re-merge
+// across the dissolved junctions; this repeats until stable. Deterministic.
+// viewZ / objectId are the same buffers given to traceCrackChains.
+std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
+                                         std::vector<ScreenChain> traced,
+                                         const float* viewZ,
+                                         const std::uint32_t* objectId,
+                                         int minStrong = 1);
 
 // ---------------------------------------------------------------------------
 // Stage 3: geometry cleanup. These operate on a bare vertex polyline (the
