@@ -14,6 +14,7 @@
 
 #include "edges/analytic_silhouette.hpp"
 #include "edges/mesh_feature_edges.hpp"
+#include "edges/stroke_render.hpp"
 
 namespace umbreon {
 namespace {
@@ -367,11 +368,14 @@ struct StrokeVertex {
 };
 
 // A chained, parametric stroke (Freestyle Stroke, Stroke.h:483-858).
+// `precedence` is the overlap paint order carried to the strips (the mesh
+// source passes naturePrecedence(nature); a screen-source chain passes its
+// class precedence directly).
 struct Stroke {
   std::vector<StrokeVertex> verts;
   float length2d = 0.0f;
   int chainIdx = 0;
-  EdgeNature nature = EdgeNature::Silhouette;
+  int precedence = 0;
 };
 
 // Stylization shader contract (Freestyle StrokeShader, StrokeShader.h:50-77): a
@@ -560,10 +564,10 @@ struct AnisoSmoothingShader : StrokeShader {
 // Operators::createStroke, Operators.cpp:1082-1155). Accumulates 2D arc length to
 // set `ca` and the normalized abscissa `u`.
 Stroke buildStroke(const std::vector<Pt2>& proj, const StrokeAttribute& def,
-                   int chainIdx, EdgeNature nat) {
+                   int chainIdx, int precedence) {
   Stroke s;
   s.chainIdx = chainIdx;
-  s.nature = nat;
+  s.precedence = precedence;
   s.verts.reserve(proj.size());
   float ca = 0.0f;
   for (std::size_t i = 0; i < proj.size(); ++i) {
@@ -641,7 +645,7 @@ void resampleStroke(Stroke& s, float stepPx) {
 // (constant per chain today; a future color shader makes them per-vertex in the
 // rasterizer). precedence keys the nature for the overlap sort.
 void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
-  const int precedence = naturePrecedence(s.nature);
+  const int precedence = s.precedence;
   const std::size_t minRun = 2;
   std::vector<Vec2> pos;
   std::vector<float> lw, rw;
@@ -1668,15 +1672,150 @@ std::vector<std::vector<Vec2f>> buildRibbonStrips(
   return out;
 }
 
+// Shared draw stage (stroke_render.hpp): resolve one chain's ribbon style by
+// style slot + section group. Table reads are identical to the retired
+// applyStrokeEdges-local resolveStyle lambda keyed on nature (the mesh source
+// passes natureStyleSlot(nature)); the per-nature master gates stayed at the
+// source.
+bool resolveStrokeStyle(const Scene& scene, const StrokeEdgeOptions& se,
+                        float ssScale, int styleSlot, std::uint16_t group,
+                        float& outHalf, float outColor[3], float& outOpacity) {
+  if (scene.groupEdgeStyle.empty()) {
+    // No section table: use the single global stroke style.
+    outHalf = std::max(0.5f, 0.5f * static_cast<float>(se.thickness) * ssScale);
+    outColor[0] = se.color[0];
+    outColor[1] = se.color[1];
+    outColor[2] = se.color[2];
+    outOpacity = se.opacity;
+    return true;
+  }
+  const std::vector<EdgeStyle>& table = scene.groupEdgeStyle;
+  const EdgeStyle& es = (group < table.size()) ? table[group]
+                                               : se.defaultStyle;
+  const EdgeClassStyle& cs = es.cls[styleSlot];
+  // A section that disables this slot's class inks nothing for it.
+  if (!cs.enabled) return false;
+  // width is the per-class FULL band width (FINAL px); half it and scale to
+  // hi-res px by the supersample factor (>= 0.5 hi-res px).
+  outHalf = std::max(0.5f, 0.5f * cs.width * ssScale);
+  outColor[0] = cs.color[0];
+  outColor[1] = cs.color[1];
+  outColor[2] = cs.color[2];
+  outOpacity = cs.opacity;
+  return true;
+}
+
+// Shared draw stage (stroke_render.hpp): stylize + rasterize source-produced
+// chains. This is the applyStrokeEdges back half moved verbatim -- per chain
+// buildStroke -> resampleStroke -> shader stack -> buildStrokeReps, then the
+// depth/precedence stable sort and the TBB row-tiled deterministic rasterize.
+void renderStrokeChains(FrameResult& frame, const Scene& scene,
+                        const RenderOptions& opt,
+                        const std::vector<StrokeChainInput>& chains) {
+  const StrokeEdgeOptions& se = opt.strokeEdges;
+  const int W = frame.width, H = frame.height;
+  if (W <= 0 || H <= 0) return;
+
+  // Supersample-aware stroke geometry: thickness/resample are FINAL-px values,
+  // scaled to hi-res px (see the mesh source's ssScale note).
+  const float ssScale = static_cast<float>(std::max(1, opt.supersample));
+  const float stepPx =
+      std::max(1.0f, static_cast<float>(se.resampleStepPx) * ssScale);
+
+  std::vector<StyledStrip> strips;
+  for (std::size_t ci = 0; ci < chains.size(); ++ci) {
+    const StrokeChainInput& in = chains[ci];
+    float halfThick = 0.0f, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
+    if (!resolveStrokeStyle(scene, se, ssScale, in.styleSlot, in.group,
+                            halfThick, col, opacity))
+      continue;
+
+    // Wrap the source points into the internal visibility-tagged polyline.
+    std::vector<Pt2> proj;
+    proj.reserve(in.pts.size());
+    for (const StrokePoint& sp : in.pts) {
+      Pt2 q;
+      q.p = {sp.x, sp.y};
+      q.vz = sp.vz;
+      q.visible = sp.visible;
+      proj.push_back(q);
+    }
+
+    // STROKE LAYER: wrap the visibility-tagged polyline as a parametric Stroke
+    // (buildStroke), arc-length resample it (resampleStroke), then emit one
+    // ribbon per maximal VISIBLE run.
+    StrokeAttribute defAttr;
+    defAttr.leftThick = halfThick;
+    defAttr.rightThick = halfThick;
+    defAttr.color[0] = col[0];
+    defAttr.color[1] = col[1];
+    defAttr.color[2] = col[2];
+    defAttr.alpha = opacity;
+    Stroke stroke =
+        buildStroke(proj, defAttr, static_cast<int>(ci), in.precedence);
+    resampleStroke(stroke, stepPx);
+
+    // STYLIZATION: run the per-vertex stroke shaders (Freestyle
+    // StrokeShader::shade). The constant width/color shaders reproduce the
+    // resolved per-section default attribute, so output is byte-identical; a
+    // real calligraphic/depth-cue/taper/noise shader plugs in here to make
+    // L != R or color vary along u.
+    std::vector<std::unique_ptr<StrokeShader>> shaders;
+    if (se.smooth)  // Freestyle anisotropic curvature-flow smoothing
+      shaders.push_back(std::make_unique<AnisoSmoothingShader>(
+          /*nbIter=*/200, /*factorPoint=*/0.0f, /*factorCurvature=*/0.4f,
+          /*factorCurvatureDiff=*/0.3f, /*anisoPoint=*/0.0f,
+          /*anisoNormal=*/0.08f, /*anisoCurvature=*/0.08f,
+          /*carricature=*/1.0f));
+    shaders.push_back(std::make_unique<ConstantThicknessShader>(halfThick));
+    shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
+    if (se.taper)  // demo f(u) shader: taper width toward stroke ends
+      shaders.push_back(std::make_unique<TaperShader>(0.5f, 0.15f));
+    for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
+
+    // Build the variable-width ribbon strips (one per maximal visible run).
+    buildStrokeReps(stroke, strips);
+  }
+
+  if (strips.empty()) return;
+
+  // Stable-sort strips for compositing. compositeOver paints in array order, so
+  // the LAST strip is on top (painter's algorithm). Primary key = DEPTH: sort
+  // FARTHER first (descending depthKey = view-z) so the NEARER stroke is last
+  // == on top (Freestyle Operators::sort + pyZBP1D, resolved to umbreon's
+  // `over` blend direction). Tie-break by class PRECEDENCE. Stable so full ties
+  // keep build (chain) order -> deterministic; depthKey is computed
+  // single-threaded, so the result is independent of TBB scheduling.
+  std::stable_sort(strips.begin(), strips.end(),
+                   [](const StyledStrip& a, const StyledStrip& b) {
+                     if (a.depthKey != b.depthKey) return a.depthKey > b.depthKey;
+                     return a.precedence < b.precedence;
+                   });
+
+  // Composite all strips over frame.color, row-tiled with TBB. Each tile
+  // rasterizes EVERY strip in PRECEDENCE order but only the rows in its range,
+  // so the result is independent of tile boundaries / thread scheduling
+  // (deterministic).
+  tbb::parallel_for(
+      tbb::blocked_range<int>(0, H),
+      [&](const tbb::blocked_range<int>& rows) {
+        const int rb = rows.begin(), re = rows.end();
+        for (const StyledStrip& ss : strips)
+          rasterizeStrip(frame.color, W, rb, re, ss.strip, ss.color,
+                         ss.opacity);
+      });
+}
+
 // STEP 4: variable-width ribbon strokes. Extract topology-tagged feature edges,
 // chain them per nature into continuous polylines, mark each backbone vertex
 // visible/hidden by ray-cast QI against the live Embree BVH (via `occluded`),
-// project + arc-length resample, build a miter-joined offset RIBBON per maximal
-// visible run, then hard-fill the triangle strips composited over frame.color in
-// LINEAR space at hi-res (the box downsample antialiases). Rasterization is
-// row-tiled with TBB and is deterministic (each tile rasterizes every strip
-// restricted to its rows). The default (edges off) path never reaches here, so
-// the no-edge render stays byte-identical.
+// project + arc-length resample, hand the visibility-tagged 2D polylines to the
+// shared draw stage (stroke_render.hpp:renderStrokeChains) which builds a
+// miter-joined offset RIBBON per maximal visible run and hard-fills the
+// triangle strips composited over frame.color in LINEAR space at hi-res (the
+// box downsample antialiases). Rasterization is row-tiled with TBB and is
+// deterministic. The default (edges off) path never reaches here, so the
+// no-edge render stays byte-identical.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
                       const OcclusionQuery& occludedRaw) {
@@ -1739,58 +1878,19 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
   // to faint gray on white (the "outline missing at --supersample 4" bug).
   const float ssScale = static_cast<float>(std::max(1, opt.supersample));
 
-  // Global fallback half-thickness / resample step (hi-res px). thickness is the
-  // FULL ribbon width target (final px); halfThick is half of it (Freestyle
-  // thickness[0]/[1] each == halfThick gives a 2*halfThick band on a straight
-  // run). Both are scaled to hi-res px by ssScale.
-  const float globalHalf =
-      std::max(0.5f, 0.5f * static_cast<float>(se.thickness) * ssScale);
-  const float stepPx =
-      std::max(1.0f, static_cast<float>(se.resampleStepPx) * ssScale);
-  const bool perSection = !scene.groupEdgeStyle.empty();
-
-  // Resolve the (per-section) style for one chain by its group + nature: pick the
-  // EdgeStyle for the chain's group (Scene::groupEdgeStyle, else the global
-  // strokeEdges fallback) and read the slot the nature maps to. Returns false to
-  // SKIP the chain when its section explicitly disables that nature's class.
-  // `outHalf`/`outColor`/`outOpacity` are the resolved ribbon style.
-  auto resolveStyle = [&](EdgeNature nat, std::uint16_t group, float& outHalf,
-                          float outColor[3], float& outOpacity) -> bool {
-    // Master per-nature gate first (global toggle): a nature switched off never
-    // draws regardless of section overrides.
+  // Master per-nature gate (global toggle): a nature switched off never draws
+  // regardless of section overrides. Applied here (before the QI work) so a
+  // disabled nature costs nothing; the table-driven per-section style itself is
+  // resolved by the shared resolveStrokeStyle (stroke_render.hpp).
+  auto natureEnabled = [&](EdgeNature nat) -> bool {
     switch (nat) {
       case EdgeNature::Silhouette:
-        if (!se.silhouette) return false;
-        break;
+        return se.silhouette;
       case EdgeNature::Border:
-        if (!se.border) return false;
-        break;
+        return se.border;
       case EdgeNature::Crease:
-        if (!se.crease) return false;
-        break;
+        return se.crease;
     }
-    if (!perSection) {
-      // No section table: use the single global stroke style.
-      outHalf = globalHalf;
-      outColor[0] = se.color[0];
-      outColor[1] = se.color[1];
-      outColor[2] = se.color[2];
-      outOpacity = se.opacity;
-      return true;
-    }
-    const std::vector<EdgeStyle>& table = scene.groupEdgeStyle;
-    const EdgeStyle& es = (group < table.size()) ? table[group]
-                                                 : se.defaultStyle;
-    const EdgeClassStyle& cs = es.cls[natureStyleSlot(nat)];
-    // A section that disables this nature's class inks nothing for it.
-    if (!cs.enabled) return false;
-    // width is the per-class FULL band width (FINAL px); half it and scale to
-    // hi-res px by the supersample factor (>= 0.5 hi-res px).
-    outHalf = std::max(0.5f, 0.5f * cs.width * ssScale);
-    outColor[0] = cs.color[0];
-    outColor[1] = cs.color[1];
-    outColor[2] = cs.color[2];
-    outOpacity = cs.opacity;
     return true;
   };
 
@@ -1818,8 +1918,9 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     segList[c.segIdx].push_back(c.t);
   }
 
-  // Build all ribbon strips for the frame up front; rasterize them tiled.
-  std::vector<StyledStrip> strips;
+  // Collect the visibility-tagged 2D chains for the shared draw stage
+  // (stroke_render.hpp:renderStrokeChains), which stylizes and rasterizes them.
+  std::vector<StrokeChainInput> drawChains;
   // DEBUG overlay (--edge-qi-dots): collected across all chains, drawn last.
   std::vector<QiDot> qiDots;
   // DEBUG overlay (--edge-qi-vertex-dots): per-VERTEX raw QI visibility.
@@ -1836,8 +1937,16 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
     // only RASTERIZE them when --stroke-analytic is on. With it off the ball-stick
     // gets no outline, yet the ribbon's hidden-line stays correct (no leak).
     if (!se.analytic && s0.v0 >= fm.nodeCount) continue;
-    float halfThick = globalHalf, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
-    if (!resolveStyle(nat, s0.group, halfThick, col, opacity)) continue;
+    // Gate + early style probe BEFORE the QI work so a disabled nature/section
+    // costs nothing. renderStrokeChains re-resolves the same style values
+    // (deterministic table reads), so the probe results are discarded here.
+    if (!natureEnabled(nat)) continue;
+    {
+      float probeHalf = 0.0f, probeCol[3] = {0.0f, 0.0f, 0.0f}, probeOp = 1.0f;
+      if (!resolveStrokeStyle(scene, se, ssScale, natureStyleSlot(nat),
+                              s0.group, probeHalf, probeCol, probeOp))
+        continue;
+    }
 
     // Freestyle-faithful visibility (split-at-junction, then per-ViewEdge QI
     // majority): the chain is split into ViewEdge units at its 2D image-space
@@ -1885,69 +1994,24 @@ void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                         &vertQiDots);
     if (spans.empty()) continue;  // nothing to project (all sub-spans degenerate)
     const std::vector<Pt2> proj = projectChainSubSpans(ch, spans, spanHide, sp);
-    // STROKE LAYER: wrap the visibility-tagged polyline as a parametric Stroke
-    // (buildStroke), arc-length resample it (resampleStroke), then emit one ribbon
-    // per maximal VISIBLE run. Stage-a keeps the SCALAR buildStrip (constant
-    // halfThick), so the rasterized result is byte-identical; the per-vertex
-    // StrokeAttribute is the substrate for later width/color shaders.
-    StrokeAttribute defAttr;
-    defAttr.leftThick = halfThick;
-    defAttr.rightThick = halfThick;
-    defAttr.color[0] = col[0];
-    defAttr.color[1] = col[1];
-    defAttr.color[2] = col[2];
-    defAttr.alpha = opacity;
-    Stroke stroke = buildStroke(proj, defAttr, static_cast<int>(ci), nat);
-    resampleStroke(stroke, stepPx);
-
-    // STYLIZATION: run the per-vertex stroke shaders (Freestyle StrokeShader::shade).
-    // The constant width/color shaders reproduce the resolved per-section default
-    // attribute, so output is byte-identical; a real calligraphic/depth-cue/taper/
-    // noise shader plugs in here to make L != R or color vary along u.
-    std::vector<std::unique_ptr<StrokeShader>> shaders;
-    if (se.smooth)  // Freestyle anisotropic curvature-flow smoothing (corner-aware)
-      shaders.push_back(std::make_unique<AnisoSmoothingShader>(
-          /*nbIter=*/200, /*factorPoint=*/0.0f, /*factorCurvature=*/0.4f,
-          /*factorCurvatureDiff=*/0.3f, /*anisoPoint=*/0.0f, /*anisoNormal=*/0.08f,
-          /*anisoCurvature=*/0.08f, /*carricature=*/1.0f));
-    shaders.push_back(std::make_unique<ConstantThicknessShader>(halfThick));
-    shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
-    if (se.taper)  // demo f(u) shader: taper width toward stroke ends
-      shaders.push_back(std::make_unique<TaperShader>(0.5f, 0.15f));
-    for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
-
-    // Build the variable-width ribbon strips (one per maximal visible run). With
-    // the constant default attribute (leftThick==rightThick==halfThick) this is
-    // byte-identical to the old scalar buildStrip path.
-    buildStrokeReps(stroke, strips);
+    // Hand the visibility-tagged polyline to the shared draw stage. The chain is
+    // single-nature; its style slot / precedence / group key the per-section
+    // style resolution there.
+    StrokeChainInput in;
+    in.styleSlot = natureStyleSlot(nat);
+    in.precedence = naturePrecedence(nat);
+    in.group = s0.group;
+    in.pts.reserve(proj.size());
+    for (const Pt2& q : proj) in.pts.push_back({q.p.x, q.p.y, q.vz, q.visible});
+    drawChains.push_back(std::move(in));
   }
 
-  if (strips.empty() && qiDots.empty() && vertQiDots.empty()) return;
+  // SHARED DRAW STAGE: stylize + rasterize the collected chains (buildStroke ->
+  // resampleStroke -> shaders -> buildStrokeReps -> depth/precedence sort ->
+  // TBB row-tiled rasterize). Byte-identical to the pre-refactor inline code.
+  renderStrokeChains(frame, scene, opt, drawChains);
 
-  // Stable-sort strips for compositing. compositeOver paints in array order, so the
-  // LAST strip is on top (painter's algorithm). Primary key = DEPTH: sort FARTHER
-  // first (descending depthKey = view-z) so the NEARER stroke is last == on top
-  // (Freestyle Operators::sort + pyZBP1D, resolved to umbreon's `over` blend
-  // direction). Tie-break by nature PRECEDENCE (Crease < Border < Silhouette).
-  // Stable so full ties keep build (chain) order -> deterministic; depthKey is
-  // computed single-threaded, so the result is independent of TBB scheduling.
-  std::stable_sort(strips.begin(), strips.end(),
-                   [](const StyledStrip& a, const StyledStrip& b) {
-                     if (a.depthKey != b.depthKey) return a.depthKey > b.depthKey;
-                     return a.precedence < b.precedence;
-                   });
-
-  // Composite all strips over frame.color, row-tiled with TBB. Each tile
-  // rasterizes EVERY strip in PRECEDENCE order but only the rows in its range, so
-  // the result is independent of tile boundaries / thread scheduling
-  // (deterministic).
-  tbb::parallel_for(
-      tbb::blocked_range<int>(0, H),
-      [&](const tbb::blocked_range<int>& rows) {
-        const int rb = rows.begin(), re = rows.end();
-        for (const StyledStrip& ss : strips)
-          rasterizeStrip(frame.color, W, rb, re, ss.strip, ss.color, ss.opacity);
-      });
+  if (qiDots.empty() && vertQiDots.empty()) return;
 
   // DEBUG dot stamping shared by both overlays. Colors are LINEAR (gamma-corrected
   // on output). Dot radius scales with the supersample factor so it survives the
