@@ -62,6 +62,24 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
   // BEFORE the box-downsample, so antialiasing works. Gated on the master flag;
   // with edges off this is never entered, keeping the default path byte-identical.
   if (opt.strokeEdges.enable) {
+    // VERIFICATION (--edges-only): blank the surface color to the scene
+    // background BEFORE the stroke pass, so only the edges are drawn. The AOVs
+    // captured above (viewZ/objectId/normal/surfAlpha) are untouched, so the
+    // extracted line set is identical to the production render. Alpha = 0 for a
+    // transparent background (premultiplied), else opaque.
+    if (opt.strokeEdges.edgesOnly) {
+      const float a = opt.transparentBackground ? 0.0f : 1.0f;
+      const float bgr = scene.background.x, bgg = scene.background.y,
+                  bgb = scene.background.z;
+      const std::size_t npix =
+          static_cast<std::size_t>(frame.width) * frame.height;
+      for (std::size_t p = 0; p < npix; ++p) {
+        frame.color[p * 4 + 0] = bgr * a;
+        frame.color[p * 4 + 1] = bgg * a;
+        frame.color[p * 4 + 2] = bgb * a;
+        frame.color[p * 4 + 3] = a;
+      }
+    }
     applyStrokeEdges(frame, scene, opt, OcclusionQuery{}, OcclusionQuery{});
   }
 

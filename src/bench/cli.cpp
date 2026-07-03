@@ -421,6 +421,10 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--edges") {
       std::string v = value("--edges");
       if (o.ok && !parseBool(v, o.edges)) fail("--edges expects on/off");
+    } else if (a == "--edges-only") {
+      std::string v = value("--edges-only");
+      if (o.ok && !parseBool(v, o.edgesOnly))
+        fail("--edges-only expects on/off");
     } else if (a == "--edge") {
       // --edge ID=spec : per-section edge style override (repeatable), mirroring
       // --alpha. Split on the first '=', strip a leading "_show", parse the spec
@@ -636,6 +640,7 @@ void printUsage(const char* prog) {
       "  --alpha <ID=value>       set a section's opacity (e.g. _34_35=0.5)\n"
       "  --list-groups            list the input's section ids and exit\n"
       "  --edges <on|off>         Freestyle stroke edge pass (sil/crease/border) [off]\n"
+      "  --edges-only <on|off>    draw ONLY edges over blank bg, full opacity (verify) [off]\n"
       "  --edge <ID=spec>         per-section edge style (repeatable), e.g.\n"
       "                           _34_35=sil,crease:color=#000000:width=1.5\n"
       "  --obj-edges <on|off>     analytic object-space edges (sph/cyl/mesh) [off]\n"

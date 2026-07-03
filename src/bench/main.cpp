@@ -306,8 +306,11 @@ int main(int argc, char** argv) {
     // master gate for the whole --edges pipeline (G-buffer AOV capture, the
     // stroke pass, and the baked-edge removal below). Off => byte-identical
     // default path. The --stroke-* knobs are wired only when edges are on.
-    ropt.strokeEdges.enable = opt.edges;
-    if (opt.edges) {
+    // --edges-only is a verification mode that implies --edges on.
+    const bool edgesOn = opt.edges || opt.edgesOnly;
+    ropt.strokeEdges.enable = edgesOn;
+    if (edgesOn) {
+      ropt.strokeEdges.edgesOnly = opt.edgesOnly;
       ropt.strokeEdges.silhouette = opt.strokeSilhouette;
       ropt.strokeEdges.crease = opt.strokeCrease;
       ropt.strokeEdges.border = opt.strokeBorder;

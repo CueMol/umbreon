@@ -170,6 +170,14 @@ struct StrokeEdgeOptions {
   // above a threshold) so genuine angular features are not rounded. Off by default
   // (byte-identical); --stroke-smooth on enables it.
   bool smooth = false;
+  // VERIFICATION mode (--edges-only): draw ONLY the edge strokes over a blank
+  // background (the surface color is cleared to the scene background before the
+  // stroke pass; the AOVs -- and thus edge extraction / surfAlpha -- are
+  // captured from the real surfaces first, so the drawn line set is identical
+  // to the production render). Strokes ink at FULL opacity (surface alpha and
+  // per-section style opacity are ignored) so faint / alpha-following lines
+  // stay clearly visible for annotating missing edges. Off by default.
+  bool edgesOnly = false;
 
   // Per-section styling: a section without an override uses defaultStyle. The
   // stroke pipeline maps each EdgeNature onto a styling slot in EdgeStyle (see

@@ -732,6 +732,10 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     if (!resolveStrokeStyle(scene, se, ssScale, in.styleSlot, in.group,
                             halfThick, col, opacity))
       continue;
+    // VERIFICATION (--edges-only): ink every line solid, ignoring per-section
+    // style opacity and the per-vertex surface alpha, so faint / alpha-
+    // following lines stay clearly visible for annotating missing edges.
+    if (se.edgesOnly) opacity = 1.0f;
 
     // Wrap the source points into the internal visibility-tagged polyline.
     std::vector<Pt2> proj;
@@ -740,7 +744,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       Pt2 q;
       q.p = {sp.x, sp.y};
       q.vz = sp.vz;
-      q.surfA = sp.alpha;
+      q.surfA = se.edgesOnly ? 1.0f : sp.alpha;
       q.visible = sp.visible;
       proj.push_back(q);
     }
