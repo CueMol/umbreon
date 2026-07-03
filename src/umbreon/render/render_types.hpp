@@ -427,6 +427,10 @@ struct RenderOptions {
   // (0 = off). Both default off so the flag-less pt1 render is unchanged.
   bool pt1Ld = false;
   float pt1Clamp = 0.0f;
+  // Print pt1 diagnostics to stderr: the OIDN stage split (device / filter /
+  // execute) inside the denoiser. Ray counts are always collected (negligible
+  // cost, reported via FrameResult::pt1Rays); this flag only adds the prints.
+  bool pt1Stats = false;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised
@@ -510,6 +514,18 @@ struct Pt1Timing {
   double total = 0.0;     // filled by the caller (wall time around render())
 };
 
+// pt1 ray counts for the frame (gather intersects, NEE shadow rays, half-res
+// G-buffer primaries). Filled only when the pt1 integrator runs; counting is
+// per-pixel-flushed so its overhead is negligible (see Pt1RayStats in
+// pt1_integrator.hpp).
+struct Pt1RayCounts {
+  std::uint64_t gatherRays = 0;
+  std::uint64_t gatherHits = 0;
+  std::uint64_t neeRays = 0;
+  std::uint64_t neeOccluded = 0;
+  std::uint64_t gbufferRays = 0;
+};
+
 // Rendered frame: linear HDR color plus AOV channels, top-left pixel origin.
 struct FrameResult {
   int width = 0;
@@ -553,6 +569,7 @@ struct FrameResult {
   // pt1 stage timing (zero-filled unless the pt1 integrator ran; bvhBuild and
   // primary are recorded on every render since the timers are free).
   Pt1Timing pt1Timing;
+  Pt1RayCounts pt1Rays;
 };
 
 }  // namespace umbreon

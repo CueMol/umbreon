@@ -518,6 +518,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     gp.shadowSamples = opt.shadowSamples;
 
     const int spp = std::max(1, opt.pt1Spp);
+    detail::Pt1RayStats rayStats;
     // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
     // REAL CSG primitives (atom balls / bonds); outline decoration and the
     // background stay 0. Unlike the cache's geomID/kind gate this is primID-
@@ -546,13 +547,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       detail::Pt1GBuffer g;
       std::vector<float> Eh, occh;
       const auto tg0 = std::chrono::high_resolution_clock::now();
-      detail::tracePt1GBuffer(gp, camb, hw, hh, g);
+      detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats);
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), g.depth.data(),
                             spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
-                            opt.pt1Clamp);
+                            opt.pt1Clamp, &rayStats);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -577,7 +578,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(),
                             res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
-                            occBuf, opt.pt1Ld, opt.pt1Clamp);
+                            occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -617,12 +618,41 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       }
     });
 
+    res.pt1Rays.gatherRays =
+        rayStats.gatherRays.load(std::memory_order_relaxed);
+    res.pt1Rays.gatherHits =
+        rayStats.gatherHits.load(std::memory_order_relaxed);
+    res.pt1Rays.neeRays = rayStats.neeRays.load(std::memory_order_relaxed);
+    res.pt1Rays.neeOccluded =
+        rayStats.neeOccluded.load(std::memory_order_relaxed);
+    res.pt1Rays.gbufferRays =
+        rayStats.gbufferRays.load(std::memory_order_relaxed);
+    const double totalRays = static_cast<double>(
+        res.pt1Rays.gatherRays + res.pt1Rays.neeRays + res.pt1Rays.gbufferRays);
+    const double neeFrac =
+        totalRays > 0.0 ? static_cast<double>(res.pt1Rays.neeRays) / totalRays
+                        : 0.0;
+    const double mraysPerSec =
+        res.pt1Timing.gather > 0.0
+            ? totalRays / res.pt1Timing.gather / 1.0e6
+            : 0.0;
     std::fprintf(stderr,
                  "pt1: %s-res gather %dx%d spp=%d -> gather %.3fs denoise "
-                 "%.3fs upsample %.3fs\n",
+                 "%.3fs upsample %.3fs\n"
+                 "pt1: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
+                 "nee_frac %.2f  %.1f Mrays/s\n",
                  opt.pt1HalfRes ? "half" : "full", W, H, spp,
                  res.pt1Timing.gather, res.pt1Timing.denoise,
-                 res.pt1Timing.upsample);
+                 res.pt1Timing.upsample,
+                 res.pt1Rays.gatherRays / 1.0e6,
+                 res.pt1Rays.gatherRays
+                     ? 100.0 * res.pt1Rays.gatherHits / res.pt1Rays.gatherRays
+                     : 0.0,
+                 res.pt1Rays.neeRays / 1.0e6,
+                 res.pt1Rays.neeRays
+                     ? 100.0 * res.pt1Rays.neeOccluded / res.pt1Rays.neeRays
+                     : 0.0,
+                 neeFrac, mraysPerSec);
   } else if (opt.gi && meshPresent(built)) {
     // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
     // clamp, then [D] interpolation into the `indirect` (E_cached) and

@@ -6,6 +6,7 @@
 
 #ifdef UMBREON_HAVE_OIDN
 
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <vector>
@@ -37,8 +38,11 @@ void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   }
   std::vector<float> out(N * 3);
 
+  using clock = std::chrono::high_resolution_clock;
+  const auto tDev0 = clock::now();
   oidn::DeviceRef device = oidn::newDevice(oidn::DeviceType::CPU);
   device.commit();
+  const auto tDev1 = clock::now();
   if (device.getError() != oidn::Error::None) {
     std::fprintf(stderr, "warning: OIDN device init failed; skipping denoise\n");
     return;
@@ -56,7 +60,15 @@ void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   // directly (no aux prefilter). Disable only if the guides are known noisy.
   if (haveAlbedo || haveNormal) filter.set("cleanAux", opt.oidnCleanAux);
   filter.commit();
+  const auto tFil1 = clock::now();
   filter.execute();
+  const auto tExe1 = clock::now();
+  if (opt.pt1Stats)
+    std::fprintf(stderr,
+                 "oidn: device %.3fs  filter %.3fs  execute %.3fs (%dx%d)\n",
+                 std::chrono::duration<double>(tDev1 - tDev0).count(),
+                 std::chrono::duration<double>(tFil1 - tDev1).count(),
+                 std::chrono::duration<double>(tExe1 - tFil1).count(), W, H);
 
   const char* msg = nullptr;
   if (device.getError(msg) != oidn::Error::None) {

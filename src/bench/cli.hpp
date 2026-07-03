@@ -66,6 +66,7 @@ struct Options {
   float pt1UpsampleDepthScale = 0.02f;  // --pt1-upsample-depth-scale
   bool pt1Ld = false;                   // --pt1-ld on|off (stratified sampling)
   float pt1Clamp = 0.0f;                // --pt1-clamp (luminance; 0 = off)
+  bool pt1Stats = false;                // --pt1-stats (OIDN stage split print)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI

@@ -482,6 +482,7 @@ int main(int argc, char** argv) {
     ropt.pt1UpsampleDepthScale = opt.pt1UpsampleDepthScale;
     ropt.pt1Ld = opt.pt1Ld;
     ropt.pt1Clamp = opt.pt1Clamp;
+    ropt.pt1Stats = opt.pt1Stats;
     // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
     // None otherwise. An explicit --denoiser (0/1/2) is honored as-is. On the
     // pt1 path the default is None: pt1 denoises its indirect irradiance
@@ -643,6 +644,9 @@ int main(int argc, char** argv) {
       try {
         std::filesystem::create_directories("outputs");
         if (std::FILE* jf = std::fopen("outputs/timing.json", "w")) {
+          const umbreon::Pt1RayCounts& rc = frame.pt1Rays;
+          const double totalRays = static_cast<double>(
+              rc.gatherRays + rc.neeRays + rc.gbufferRays);
           std::fprintf(jf,
                        "{\n"
                        "  \"bvh_build\": %.6f,\n"
@@ -652,11 +656,21 @@ int main(int argc, char** argv) {
                        "  \"denoise\": %.6f,\n"
                        "  \"upsample\": %.6f,\n"
                        "  \"total\": %.6f,\n"
+                       "  \"rays_gather\": %llu,\n"
+                       "  \"rays_nee\": %llu,\n"
+                       "  \"rays_gbuffer\": %llu,\n"
+                       "  \"nee_fraction\": %.4f,\n"
+                       "  \"mrays_per_sec\": %.2f,\n"
                        "  \"note\": \"direct shading is fused into the "
                        "primary-ray loop; its cost is under 'primary'\"\n"
                        "}\n",
                        t.bvhBuild, t.primary, t.direct, t.gather, t.denoise,
-                       t.upsample, t.total);
+                       t.upsample, t.total,
+                       static_cast<unsigned long long>(rc.gatherRays),
+                       static_cast<unsigned long long>(rc.neeRays),
+                       static_cast<unsigned long long>(rc.gbufferRays),
+                       totalRays > 0.0 ? rc.neeRays / totalRays : 0.0,
+                       t.gather > 0.0 ? totalRays / t.gather / 1.0e6 : 0.0);
           std::fclose(jf);
           std::printf("  wrote outputs/timing.json\n");
         }
