@@ -309,5 +309,23 @@ int main() {
     s.check("isolated sphere: no pixel self-occludes", maxOcc < 0.2f);
   }
 
+  // --- gather-grid divisor smoke: pt1GatherDiv = 4 renders deterministically
+  // and still produces indirect light on the GI scene's floor.
+  {
+    umbreon::RenderOptions o = makeGiOptions(1, 1.0f);
+    o.pt1GatherDiv = 4;
+    const umbreon::FrameResult f1 = umbreon::render(sc, o);
+    const umbreon::FrameResult f2 = umbreon::render(sc, o);
+    s.check("gatherDiv=4: deterministic across runs",
+            f1.color == f2.color && f1.indirect == f2.indirect);
+    float maxInd = 0.0f;
+    for (float v : f1.indirect) maxInd = std::max(maxInd, v);
+    s.check("gatherDiv=4: nonzero indirect", maxInd > 0.0f);
+    bool finite = true;
+    for (float v : f1.color)
+      if (!std::isfinite(v)) finite = false;
+    s.check("gatherDiv=4: finite color", finite);
+  }
+
   return s.report();
 }

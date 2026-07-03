@@ -427,6 +427,15 @@ struct RenderOptions {
   // (0 = off). Both default off so the flag-less pt1 render is unchanged.
   bool pt1Ld = false;
   float pt1Clamp = 0.0f;
+  // Gather-grid divisor relative to the RENDER grid (which is the supersampled
+  // hi-res grid): the indirect irradiance is gathered on a ceil(W/k) x
+  // ceil(H/k) grid and joint-bilateral-upsampled back (the E field is
+  // low-frequency; the denoise and the ss box-downsample smooth it anyway).
+  //   0  = legacy: derive 1 or 2 from pt1HalfRes (default; byte-identical)
+  //   k>=1 = explicit divisor (1 = gather on the render grid)
+  //   -1 = "output resolution": resolved to the supersample factor by
+  //        renderFrame, so the gather grid matches the FINAL image size.
+  int pt1GatherDiv = 0;
   // Print pt1 diagnostics to stderr: the OIDN stage split (device / filter /
   // execute) inside the denoiser. Ray counts are always collected (negligible
   // cost, reported via FrameResult::pt1Rays); this flag only adds the prints.

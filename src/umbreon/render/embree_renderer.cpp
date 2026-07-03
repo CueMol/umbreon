@@ -525,14 +525,23 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // aware, which the fromEdge distinction requires.
     const std::vector<uint8_t>& eligible = giElig;
 
+    // Gather-grid divisor k relative to the RENDER grid (which is the
+    // supersampled hi-res W x H). Legacy (pt1GatherDiv == 0) derives 1 or 2
+    // from pt1HalfRes; the -1 "output resolution" sentinel was resolved to
+    // the supersample factor in renderFrame. k == 2 reproduces the historical
+    // half-res grid exactly ((W+1)/2 == ceil(W/2)).
+    int gatherDiv = opt.pt1GatherDiv;
+    if (gatherDiv == 0) gatherDiv = opt.pt1HalfRes ? 2 : 1;
+    if (gatherDiv < 1) gatherDiv = 1;
+
     std::vector<float> Ebuf, occBuf;
-    if (opt.pt1HalfRes) {
-      // Half of the RENDER grid (which is the supersampled hi-res W x H; use
-      // --supersample 1 for benchmarks so "half" means half the output). The
-      // half pass shoots its own primary rays at the half-pixel centers (=
-      // full-grid 2x2 block centers) into a private G-buffer, gathers and
-      // denoises there, then joint-bilateral-upsamples E to the render grid.
-      const int hw = (W + 1) / 2, hh = (H + 1) / 2;
+    if (gatherDiv > 1) {
+      // Reduced gather grid: shoot one primary ray per low-grid pixel center
+      // (the two grids share the same normalized [-1,1] plane) into a private
+      // G-buffer, gather and denoise there, then joint-bilateral-upsample E
+      // to the render grid.
+      const int hw = (W + gatherDiv - 1) / gatherDiv,
+                hh = (H + gatherDiv - 1) / gatherDiv;
       detail::Pt1CameraBasis camb;
       camb.position = cam.position;
       camb.dir = dir;
@@ -567,10 +576,21 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       }
 
       const auto tu0 = std::chrono::high_resolution_clock::now();
+      // At k <= 2 keep the historical 2x2-quad-only fallback (byte-identical
+      // legacy half-res); coarser grids widen the all-invalid-quad fallback
+      // search so sub-k-pixel features keep SOME indirect instead of none.
+      std::atomic<uint64_t> upsampleHoles{0};
       detail::upsampleJointBilateral(
           W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
           occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
-          occBuf);
+          occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles);
+      const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
+      if (holes > 0)
+        std::fprintf(stderr,
+                     "pt1: %llu eligible pixel(s) found no valid gather "
+                     "sample in the upsample window (thin features at 1/%d "
+                     "gather res lose their indirect)\n",
+                     static_cast<unsigned long long>(holes), gatherDiv);
       const auto tu1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
     } else {
@@ -637,11 +657,11 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
             ? totalRays / res.pt1Timing.gather / 1.0e6
             : 0.0;
     std::fprintf(stderr,
-                 "pt1: %s-res gather %dx%d spp=%d -> gather %.3fs denoise "
+                 "pt1: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
                  "%.3fs upsample %.3fs\n"
                  "pt1: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
                  "nee_frac %.2f  %.1f Mrays/s\n",
-                 opt.pt1HalfRes ? "half" : "full", W, H, spp,
+                 gatherDiv, W, H, spp,
                  res.pt1Timing.gather, res.pt1Timing.denoise,
                  res.pt1Timing.upsample,
                  res.pt1Rays.gatherRays / 1.0e6,

@@ -10,6 +10,7 @@
 // (object silhouettes, creases) keep the irradiance from leaking across.
 #pragma once
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -22,13 +23,19 @@
 namespace umbreon {
 namespace detail {
 
-// Upsample halfE (and the matching hit-fraction halfOcc) from the half G-buffer
-// grid to the full W x H grid. fullNormal/fullDepth are the render AOVs;
-// fullEligible marks the gather-eligible (mesh-hit) full pixels -- others stay
-// zero. Half pixels with hit == 0 get zero weight. When every neighbor weight
-// dies (< 1e-6 total; disagreeing edge pixels), fall back to the nearest valid
-// half pixel; with no valid neighbor at all the output stays zero (a thin
-// feature the half grid missed entirely -- accepted, documented limitation).
+// Upsample halfE (and the matching hit-fraction halfOcc) from the low G-buffer
+// grid to the full W x H grid (any integer or non-integer scale: both grids
+// sample pixel centers of the same normalized plane, so the continuous
+// projection below is exact for every ratio). fullNormal/fullDepth are the
+// render AOVs; fullEligible marks the gather-eligible (mesh-hit) full pixels
+// -- others stay zero. Low pixels with hit == 0 get zero weight. When every
+// neighbor weight dies (< 1e-6 total; disagreeing edge pixels), fall back to
+// the nearest valid low pixel of the 2x2 quad. When the WHOLE quad is invalid
+// (a thin feature the low grid missed entirely) and fallbackRadius > 0, search
+// the (2r+1)^2 window for the nearest valid low pixel -- a rare path that only
+// coarse grids (divisor >= 3) enable; fallbackRadius == 0 keeps the historical
+// quad-only behavior byte-identical. Pixels that STILL find nothing stay zero
+// and are counted into *outHoles (diagnostic).
 inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
                                    const float* fullDepth,
                                    const uint8_t* fullEligible,
@@ -37,7 +44,9 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
                                    const std::vector<float>& halfOcc,
                                    float normalPow, float depthScale,
                                    std::vector<float>& outE,
-                                   std::vector<float>& outOcc) {
+                                   std::vector<float>& outOcc,
+                                   int fallbackRadius = 0,
+                                   std::atomic<uint64_t>* outHoles = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   outE.assign(npix * 3, 0.0f);
   outOcc.assign(npix, 0.0f);
@@ -110,6 +119,40 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
           outE[pix * 3 + 1] = halfE[bestPix * 3 + 1];
           outE[pix * 3 + 2] = halfE[bestPix * 3 + 2];
           outOcc[pix] = halfOcc[bestPix];
+        } else {
+          // The whole 2x2 quad is invalid: the low grid missed this feature.
+          // Widened fallback (coarse grids only): nearest valid low pixel by
+          // grid distance within the (2r+1)^2 window around the quad.
+          std::size_t foundPix = static_cast<std::size_t>(-1);
+          if (fallbackRadius > 0) {
+            float bestD2 = 1e30f;
+            for (int wy = by - fallbackRadius + 1;
+                 wy <= by + fallbackRadius; ++wy) {
+              if (wy < 0 || wy >= hh) continue;
+              for (int wx = bx - fallbackRadius + 1;
+                   wx <= bx + fallbackRadius; ++wx) {
+                if (wx < 0 || wx >= hw) continue;
+                const std::size_t hpix =
+                    static_cast<std::size_t>(wy) * hw + wx;
+                if (!half.hit[hpix]) continue;
+                const float ddx = static_cast<float>(wx) - sx;
+                const float ddy = static_cast<float>(wy) - sy;
+                const float d2 = ddx * ddx + ddy * ddy;
+                if (d2 < bestD2) {
+                  bestD2 = d2;
+                  foundPix = hpix;
+                }
+              }
+            }
+          }
+          if (foundPix != static_cast<std::size_t>(-1)) {
+            outE[pix * 3 + 0] = halfE[foundPix * 3 + 0];
+            outE[pix * 3 + 1] = halfE[foundPix * 3 + 1];
+            outE[pix * 3 + 2] = halfE[foundPix * 3 + 2];
+            outOcc[pix] = halfOcc[foundPix];
+          } else if (outHoles) {
+            outHoles->fetch_add(1, std::memory_order_relaxed);
+          }
         }
       }
     }

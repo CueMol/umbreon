@@ -474,6 +474,7 @@ int main(int argc, char** argv) {
     ropt.giIntegrator = opt.giIntegrator;
     ropt.pt1Spp = opt.pt1Spp;
     ropt.pt1HalfRes = opt.pt1HalfRes;
+    ropt.pt1GatherDiv = opt.pt1GatherDiv;
     ropt.pt1Denoise = opt.pt1Denoise;
     ropt.pt1Seed = opt.pt1Seed;
     ropt.pt1SkyMode = opt.pt1SkyMode;

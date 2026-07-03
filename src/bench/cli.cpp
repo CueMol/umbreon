@@ -300,11 +300,15 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--indirect-res") {
       std::string v = value("--indirect-res");
       if (v == "full")
-        o.pt1HalfRes = false;
+        o.pt1GatherDiv = 1;
       else if (v == "half")
-        o.pt1HalfRes = true;
+        o.pt1GatherDiv = 2;
+      else if (v == "quarter")
+        o.pt1GatherDiv = 4;
+      else if (v == "out")
+        o.pt1GatherDiv = -1;  // resolved to the supersample factor
       else
-        fail("--indirect-res expects full/half");
+        fail("--indirect-res expects full/half/quarter/out");
     } else if (a == "--denoise") {
       std::string v = value("--denoise");
       if (o.ok && !parseBool(v, o.pt1Denoise))
@@ -739,7 +743,8 @@ void printUsage(const char* prog) {
       "                           (put it FIRST; later flags override)\n"
       "                           [cache]\n"
       "  --spp <int>              pt1 gather rays per pixel             [8]\n"
-      "  --indirect-res <full|half> pt1 gather resolution             [half]\n"
+      "  --indirect-res <full|half|quarter|out> pt1 gather grid = render\n"
+      "                           grid / {1,2,4,ss} (out = final size)  [half]\n"
       "  --denoise <on|off>       pt1 indirect-only OIDN denoise        [on]\n"
       "  --sky <uniform|gradient> pt1 gather sky model            [uniform]\n"
       "  --sky-radiance r,g,b     pt1 sky tint (x ambient energy)   [1,1,1]\n"
