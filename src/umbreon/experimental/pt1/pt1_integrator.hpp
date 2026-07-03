@@ -421,6 +421,18 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
 // geometric normal (half-res mode: the real guard). skip[pix] != 0 marks
 // gather-eligible (mesh-hit) pixels; others stay zero.
 //
+// `depth` is the PRIMARY-ray hit distance per pixel and sets the gather-origin
+// self-intersection epsilon scale: the first-hit position carries an absolute
+// error ~ t * 2^-23 that grows with the camera distance, so the offset that
+// lifts the gather origin off the surface must scale with that same t --
+// exactly what the transparency walk does with its per-hit tfar. The previous
+// scale (the pass scene's mesh AABB diagonal via `epsT`) only worked when the
+// diagonal happened to be of the camera-distance order, and DEGENERATED to the
+// 1.0 fallback for scenes with no mesh (CSG-only ball-and-stick), where the
+// epsilon fell below the hit-position error and gather rays re-hit their own
+// surface (false occlusion, darkened GI). `epsT` remains as the fallback for
+// null/zero depth entries.
+//
 // TBB 16x16 tiles; each pixel is seeded from (pixel index, frameSeed) only, so
 // the image is deterministic across thread counts. Tiles write disjoint pixel
 // ranges (no locks). ld / clampLum forward to pt1GatherPoint (stratified
@@ -428,9 +440,10 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
 inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                           const float* position, const float* normal,
                           const float* geomNormal, const uint8_t* eligible,
-                          int spp, uint32_t frameSeed, float epsT,
-                          std::vector<float>& E, std::vector<float>& occ,
-                          bool ld = false, float clampLum = 0.0f) {
+                          const float* depth, int spp, uint32_t frameSeed,
+                          float epsT, std::vector<float>& E,
+                          std::vector<float>& occ, bool ld = false,
+                          float clampLum = 0.0f) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   E.assign(npix * 3, 0.0f);
   occ.assign(npix, 0.0f);
@@ -453,8 +466,10 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                                 : N;
             const uint32_t seed =
                 hashU32(static_cast<uint32_t>(pix) ^ seedMix);
+            const float tEps =
+                (depth != nullptr && depth[pix] > 0.0f) ? depth[pix] : epsT;
             float o = 0.0f;
-            const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, epsT, &o,
+            const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, tEps, &o,
                                           ld, clampLum);
             E[pix * 3 + 0] = e.x;
             E[pix * 3 + 1] = e.y;

@@ -258,5 +258,56 @@ int main() {
                 center2.z > center.z);
   }
 
+  // --- gather self-intersection regression: an ISOLATED convex sphere with a
+  // distant camera. A convex body cannot occlude its own outward hemisphere,
+  // so the gather occlusion at every sphere pixel must be ~0. The first-hit
+  // position carries an absolute error ~ t * 2^-23 that grows with the camera
+  // distance (t ~ 200 here); if the gather-origin epsilon does not scale with
+  // that PRIMARY-RAY distance, origins quantize below the surface and gather
+  // rays re-hit the sphere from inside (occlusion ~0.5, falsely darkened GI).
+  // This scene has NO mesh, so the old mesh-AABB-diagonal epsilon scale
+  // degenerated to its 1.0 fallback and exhibited exactly that.
+  {
+    umbreon::Scene sc2;
+    umbreon::Sphere sp;
+    sp.center = {0, 0, 0};
+    sp.radius = 1.0f;
+    sp.color = {0.8f, 0.3f, 0.3f, 1.0f};
+    sp.material.ambient = 0.2f;
+    sp.material.diffuse = 0.8f;
+    sc2.spheres.push_back(sp);
+    sc2.camera.position = {0, 0, 200};
+    sc2.camera.direction = {0, 0, -1};
+    sc2.camera.up = {0, 1, 0};
+    sc2.camera.orthographic = true;
+    sc2.camera.height = 4.0f;
+    umbreon::DistantLight l;
+    l.direction = umbreon::normalize(umbreon::Vec3{-0.4f, -0.3f, -1.0f});
+    l.color = {1, 1, 1};
+    l.intensity = 0.8f;
+    sc2.lights.push_back(l);
+    sc2.background = {1, 1, 1};
+    sc2.ambientColor = {0.5f, 0.5f, 0.5f};
+
+    umbreon::RenderOptions o;
+    o.width = 33;
+    o.height = 33;
+    o.gi = true;
+    o.giIntegrator = 1;  // pt1
+    o.pt1Spp = 16;
+    o.pt1HalfRes = false;
+    o.pt1Denoise = false;
+    const umbreon::FrameResult f = umbreon::render(sc2, o);
+    // Center pixel: the sphere's front pole (head-on hit, |P| ~ 1, t ~ 199).
+    const std::size_t cpix = static_cast<std::size_t>(16) * f.width + 16;
+    s.check("isolated sphere: gather occlusion ~0 at distant camera",
+            f.giOcclusion[cpix] < 0.05f);
+    // The whole sphere disc must be self-occlusion free, not just the pole.
+    float maxOcc = 0.0f;
+    for (std::size_t i = 0; i < f.giOcclusion.size(); ++i)
+      maxOcc = std::max(maxOcc, f.giOcclusion[i]);
+    s.check("isolated sphere: no pixel self-occludes", maxOcc < 0.2f);
+  }
+
   return s.report();
 }
