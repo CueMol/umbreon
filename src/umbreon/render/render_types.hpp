@@ -479,6 +479,13 @@ struct RenderOptions {
   // termination is the opacity early-out (accumulated alpha >= ~1); this only
   // bites pathological deep stacks. The renderer warns once if a ray hits it.
   int maxTransparentLayers = 256;
+  // Group-alpha multipass reuse (Scene::groupBlend): 0 = off (every pass
+  // renders full-frame, the reference behavior), 1 = on (layer passes reuse
+  // the background pass's per-pixel trace results where a probe proves the
+  // blend group cannot affect the pixel -- bit-exact by construction),
+  // 2 = verify (reuse on, but every layer pass ALSO renders full-frame and
+  // the two are compared; debug mode, ~naive cost).
+  int blendReuse = 0;
 
   // --- Freestyle-style stroke edges (--edges) --- defaulted OFF (enable ==
   // false). When off, no edge AOV is allocated and applyStrokeEdges is never

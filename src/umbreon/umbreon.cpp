@@ -104,8 +104,14 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   std::vector<float> acc;
   double seconds = 0.0;
   Pt1Timing timing{};
+  int passIndex = 0;
+  const int passCount = 1 + static_cast<int>(scene.groupBlend.size());
   auto addPass = [&](const Scene& ps, float w) {
     FrameResult f = renderFrame(ps, opt);
+    std::fprintf(stderr,
+                 "blend pass %d/%d: weight %.3f  %zu tris  %.3f s\n",
+                 ++passIndex, passCount, w, ps.mesh.triangleCount(),
+                 f.renderSeconds);
     seconds += f.renderSeconds;
     timing.bvhBuild += f.pt1Timing.bvhBuild;
     timing.primary += f.pt1Timing.primary;

@@ -271,6 +271,9 @@ struct Options {
   bool transparentBackground = false;
   // Master switch for the single-layer transparency walk (off = opaque only).
   bool transparency = true;
+  // Group-alpha multipass reuse: 0 = off, 1 = on, 2 = verify (see
+  // RenderOptions::blendReuse).
+  int blendReuse = 0;
 
   // Image-compare mode: print PSNR/SSIM between two PPM files and exit.
   bool compareMode = false;

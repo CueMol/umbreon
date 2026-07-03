@@ -283,6 +283,7 @@ int main(int argc, char** argv) {
     // Single-layer transparency controls (apply to both input paths).
     ropt.transparency = opt.transparency;
     ropt.transparentBackground = opt.transparentBackground;
+    ropt.blendReuse = opt.blendReuse;
 
     // Freestyle STROKE edges (--edges). The single strokeEdges.enable flag is the
     // master gate for the whole --edges pipeline (G-buffer AOV capture, the

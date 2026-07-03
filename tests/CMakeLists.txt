@@ -57,6 +57,12 @@ if(TARGET umbreon)
   target_link_libraries(test_render PRIVATE umbreon)
   add_test(NAME render COMMAND test_render)
 
+  # Group-alpha multipass reuse: bit-exact A/B (blendReuse off vs on) plus the
+  # in-process determinism canary (incl. OIDN via the pt1 scenarios).
+  add_executable(test_blend_reuse test_blend_reuse.cpp)
+  target_link_libraries(test_blend_reuse PRIVATE umbreon)
+  add_test(NAME blend_reuse COMMAND test_blend_reuse)
+
   add_executable(test_mesh_indexed test_mesh_indexed.cpp)
   target_link_libraries(test_mesh_indexed PRIVATE umbreon)
   add_test(NAME mesh_indexed COMMAND test_mesh_indexed)

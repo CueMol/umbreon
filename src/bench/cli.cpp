@@ -597,6 +597,18 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--transparency");
       if (o.ok && !parseBool(v, o.transparency))
         fail("--transparency expects on/off");
+    } else if (a == "--blend-reuse") {
+      std::string v = value("--blend-reuse");
+      if (o.ok) {
+        bool b = false;
+        if (v == "verify") {
+          o.blendReuse = 2;
+        } else if (parseBool(v, b)) {
+          o.blendReuse = b ? 1 : 0;
+        } else {
+          fail("--blend-reuse expects on/off/verify");
+        }
+      }
     } else if (a == "--compare") {
       o.compareMode = true;
       o.compareA = value("--compare");
@@ -639,6 +651,8 @@ void printUsage(const char* prog) {
       "  --threads <int>          TBB parallelism cap (1 = serial)  [0 = all]\n"
       "  --alpha <ID=value>       section group alpha (e.g. _34_35=0.5),\n"
       "                           blendpng-equivalent multipass blend\n"
+      "  --blend-reuse <on|off|verify> reuse bg-pass pixels across blend\n"
+      "                           passes (bit-exact; verify = debug A/B) [off]\n"
       "  --list-groups            list the input's section ids and exit\n"
       "  --edges <on|off>         Freestyle stroke edge pass (sil/crease/border) [off]\n"
       "  --edges-only <on|off>    draw ONLY edges over blank bg, full opacity (verify) [off]\n"
