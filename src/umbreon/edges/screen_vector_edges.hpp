@@ -134,6 +134,15 @@ struct ScreenClassifyParams {
   // unwanted micro-occlusion (measured on mesh4: sliver ratios <= ~200,
   // contour ratios >= ~500). 0 disables the gate (every inked crack strong).
   float stepDominanceK = 250.0f;
+  // Step-dominance rescue: a crack that passes the full depthGapPx threshold
+  // but fails the step-dominance gate is still STRONG when the shading
+  // normals across the crack differ by more than this (ndelta =
+  // 1 - dot(unit normals)). The facet-horizon slivers the dominance gate
+  // targets land on the SAME grazing ramp deeper, so their normals match to
+  // ~0.02; a genuine occlusion contour steps onto an unrelated surface whose
+  // normal differs by an order of magnitude more. Requires the normal AOV;
+  // 0 disables the rescue.
+  float strongNdelta = 0.3f;
   // ObjectId contact veto only: a side's slope is credited toward the
   // depth-continuity extrapolation only while its shading normal still faces
   // the viewer (|n.v|/|n| >= this). At a rim curling toward its own

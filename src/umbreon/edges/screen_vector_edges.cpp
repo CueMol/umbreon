@@ -257,6 +257,26 @@ inline std::uint8_t classifyPair(const float* viewZ,
         if (strong && p.stepDominanceK > 0.0f) {
           const float rec = nearSideRecession(viewZ, objectId, W, H, ia, ib);
           strong = rec >= 0.0f && g0 > p.stepDominanceK * std::max(rec, px);
+          // Normal-difference rescue: the dominance gate exists to kill
+          // facet-horizon slivers, which land on the SAME grazing ramp
+          // (matching normals). A step onto a surface with a clearly
+          // different normal is a genuine occlusion contour even when the
+          // near side recedes fast (e.g. a ribbon fold in front of another
+          // strand), so it stays strong.
+          if (!strong && normal && p.strongNdelta > 0.0f) {
+            const float* nA = normal + 3 * static_cast<std::size_t>(ia);
+            const float* nB = normal + 3 * static_cast<std::size_t>(ib);
+            const float lA = std::sqrt(nA[0] * nA[0] + nA[1] * nA[1] +
+                                       nA[2] * nA[2]);
+            const float lB = std::sqrt(nB[0] * nB[0] + nB[1] * nB[1] +
+                                       nB[2] * nB[2]);
+            if (lA > 1.0e-6f && lB > 1.0e-6f) {
+              const float nd = 1.0f - (nA[0] * nB[0] + nA[1] * nB[1] +
+                                       nA[2] * nB[2]) /
+                                          (lA * lB);
+              strong = nd > p.strongNdelta;
+            }
+          }
         }
         if (strong) {
           if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kInked;
