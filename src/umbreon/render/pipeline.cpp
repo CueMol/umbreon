@@ -15,7 +15,8 @@
 
 namespace umbreon {
 
-FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
+FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
+                        detail::BlendReuseContext* reuse) {
   // The two NPR edge methods both draw the silhouette and would double-ink if
   // run together (stroke ribbons over object-space edge cylinders); reject the
   // combination rather than silently picking one.
@@ -47,7 +48,7 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
   hi.height = finalH * ss;
 
   EmbreeRenderer renderer;
-  FrameResult frame = renderer.render(scene, hi);
+  FrameResult frame = renderer.render(scene, hi, reuse);
 
   // OpenGL linear fog at full (supersampled) resolution, before downsampling, so
   // the box-average mirrors antialiased, fogged samples. Uses the plane eye-z

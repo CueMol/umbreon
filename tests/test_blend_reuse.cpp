@@ -14,11 +14,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "test_util.hpp"
 #include "umbreon.hpp"
+
+#include "render/blend_reuse.hpp"   // BlendProbeHolder / BlendReuseContext
+#include "render/pipeline.hpp"      // renderFrame (capture-mode touch tests)
+#include "shading/blend_probe.hpp"  // RayProbe / probeSegment unit test
 
 namespace {
 
@@ -335,6 +340,104 @@ int main() {
     o.pt1Spp = 2;
     o.pt1HalfRes = true;
     checkAB(s, "pt1 half-res, odd dims", sc, o);
+  }
+
+  // --- probeSegment unit test: one blend group = the standard blend quad at
+  // z=1 covering [-1,1]^2 (group 1).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0, 0, 1, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::detail::BlendProbeHolder probes =
+        umbreon::detail::buildBlendProbes(sc);
+    const float inf = std::numeric_limits<float>::infinity();
+    auto touchOf = [&](Vec3 O, Vec3 dir, float tnear, float tfar) {
+      std::uint32_t t = 0;
+      umbreon::detail::RayProbe rp{&probes.scenes, &t};
+      umbreon::detail::probeSegment(&rp, O, dir, tnear, tfar);
+      return t;
+    };
+    // Straight through the quad center: touch bit 0 set.
+    s.check("probeSegment: hit sets bit",
+            touchOf({0, 0, 10}, {0, 0, -1}, 0.0f, inf) == 1u);
+    // Segment ends BEFORE the quad (t up to z=2): no touch.
+    s.check("probeSegment: short segment misses",
+            touchOf({0, 0, 10}, {0, 0, -1}, 0.0f, 7.0f) == 0u);
+    // Segment starts BEHIND the quad: no touch.
+    s.check("probeSegment: tnear past quad misses",
+            touchOf({0, 0, 10}, {0, 0, -1}, 10.0f, inf) == 0u);
+    // Laterally outside the quad: no touch.
+    s.check("probeSegment: lateral miss",
+            touchOf({1.8f, 1.8f, 10}, {0, 0, -1}, 0.0f, inf) == 0u);
+    // nullptr probe is a no-op (does not crash, touches nothing).
+    umbreon::detail::probeSegment(nullptr, {0, 0, 10}, {0, 0, -1}, 0.0f, inf);
+    s.check("probeSegment: nullptr no-op", true);
+  }
+
+  // --- capture-mode touch masks, verified directly against known geometry.
+  // Blend group 1 = quad at z=1 covering the [0,2]x[0,2] (top-right) quadrant;
+  // blend group 2 = a sphere whose only effect on some pixels is its SHADOW.
+  // The background pass renders WITHOUT the blend groups but probes them, so
+  // touch must flag: (a) pixels whose primary ray crosses the quad/sphere,
+  // (b) pixels whose shadow ray toward the light crosses the sphere, and stay
+  // clear elsewhere.
+  {
+    // Full scene carries the blend spec (for probe construction). The group-1
+    // quad starts at 0.5 so the shadow-only verification point (0.2, 0.0)
+    // stays OUTSIDE its footprint.
+    umbreon::Scene full = makeBaseScene();
+    addQuad(full.mesh, {0, 0, 1, 1.0f}, 0.5f, 0.5f, 2, 2, 1.0f, 1);
+    umbreon::Sphere sp;
+    sp.center = {1.0f, 0.6f, 2.0f};
+    sp.radius = 0.4f;
+    sp.color = {0.2f, 0.8f, 0.3f, 1.0f};
+    sp.group = 2;
+    full.spheres.push_back(sp);
+    full.groupBlend.push_back({1, 0.3f});
+    full.groupBlend.push_back({2, 0.3f});
+    // ...the background scene is the SAME opaque backdrop without them.
+    umbreon::Scene bg = makeBaseScene();
+
+    umbreon::RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.shadows = true;
+
+    umbreon::detail::BlendProbeHolder probes =
+        umbreon::detail::buildBlendProbes(full);
+    umbreon::detail::BlendReuseContext ctx;
+    ctx.mode = umbreon::detail::BlendReuseContext::Mode::Capture;
+    ctx.probe = &probes.scenes;
+    (void)umbreon::renderFrame(bg, o, &ctx);
+
+    s.check("touch: dims recorded",
+            ctx.hiW == 32 && ctx.hiH == 32 &&
+                ctx.touch.size() == std::size_t{32 * 32});
+    // World->pixel mapping for the 32x32 ortho camera framing [-2,2]:
+    // x = (px+0.5)/8 - 2, y = 2 - (py+0.5)/8.
+    auto touchAt = [&](float x, float y) {
+      const int px = static_cast<int>((x + 2.0f) * 8.0f);
+      const int py = static_cast<int>((2.0f - y) * 8.0f);
+      return ctx.touch[static_cast<std::size_t>(py) * 32 + px];
+    };
+    // Deep inside the group-1 quad: primary rays cross it -> bit 0.
+    s.check("touch: quad footprint dirty (group 1)",
+            (touchAt(1.0f, 1.0f) & 1u) != 0u);
+    // Far corner: no ray goes near either group.
+    s.check("touch: far corner clean", touchAt(-1.8f, -1.8f) == 0u);
+    // Under the sphere footprint: primary rays cross it -> bit 1.
+    s.check("touch: sphere footprint dirty (group 2)",
+            (touchAt(1.0f, 0.6f) & 2u) != 0u);
+    // Shadow-only region: the key light travels (-0.4,-0.3,-1)/|.|, so the
+    // sphere at (1.0,0.6,2) shadows the backdrop around (0.2,0.0) -- outside
+    // the sphere's footprint and outside the quad. Those pixels' PRIMARY rays
+    // miss both groups; only their shadow ray toward the light crosses the
+    // sphere. This is the probe-coverage case for occluded() plumbing.
+    const std::uint32_t shadowTouch = touchAt(0.2f, 0.0f);
+    s.check("touch: shadow-only region dirty (group 2)",
+            (shadowTouch & 2u) != 0u);
+    s.check("touch: shadow-only region NOT dirty for group 1",
+            (shadowTouch & 1u) == 0u);
   }
 
   return s.report();

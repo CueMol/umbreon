@@ -43,7 +43,7 @@ inline AoShade computeAoShade(RTCScene rscene, const RenderOptions& opt,
                               const Vec3& ambLight, const Vec3& aoUp,
                               const Vec3& P, const Vec3& Ng, const Vec3& N,
                               const Vec3& C, float secEps, uint32_t px,
-                              uint32_t py) {
+                              uint32_t py, const RayProbe* probe = nullptr) {
   AoShade r;
   r.ambLight = ambLight;
   if (opt.aoSamples <= 0) return r;
@@ -55,7 +55,8 @@ inline AoShade computeAoShade(RTCScene rscene, const RenderOptions& opt,
     ap.falloffPower = opt.aoFalloffPower;
     ap.multiScale = opt.aoMultiScale;
     ap.lowDiscrepancy = opt.aoLowDiscrepancy;
-    r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, opt.width);
+    r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, opt.width,
+                             probe);
     openness = r.aov.openness;
     // Directional ambient: a 2-color sky/ground hemisphere gradient sampled along
     // the bent normal (the average unoccluded direction). White sky == ground
@@ -71,7 +72,7 @@ inline AoShade computeAoShade(RTCScene rscene, const RenderOptions& opt,
     }
   } else {
     openness = computeAO(rscene, P, Ng, N, secEps, opt.aoSamples, opt.aoDistance,
-                         px, py, opt.width);
+                         px, py, opt.width, probe);
     // Color stays on the bit-exact legacy path; if AOVs are requested, derive the
     // contact/shape/bent/avgHitDist channels with one extra (single-scale)
     // quality pass that does NOT feed the color.
@@ -79,7 +80,8 @@ inline AoShade computeAoShade(RTCScene rscene, const RenderOptions& opt,
       AOParams ap;
       ap.nSamples = opt.aoSamples;
       ap.radius = opt.aoDistance;
-      r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, opt.width);
+      r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, opt.width,
+                               probe);
     }
   }
   if (opt.aoMultibounce) {

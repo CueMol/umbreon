@@ -76,9 +76,15 @@ struct Pt1GBuffer {
 // fill the G-buffer. The grid's normalized [-1,1] plane coordinates match the
 // main render grid's, so a (W+1)/2 x (H+1)/2 grid samples the centers of the
 // full grid's 2x2 pixel blocks.
+// Blend-reuse: `probeScenes`+`touch` (capture) probe each primary segment and
+// record per-pixel group-touch bits; `active` (reuse) skips pixels marked 0
+// (their zero-init G-buffer entries are then copied in by the caller).
 inline void tracePt1GBuffer(const IrradianceCacheParams& p,
                             const Pt1CameraBasis& cam, int w, int h,
-                            Pt1GBuffer& g) {
+                            Pt1GBuffer& g,
+                            const BlendProbeScenes* probeScenes = nullptr,
+                            uint32_t* touch = nullptr,
+                            const uint8_t* active = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(w) * h;
   g.w = w;
   g.h = h;
@@ -95,6 +101,8 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
       const float v =
           1.0f - 2.0f * (static_cast<float>(py) + 0.5f) / static_cast<float>(h);
       for (int px = 0; px < w; ++px) {
+        const std::size_t apix = static_cast<std::size_t>(py) * w + px;
+        if (active && !active[apix]) continue;
         const float u =
             2.0f * (static_cast<float>(px) + 0.5f) / static_cast<float>(w) -
             1.0f;
@@ -109,8 +117,11 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
                          cam.trueUp * (v * cam.persHalfH));
         }
 
+        RayProbe rp{probeScenes, touch ? &touch[apix] : nullptr};
+        const RayProbe* probe = probeScenes ? &rp : nullptr;
         const RTCRayHit rh = intersectFull(
-            p.scene, org, rd, 0.0f, std::numeric_limits<float>::infinity());
+            p.scene, org, rd, 0.0f, std::numeric_limits<float>::infinity(),
+            probe);
         if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID) continue;
         const GeomRecord& rec = p.built->records[rh.hit.geomID];
 
@@ -204,7 +215,8 @@ struct Pt1Vertex {
 // The cache keeps calling oneBounceRadiance directly, so its mesh-only
 // behavior (and byte-identical output) is untouched.
 inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
-                          const Vec3& O, const Vec3& wi, Pt1Vertex& v) {
+                          const Vec3& O, const Vec3& wi, Pt1Vertex& v,
+                          const RayProbe* probe = nullptr) {
   const GeomRecord& rec = p.built->records[rh.hit.geomID];
   Vec3 Ny, Cy, NgShadow;
   float kd;
@@ -256,7 +268,8 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
   for (const Light& l : *p.lights) {
     const float ndl = dot(Ny, l.L);
     if (ndl <= 0.0f) continue;
-    const float sh = computeShadow(p.scene, Py, NgShadow, Ny, eps, l, 1, s0, s1);
+    const float sh =
+        computeShadow(p.scene, Py, NgShadow, Ny, eps, l, 1, s0, s1, probe);
     E.x += ndl * l.color.x * sh;
     E.y += ndl * l.color.y * sh;
     E.z += ndl * l.color.z * sh;
@@ -315,7 +328,8 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
 inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
                            const Vec3& N, const Vec3& Ng, int spp,
                            uint32_t seed, float epsT, float* outOcclusion,
-                           bool ld = false, float clampLum = 0.0f) {
+                           bool ld = false, float clampLum = 0.0f,
+                           const RayProbe* probe = nullptr) {
   const Frame f = frameFromNormal(N);
   const float eps = selfIntersectEps(P, N, epsT);
   const Vec3 O = P + N * eps;
@@ -354,7 +368,7 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     Vec3 L{0.0f, 0.0f, 0.0f};
     for (int b = 1; b <= maxB; ++b) {
       const RTCRayHit rh = intersectFull(p.scene, org, wi, tnear,
-                                         p.maxDistance);
+                                         p.maxDistance, probe);
       if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID) {
         const Vec3 env = environmentRadiance(p, wi);
         L.x += throughput.x * env.x;
@@ -364,7 +378,7 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
       }
       if (b == 1) ++nOccluded;
       Pt1Vertex v;
-      if (!pt1EvalVertex(p, rh, org, wi, v)) break;  // outline: absorbed
+      if (!pt1EvalVertex(p, rh, org, wi, v, probe)) break;  // outline: absorbed
       L.x += throughput.x * v.radiance.x;
       L.y += throughput.y * v.radiance.y;
       L.z += throughput.z * v.radiance.z;
@@ -425,12 +439,18 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
 // the image is deterministic across thread counts. Tiles write disjoint pixel
 // ranges (no locks). ld / clampLum forward to pt1GatherPoint (stratified
 // first-bounce sampling / per-sample luminance clamp).
+// Blend-reuse: `probeScenes`+`touch` (capture) probe every gather/NEE ray of a
+// pixel into its touch word; `active` (reuse) additionally skips pixels marked
+// 0 (their E/occ stay at the zero preset and are copied in by the caller).
 inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                           const float* position, const float* normal,
                           const float* geomNormal, const uint8_t* eligible,
                           int spp, uint32_t frameSeed, float epsT,
                           std::vector<float>& E, std::vector<float>& occ,
-                          bool ld = false, float clampLum = 0.0f) {
+                          bool ld = false, float clampLum = 0.0f,
+                          const BlendProbeScenes* probeScenes = nullptr,
+                          uint32_t* touch = nullptr,
+                          const uint8_t* active = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   E.assign(npix * 3, 0.0f);
   occ.assign(npix, 0.0f);
@@ -442,6 +462,7 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
           for (int px = r.cols().begin(); px != r.cols().end(); ++px) {
             const std::size_t pix = static_cast<std::size_t>(py) * W + px;
             if (!eligible[pix]) continue;
+            if (active && !active[pix]) continue;
             const Vec3 P{position[pix * 3 + 0], position[pix * 3 + 1],
                          position[pix * 3 + 2]};
             const Vec3 N{normal[pix * 3 + 0], normal[pix * 3 + 1],
@@ -453,9 +474,11 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                                 : N;
             const uint32_t seed =
                 hashU32(static_cast<uint32_t>(pix) ^ seedMix);
+            RayProbe rp{probeScenes, touch ? &touch[pix] : nullptr};
+            const RayProbe* probe = probeScenes ? &rp : nullptr;
             float o = 0.0f;
             const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, epsT, &o,
-                                          ld, clampLum);
+                                          ld, clampLum, probe);
             E[pix * 3 + 0] = e.x;
             E[pix * 3 + 1] = e.y;
             E[pix * 3 + 2] = e.z;

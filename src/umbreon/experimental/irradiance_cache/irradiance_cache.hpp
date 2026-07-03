@@ -271,8 +271,12 @@ inline Vec3 oneBounceRadiance(const IrradianceCacheParams& p, const RTCRayHit& r
 
 // rtcIntersect1 returning the full hit record (geom/prim/uv/tfar), or geomID ==
 // RTC_INVALID_GEOMETRY_ID on a miss. Used by the gather to shade the hit point.
+// `probe` (blend-reuse capture): the LIVE segment [tnear, min(hit, tfar)] is
+// probed against the blend groups (cache callers pass nothing; the cache
+// integrator is excluded from reuse).
 inline RTCRayHit intersectFull(RTCScene scene, const Vec3& O, const Vec3& dir,
-                               float tnear, float tfar) {
+                               float tnear, float tfar,
+                               const RayProbe* probe = nullptr) {
   RTCRayHit rh;
   rh.ray.org_x = O.x;
   rh.ray.org_y = O.y;
@@ -293,6 +297,8 @@ inline RTCRayHit intersectFull(RTCScene scene, const Vec3& O, const Vec3& dir,
   // single-ray incoherent mode (Embree guidance).
   iargs.flags = RTC_RAY_QUERY_FLAG_INCOHERENT;
   rtcIntersect1(scene, &rh, &iargs);
+  probeSegment(probe, O, dir, tnear,
+               rh.hit.geomID != RTC_INVALID_GEOMETRY_ID ? rh.ray.tfar : tfar);
   return rh;
 }
 

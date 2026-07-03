@@ -75,7 +75,7 @@ struct ShadeContext {
 // sampling).
 inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                          const Vec3& rd, const Vec3& org, uint32_t px,
-                         uint32_t py) {
+                         uint32_t py, const RayProbe* probe = nullptr) {
   HitShade hs;
   RTCScene rscene = c.built.scene;
   // The environment dome (opt.envLights > 0) only works if its lights cast
@@ -125,7 +125,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // legacy binary computeAO runs verbatim, keeping --ao-samples-only renders
     // bit-identical too.
     AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
-                                secEps, px, py);
+                                secEps, px, py, probe);
     Vec3 aoFactor = ao.aoFactor;
     Vec3 ambLight = ao.ambLight;
     float diffuseAo = ao.diffuseAo;  // direct-diffuse AO scale (1 = ambient-only)
@@ -160,7 +160,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
-                          rscene, shadowsActive, c.opt.shadowSamples, px, py);
+                          rscene, shadowsActive, c.opt.shadowSamples, px, py,
+                          probe);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
     // Edge G-buffer (only when the stroke edge pass is on; otherwise the
@@ -229,7 +230,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     float diffuseAo = 1.0f;
     if (!fromEdge) {
       AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
-                                secEps, px, py);
+                                secEps, px, py, probe);
       aoFactor = ao.aoFactor;
       ambLight = ao.ambLight;
       diffuseAo = ao.diffuseAo;
@@ -252,7 +253,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     const bool primShadows = !fromEdge && shadowsActive;
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
-                          rscene, primShadows, c.opt.shadowSamples, px, py);
+                          rscene, primShadows, c.opt.shadowSamples, px, py,
+                          probe);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]

@@ -114,6 +114,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/scene_build.cpp
     src/umbreon/render/curve_build.cpp
     src/umbreon/render/pipeline.cpp
+    src/umbreon/render/blend_reuse.cpp
     src/umbreon/experimental/irradiance_cache/denoise_atrous.cpp
     src/umbreon/experimental/pt1/pt1_denoise.cpp
     src/umbreon/postprocess/fog.cpp

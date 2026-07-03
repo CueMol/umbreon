@@ -18,6 +18,7 @@
 #include <embree4/rtcore.h>
 
 #include "scene.hpp"
+#include "shading/blend_probe.hpp"
 
 namespace umbreon {
 namespace detail {
@@ -76,8 +77,11 @@ inline Vec3 cosineSampleHemisphere(float u1, float u2, const Frame& f) {
 // (rtcOccluded1 sets ray.tfar < 0 on a hit). Transparent geometry counts as an
 // opaque occluder (binary), as OSPRay scivis does -- cheaper than a second
 // transparency walk and visually close.
+// `probe` (blend-reuse capture): an UNOCCLUDED result is probed against the
+// blend groups -- adding group geometry could flip it to occluded. An occluded
+// result cannot change by adding geometry, so it is not probed.
 inline bool occluded(RTCScene rscene, const Vec3& P, const Vec3& dir, float tnear,
-                     float tfar) {
+                     float tfar, const RayProbe* probe = nullptr) {
   RTCRay r;
   r.org_x = P.x;
   r.org_y = P.y;
@@ -93,7 +97,9 @@ inline bool occluded(RTCScene rscene, const Vec3& P, const Vec3& dir, float tnea
   RTCOccludedArguments oargs;
   rtcInitOccludedArguments(&oargs);
   rtcOccluded1(rscene, &r, &oargs);
-  return r.tfar < 0.0f;
+  if (r.tfar < 0.0f) return true;
+  probeSegment(probe, P, dir, tnear, tfar);
+  return false;
 }
 
 // Sample a direction toward a distant light of angular radius l.radius: a
@@ -117,18 +123,19 @@ inline Vec3 sampleLightDir(const Light& l, float u1, float u2) {
 // samples are averaged for a soft area-light penumbra.
 inline float computeShadow(RTCScene rscene, const Vec3& P, const Vec3& Ng,
                            const Vec3& N, float eps, const Light& l,
-                           int shadowSamples, uint32_t& s0, uint32_t& s1) {
+                           int shadowSamples, uint32_t& s0, uint32_t& s1,
+                           const RayProbe* probe = nullptr) {
   Vec3 ng = (dot(Ng, N) < 0.0f) ? Vec3{-Ng.x, -Ng.y, -Ng.z} : Ng;
   ng = safeNormalize(ng, N);
   const Vec3 O = P + ng * eps;
   const float far = std::numeric_limits<float>::infinity();  // distant light
   if (shadowSamples <= 1 || l.radius <= 0.0f)
-    return occluded(rscene, O, l.L, eps, far) ? 0.0f : 1.0f;
+    return occluded(rscene, O, l.L, eps, far, probe) ? 0.0f : 1.0f;
   int hits = 0;
   for (int i = 0; i < shadowSamples; ++i) {
     tea2(s0, s1);
     const Vec3 dir = sampleLightDir(l, u32ToUnorm(s0), u32ToUnorm(s1));
-    if (occluded(rscene, O, dir, eps, far)) ++hits;
+    if (occluded(rscene, O, dir, eps, far, probe)) ++hits;
   }
   return 1.0f - static_cast<float>(hits) / static_cast<float>(shadowSamples);
 }

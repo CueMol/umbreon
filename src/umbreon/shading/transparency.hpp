@@ -70,7 +70,8 @@ struct PixelResult {
 inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                                   const Vec3& rd, uint32_t px, uint32_t py,
                                   const Vec3& camDir,
-                                  std::atomic<long long>& cappedRays) {
+                                  std::atomic<long long>& cappedRays,
+                                  const RayProbe* probe = nullptr) {
   RTCScene rscene = sc.built.scene;
   const RenderOptions& opt = sc.opt;
   const Vec3& bg = sc.bg;
@@ -128,9 +129,17 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
 
     if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
         rh.hit.geomID >= sc.built.records.size()) {
-      break;  // ray escaped: base stays the background
+      // Ray escaped: base stays the background. Blend-reuse capture: the whole
+      // remaining segment is live -- blend geometry anywhere on it would
+      // become the nearest hit.
+      probeSegment(probe, org, rd, tnear,
+                   std::numeric_limits<float>::infinity());
+      break;
     }
-    const HitShade hs = shadeHit(sc, rh, rd, org, px, py);
+    // Blend-reuse capture: probe the LIVE segment up to the accepted hit
+    // (geometry behind an accepted nearest hit cannot change this walk step).
+    probeSegment(probe, org, rd, tnear, rh.ray.tfar);
+    const HitShade hs = shadeHit(sc, rh, rd, org, px, py, probe);
 
     // Capture the edge G-buffer from the FIRST (nearest) hit, before any
     // opaque/transparent compositing decision, so edges draw against the

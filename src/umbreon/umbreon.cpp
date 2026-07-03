@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "postprocess/image_ops.hpp"
+#include "render/blend_reuse.hpp"
 #include "render/pipeline.hpp"
 
 namespace umbreon {
@@ -92,6 +93,24 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   std::vector<uint8_t> hideAll(static_cast<std::size_t>(maxGroup) + 1, 0);
   for (const GroupBlend& gb : scene.groupBlend) hideAll[gb.group] = 1;
 
+  // Cross-pass reuse eligibility (RenderOptions::blendReuse). The exclusions
+  // fall back to the naive multipass, which is trivially bit-exact:
+  //  - irradiance-cache GI: world-space shared records, not pixel-separable;
+  //  - objectSpaceEdges: edge GEOMETRY derives from each pass's scene subset,
+  //    so removing a group can change edges far from it (unboundable);
+  //  - > 32 groups: the touch word is uint32.
+  const bool reusable = opt.blendReuse != 0 &&
+                        !(opt.gi && opt.giIntegrator == 0) &&
+                        !opt.objectSpaceEdges.enable &&
+                        scene.groupBlend.size() <= 32;
+  detail::BlendProbeHolder probes;
+  detail::BlendReuseContext ctx;
+  if (reusable) {
+    probes = detail::buildBlendProbes(scene);
+    ctx.mode = detail::BlendReuseContext::Mode::Capture;
+    ctx.probe = &probes.scenes;
+  }
+
   // Accumulate w * pass color into `acc` -- RGB in the sRGB-ENCODED domain
   // (blendpng blends the finished 8-bit PNGs, whose RGB is the sRGB encode of
   // FrameResult.color; alpha is stored linear in the PNG and blends as-is).
@@ -106,8 +125,9 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   Pt1Timing timing{};
   int passIndex = 0;
   const int passCount = 1 + static_cast<int>(scene.groupBlend.size());
-  auto addPass = [&](const Scene& ps, float w) {
-    FrameResult f = renderFrame(ps, opt);
+  auto addPass = [&](const Scene& ps, float w,
+                     detail::BlendReuseContext* rc = nullptr) {
+    FrameResult f = renderFrame(ps, opt, rc);
     std::fprintf(stderr,
                  "blend pass %d/%d: weight %.3f  %zu tris  %.3f s\n",
                  ++passIndex, passCount, w, ps.mesh.triangleCount(),
@@ -130,7 +150,34 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
     carrier = std::move(f);
   };
 
-  addPass(hideGroups(scene, hideAll), bgW);
+  // Background pass. Under reuse it runs in Capture mode: rays are ghost-
+  // probed against the blend groups and the trace-stage outputs snapshot into
+  // `ctx` for the layer passes.
+  addPass(hideGroups(scene, hideAll), bgW, reusable ? &ctx : nullptr);
+  if (reusable) {
+    // Per-group dirty fractions (diagnostics + the go/no-go datapoint for the
+    // reuse phases): the fraction of hi-res pixels whose rays touched each
+    // group during the background pass.
+    const std::size_t nHi = ctx.touch.size();
+    const std::size_t nHalf = ctx.touchHalf.size();
+    for (std::size_t i = 0; i < scene.groupBlend.size(); ++i) {
+      std::size_t dirty = 0, dirtyHalf = 0;
+      for (uint32_t t : ctx.touch) dirty += (t >> i) & 1u;
+      for (uint32_t t : ctx.touchHalf) dirtyHalf += (t >> i) & 1u;
+      const double pctHi =
+          nHi ? 100.0 * static_cast<double>(dirty) / static_cast<double>(nHi)
+              : 0.0;
+      if (nHalf)
+        std::fprintf(stderr,
+                     "blend-reuse: group %u dirty %.1f%% (hi) %.1f%% (half)\n",
+                     scene.groupBlend[i].group, pctHi,
+                     100.0 * static_cast<double>(dirtyHalf) /
+                         static_cast<double>(nHalf));
+      else
+        std::fprintf(stderr, "blend-reuse: group %u dirty %.1f%% (hi)\n",
+                     scene.groupBlend[i].group, pctHi);
+    }
+  }
   for (const GroupBlend& gb : scene.groupBlend) {
     std::vector<uint8_t> hide = hideAll;
     hide[gb.group] = 0;  // keep this group (opaque), hide the other layers

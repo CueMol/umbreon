@@ -59,7 +59,8 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
                        const Vec3& ambLight, const Vec3& bg, float specularScale,
                        const Vec3& aoFactor, float diffuseAo, const Vec3& P,
                        const Vec3& Ng, float eps, RTCScene rscene, bool shadowsOn,
-                       int shadowSamples, uint32_t px, uint32_t py) {
+                       int shadowSamples, uint32_t px, uint32_t py,
+                       const RayProbe* probe = nullptr) {
   Vec3 out{mat.emission * C.x + aoFactor.x * mat.ambient * C.x * ambLight.x,
            mat.emission * C.y + aoFactor.y * mat.ambient * C.y * ambLight.y,
            mat.emission * C.z + aoFactor.z * mat.ambient * C.z * ambLight.z};
@@ -78,7 +79,8 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
     // fully lit point) Lc == l.color bitwise, so the shadow-off render is
     // byte-identical to the pre-shadow output.
     const float shadowFactor =
-        shadowsOn ? computeShadow(rscene, P, Ng, N, eps, l, shadowSamples, s0, s1)
+        shadowsOn ? computeShadow(rscene, P, Ng, N, eps, l, shadowSamples, s0,
+                                  s1, probe)
                   : 1.0f;
     const Vec3 Lc{l.color.x * shadowFactor, l.color.y * shadowFactor,
                   l.color.z * shadowFactor};

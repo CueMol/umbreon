@@ -11,6 +11,7 @@
 
 #include <embree4/rtcore.h>
 
+#include "render/blend_reuse.hpp"
 #include "render/render_types.hpp"
 #include "scene.hpp"
 
@@ -32,7 +33,12 @@ class EmbreeRenderer {
   EmbreeRenderer(const EmbreeRenderer&) = delete;
   EmbreeRenderer& operator=(const EmbreeRenderer&) = delete;
 
-  FrameResult render(const Scene& scene, const RenderOptions& opt);
+  // `reuse` (optional, group-alpha multipass): Capture mode ghost-probes
+  // every ray against the blend groups and snapshots the trace-stage outputs;
+  // Reuse mode skips clean pixels and copies them from the snapshot. nullptr
+  // (all normal callers) keeps the render byte-identical.
+  FrameResult render(const Scene& scene, const RenderOptions& opt,
+                     detail::BlendReuseContext* reuse = nullptr);
 
   // Any-hit occlusion test against the live committed scene along the segment
   // P->Q, trimmed by `eps` (relative + absolute floor) at both ends to skip

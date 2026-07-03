@@ -32,7 +32,8 @@ namespace detail {
 // Deterministic from the hi-res pixel (px, py).
 inline float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng,
                        const Vec3& Ns, float eps, int nSamples, float aoRadius,
-                       uint32_t px, uint32_t py, int wHi) {
+                       uint32_t px, uint32_t py, int wHi,
+                       const RayProbe* probe = nullptr) {
   if (nSamples <= 0) return 1.0f;
   const Frame f = frameFromNormal(Ns);
   // Offset axis = geometric normal, face-forwarded to the shading side. eps is
@@ -51,7 +52,7 @@ inline float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng,
       ++hits;
       continue;
     }
-    if (occluded(rscene, O, dir, eps, aoRadius)) ++hits;
+    if (occluded(rscene, O, dir, eps, aoRadius, probe)) ++hits;
   }
   return 1.0f - static_cast<float>(hits) / static_cast<float>(nSamples);
 }
@@ -69,8 +70,11 @@ inline float computeAO(RTCScene rscene, const Vec3& P, const Vec3& Ng,
 // after rtcIntersect1) or +inf on a miss. Same any-geometry semantics as
 // occluded(), but it keeps the distance so the multi-scale falloff and the
 // average-hit-distance AOV can be derived from a single ray set (no extra rays).
+// `probe` (blend-reuse capture): the LIVE segment [tnear, min(hit, tfar)] is
+// probed -- blend geometry behind an accepted nearest hit cannot change it.
 inline float intersectNearest(RTCScene rscene, const Vec3& O, const Vec3& dir,
-                              float tnear, float tfar) {
+                              float tnear, float tfar,
+                              const RayProbe* probe = nullptr) {
   RTCRayHit rh;
   rh.ray.org_x = O.x;
   rh.ray.org_y = O.y;
@@ -88,9 +92,9 @@ inline float intersectNearest(RTCScene rscene, const Vec3& O, const Vec3& dir,
   RTCIntersectArguments iargs;
   rtcInitIntersectArguments(&iargs);
   rtcIntersect1(rscene, &rh, &iargs);
-  return (rh.hit.geomID != RTC_INVALID_GEOMETRY_ID)
-             ? rh.ray.tfar
-             : std::numeric_limits<float>::infinity();
+  const bool hit = rh.hit.geomID != RTC_INVALID_GEOMETRY_ID;
+  probeSegment(probe, O, dir, tnear, hit ? rh.ray.tfar : tfar);
+  return hit ? rh.ray.tfar : std::numeric_limits<float>::infinity();
 }
 
 // Van der Corput radical inverse in base 2 (bit reversal): the second Hammersley
@@ -170,7 +174,8 @@ struct AOResult {
 // down with distance so far geometry no longer darkens uniformly.
 inline AOResult computeAOQuality(RTCScene rscene, const Vec3& P, const Vec3& Ng,
                                  const Vec3& Ns, float eps, const AOParams& ap,
-                                 uint32_t px, uint32_t py, int wHi) {
+                                 uint32_t px, uint32_t py, int wHi,
+                                 const RayProbe* probe = nullptr) {
   AOResult r;
   if (ap.nSamples <= 0) {
     r.bent = Ns;
@@ -229,7 +234,7 @@ inline AOResult computeAOQuality(RTCScene rscene, const Vec3& P, const Vec3& Ng,
       weightedObs += 1.0f;  // Sum_k weight[k] == 1
       continue;             // no bent / avgHitDist contribution
     }
-    const float t = intersectNearest(rscene, O, dir, eps, R);
+    const float t = intersectNearest(rscene, O, dir, eps, R, probe);
     float perSample = 0.0f;  // Sum_k weight[k]*falloff_ik for this sample
     for (int k = 0; k < K; ++k) {
       if (t < radius[k]) {

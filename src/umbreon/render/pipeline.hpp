@@ -7,6 +7,7 @@
 // Internal API (not installed); the public surface is umbreon::render().
 #pragma once
 
+#include "render/blend_reuse.hpp"
 #include "render/render_types.hpp"
 #include "scene.hpp"
 
@@ -14,6 +15,9 @@ namespace umbreon {
 
 // Run the full frame pipeline at opt.supersample and return the final LINEAR HDR
 // framebuffer (top-left pixel origin). opt.width/height are the FINAL output size.
-FrameResult renderFrame(const Scene& scene, const RenderOptions& opt);
+// `reuse` (optional, group-alpha multipass) is forwarded to the renderer; the
+// post stages (fog/edges/downsample/denoise/gamma) always run full-frame.
+FrameResult renderFrame(const Scene& scene, const RenderOptions& opt,
+                        detail::BlendReuseContext* reuse = nullptr);
 
 }  // namespace umbreon

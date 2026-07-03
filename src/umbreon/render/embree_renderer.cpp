@@ -228,7 +228,8 @@ bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
   return r.tfar < 0.0f;  // a NON-excluded occluder was found
 }
 
-FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
+FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
+                                   detail::BlendReuseContext* reuse) {
   // A renderer instance renders one scene; if reused, drop the previous BVH
   // before building the new one (keeps the lifetime invariant simple).
   releaseEmbree();
@@ -370,6 +371,18 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // far transmission is observable (warned once below) rather than silent.
   std::atomic<long long> cappedRays{0};
 
+  // Blend-reuse capture (group-alpha multipass background pass): every ray of
+  // a pixel is additionally ghost-probed against the per-group blend BVHs and
+  // the touch bits land in reuse->touch. nullptr on all normal renders.
+  const bool blendCapture = reuse != nullptr &&
+                            reuse->mode == BlendReuseContext::Mode::Capture &&
+                            reuse->probe != nullptr;
+  if (blendCapture) {
+    reuse->hiW = W;
+    reuse->hiH = H;
+    reuse->touch.assign(static_cast<std::size_t>(W) * H, 0u);
+  }
+
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
   // primitive). Each ray is independent and rtcIntersect1 on a committed scene
   // is thread-safe; pixels write to disjoint framebuffer indices.
@@ -392,11 +405,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
         rd = normalize(dir + right * (u * persHalfW) + trueUp * (v * persHalfH));
       }
 
+      const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
+      RayProbe blendProbe{blendCapture ? reuse->probe : nullptr,
+                          blendCapture ? &reuse->touch[pix] : nullptr};
       const PixelResult pr =
           integratePixel(sc, org, rd, static_cast<uint32_t>(px),
-                         static_cast<uint32_t>(py), dir, cappedRays);
-
-      const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
+                         static_cast<uint32_t>(py), dir, cappedRays,
+                         blendCapture ? &blendProbe : nullptr);
       res.color[pix * 4 + 0] = pr.r;
       res.color[pix * 4 + 1] = pr.g;
       res.color[pix * 4 + 2] = pr.b;
@@ -545,16 +560,34 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
 
       detail::Pt1GBuffer g;
       std::vector<float> Eh, occh;
+      // Blend-reuse capture: the half grid gets its own touch buffer (its
+      // primary rays and gather origins live on the half grid, not the render
+      // grid) and its raw outputs are snapshot below, pre-denoise.
+      if (blendCapture) {
+        reuse->halfW = hw;
+        reuse->halfH = hh;
+        reuse->touchHalf.assign(static_cast<std::size_t>(hw) * hh, 0u);
+      }
       const auto tg0 = std::chrono::high_resolution_clock::now();
-      detail::tracePt1GBuffer(gp, camb, hw, hh, g);
+      detail::tracePt1GBuffer(gp, camb, hw, hh, g,
+                              blendCapture ? reuse->probe : nullptr,
+                              blendCapture ? reuse->touchHalf.data() : nullptr);
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), spp,
                             opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
-                            opt.pt1Clamp);
+                            opt.pt1Clamp,
+                            blendCapture ? reuse->probe : nullptr,
+                            blendCapture ? reuse->touchHalf.data() : nullptr);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      if (blendCapture) {
+        reuse->pt1.gbuf = g;      // post-trace G-buffer
+        reuse->pt1.EhRaw = Eh;    // pre-denoise gather outputs
+        reuse->pt1.occhRaw = occh;
+      }
 
       if (opt.pt1Denoise) {
         const auto td0 = std::chrono::high_resolution_clock::now();
@@ -574,12 +607,22 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
     } else {
       const auto tg0 = std::chrono::high_resolution_clock::now();
+      // Blend-reuse capture: gather rays share the pixel's hi-res touch word
+      // (the gather grid IS the render grid here; the primary loop above has
+      // already finished, so the single-writer rule holds).
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(), spp,
                             opt.pt1Seed, diag, Ebuf, occBuf, opt.pt1Ld,
-                            opt.pt1Clamp);
+                            opt.pt1Clamp,
+                            blendCapture ? reuse->probe : nullptr,
+                            blendCapture ? reuse->touch.data() : nullptr);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      if (blendCapture) {
+        reuse->pt1.Eraw = Ebuf;   // pre-denoise gather outputs
+        reuse->pt1.occRaw = occBuf;
+      }
 
       // Denoise the indirect irradiance ONLY (pre-composite; direct light and
       // albedo are noise-free): OIDN on E with the reflectance/normal guides.
@@ -759,6 +802,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // occluded(). They are released in the destructor / on the next render().
   device_ = device;
   scene_ = built.scene;
+
+  // Blend-reuse capture: snapshot the trace-stage outputs. This is the seam
+  // between the per-pixel trace work (reused by layer passes) and the
+  // full-frame post stages (fog/edges/downsample/denoise/gamma, which always
+  // run per pass in the pipeline).
+  if (blendCapture) {
+    reuse->raw = res;
+    reuse->giRefl = giRefl;
+    reuse->giElig = giElig;
+  }
   return res;
 }
 
