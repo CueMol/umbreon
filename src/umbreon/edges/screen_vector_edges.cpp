@@ -257,6 +257,26 @@ inline std::uint8_t classifyPair(const float* viewZ,
         if (strong && p.stepDominanceK > 0.0f) {
           const float rec = nearSideRecession(viewZ, objectId, W, H, ia, ib);
           strong = rec >= 0.0f && g0 > p.stepDominanceK * std::max(rec, px);
+          // Normal-difference rescue: the dominance gate exists to kill
+          // facet-horizon slivers, which land on the SAME grazing ramp
+          // (matching normals). A step onto a surface with a clearly
+          // different normal is a genuine occlusion contour even when the
+          // near side recedes fast (e.g. a ribbon fold in front of another
+          // strand), so it stays strong.
+          if (!strong && normal && p.strongNdelta > 0.0f) {
+            const float* nA = normal + 3 * static_cast<std::size_t>(ia);
+            const float* nB = normal + 3 * static_cast<std::size_t>(ib);
+            const float lA = std::sqrt(nA[0] * nA[0] + nA[1] * nA[1] +
+                                       nA[2] * nA[2]);
+            const float lB = std::sqrt(nB[0] * nB[0] + nB[1] * nB[1] +
+                                       nB[2] * nB[2]);
+            if (lA > 1.0e-6f && lB > 1.0e-6f) {
+              const float nd = 1.0f - (nA[0] * nB[0] + nA[1] * nB[1] +
+                                       nA[2] * nB[2]) /
+                                          (lA * lB);
+              strong = nd > p.strongNdelta;
+            }
+          }
         }
         if (strong) {
           if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kInked;
@@ -525,9 +545,12 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
     e = next;
   }
 
+  ch.edgeAlpha = edgeA;
+
   // Vertex view-z / surface alpha = mean of the adjacent edgels' owner
   // values; a closed loop's duplicated seed vertex averages the last and
-  // first edgel.
+  // first edgel. (Vertex alpha is chain-level only -- the Stage-4 driver
+  // re-attributes it per class run from edgeAlpha, see the header.)
   const std::size_t nE = edgeVz.size();
   for (std::size_t vi = 0; vi < ch.pts.size(); ++vi) {
     float vz, a;
@@ -1364,6 +1387,31 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       // Geometry cleanup on the run's vertex slice [e0, e1].
       std::vector<ScreenChainVert> pts(ch.pts.begin() + e0,
                                        ch.pts.begin() + e1 + 1);
+      // Re-attribute vertex alpha from the run's OWN edgels. The chain-level
+      // vertex alpha blends the two adjacent edgels regardless of run
+      // membership, so a run-boundary vertex inherits half of the
+      // neighboring run's owner opacity (e.g. an opaque stick border
+      // junctioning into an edge on a fully transparent surface pushed that
+      // endpoint to 0.5, and the draw stage lerped the leak across the whole
+      // segment). Within the run, interior vertices still average their two
+      // in-run edgels; the endpoints take their single in-run edgel, so the
+      // run's opacity is a function of its own surface only.
+      if (!ch.edgeAlpha.empty()) {
+        const std::size_t nV = pts.size();
+        for (std::size_t k = 0; k < nV; ++k) {
+          float a;
+          if (runClosed && (k == 0 || k == nV - 1)) {
+            a = 0.5f * (ch.edgeAlpha[e0] + ch.edgeAlpha[e1 - 1]);
+          } else if (k == 0) {
+            a = ch.edgeAlpha[e0];
+          } else if (k == nV - 1) {
+            a = ch.edgeAlpha[e1 - 1];
+          } else {
+            a = 0.5f * (ch.edgeAlpha[e0 + k - 1] + ch.edgeAlpha[e0 + k]);
+          }
+          pts[k].alpha = a;
+        }
+      }
       collapseCollinear(pts, runClosed);
       chaikinSmooth(pts, runClosed, se.screenSmoothIters);
       simplifyRdp(pts, runClosed, rdpEps);
