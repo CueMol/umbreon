@@ -314,6 +314,118 @@ int main() {
     checkAB(s, "rt stroke edges across blend boundary", sc, o);
   }
 
+  // rt + soft shadows (multi-sample cone shadow rays).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addBlendSphere(sc, {0.0f, 0.0f, 1.2f}, 0.6f, {0.2f, 0.8f, 0.3f, 1.0f}, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.shadows = true;
+    o.shadowSamples = 4;
+    o.lightRadius = 3.0f;
+    checkAB(s, "rt + soft shadows", sc, o, /*compareMaterialId=*/false);
+  }
+
+  // rt + legacy AO (binary occluded() rays).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.aoSamples = 4;
+    o.aoDistance = 3.0f;
+    checkAB(s, "rt + AO legacy", sc, o);
+  }
+
+  // rt + enhanced AO (multi-scale + falloff + bent normal): exercises the
+  // intersectNearest probe path.
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.aoSamples = 4;
+    o.aoDistance = 3.0f;
+    o.aoFalloffPower = 1.0f;
+    o.aoMultiScale = true;
+    o.aoBentNormal = true;
+    o.aoWriteAov = true;
+    checkAB(s, "rt + AO enhanced (intersectNearest)", sc, o);
+  }
+
+  // rt + env-dome lights (many shadowed distant lights).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.envLights = 8;
+    checkAB(s, "rt + env dome lights", sc, o);
+  }
+
+  // rt edges-only verification mode (surface blanked, only strokes drawn).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 2.2f, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    auto& cs = o.strokeEdges.defaultStyle
+                   .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    cs.enabled = true;
+    cs.width = 2.0f;
+    checkAB(s, "rt edges-only", sc, o);
+  }
+
+  // rt edges with a per-section style override on the blend group.
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 2.2f, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.strokeEdges.enable = true;
+    auto& cs = o.strokeEdges.defaultStyle
+                   .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    cs.enabled = true;
+    cs.width = 2.0f;
+    sc.groupEdgeStyle.assign(2, o.strokeEdges.defaultStyle);
+    sc.groupEdgeStyle[1]
+        .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)]
+        .color[0] = 1.0f;  // red silhouette for the blend section
+    checkAB(s, "rt edges, per-section style", sc, o);
+  }
+
+  // rt + final-color a-trous denoiser (global post stage on assembled color).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.denoiser = 1;  // a-trous
+    checkAB(s, "rt + atrous final denoise", sc, o);
+  }
+
+  // rt verify mode (blendReuse=2): reuse output must equal naive AND the
+  // internal full-frame check must pass (it prints to stderr; here we assert
+  // the frame equality like the other scenarios).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    addBlendSphere(sc, {1.0f, 1.0f, 1.0f}, 0.5f, {0.9f, 0.8f, 0.1f, 1.0f}, 2);
+    sc.groupBlend.push_back({1, 0.4f});
+    sc.groupBlend.push_back({2, 0.3f});
+    umbreon::RenderOptions o = base;
+    o.shadows = true;
+    o.blendReuse = 0;
+    const umbreon::FrameResult ref = umbreon::render(sc, o);
+    o.blendReuse = 2;  // verify
+    const umbreon::FrameResult got = umbreon::render(sc, o);
+    std::string why;
+    s.check("rt verify mode bit-exact",
+            sameFrame(ref, got, /*compareMaterialId=*/false, &why));
+  }
+
   // pt1 full-res, denoise on.
   {
     umbreon::Scene sc = makeBaseScene();

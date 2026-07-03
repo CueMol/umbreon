@@ -71,12 +71,41 @@ BlendProbeHolder buildBlendProbes(const Scene& scene) {
   rtcSetDeviceErrorFunction(h.device, embreeErrorCallback, nullptr);
   h.built.reserve(scene.groupBlend.size());
   h.scenes.groupScene.reserve(scene.groupBlend.size());
+  h.scenes.groupBounds.reserve(scene.groupBlend.size());
   for (const GroupBlend& gb : scene.groupBlend) {
     // An empty group builds an empty committed scene: every probe misses,
-    // which is exactly the correct "cannot affect any pixel" answer.
-    h.built.push_back(
-        buildEmbreeScene(h.device, keepOnlyGroup(scene, gb.group)));
+    // which is exactly the correct "cannot affect any pixel" answer (its
+    // never-extended AABB rejects every segment before the BVH is asked).
+    const Scene gs = keepOnlyGroup(scene, gb.group);
+    h.built.push_back(buildEmbreeScene(h.device, gs));
     h.scenes.groupScene.push_back(h.built.back().scene);
+    // Conservative world bounds of the group's geometry. The filtered mesh
+    // shares the FULL vertex buffers, so extend only over the vertices its
+    // index actually references (Mesh::bounds() would cover every group).
+    Aabb b;
+    for (uint32_t v : gs.mesh.index) b.extend(gs.mesh.positions[v]);
+    for (const Sphere& sp : gs.spheres) {
+      const Vec3 r{sp.radius, sp.radius, sp.radius};
+      b.extend(sp.center - r);
+      b.extend(sp.center + r);
+    }
+    for (const Cylinder& cy : gs.cylinders) {
+      const Vec3 r{cy.radius, cy.radius, cy.radius};
+      b.extend(cy.p0 - r);
+      b.extend(cy.p0 + r);
+      b.extend(cy.p1 - r);
+      b.extend(cy.p1 + r);
+    }
+    // The scene builder bakes one copy per instance offset (legacy .inc grid
+    // path); the bounds must cover every baked copy.
+    if (!gs.instanceOffsets.empty() && b.valid()) {
+      const Aabb base = b;
+      for (const Vec3& off : gs.instanceOffsets) {
+        b.extend(base.lo + off);
+        b.extend(base.hi + off);
+      }
+    }
+    h.scenes.groupBounds.push_back(b);
   }
   return h;
 }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include "postprocess/image_ops.hpp"
@@ -56,6 +57,32 @@ Scene hideGroups(const Scene& s, const std::vector<uint8_t>& hide) {
                      [&](const Cylinder& cy) { return hidden(cy.group); }),
       out.cylinders.end());
   return out;
+}
+
+// --blend-reuse verify: byte-compare two frames' image buffers (timing
+// metadata excluded) and report the first mismatching buffer to stderr.
+// Returns true when identical.
+bool framesIdentical(const FrameResult& a, const FrameResult& b,
+                     const char** what) {
+  auto same = [](const auto& x, const auto& y) {
+    return x.size() == y.size() &&
+           (x.empty() ||
+            std::memcmp(x.data(), y.data(),
+                        x.size() * sizeof(x[0])) == 0);
+  };
+  *what = "";
+  if (a.width != b.width || a.height != b.height) { *what = "dims"; return false; }
+  if (!same(a.color, b.color)) { *what = "color"; return false; }
+  if (!same(a.depth, b.depth)) { *what = "depth"; return false; }
+  if (!same(a.viewZ, b.viewZ)) { *what = "viewZ"; return false; }
+  if (!same(a.normal, b.normal)) { *what = "normal"; return false; }
+  if (!same(a.albedo, b.albedo)) { *what = "albedo"; return false; }
+  if (!same(a.objectId, b.objectId)) { *what = "objectId"; return false; }
+  if (!same(a.surfAlpha, b.surfAlpha)) { *what = "surfAlpha"; return false; }
+  if (!same(a.position, b.position)) { *what = "position"; return false; }
+  if (!same(a.indirect, b.indirect)) { *what = "indirect"; return false; }
+  if (!same(a.giOcclusion, b.giOcclusion)) { *what = "giOcclusion"; return false; }
+  return true;
 }
 
 }  // namespace
@@ -178,10 +205,43 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
                      scene.groupBlend[i].group, pctHi);
     }
   }
+  // Layer passes. Under reuse each runs in Reuse mode with its dirty mask
+  // (the group's touch bit from the background pass); clean pixels are copied
+  // from the capture snapshot inside the renderer. The pt1 integrator joins
+  // in a later phase; until then GI passes fall back to full-frame renders.
+  const bool reuseLayers = reusable && !opt.gi;
+  std::size_t groupIdx = 0;
   for (const GroupBlend& gb : scene.groupBlend) {
     std::vector<uint8_t> hide = hideAll;
     hide[gb.group] = 0;  // keep this group (opaque), hide the other layers
-    addPass(hideGroups(scene, hide), gb.alpha);
+    const Scene layer = hideGroups(scene, hide);
+    if (!reuseLayers) {
+      addPass(layer, gb.alpha);
+    } else {
+      std::vector<uint8_t> active(ctx.touch.size());
+      for (std::size_t p = 0; p < active.size(); ++p)
+        active[p] = static_cast<uint8_t>((ctx.touch[p] >> groupIdx) & 1u);
+      ctx.mode = detail::BlendReuseContext::Mode::Reuse;
+      ctx.active = &active;
+      ctx.activeHalf = nullptr;
+      // verify mode (--blend-reuse verify): ALSO render the layer full-frame
+      // and require byte-identity -- the direct probe-soundness check.
+      FrameResult check;
+      if (opt.blendReuse == 2) check = renderFrame(layer, opt);
+      addPass(layer, gb.alpha, &ctx);
+      if (opt.blendReuse == 2) {
+        const char* what = nullptr;
+        if (framesIdentical(carrier, check, &what)) {
+          std::fprintf(stderr, "blend-reuse verify: group %u OK\n", gb.group);
+        } else {
+          std::fprintf(stderr,
+                       "blend-reuse verify: group %u MISMATCH in '%s' -- the "
+                       "reuse mask is unsound for this scene, please report\n",
+                       gb.group, what);
+        }
+      }
+    }
+    ++groupIdx;
   }
 
   // Map the blended sRGB values back to FrameResult's linear-ish domain so

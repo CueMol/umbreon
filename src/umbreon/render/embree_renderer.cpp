@@ -382,6 +382,56 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
     reuse->hiH = H;
     reuse->touch.assign(static_cast<std::size_t>(W) * H, 0u);
   }
+  // Blend-reuse consume (layer pass): pixels the background pass proved
+  // untouchable by this pass's group are COPIED from the capture snapshot
+  // instead of recomputed -- bit-exact because a pixel's trace work is a pure
+  // deterministic function of (pixel, scene, options) and the scenes agree
+  // everywhere the group's geometry is not involved.
+  const bool blendReuseActive =
+      reuse != nullptr && reuse->mode == BlendReuseContext::Mode::Reuse &&
+      reuse->active != nullptr;
+  if (blendReuseActive && (reuse->hiW != W || reuse->hiH != H))
+    throw std::runtime_error(
+        "blend reuse: layer pass dimensions do not match the capture");
+  const uint8_t* activeMask =
+      blendReuseActive ? reuse->active->data() : nullptr;
+
+  // Copy one clean pixel from the capture snapshot. Copies every buffer the
+  // snapshot carries (non-empty <=> allocated under the SAME options in both
+  // passes), so the copy set can never drift from the write set below.
+  auto copyCleanPixel = [&](std::size_t pix) {
+    const FrameResult& raw = reuse->raw;
+    for (int c = 0; c < 4; ++c) res.color[pix * 4 + c] = raw.color[pix * 4 + c];
+    res.depth[pix] = raw.depth[pix];
+    if (!res.viewZ.empty()) res.viewZ[pix] = raw.viewZ[pix];
+    if (!res.normal.empty())
+      for (int c = 0; c < 3; ++c)
+        res.normal[pix * 3 + c] = raw.normal[pix * 3 + c];
+    if (!res.objectId.empty()) res.objectId[pix] = raw.objectId[pix];
+    if (!res.materialId.empty()) res.materialId[pix] = raw.materialId[pix];
+    if (!res.surfAlpha.empty()) res.surfAlpha[pix] = raw.surfAlpha[pix];
+    if (!res.albedo.empty())
+      for (int c = 0; c < 3; ++c)
+        res.albedo[pix * 3 + c] = raw.albedo[pix * 3 + c];
+    if (!res.bentNormal.empty())
+      for (int c = 0; c < 3; ++c)
+        res.bentNormal[pix * 3 + c] = raw.bentNormal[pix * 3 + c];
+    if (!res.contactAo.empty()) res.contactAo[pix] = raw.contactAo[pix];
+    if (!res.shapeAo.empty()) res.shapeAo[pix] = raw.shapeAo[pix];
+    if (!res.avgHitDist.empty()) res.avgHitDist[pix] = raw.avgHitDist[pix];
+    if (!res.position.empty())
+      for (int c = 0; c < 3; ++c)
+        res.position[pix * 3 + c] = raw.position[pix * 3 + c];
+    // indirect / giRecordViz / giOcclusion are filled by the GI post-pass;
+    // the clean-pixel values are copied there (the composite is restricted to
+    // dirty pixels under reuse).
+    if (!giRefl.empty())
+      for (int c = 0; c < 3; ++c)
+        giRefl[pix * 3 + c] = reuse->giRefl[pix * 3 + c];
+    if (!giElig.empty()) giElig[pix] = reuse->giElig[pix];
+    // giGroup/giGeom stay at their init sentinels: they feed only the
+    // irradiance-cache integrator, which is excluded from reuse.
+  };
 
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
   // primitive). Each ray is independent and rtcIntersect1 on a committed scene
@@ -406,6 +456,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
       }
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
+      if (activeMask && !activeMask[pix]) {
+        copyCleanPixel(pix);
+        continue;
+      }
       RayProbe blendProbe{blendCapture ? reuse->probe : nullptr,
                           blendCapture ? &reuse->touch[pix] : nullptr};
       const PixelResult pr =
