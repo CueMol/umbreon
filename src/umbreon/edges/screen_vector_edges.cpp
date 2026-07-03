@@ -477,12 +477,14 @@ inline int crackOwnerPixel(const CrackField& cf, const CornerEdge& e,
 // equals loopSeed (closed loop). Returns the finished chain.
 ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
                       long loopSeed, const float* viewZ,
-                      const std::uint32_t* objectId) {
+                      const std::uint32_t* objectId,
+                      const float* surfAlpha) {
   ScreenChain ch;
   std::vector<float> edgeVz;  // per-edgel owner view-z (attribution below)
+  std::vector<float> edgeA;   // per-edgel owner surface alpha
   auto pushCorner = [&](int px, int py) {
     ch.pts.push_back({static_cast<float>(px) - 0.5f,
-                      static_cast<float>(py) - 0.5f, 0.0f});
+                      static_cast<float>(py) - 0.5f, 0.0f, 1.0f});
   };
   pushCorner(cx, cy);
 
@@ -496,6 +498,7 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
     ch.edgeGroup.push_back(
         objectId ? static_cast<std::uint16_t>(objectId[owner] >> 2) : 0);
     edgeVz.push_back(viewZ ? viewZ[owner] : 0.0f);
+    edgeA.push_back(surfAlpha ? surfAlpha[owner] : 1.0f);
 
     cx = e.farCx;
     cy = e.farCy;
@@ -522,23 +525,30 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
     e = next;
   }
 
-  // Vertex view-z = mean of the adjacent edgels' owner view-z; a closed loop's
-  // duplicated seed vertex averages the last and first edgel.
+  // Vertex view-z / surface alpha = mean of the adjacent edgels' owner
+  // values; a closed loop's duplicated seed vertex averages the last and
+  // first edgel.
   const std::size_t nE = edgeVz.size();
   for (std::size_t vi = 0; vi < ch.pts.size(); ++vi) {
-    float vz;
+    float vz, a;
     if (nE == 0) {
       vz = 0.0f;
+      a = 1.0f;
     } else if (ch.closed && (vi == 0 || vi == ch.pts.size() - 1)) {
       vz = 0.5f * (edgeVz[0] + edgeVz[nE - 1]);
+      a = 0.5f * (edgeA[0] + edgeA[nE - 1]);
     } else if (vi == 0) {
       vz = edgeVz[0];
+      a = edgeA[0];
     } else if (vi >= nE) {
       vz = edgeVz[nE - 1];
+      a = edgeA[nE - 1];
     } else {
       vz = 0.5f * (edgeVz[vi - 1] + edgeVz[vi]);
+      a = 0.5f * (edgeA[vi - 1] + edgeA[vi]);
     }
     ch.pts[vi].vz = vz;
+    ch.pts[vi].alpha = a;
   }
   return ch;
 }
@@ -546,7 +556,8 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
 }  // namespace
 
 std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
-                                          const std::uint32_t* objectId) {
+                                          const std::uint32_t* objectId,
+                                          const float* surfAlpha) {
   std::vector<ScreenChain> chains;
   const int W = cf.W, H = cf.H;
   if (W <= 0 || H <= 0) return chains;
@@ -564,7 +575,8 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
         if (!e.valid) continue;
         const std::uint8_t b = crackByte(cf, e);
         if (!(b & kCrackClassMask) || (b & kCrackConsumedBit)) continue;
-        ScreenChain ch = walkChain(cf, cx, cy, e, -1, viewZ, objectId);
+        ScreenChain ch = walkChain(cf, cx, cy, e, -1, viewZ, objectId,
+                                   surfAlpha);
         ch.deg0 = deg;
         const int lx = static_cast<int>(ch.pts.back().x + 0.5f);
         const int ly = static_cast<int>(ch.pts.back().y + 0.5f);
@@ -589,7 +601,8 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
       const int cy = pass == 0 ? y : y + 1;
       const CornerEdge e = cornerEdge(cf, cx, cy, pass == 0 ? 1 : 0);
       const long seed = static_cast<long>(cy) * (W + 1) + cx;
-      ScreenChain ch = walkChain(cf, cx, cy, e, seed, viewZ, objectId);
+      ScreenChain ch = walkChain(cf, cx, cy, e, seed, viewZ, objectId,
+                                 surfAlpha);
       ch.deg0 = ch.deg1 = 2;
       chains.push_back(std::move(ch));
     }
@@ -610,16 +623,20 @@ bool keepScreenChain(const ScreenChain& ch, int minStrong) {
   return false;
 }
 
-void eraseChainCracks(CrackField& cf, const ScreenChain& ch) {
+void eraseChainCracks(CrackField& cf, const ScreenChain& ch, std::size_t e0,
+                      std::size_t e1) {
   // Consecutive corner pairs map back to lattice cells (see the cornerEdge
   // mapping): a horizontal lattice edge (cx,cy)-(cx+1,cy) is
   // down[(cy-1)*W + cx], a vertical one (cx,cy)-(cx,cy+1) is
-  // right[cy*W + (cx-1)]. Chain points store corner - 0.5.
-  for (std::size_t i = 1; i < ch.pts.size(); ++i) {
-    const int cx0 = static_cast<int>(std::lround(ch.pts[i - 1].x + 0.5f));
-    const int cy0 = static_cast<int>(std::lround(ch.pts[i - 1].y + 0.5f));
-    const int cx1 = static_cast<int>(std::lround(ch.pts[i].x + 0.5f));
-    const int cy1 = static_cast<int>(std::lround(ch.pts[i].y + 0.5f));
+  // right[cy*W + (cx-1)]. Chain points store corner - 0.5; edgel i spans
+  // pts[i] -> pts[i+1].
+  if (ch.pts.size() < 2) return;
+  e1 = std::min(e1, ch.pts.size() - 1);
+  for (std::size_t i = e0; i < e1; ++i) {
+    const int cx0 = static_cast<int>(std::lround(ch.pts[i].x + 0.5f));
+    const int cy0 = static_cast<int>(std::lround(ch.pts[i].y + 0.5f));
+    const int cx1 = static_cast<int>(std::lround(ch.pts[i + 1].x + 0.5f));
+    const int cy1 = static_cast<int>(std::lround(ch.pts[i + 1].y + 0.5f));
     if (cy0 == cy1)
       cf.down[static_cast<std::size_t>(cy0 - 1) * cf.W + std::min(cx0, cx1)] =
           0;
@@ -627,6 +644,11 @@ void eraseChainCracks(CrackField& cf, const ScreenChain& ch) {
       cf.right[static_cast<std::size_t>(std::min(cy0, cy1)) * cf.W +
                (cx0 - 1)] = 0;
   }
+}
+
+void eraseChainCracks(CrackField& cf, const ScreenChain& ch) {
+  if (ch.pts.size() < 2) return;
+  eraseChainCracks(cf, ch, 0, ch.pts.size() - 1);
 }
 
 namespace {
@@ -644,7 +666,8 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
                                          std::vector<ScreenChain> traced,
                                          const float* viewZ,
                                          const std::uint32_t* objectId,
-                                         int minStrong) {
+                                         int minStrong,
+                                         const float* surfAlpha) {
   // Outer loop: prune, retrace, re-evaluate. Bounded: every round erases at
   // least one chain's cracks for good; the cap only bounds the cost of
   // pathological peeling cascades (leftovers are then kept, not lost).
@@ -719,11 +742,88 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
         dropped = true;
       }
     }
+
+    // RUN-LEVEL weak-tail trim on the kept OPEN chains WITHOUT strong self-
+    // support. Chain-level support from a NON-DepthGap class must not extend
+    // to a weak DepthGap run dangling toward an unsupported endpoint: without
+    // a junction at the class transition, a weak sliver FUSED to a supported
+    // run (e.g. a stick's cross-section ObjectId border continuing straight
+    // into the mesh strand's same-id grazing-fade line) would ride the
+    // whole-chain keep, while the SAME cracks are pruned as a free-end spur
+    // when a junction separates them. Mirror the pure-weak-chain rule at run
+    // granularity: a leading/trailing weak run survives only when its outer
+    // endpoint corner junctions into another kept chain (its interior side
+    // is bracket-supported by the adjacent non-weak run by construction).
+    //
+    // A chain carrying >= minStrong STRONG DepthGap edgels of its own is
+    // EXEMPT: its weak end runs are the genuine tapering tails of a real
+    // occlusion contour (classic hysteresis -- strong evidence extends the
+    // connected weak cracks), and such contours routinely END FREE mid-
+    // surface at a cusp over another surface behind, with no junction to
+    // support them. Trimming those dashed the ribbon fold contours of
+    // edge_ribbon2/stick3. The transp1 leak this trim exists for has ZERO
+    // strong edgels (it rode an ObjectId run's keep), so it stays trimmed.
+    //
+    // Interior weak runs are always bracketed; closed chains are cyclically
+    // bracketed; a whole-weak open chain kept here passed the both-ends
+    // rescue above, so both its ends are supported.
+    std::vector<long> keptEnds;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!kept[i] || end0[i] < 0) continue;
+      keptEnds.push_back(end0[i]);
+      keptEnds.push_back(end1[i]);
+    }
+    std::sort(keptEnds.begin(), keptEnds.end());
+    // Endpoint corner `cid` of chain i is supported iff some OTHER kept
+    // chain also ends there (subtract chain i's own contributions).
+    auto supportedEnd = [&](std::size_t i, long cid) {
+      const auto pr = std::equal_range(keptEnds.begin(), keptEnds.end(), cid);
+      const int own = (end0[i] == cid ? 1 : 0) + (end1[i] == cid ? 1 : 0);
+      return static_cast<int>(pr.second - pr.first) - own > 0;
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!kept[i] || traced[i].closed || end0[i] < 0) continue;
+      const ScreenChain& ch = traced[i];
+      const std::size_t nE = ch.edgeClass.size();
+      // Strong self-support exemption: a chain that would be kept on its own
+      // strong DepthGap evidence keeps its weak end runs too.
+      {
+        int strong = 0;
+        bool exempt = false;
+        for (std::size_t e = 0; e < ch.edgeFlags.size(); ++e) {
+          if (ch.edgeClass[e] ==
+                  static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+              (ch.edgeFlags[e] & 1) && ++strong >= std::max(1, minStrong)) {
+            exempt = true;
+            break;
+          }
+        }
+        if (exempt) continue;
+      }
+      auto weakAt = [&](std::size_t e) {
+        return ch.edgeClass[e] ==
+                   static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+               !(e < ch.edgeFlags.size() && (ch.edgeFlags[e] & 1));
+      };
+      std::size_t lead = 0;
+      while (lead < nE && weakAt(lead)) ++lead;
+      if (lead == nE) continue;  // whole-weak: rescued, both ends supported
+      if (lead > 0 && !supportedEnd(i, end0[i])) {
+        eraseChainCracks(cf, ch, 0, lead);
+        dropped = true;
+      }
+      std::size_t tail = nE;
+      while (tail > 0 && weakAt(tail - 1)) --tail;
+      if (tail < nE && !supportedEnd(i, end1[i])) {
+        eraseChainCracks(cf, ch, tail, nE);
+        dropped = true;
+      }
+    }
     if (!dropped) break;
     for (std::vector<std::uint8_t>* plane : {&cf.right, &cf.down})
       for (std::uint8_t& b : *plane)
         b &= static_cast<std::uint8_t>(~kCrackConsumedBit);
-    traced = traceCrackChains(cf, viewZ, objectId);
+    traced = traceCrackChains(cf, viewZ, objectId, surfAlpha);
   }
   return traced;
 }
@@ -766,7 +866,7 @@ namespace {
 inline ScreenChainVert lerpVert(const ScreenChainVert& a,
                                 const ScreenChainVert& b, float t) {
   return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
-          a.vz + (b.vz - a.vz) * t};
+          a.vz + (b.vz - a.vz) * t, a.alpha + (b.alpha - a.alpha) * t};
 }
 
 }  // namespace
@@ -1192,16 +1292,21 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
                    frame.objectId.data(), normalPtr, sp, cp);
 
-  // Stage 2: trace, then Stage 2.5: hysteresis prune + retrace.
+  // Stage 2: trace, then Stage 2.5: hysteresis prune + retrace. The optional
+  // surfAlpha AOV attributes per-vertex surface opacity so transparent
+  // sections / alpha-graded fragments fade their edges accordingly.
+  const float* surfAlphaPtr =
+      frame.surfAlpha.empty() ? nullptr : frame.surfAlpha.data();
   std::vector<ScreenChain> traced =
-      traceCrackChains(cf, frame.viewZ.data(), frame.objectId.data());
+      traceCrackChains(cf, frame.viewZ.data(), frame.objectId.data(),
+                       surfAlphaPtr);
   const std::size_t tracedRaw = traced.size();
   // Self-support needs ~2 FINAL px of strong evidence so a lone borderline
   // crack cannot resurrect an isolated sliver as a dash.
   const int minStrong = std::max(1, static_cast<int>(std::lround(
                                         2.0f * ssScale)));
   traced = pruneWeakChains(cf, std::move(traced), frame.viewZ.data(),
-                           frame.objectId.data(), minStrong);
+                           frame.objectId.data(), minStrong, surfAlphaPtr);
 
   // Stage 3+4 per chain: speck filter (whole chain), class-run relabel +
   // split, per-run geometry cleanup, slot mapping.
@@ -1268,7 +1373,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       }
       in.pts.reserve(pts.size());
       for (const ScreenChainVert& v : pts)
-        in.pts.push_back({v.x, v.y, v.vz, true});
+        in.pts.push_back({v.x, v.y, v.vz, v.alpha, true});
       drawChains.push_back(std::move(in));
       e0 = e1;
     }

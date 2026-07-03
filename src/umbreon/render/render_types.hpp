@@ -170,6 +170,14 @@ struct StrokeEdgeOptions {
   // above a threshold) so genuine angular features are not rounded. Off by default
   // (byte-identical); --stroke-smooth on enables it.
   bool smooth = false;
+  // VERIFICATION mode (--edges-only): draw ONLY the edge strokes over a blank
+  // background (the surface color is cleared to the scene background before the
+  // stroke pass; the AOVs -- and thus edge extraction / surfAlpha -- are
+  // captured from the real surfaces first, so the drawn line set is identical
+  // to the production render). Strokes ink at FULL opacity (surface alpha and
+  // per-section style opacity are ignored) so faint / alpha-following lines
+  // stay clearly visible for annotating missing edges. Off by default.
+  bool edgesOnly = false;
 
   // Per-section styling: a section without an override uses defaultStyle. The
   // stroke pipeline maps each EdgeNature onto a styling slot in EdgeStyle (see
@@ -514,6 +522,13 @@ struct FrameResult {
   std::vector<float> viewZ;          // width*height   linear view-z (edge-only)
   std::vector<std::uint32_t> objectId;    // width*height   per-pixel object id
   std::vector<std::uint32_t> materialId;  // width*height   per-pixel material id
+  // First-hit surface opacity (fragment alpha, including any group alpha
+  // override baked into the scene colors). Sized and written ONLY when
+  // strokeEdges is enabled. The stroke edge pass multiplies each chain
+  // vertex's stroke opacity by this value, so an edge derived from a
+  // transparent surface inks with that surface's transparency (per-vertex
+  // alpha varies linearly along the stroke via the standard lerp).
+  std::vector<float> surfAlpha;           // width*height   first-hit opacity
   // AO / surface-irradiance-cache AOVs: sized and written ONLY when
   // RenderOptions::aoWriteAov is on (else left empty, keeping the default path
   // byte-identical). albedo/normal above are the OIDN guide; these are the AO

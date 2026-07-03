@@ -125,6 +125,10 @@ struct Options {
   // Master switch for the stroke edge pass (off => byte-identical default, no
   // extra AOVs allocated). --edges on|off.
   bool edges = false;
+  // Verification: draw ONLY the edge strokes over a blank background, full
+  // opacity (--edges-only on). Implies --edges on. See
+  // StrokeEdgeOptions::edgesOnly.
+  bool edgesOnly = false;
   // Per-section edge style override (--edge ID=spec, repeatable), mirroring
   // --alpha one-for-one. Key is the section id with the "_show" prefix stripped
   // (e.g. "_34_35"); value is the parsed EdgeStyle (which natures are enabled and

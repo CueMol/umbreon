@@ -1,7 +1,8 @@
 # Screen-Space Vector Edges
 
 The chain extractor for the stroke edge pass (`--edges on`). It vectorizes the
-per-pixel edge G-buffer AOVs (`viewZ` / `objectId` / `normal`) by crack tracing.
+per-pixel edge G-buffer AOVs (`viewZ` / `objectId` / `normal` / `surfAlpha`)
+by crack tracing.
 It shares the stylization and rasterization back half (`edges/stroke_render.hpp`)
 with the retired mesh-topology source, so all style flags
 (`--stroke-thickness`, `--stroke-taper`, `--stroke-smooth`, `--edge ID=spec`,
@@ -66,6 +67,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    slivers, spurs with a free end, weak lines hugging the outline with both
    ends on it) is erased and the field is retraced, so survivors re-merge
    across the dissolved junctions into maximal chains again.
+   On a kept open chain WITHOUT strong self-support (kept only via its
+   non-DepthGap edgels), a leading/trailing weak DepthGap run whose outer
+   end does not junction into another kept chain is trimmed too: without a
+   junction at the class transition, a grazing-fade sliver fused straight
+   onto e.g. an ObjectId run would ride the whole-chain keep. A chain with
+   enough strong edgels of its own is exempt -- its weak end runs are the
+   tapering tails of a real contour, which routinely ends free at a cusp
+   over another surface behind.
 3. **Cleanup**: collinear collapse, Chaikin corner cutting (endpoints pinned
    at junctions), Douglas-Peucker simplification, junction-aware speck
    filter (isolated specks and free-end spurs drop; short junction-to-
@@ -116,7 +125,14 @@ defaults, deliberately not CLI flags.
   refinement from the viewZ gradients is a possible later step.
 - The AOVs are captured from the FIRST hit including transparent surfaces,
   so the screen source outlines a front transparent veil where the mesh QI
-  path would see through it.
+  path would see through it. The ink does follow the veil's transparency,
+  though: each chain vertex samples the first hit's fragment opacity from the
+  `surfAlpha` AOV (mesh vertex-color alpha barycentric-interpolated at the
+  hit, sphere/cylinder color alpha incl. the edge_line2 gradient, any --alpha
+  group override baked in), and the stroke opacity is the per-section style
+  opacity TIMES that per-vertex surface alpha, lerped along the stroke. A
+  fully transparent section's outline vanishes with it; a vertex-alpha fade
+  (CueMol fadeout) fades its edge linearly in step.
 - Junctions are exact T-vertices, but the chains meeting there are smoothed
   independently (endpoints pinned), which can leave a small kink.
 - Hidden lines cannot be drawn (the z-buffer only sees visible surfaces).

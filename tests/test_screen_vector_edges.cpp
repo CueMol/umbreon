@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "edges/screen_vector_edges.hpp"
+#include "edges/stroke_render.hpp"
 #include "test_util.hpp"
 
 namespace {
@@ -747,6 +748,133 @@ int main() {
     s.check("prune: deterministic", same);
   }
 
+  // ---- (8b) run-level weak-tail trim: a weak run fused to a supported ----
+  // run must not ride the whole-chain keep to a free end. Left surface (one
+  // section) against a farther right surface: the upper right half is
+  // ANOTHER section (ObjectId border), the lower right half the SAME section
+  // (weak same-id step, dominance-gated). No junction separates the two runs
+  // (the id transition inside the right surface is depth-continuous), so
+  // they trace as ONE chain; the weak run ends at a free image-border corner
+  // and must be trimmed while the ObjectId run stays.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        if (x < 8)
+          b.set(x, y, 5, 100.0f);       // near surface, section 1
+        else if (y < 8)
+          b.set(x, y, 9, 130.0f);       // far surface, section 2 -> ObjectId
+        else
+          b.set(x, y, 5, 130.0f);       // far surface, section 1 -> weak gap
+      }
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    // Sanity: one fused chain, 8 ObjectId + 8 weak DepthGap edgels.
+    int objRaw = 0, weakRaw = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e) {
+        if (ch.edgeClass[e] == static_cast<std::uint8_t>(CrackClass::ObjectId))
+          ++objRaw;
+        if (ch.edgeClass[e] == static_cast<std::uint8_t>(CrackClass::DepthGap))
+          ++weakRaw;
+      }
+    s.check_eq("weak-tail trim: fused into one chain", chains.size(),
+               static_cast<std::size_t>(1));
+    s.check_eq("weak-tail trim: raw ObjectId edgels", objRaw, 8);
+    s.check_eq("weak-tail trim: raw weak edgels", weakRaw, 8);
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    int objKept = 0, weakKept = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e) {
+        if (ch.edgeClass[e] == static_cast<std::uint8_t>(CrackClass::ObjectId))
+          ++objKept;
+        if (ch.edgeClass[e] == static_cast<std::uint8_t>(CrackClass::DepthGap))
+          ++weakKept;
+      }
+    s.check_eq("weak-tail trim: ObjectId run kept", objKept, 8);
+    s.check_eq("weak-tail trim: free-end weak tail erased", weakKept, 0);
+  }
+  // Bracketed counterpart: the same fused chain, but the weak run lands on
+  // the silhouette outline (background rows below). Its outer end junctions
+  // into the kept silhouette chains, so the weak run SURVIVES -- the
+  // contour-terminal case the trim must not break.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 12; ++y)
+      for (int x = 0; x < 16; ++x) {
+        if (x < 8)
+          b.set(x, y, 5, 100.0f);
+        else if (y < 8)
+          b.set(x, y, 9, 130.0f);
+        else
+          b.set(x, y, 5, 130.0f);
+      }
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    int objKept = 0, weakKept = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e) {
+        if (ch.edgeClass[e] == static_cast<std::uint8_t>(CrackClass::ObjectId))
+          ++objKept;
+        if (ch.edgeClass[e] == static_cast<std::uint8_t>(CrackClass::DepthGap))
+          ++weakKept;
+      }
+    s.check_eq("weak-tail trim: ObjectId run kept (bracketed)", objKept, 8);
+    s.check_eq("weak-tail trim: outline-landing weak run survives", weakKept,
+               4);
+  }
+  // Strong self-support exemption: a free-ended (deg 1/1) contour chain of
+  // weak-strong-weak composition -- the tapering fold contour over another
+  // surface behind (the edge_ribbon2 regression) -- keeps its weak end runs.
+  // One vertical same-id step whose magnitude varies smoothly along y (linear
+  // ramps, so no horizontal cracks fire): 30 (weak) at both ends, 510
+  // (strong: > stepDominanceK * px) in the middle.
+  {
+    Buffers b(16, 16);
+    const float f[16] = {30, 30, 30, 30, 30, 150, 270, 390, 510, 510, 510,
+                         510, 390, 270, 150, 30};
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 100.0f : 100.0f + f[y]);
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    s.check_eq("strong exemption: one free-ended chain", chains.size(),
+               static_cast<std::size_t>(1));
+    int strongRaw = 0, weakRaw = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e)
+        if (ch.edgeClass[e] ==
+            static_cast<std::uint8_t>(CrackClass::DepthGap)) {
+          if (ch.edgeFlags[e] & 1)
+            ++strongRaw;
+          else
+            ++weakRaw;
+        }
+    s.check_eq("strong exemption: raw strong edgels", strongRaw, 8);
+    s.check_eq("strong exemption: raw weak edgels", weakRaw, 8);
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    int strongKept = 0, weakKept = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e)
+        if (ch.edgeClass[e] ==
+            static_cast<std::uint8_t>(CrackClass::DepthGap)) {
+          if (ch.edgeFlags[e] & 1)
+            ++strongKept;
+          else
+            ++weakKept;
+        }
+    s.check_eq("strong exemption: strong body kept", strongKept, 8);
+    s.check_eq("strong exemption: free-end weak tails kept (not trimmed)",
+               weakKept, 8);
+  }
+
   // ---- (9) bg clearance: terminal weak cracks reach the outline -----------
   // A weak step line PERPENDICULAR to the outline is a contour terminal: its
   // cracks inside the clearance radius have background in their along-crack
@@ -773,6 +901,111 @@ int main() {
     s.check("parallel weak line: terminal crack at the side outline survives",
             (cf.down[b.idx(4, 5)] & kCrackClassMask) ==
                 static_cast<std::uint8_t>(CrackClass::DepthGap));
+  }
+
+  // ---- (10) surfAlpha attribution: chain vertices carry the owner-pixel ---
+  // surface opacity (mean of the adjacent edgels), so a transparent section's
+  // edge fades with it. Null buffer keeps every vertex opaque (alpha == 1).
+  {
+    Buffers b(16, 16);
+    std::vector<float> surfA(static_cast<std::size_t>(b.W) * b.H, 1.0f);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x) {
+        b.set(x, y, 7, 10.0f);
+        surfA[b.idx(x, y)] = 0.4f;  // uniformly transparent section
+      }
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains = umbreon::traceCrackChains(
+        cf, b.viewZ.data(), b.objectId.data(), surfA.data());
+    bool all04 = !chains.empty();
+    for (const ScreenChain& ch : chains)
+      for (const umbreon::ScreenChainVert& v : ch.pts)
+        if (v.alpha != 0.4f) all04 = false;
+    s.check("uniform transparent section: every chain vertex alpha == 0.4",
+            all04);
+
+    CrackField cf2 = classify(b, defaults);
+    std::vector<ScreenChain> chains2 =
+        umbreon::traceCrackChains(cf2, b.viewZ.data(), b.objectId.data());
+    bool all1 = !chains2.empty();
+    for (const ScreenChain& ch : chains2)
+      for (const umbreon::ScreenChainVert& v : ch.pts)
+        if (v.alpha != 1.0f) all1 = false;
+    s.check("no surfAlpha buffer: every chain vertex alpha == 1", all1);
+  }
+
+  // ---- (11) surfAlpha gradient: a fragment-alpha split inside one section -
+  // yields per-vertex alphas following the owner pixels, with the transition
+  // vertex averaging its two adjacent edgels (0.25 | 0.75 -> 0.5) -- the
+  // linear-interpolation contract between differently-transparent fragments.
+  {
+    Buffers b(16, 16);
+    std::vector<float> surfA(static_cast<std::size_t>(b.W) * b.H, 1.0f);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x) {
+        b.set(x, y, 7, 10.0f);
+        surfA[b.idx(x, y)] = x < 8 ? 0.25f : 0.75f;
+      }
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains = umbreon::traceCrackChains(
+        cf, b.viewZ.data(), b.objectId.data(), surfA.data());
+    float aMin = 1.0f, aMax = 0.0f;
+    int nHalf = 0;
+    bool inSet = !chains.empty();
+    for (const ScreenChain& ch : chains)
+      for (const umbreon::ScreenChainVert& v : ch.pts) {
+        aMin = std::min(aMin, v.alpha);
+        aMax = std::max(aMax, v.alpha);
+        if (v.alpha == 0.5f) ++nHalf;
+        if (v.alpha != 0.25f && v.alpha != 0.5f && v.alpha != 0.75f)
+          inSet = false;
+      }
+    s.check("alpha split: vertex alphas are owner means only", inSet);
+    s.check_eq("alpha split: min vertex alpha", aMin, 0.25f);
+    s.check_eq("alpha split: max vertex alpha", aMax, 0.75f);
+    // One averaged transition vertex on the top boundary, one on the bottom.
+    s.check_eq("alpha split: two 0.5 transition vertices", nHalf, 2);
+  }
+
+  // ---- (12) draw stage: per-vertex alpha lerps along the stroke; uniform --
+  // alpha takes the constant path. A horizontal 2 px stroke over a white
+  // frame, alpha 0 -> 1: untouched at the start, ~half ink mid-span, full
+  // ink at the end. A second chain with constant alpha 0.5 inks exactly 0.5.
+  {
+    const int W = 40, H = 12;
+    umbreon::FrameResult frame;
+    frame.width = W;
+    frame.height = H;
+    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    umbreon::Scene scene;  // groupEdgeStyle empty -> global stroke style
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.thickness = 2;  // black, opacity 1 (defaults)
+
+    // Half-integer backbone coordinates, exactly like the tracer's chain
+    // vertices (lattice corner - 0.5): pixel centers then sit strictly
+    // inside the ribbon quads, never on a shared quad seam.
+    std::vector<umbreon::StrokeChainInput> chains(2);
+    chains[0].pts = {{4.5f, 3.5f, 10.0f, 0.0f, true},
+                     {35.5f, 3.5f, 10.0f, 1.0f, true}};
+    chains[1].pts = {{4.5f, 8.5f, 10.0f, 0.5f, true},
+                     {35.5f, 8.5f, 10.0f, 0.5f, true}};
+    umbreon::renderStrokeChains(frame, scene, opt, chains);
+
+    auto lum = [&](int x, int y) {
+      const std::size_t p = (static_cast<std::size_t>(y) * W + x) * 4;
+      return frame.color[p];  // white base + black ink: R == G == B
+    };
+    s.check("gradient stroke: start stays (nearly) uninked",
+            lum(5, 3) > 0.9f);
+    s.check("gradient stroke: mid-span inks about half",
+            lum(20, 3) > 0.3f && lum(20, 3) < 0.7f);
+    s.check("gradient stroke: end inks (nearly) full", lum(34, 3) < 0.1f);
+    // Constant-alpha chain: exactly style opacity (1) x surface alpha (0.5).
+    s.check_eq("uniform 0.5 stroke: exact half ink", lum(20, 8), 0.5f);
   }
 
   return s.report();
