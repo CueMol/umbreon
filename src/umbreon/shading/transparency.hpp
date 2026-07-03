@@ -1,10 +1,12 @@
 // libumbreon INTERNAL header -- not installed, not part of the public API.
 // Implementation detail; may change without notice. Do not include downstream.
 // Front-to-back transparency integration for one primary ray. Walks the hits
-// along the ray, compositing CueMol "veil" groups additively (group alpha) and
-// every other transparent fragment with "over" (fragment alpha), over the
-// nearest opaque surface / background. Returns the pixel's linear HDR RGBA and
-// near depth.
+// along the ray, compositing every transparent fragment with "over" (fragment
+// alpha = intrinsic per-color opacity, POV native transmit) over the nearest
+// opaque surface / background. Returns the pixel's linear HDR RGBA and near
+// depth. Group alpha (CueMol section transparency) is NOT handled here: it is
+// realized as a blendpng-equivalent multi-pass post-blend in render() (see
+// Scene::groupBlend), so each pass sees only opaque + fragment-alpha surfaces.
 //
 // Hot per-pixel path, so it is `inline` here and calls shadeHit() (hit_shader.hpp)
 // inline; the renderer's TBB loop inlines the whole thing per pixel.
@@ -62,31 +64,21 @@ struct PixelResult {
 
 // Integrate one primary ray (origin `org`, direction `rd`) through the scene,
 // compositing transparency. (px, py) is the hi-res pixel for deterministic
-// secondary-ray sampling; `isVeil` flags the additive (group-alpha) sections;
-// `camDir` is the camera forward axis (normalized) used to convert ray-tfar to
-// linear view-z for the edge G-buffer; `cappedRays` counts rays that exhaust the
-// transparent-layer ceiling.
-inline PixelResult integratePixel(const ShadeContext& sc,
-                                  const std::vector<uint8_t>& isVeil,
-                                  const Vec3& org, const Vec3& rd, uint32_t px,
-                                  uint32_t py, const Vec3& camDir,
+// secondary-ray sampling; `camDir` is the camera forward axis (normalized) used
+// to convert ray-tfar to linear view-z for the edge G-buffer; `cappedRays`
+// counts rays that exhaust the transparent-layer ceiling.
+inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
+                                  const Vec3& rd, uint32_t px, uint32_t py,
+                                  const Vec3& camDir,
                                   std::atomic<long long>& cappedRays) {
   RTCScene rscene = sc.built.scene;
   const RenderOptions& opt = sc.opt;
   const Vec3& bg = sc.bg;
 
-  // Single-pass transparency with two coexisting models, selected per hit
-  // by the hit's group:
-  //   - VEIL groups (group alpha): additive single-layer, frontmost-per-
-  //     group, order-independent -- exactly CueMol's blendpng.
-  //   - everything else (fragment alpha = intrinsic per-color opacity):
-  //     front-to-back "over", every surface composited (no dedup) -- POV
-  //     native transmit; group alpha (if any) already multiplied in.
-  // Combine: fragments composite over the opaque floor, then the veils are
-  // laid additively on top. Reduces to pure "over" (no veils, e.g. scene5),
-  // pure additive (all veils, the group-alpha path), or opaque (unchanged).
-  Vec3 Cv{0.0f, 0.0f, 0.0f};  // additive (veil) premultiplied color
-  float sumBeta = 0.0f;       // sum of veil weights
+  // Fragment alpha (intrinsic per-color opacity): front-to-back "over", every
+  // surface composited (no dedup) -- POV native transmit -- over the nearest
+  // opaque floor / background. Reduces to opaque (unchanged) when nothing is
+  // transparent along the ray.
   Vec3 Cf{0.0f, 0.0f, 0.0f};  // over (fragment) premultiplied color
   float Af = 0.0f;            // over accumulated coverage
   float nearDepth = 0.0f;
@@ -109,10 +101,6 @@ inline PixelResult integratePixel(const ShadeContext& sc,
   float firstOpacity = 1.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
-
-  constexpr int kMaxSeen = 64;  // distinct veil groups per ray
-  int seen[kMaxSeen];
-  int nseen = 0;
 
   const float kOpaque = 1.0f - 1e-4f;  // opacity at/above this == opaque
   float tnear = 0.0f;
@@ -179,31 +167,13 @@ inline PixelResult integratePixel(const ShadeContext& sc,
       break;
     }
 
-    const bool veil =
-        hs.group >= 0 && static_cast<std::size_t>(hs.group) < isVeil.size() &&
-        isVeil[hs.group] != 0;
-    if (veil) {
-      // additive: only the frontmost surface of each veil group
-      bool dup = false;
-      for (int sidx = 0; sidx < nseen; ++sidx)
-        if (seen[sidx] == hs.group) { dup = true; break; }
-      if (!dup) {
-        if (nseen < kMaxSeen) seen[nseen++] = hs.group;
-        const float a = hs.opacity;
-        Cv.x += a * hs.color.x;
-        Cv.y += a * hs.color.y;
-        Cv.z += a * hs.color.z;
-        sumBeta += a;
-      }
-    } else {
-      // over: every fragment composited front-to-back (no dedup)
-      const float w = (1.0f - Af) * hs.opacity;
-      Cf.x += w * hs.color.x;
-      Cf.y += w * hs.color.y;
-      Cf.z += w * hs.color.z;
-      Af += w;
-    }
-    if (sumBeta >= kOpaque || Af >= kOpaque) break;  // fully saturated
+    // over: every fragment composited front-to-back (no dedup)
+    const float w = (1.0f - Af) * hs.opacity;
+    Cf.x += w * hs.color.x;
+    Cf.y += w * hs.color.y;
+    Cf.z += w * hs.color.z;
+    Af += w;
+    if (Af >= kOpaque) break;  // fully saturated
     // Advance just past this surface to find the next one. The step is a
     // self-intersection epsilon: it must clear only floating-point jitter,
     // never a distinct surface sitting just behind this one. A hardcoded
@@ -229,24 +199,18 @@ inline PixelResult integratePixel(const ShadeContext& sc,
       cappedRays.fetch_add(1, std::memory_order_relaxed);
   }
 
-  // Fragments over the opaque floor; veils laid additively on top. The base
-  // (floor / background) contributes COLOR only where it is covered
-  // (baseCov), so an opaque background (default) leaves opaque scenes
-  // byte-unchanged, while a transparent background (baseCov 0) yields a
-  // premultiplied result with alpha = accumulated coverage.
+  // Fragments over the opaque floor. The base (floor / background) contributes
+  // COLOR only where it is covered (baseCov), so an opaque background
+  // (default) leaves opaque scenes byte-unchanged, while a transparent
+  // background (baseCov 0) yields a premultiplied result with alpha =
+  // accumulated coverage.
   const float floorW = (1.0f - Af) * baseCov;
-  const Vec3 baseEff{Cf.x + floorW * base.x,
-                     Cf.y + floorW * base.y,
-                     Cf.z + floorW * base.z};
-  const float covEff = Af + floorW;
-  float vw = 1.0f - sumBeta;
-  if (vw < 0.0f) vw = 0.0f;
-  float outA = sumBeta + vw * covEff;
+  float outA = Af + floorW;
   outA = std::fmin(1.0f, std::fmax(0.0f, outA));
 
-  return PixelResult{Cv.x + vw * baseEff.x,
-                     Cv.y + vw * baseEff.y,
-                     Cv.z + vw * baseEff.z,
+  return PixelResult{Cf.x + floorW * base.x,
+                     Cf.y + floorW * base.y,
+                     Cf.z + floorW * base.z,
                      outA,
                      nearDepth,
                      firstObjectId,

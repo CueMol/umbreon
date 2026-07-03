@@ -468,8 +468,9 @@ struct RenderOptions {
 
   // --- transparency (single-pass front-to-back compositing) ---
   // When on, the renderer walks hits front-to-back and composites every
-  // transparent fragment ("over"), with groups in Scene::veilGroups instead laid
-  // additively as single-layer "veils" (CueMol blendpng). Off = opaque only.
+  // transparent fragment ("over", fragment alpha). Off = opaque only. Group
+  // alpha (CueMol sections) is separate: Scene::groupBlend renders one extra
+  // pass per group and blends the final frames (blendpng equivalence).
   bool transparency = true;
   // When on, the background contributes 0 coverage so the output alpha equals the
   // accumulated transparent coverage (POV "_transpbg"); default = opaque bg.

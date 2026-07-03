@@ -274,6 +274,20 @@ struct Cylinder {
   bool fromEdgeMacro = false;
 };
 
+// One group-alpha blend entry: CueMol "postprocess" transparency for a whole
+// section (transparency group). render() realizes the listed entries with one
+// extra full-pipeline pass per group and blends the FINAL display-encoded
+// framebuffers -- the closed form of CueMol's blendpng lerp chain (solvebeta):
+//   out = (1 - sum_i a_i) * render(scene minus every listed group)
+//       + sum_i a_i * render(scene with group i kept, other listed groups hidden)
+// The group's geometry renders OPAQUE (colors untouched) inside its own pass;
+// fragment alpha (per-vertex color.w / POV native transmit) is orthogonal and
+// still composites front-to-back "over" within each pass.
+struct GroupBlend {
+  uint16_t group = 0;  // transparency group (CueMol section) id
+  float alpha = 1.0f;  // blend weight (CueMol group alpha; blendpng beta)
+};
+
 // --------------------------------------------------------------------------
 // Scene description (parser/builder output, renderer input)
 // --------------------------------------------------------------------------
@@ -336,11 +350,11 @@ struct Scene {
   float aoDistance = 1.0e20f;         // AO ray max distance (scene-scaled)
   float assumedGamma = 1.0f;         // POV assumed_gamma (from global_settings)
 
-  // Transparency groups (sections) rendered as additive single-layer "veils"
-  // (group alpha, e.g. from --alpha). A transparent hit whose group is listed
-  // uses the additive model; ALL other transparency uses front-to-back "over"
-  // (fragment alpha). Empty (default) => every transparent surface is over.
-  std::vector<uint16_t> veilGroups;
+  // Group-alpha (section) transparency realized as a blendpng-equivalent
+  // multi-pass post-blend (see GroupBlend above). Empty (default) => a single
+  // render pass and no blending; every transparent surface then composites
+  // front-to-back "over" (fragment alpha).
+  std::vector<GroupBlend> groupBlend;
 
   // Per-section (per transparency group) stroke edge style, indexed by group id
   // (objectId >> 2). Sized to groupNames.size() and pre-filled with
