@@ -454,6 +454,129 @@ int main() {
     checkAB(s, "pt1 half-res, odd dims", sc, o);
   }
 
+  // pt1 full-res, denoise off (raw composite path).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 2;
+    o.pt1Denoise = false;
+    checkAB(s, "pt1 full-res, denoise off", sc, o);
+  }
+
+  // pt1 full-res: LD sampling + firefly clamp + 3 bounces (RR path) + shadows.
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 4;
+    o.giBounces = 3;
+    o.pt1Ld = true;
+    o.pt1Clamp = 2.0f;
+    o.shadows = true;
+    checkAB(s, "pt1 ld+clamp+3bounce+shadows", sc, o);
+  }
+
+  // pt1 half-res + 3 bounces, denoise off.
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 2;
+    o.giBounces = 3;
+    o.pt1HalfRes = true;
+    o.pt1Denoise = false;
+    checkAB(s, "pt1 half-res, 3 bounces, denoise off", sc, o);
+  }
+
+  // pt1 with REAL CSG receivers/scatterers: the blend group is ball-and-stick
+  // (gather-eligible primitives), plus a mesh group behind it.
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addBlendSphere(sc, {0.0f, 0.5f, 1.2f}, 0.5f, {0.2f, 0.8f, 0.3f, 1.0f}, 1);
+    addBlendCylinder(sc, {-0.8f, -0.8f, 1.0f}, {0.5f, -0.2f, 1.0f}, 0.2f,
+                     {0.8f, 0.7f, 0.1f, 1.0f}, 1);
+    sc.groupBlend.push_back({1, 0.4f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 2;
+    checkAB(s, "pt1 CSG receivers in blend group", sc, o,
+            /*compareMaterialId=*/false);
+  }
+
+  // pt1 + stroke edges combo (edge AOVs assembled + pt1 reuse together).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 2.2f, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 2;
+    o.strokeEdges.enable = true;
+    auto& cs = o.strokeEdges.defaultStyle
+                   .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    cs.enabled = true;
+    cs.width = 2.0f;
+    checkAB(s, "pt1 + stroke edges", sc, o);
+  }
+
+  // pt1 multi-group, half-res.
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1.8f, -1.8f, -0.2f, 0.2f,
+            1.0f, 1);
+    addQuad(sc.mesh, {0.9f, 0.6f, 0.1f, 1.0f}, 0.2f, 0.2f, 1.8f, 1.8f,
+            1.5f, 2);
+    sc.groupBlend.push_back({1, 0.3f});
+    sc.groupBlend.push_back({2, 0.4f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 2;
+    o.pt1HalfRes = true;
+    checkAB(s, "pt1 half-res, 2 groups", sc, o);
+  }
+
+  // pt1 verify mode.
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 1;
+    o.pt1Spp = 2;
+    o.blendReuse = 0;
+    const umbreon::FrameResult ref = umbreon::render(sc, o);
+    o.blendReuse = 2;  // verify
+    const umbreon::FrameResult got = umbreon::render(sc, o);
+    std::string why;
+    s.check("pt1 verify mode bit-exact", sameFrame(ref, got, true, &why));
+  }
+
+  // gi-cache integrator falls back to naive (still bit-exact by identity).
+  {
+    umbreon::Scene sc = makeBaseScene();
+    addQuad(sc.mesh, {0.2f, 0.4f, 0.9f, 1.0f}, -1, -1, 1, 1, 1.0f, 1);
+    sc.groupBlend.push_back({1, 0.5f});
+    umbreon::RenderOptions o = base;
+    o.gi = true;
+    o.giIntegrator = 0;  // irradiance cache: excluded from reuse
+    o.giSamples = 4;
+    checkAB(s, "gi-cache falls back to naive", sc, o);
+  }
+
   // --- probeSegment unit test: one blend group = the standard blend quad at
   // z=1 covering [-1,1]^2 (group 1).
   {

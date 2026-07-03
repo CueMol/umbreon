@@ -529,6 +529,19 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
 
   auto t1 = std::chrono::high_resolution_clock::now();
   res.renderSeconds = std::chrono::duration<double>(t1 - t0).count();
+
+  // Blend-reuse capture: snapshot the trace-stage outputs PRE-GI-composite.
+  // This is the seam the layer passes copy clean pixels from: their direct
+  // color must NOT include the background pass's composited indirect, because
+  // the denoised E of a clean pixel depends on the whole frame and is
+  // re-derived per pass (raw E assembled, then denoise + composite run
+  // full-frame). The pt1 raw E/occ bundles are captured separately inside the
+  // pt1 block, post-gather / pre-denoise.
+  if (blendCapture) {
+    reuse->raw = res;
+    reuse->giRefl = giRefl;
+    reuse->giElig = giElig;
+  }
   res.pt1Timing.bvhBuild = std::chrono::duration<double>(tBvh1 - tBvh0).count();
   res.pt1Timing.primary = res.renderSeconds;
 
@@ -550,6 +563,9 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                    opt.envLights);
     const Aabb b = scene.mesh.bounds();
     const float diag = b.valid() ? b.diagonal() : 1.0f;
+    // Gather epsilon scale: the pass mesh diagonal, unless the multipass
+    // orchestrator pinned the full-scene diagonal (see RenderOptions::pt1EpsT).
+    const float epsT = (opt.pt1EpsT > 0.0f) ? opt.pt1EpsT : diag;
     detail::IrradianceCacheParams gp;
     gp.scene = built.scene;
     gp.built = &built;
@@ -622,18 +638,58 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
         reuse->halfH = hh;
         reuse->touchHalf.assign(static_cast<std::size_t>(hw) * hh, 0u);
       }
+      // Blend-reuse consume: skip clean HALF pixels in the trace and gather,
+      // then copy them from the capture's raw bundle. When the background
+      // pass had no gather-eligible geometry (empty bg scene) the bundle is
+      // empty and activeHalf is null: everything recomputes, still bit-exact,
+      // and clean half pixels legitimately stay at the zero init (no bg
+      // geometry can appear at a clean pixel).
+      const uint8_t* activeHalfMask =
+          (blendReuseActive && reuse->activeHalf != nullptr)
+              ? reuse->activeHalf->data()
+              : nullptr;
+      if (activeHalfMask && reuse->halfW != 0 &&
+          (reuse->halfW != hw || reuse->halfH != hh))
+        throw std::runtime_error(
+            "blend reuse: pt1 half grid does not match the capture");
       const auto tg0 = std::chrono::high_resolution_clock::now();
       detail::tracePt1GBuffer(gp, camb, hw, hh, g,
                               blendCapture ? reuse->probe : nullptr,
-                              blendCapture ? reuse->touchHalf.data() : nullptr);
+                              blendCapture ? reuse->touchHalf.data() : nullptr,
+                              activeHalfMask);
+      if (activeHalfMask && !reuse->pt1.gbuf.hit.empty()) {
+        const Pt1GBuffer& rg = reuse->pt1.gbuf;
+        const std::size_t nh = static_cast<std::size_t>(hw) * hh;
+        for (std::size_t i = 0; i < nh; ++i) {
+          if (activeHalfMask[i]) continue;
+          for (int c = 0; c < 3; ++c) {
+            g.position[i * 3 + c] = rg.position[i * 3 + c];
+            g.normal[i * 3 + c] = rg.normal[i * 3 + c];
+            g.geomNormal[i * 3 + c] = rg.geomNormal[i * 3 + c];
+            g.albedo[i * 3 + c] = rg.albedo[i * 3 + c];
+          }
+          g.depth[i] = rg.depth[i];
+          g.hit[i] = rg.hit[i];
+        }
+      }
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), spp,
-                            opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
+                            opt.pt1Seed, epsT, Eh, occh, opt.pt1Ld,
                             opt.pt1Clamp,
                             blendCapture ? reuse->probe : nullptr,
-                            blendCapture ? reuse->touchHalf.data() : nullptr);
+                            blendCapture ? reuse->touchHalf.data() : nullptr,
+                            activeHalfMask);
+      if (activeHalfMask && !reuse->pt1.EhRaw.empty()) {
+        const std::size_t nh = static_cast<std::size_t>(hw) * hh;
+        for (std::size_t i = 0; i < nh; ++i) {
+          if (activeHalfMask[i]) continue;
+          for (int c = 0; c < 3; ++c)
+            Eh[i * 3 + c] = reuse->pt1.EhRaw[i * 3 + c];
+          occh[i] = reuse->pt1.occhRaw[i];
+        }
+      }
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -663,13 +719,26 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
       const auto tg0 = std::chrono::high_resolution_clock::now();
       // Blend-reuse capture: gather rays share the pixel's hi-res touch word
       // (the gather grid IS the render grid here; the primary loop above has
-      // already finished, so the single-writer rule holds).
+      // already finished, so the single-writer rule holds). Reuse: clean
+      // pixels are skipped and their raw E/occ copied from the capture
+      // (empty bundle => the background pass ran no pt1; clean pixels then
+      // cannot be gather-eligible and correctly stay at zero).
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(), spp,
-                            opt.pt1Seed, diag, Ebuf, occBuf, opt.pt1Ld,
+                            opt.pt1Seed, epsT, Ebuf, occBuf, opt.pt1Ld,
                             opt.pt1Clamp,
                             blendCapture ? reuse->probe : nullptr,
-                            blendCapture ? reuse->touch.data() : nullptr);
+                            blendCapture ? reuse->touch.data() : nullptr,
+                            activeMask);
+      if (activeMask && !reuse->pt1.Eraw.empty()) {
+        const std::size_t npixHi = static_cast<std::size_t>(W) * H;
+        for (std::size_t i = 0; i < npixHi; ++i) {
+          if (activeMask[i]) continue;
+          for (int c = 0; c < 3; ++c)
+            Ebuf[i * 3 + c] = reuse->pt1.Eraw[i * 3 + c];
+          occBuf[i] = reuse->pt1.occRaw[i];
+        }
+      }
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -699,6 +768,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
       for (int py = rows.begin(); py != rows.end(); ++py) {
         for (int px = 0; px < W; ++px) {
           const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+          // Blend-reuse: the composite runs for EVERY eligible pixel, clean
+          // ones included. Their direct color was copied PRE-composite and
+          // their raw E assembled from the capture, so this add reproduces
+          // the naive pass bit-for-bit. (The denoised E of a clean pixel
+          // depends on the whole frame -- copying a post-composite color
+          // from the background pass would bake in the WRONG denoise
+          // neighborhood.)
           if (!eligible[pix]) continue;
           const Vec3 ind{gI * giRefl[pix * 3 + 0] * Ebuf[pix * 3 + 0],
                          gI * giRefl[pix * 3 + 1] * Ebuf[pix * 3 + 1],
@@ -857,15 +933,6 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   device_ = device;
   scene_ = built.scene;
 
-  // Blend-reuse capture: snapshot the trace-stage outputs. This is the seam
-  // between the per-pixel trace work (reused by layer passes) and the
-  // full-frame post stages (fog/edges/downsample/denoise/gamma, which always
-  // run per pass in the pipeline).
-  if (blendCapture) {
-    reuse->raw = res;
-    reuse->giRefl = giRefl;
-    reuse->giElig = giElig;
-  }
   return res;
 }
 

@@ -479,6 +479,14 @@ struct RenderOptions {
   // termination is the opacity early-out (accumulated alpha >= ~1); this only
   // bites pathological deep stacks. The renderer warns once if a ray hits it.
   int maxTransparentLayers = 256;
+  // pt1 gather epsilon length scale override, world units (0 = auto: the
+  // pass scene's mesh AABB diagonal). The group-alpha multipass sets this to
+  // the FULL scene's diagonal for every pass, so a surface point uses the
+  // same self-intersection epsilon in every pass -- required for the reuse
+  // path to be bit-exact (the gather at an untouched pixel must not depend on
+  // which blend groups the pass happens to contain) and applied to the naive
+  // multipass alike so reuse on/off stay comparable.
+  float pt1EpsT = 0.0f;
   // Group-alpha multipass reuse (Scene::groupBlend): 0 = off (every pass
   // renders full-frame, the reference behavior), 1 = on (layer passes reuse
   // the background pass's per-pixel trace results where a probe proves the

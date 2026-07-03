@@ -117,6 +117,16 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
                  sumA);
   const float bgW = std::fmax(0.0f, 1.0f - sumA);
 
+  // Every pass renders with the same options; for pt1, pin the gather epsilon
+  // scale to the FULL scene's mesh diagonal so it does not vary with the
+  // pass's geometry subset (see RenderOptions::pt1EpsT -- applied to naive
+  // and reuse multipass alike, so the two stay bit-comparable).
+  RenderOptions passOpt = opt;
+  if (opt.gi && opt.giIntegrator == 1 && opt.pt1EpsT <= 0.0f) {
+    const Aabb fullBounds = scene.mesh.bounds();
+    passOpt.pt1EpsT = fullBounds.valid() ? fullBounds.diagonal() : 1.0f;
+  }
+
   std::vector<uint8_t> hideAll(static_cast<std::size_t>(maxGroup) + 1, 0);
   for (const GroupBlend& gb : scene.groupBlend) hideAll[gb.group] = 1;
 
@@ -154,7 +164,7 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   const int passCount = 1 + static_cast<int>(scene.groupBlend.size());
   auto addPass = [&](const Scene& ps, float w,
                      detail::BlendReuseContext* rc = nullptr) {
-    FrameResult f = renderFrame(ps, opt, rc);
+    FrameResult f = renderFrame(ps, passOpt, rc);
     std::fprintf(stderr,
                  "blend pass %d/%d: weight %.3f  %zu tris  %.3f s\n",
                  ++passIndex, passCount, w, ps.mesh.triangleCount(),
@@ -207,9 +217,9 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   }
   // Layer passes. Under reuse each runs in Reuse mode with its dirty mask
   // (the group's touch bit from the background pass); clean pixels are copied
-  // from the capture snapshot inside the renderer. The pt1 integrator joins
-  // in a later phase; until then GI passes fall back to full-frame renders.
-  const bool reuseLayers = reusable && !opt.gi;
+  // from the capture snapshot inside the renderer, and the pt1 gather is
+  // restricted the same way (with the half-grid mask when half-res ran).
+  const bool reuseLayers = reusable;
   std::size_t groupIdx = 0;
   for (const GroupBlend& gb : scene.groupBlend) {
     std::vector<uint8_t> hide = hideAll;
@@ -221,13 +231,16 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
       std::vector<uint8_t> active(ctx.touch.size());
       for (std::size_t p = 0; p < active.size(); ++p)
         active[p] = static_cast<uint8_t>((ctx.touch[p] >> groupIdx) & 1u);
+      std::vector<uint8_t> activeHalf(ctx.touchHalf.size());
+      for (std::size_t p = 0; p < activeHalf.size(); ++p)
+        activeHalf[p] = static_cast<uint8_t>((ctx.touchHalf[p] >> groupIdx) & 1u);
       ctx.mode = detail::BlendReuseContext::Mode::Reuse;
       ctx.active = &active;
-      ctx.activeHalf = nullptr;
+      ctx.activeHalf = activeHalf.empty() ? nullptr : &activeHalf;
       // verify mode (--blend-reuse verify): ALSO render the layer full-frame
       // and require byte-identity -- the direct probe-soundness check.
       FrameResult check;
-      if (opt.blendReuse == 2) check = renderFrame(layer, opt);
+      if (opt.blendReuse == 2) check = renderFrame(layer, passOpt);
       addPass(layer, gb.alpha, &ctx);
       if (opt.blendReuse == 2) {
         const char* what = nullptr;
