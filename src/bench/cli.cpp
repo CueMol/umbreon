@@ -331,6 +331,10 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--pt1-ld") {
       std::string v = value("--pt1-ld");
       if (o.ok && !parseBool(v, o.pt1Ld)) fail("--pt1-ld expects on/off");
+    } else if (a == "--pt1-edge-patch") {
+      std::string v = value("--pt1-edge-patch");
+      if (o.ok && !parseBool(v, o.pt1EdgePatch))
+        fail("--pt1-edge-patch expects on/off");
     } else if (a == "--pt1-stats") {
       std::string v = value("--pt1-stats");
       if (o.ok && !parseBool(v, o.pt1Stats))
@@ -751,6 +755,8 @@ void printUsage(const char* prog) {
       "  --seed <int>             pt1 per-pixel RNG seed                [0]\n"
       "  --pt1-ld <on|off>        pt1 stratified 1st-bounce sampling   [off]\n"
       "  --pt1-clamp <f>          pt1 per-sample luminance clamp      [0=off]\n"
+      "  --pt1-edge-patch <on|off> full-res re-gather of silhouette rims\n"
+      "                           the reduced gather grid cannot resolve  [on]\n"
       "  --pt1-stats <on|off>     print pt1 denoiser stage split (debug) [off]\n"
       "  --pt1-upsample-normal-pow <f> upsample normal edge-stop       [32]\n"
       "  --pt1-upsample-depth-scale <f> upsample depth edge-stop     [0.02]\n"

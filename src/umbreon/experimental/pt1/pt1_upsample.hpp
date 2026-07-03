@@ -46,10 +46,17 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
                                    std::vector<float>& outE,
                                    std::vector<float>& outOcc,
                                    int fallbackRadius = 0,
-                                   std::atomic<uint64_t>* outHoles = nullptr) {
+                                   std::atomic<uint64_t>* outHoles = nullptr,
+                                   std::vector<uint8_t>* outNeedsPatch =
+                                       nullptr) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   outE.assign(npix * 3, 0.0f);
   outOcc.assign(npix, 0.0f);
+  // Optional per-pixel "no compatible low-res sample" mask: set wherever the
+  // guide weights died (silhouette rims whose surface the low grid never
+  // sampled at this locale) so the caller can re-gather exactly those pixels
+  // at full resolution instead of accepting a copied/zero E.
+  if (outNeedsPatch) outNeedsPatch->assign(npix, 0);
   const int hw = half.w, hh = half.h;
 
   tbb::parallel_for(tbb::blocked_range<int>(0, H),
@@ -113,6 +120,7 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
           outE[pix * 3 + 2] = eSum.z * inv;
           outOcc[pix] = occSum * inv;
         } else if (bestPix != static_cast<std::size_t>(-1)) {
+          if (outNeedsPatch) (*outNeedsPatch)[pix] = 1;
           // Edge fallback: every guide weight died -- take the nearest valid
           // half pixel verbatim rather than leaving a hole.
           outE[pix * 3 + 0] = halfE[bestPix * 3 + 0];
@@ -120,6 +128,7 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
           outE[pix * 3 + 2] = halfE[bestPix * 3 + 2];
           outOcc[pix] = halfOcc[bestPix];
         } else {
+          if (outNeedsPatch) (*outNeedsPatch)[pix] = 1;
           // The whole 2x2 quad is invalid: the low grid missed this feature.
           // Widened fallback (coarse grids only): nearest valid low pixel by
           // grid distance within the (2r+1)^2 window around the quad.

@@ -436,6 +436,13 @@ struct RenderOptions {
   //   -1 = "output resolution": resolved to the supersample factor by
   //        renderFrame, so the gather grid matches the FINAL image size.
   int pt1GatherDiv = 0;
+  // Re-gather silhouette-rim pixels at FULL resolution when the reduced
+  // gather grid has no compatible sample for them (the joint-bilateral guide
+  // weights die at depth/normal discontinuities whose surface the low grid
+  // never sampled -- historically those pixels copied a wrong-surface E or
+  // went black). The rim set is a few percent of the frame, so the patch
+  // gather costs little. Applies only when the gather grid is reduced.
+  bool pt1EdgePatch = true;
   // Print pt1 diagnostics to stderr: the OIDN stage split (device / filter /
   // execute) inside the denoiser. Ray counts are always collected (negligible
   // cost, reported via FrameResult::pt1Rays); this flag only adds the prints.

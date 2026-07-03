@@ -580,12 +580,14 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       // legacy half-res); coarser grids widen the all-invalid-quad fallback
       // search so sub-k-pixel features keep SOME indirect instead of none.
       std::atomic<uint64_t> upsampleHoles{0};
+      std::vector<uint8_t> needsPatch;
       detail::upsampleJointBilateral(
           W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
           occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
-          occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles);
+          occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles,
+          opt.pt1EdgePatch ? &needsPatch : nullptr);
       const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
-      if (holes > 0)
+      if (holes > 0 && !opt.pt1EdgePatch)
         std::fprintf(stderr,
                      "pt1: %llu eligible pixel(s) found no valid gather "
                      "sample in the upsample window (thin features at 1/%d "
@@ -593,6 +595,44 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
                      static_cast<unsigned long long>(holes), gatherDiv);
       const auto tu1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
+
+      // Silhouette-rim patch: the masked pixels have NO compatible low-res
+      // sample (their surface is unrepresented in their upsample window), so
+      // the copied/zero E above is wrong there. Re-gather exactly those
+      // pixels at full resolution -- typically a few percent of the frame --
+      // and overwrite. The patched E skips the low-grid denoise (it never
+      // belonged to that field); rim noise at low spp is the tradeoff for
+      // removing the dark-rim artifact, judged via the comparison images.
+      if (opt.pt1EdgePatch && !needsPatch.empty()) {
+        std::size_t patchCount = 0;
+        for (std::size_t i = 0; i < needsPatch.size(); ++i)
+          patchCount += needsPatch[i];
+        if (patchCount > 0) {
+          const auto tp0 = std::chrono::high_resolution_clock::now();
+          std::vector<float> Ep, occp;
+          detail::gatherPt1Grid(gp, W, H, res.position.data(),
+                                res.normal.data(), /*geomNormal=*/nullptr,
+                                needsPatch.data(), res.depth.data(), spp,
+                                opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
+                                opt.pt1Clamp, &rayStats);
+          for (std::size_t i = 0; i < needsPatch.size(); ++i) {
+            if (!needsPatch[i]) continue;
+            Ebuf[i * 3 + 0] = Ep[i * 3 + 0];
+            Ebuf[i * 3 + 1] = Ep[i * 3 + 1];
+            Ebuf[i * 3 + 2] = Ep[i * 3 + 2];
+            occBuf[i] = occp[i];
+          }
+          const auto tp1 = std::chrono::high_resolution_clock::now();
+          res.pt1Timing.gather +=
+              std::chrono::duration<double>(tp1 - tp0).count();
+          std::fprintf(stderr,
+                       "pt1: edge patch re-gathered %zu rim pixel(s) "
+                       "(%.1f%% of grid) at full res\n",
+                       patchCount,
+                       100.0 * static_cast<double>(patchCount) /
+                           static_cast<double>(needsPatch.size()));
+        }
+      }
     } else {
       const auto tg0 = std::chrono::high_resolution_clock::now();
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
