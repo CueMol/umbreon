@@ -214,6 +214,14 @@ struct ScreenChain {
   std::vector<std::uint16_t> edgeGroup;
   // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis).
   std::vector<std::uint8_t> edgeFlags;
+  // Per edgel, the owner pixel's first-hit surface alpha (1 when the tracer
+  // was given no surfAlpha buffer). The per-VERTEX alpha in `pts` is a
+  // chain-level convenience (mean of the adjacent edgels) and blends across
+  // class-run boundaries; the Stage-4 driver re-attributes each run's vertex
+  // alphas from THIS array so a run never inherits a neighboring run's
+  // opacity (an edge on a fully transparent surface must stay invisible no
+  // matter what junctions into it).
+  std::vector<float> edgeAlpha;
   bool closed = false;
   int deg0 = 0, deg1 = 0;
 };

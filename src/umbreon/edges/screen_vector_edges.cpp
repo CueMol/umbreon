@@ -545,9 +545,12 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
     e = next;
   }
 
+  ch.edgeAlpha = edgeA;
+
   // Vertex view-z / surface alpha = mean of the adjacent edgels' owner
   // values; a closed loop's duplicated seed vertex averages the last and
-  // first edgel.
+  // first edgel. (Vertex alpha is chain-level only -- the Stage-4 driver
+  // re-attributes it per class run from edgeAlpha, see the header.)
   const std::size_t nE = edgeVz.size();
   for (std::size_t vi = 0; vi < ch.pts.size(); ++vi) {
     float vz, a;
@@ -1384,6 +1387,31 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       // Geometry cleanup on the run's vertex slice [e0, e1].
       std::vector<ScreenChainVert> pts(ch.pts.begin() + e0,
                                        ch.pts.begin() + e1 + 1);
+      // Re-attribute vertex alpha from the run's OWN edgels. The chain-level
+      // vertex alpha blends the two adjacent edgels regardless of run
+      // membership, so a run-boundary vertex inherits half of the
+      // neighboring run's owner opacity (e.g. an opaque stick border
+      // junctioning into an edge on a fully transparent surface pushed that
+      // endpoint to 0.5, and the draw stage lerped the leak across the whole
+      // segment). Within the run, interior vertices still average their two
+      // in-run edgels; the endpoints take their single in-run edgel, so the
+      // run's opacity is a function of its own surface only.
+      if (!ch.edgeAlpha.empty()) {
+        const std::size_t nV = pts.size();
+        for (std::size_t k = 0; k < nV; ++k) {
+          float a;
+          if (runClosed && (k == 0 || k == nV - 1)) {
+            a = 0.5f * (ch.edgeAlpha[e0] + ch.edgeAlpha[e1 - 1]);
+          } else if (k == 0) {
+            a = ch.edgeAlpha[e0];
+          } else if (k == nV - 1) {
+            a = ch.edgeAlpha[e1 - 1];
+          } else {
+            a = 0.5f * (ch.edgeAlpha[e0 + k - 1] + ch.edgeAlpha[e0 + k]);
+          }
+          pts[k].alpha = a;
+        }
+      }
       collapseCollinear(pts, runClosed);
       chaikinSmooth(pts, runClosed, se.screenSmoothIters);
       simplifyRdp(pts, runClosed, rdpEps);
