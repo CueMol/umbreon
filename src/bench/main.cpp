@@ -188,10 +188,12 @@ int main(int argc, char** argv) {
       if (aoBounds.valid())
         scene.aoDistance = std::max(aoBounds.diagonal() * 0.7f, 1.0e-3f);
 
-      // Apply per-section opacity overrides (--alpha ID=value). The section is
-      // resolved against the group names recovered by the parser; every
-      // primitive in that group gets the given opacity so the renderer
-      // composites it as one transparent layer.
+      // Apply per-section group alpha (--alpha ID=value). The section is
+      // resolved against the group names recovered by the parser and recorded
+      // in Scene::groupBlend; render() then realizes it as the blendpng-
+      // equivalent multi-pass post-blend (one extra full pass per section,
+      // rendered opaque, blended into the final image with weight `value`).
+      // The geometry's intrinsic (fragment) opacity is left untouched.
       if (!opt.sectionAlpha.empty()) {
         std::map<std::string, int> gidx;
         for (std::size_t i = 0; i < geo.groupNames.size(); ++i)
@@ -206,31 +208,11 @@ int main(int argc, char** argv) {
           }
           const int g = it->second;
           const float a = kv.second;
-          // Group alpha MULTIPLIES the intrinsic (fragment) opacity, so the two
-          // are orthogonal: group 0.5 x fragment 0.5 = 0.25. A fully opaque
-          // fragment (1.0) just becomes the group alpha (no change vs before).
-          // Apply ONCE per vertex: with an indexed mesh a vertex is shared by
-          // several triangles of the group, and multiplying per corner would
-          // over-apply `a`. The per-block weld keeps each vertex in one group.
-          std::vector<uint8_t> alphaTouched(scene.mesh.vertexCount(), 0);
-          for (std::size_t t = 0; t < scene.mesh.triangleCount(); ++t)
-            if (scene.mesh.groupForTri(t) == g)
-              for (int k = 0; k < 3; ++k) {
-                const uint32_t v =
-                    scene.mesh.cornerVertex(t * 3 + static_cast<std::size_t>(k));
-                if (!alphaTouched[v]) {
-                  scene.mesh.colors[v].w *= a;
-                  alphaTouched[v] = 1;
-                }
-              }
-          for (umbreon::Sphere& s : scene.spheres)
-            if (s.group == g) s.color.w *= a;
-          for (umbreon::Cylinder& c : scene.cylinders)
-            if (c.group == g) c.color.w *= a;
-          // Mark the section as an additive single-layer "veil" (group alpha).
-          scene.veilGroups.push_back(static_cast<uint16_t>(g));
-          std::printf("  alpha override: %s *= %.3f (group %d, veil)\n",
-                      kv.first.c_str(), a, g);
+          scene.groupBlend.push_back(
+              umbreon::GroupBlend{static_cast<uint16_t>(g), a});
+          std::printf(
+              "  alpha override: %s = %.3f (group %d, blendpng multipass)\n",
+              kv.first.c_str(), a, g);
         }
       }
       // Keep the section names for the post-block --edge resolution (the edge

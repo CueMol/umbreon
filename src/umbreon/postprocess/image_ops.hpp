@@ -25,4 +25,12 @@ void applyAssumedGamma(FrameResult& frame, float g);
 // or hand-off to CueMol. channels is 3 (RGB) or 4 (RGBA; alpha stored linear).
 std::vector<std::uint8_t> srgbEncode8(const FrameResult& frame, int channels);
 
+// Scalar sRGB transfer, float and unquantized: srgbEncodeF is exactly the
+// encode srgbEncode8 applies per channel (input clamped to [0, 1]) and
+// srgbDecodeF its inverse. Used by the group-alpha multi-pass blend, which --
+// like CueMol's blendpng on the finished PNGs -- must combine DISPLAY-encoded
+// values, then map back so the image writer reproduces the blend exactly.
+float srgbEncodeF(float v);
+float srgbDecodeF(float s);
+
 }  // namespace umbreon

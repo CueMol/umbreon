@@ -349,15 +349,6 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // Everything the per-hit shader reads, gathered once.
   const ShadeContext sc{built, m, lights, ambLight, bg, opt, aoUpAxis};
 
-  // Veil lookup: groups rendered as additive single-layer (group alpha). Every
-  // other transparency uses front-to-back "over" (fragment alpha). Empty =>
-  // all transparency is "over".
-  std::vector<uint8_t> isVeil;
-  for (uint16_t g : scene.veilGroups) {
-    if (g >= isVeil.size()) isVeil.resize(static_cast<std::size_t>(g) + 1, 0);
-    isVeil[g] = 1;
-  }
-
   // Per-pixel GI cache seed side-channels (component id / Embree geomID of the
   // first hit). Kept local to render() (not in FrameResult): the cache build
   // reads them right below. Allocated only when GI is on.
@@ -402,7 +393,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       }
 
       const PixelResult pr =
-          integratePixel(sc, isVeil, org, rd, static_cast<uint32_t>(px),
+          integratePixel(sc, org, rd, static_cast<uint32_t>(px),
                          static_cast<uint32_t>(py), dir, cappedRays);
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);

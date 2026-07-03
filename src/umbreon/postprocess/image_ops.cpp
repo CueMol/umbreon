@@ -45,13 +45,21 @@ void applyAssumedGamma(FrameResult& frame, float g) {
   }
 }
 
+float srgbEncodeF(float v) {
+  v = std::min(1.0f, std::max(0.0f, v));
+  return (v <= 0.0031308f) ? 12.92f * v
+                           : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+}
+
+float srgbDecodeF(float s) {
+  s = std::min(1.0f, std::max(0.0f, s));
+  return (s <= 0.04045f) ? s / 12.92f
+                         : std::pow((s + 0.055f) / 1.055f, 2.4f);
+}
+
 namespace {
 std::uint8_t toSrgb8(float v) {
-  v = std::min(1.0f, std::max(0.0f, v));
-  const float s = (v <= 0.0031308f)
-                      ? 12.92f * v
-                      : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
-  const int i = static_cast<int>(s * 255.0f + 0.5f);
+  const int i = static_cast<int>(srgbEncodeF(v) * 255.0f + 0.5f);
   return static_cast<std::uint8_t>(std::min(255, std::max(0, i)));
 }
 }  // namespace
