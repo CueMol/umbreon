@@ -253,15 +253,20 @@ void eraseChainCracks(CrackField& cf, const ScreenChain& ch, std::size_t e0,
 // piece of boundary chopped by side branches). Unsupported chains (isolated
 // facet-horizon slivers, grazing speckles, pure-weak loops, and clusters of
 // weak chains that only support each other) are erased from the field.
-// RUN-LEVEL weak-tail trim: on a kept OPEN chain, a leading/trailing run of
-// WEAK DepthGap edgels whose outer endpoint corner does NOT junction into
-// another kept chain is erased too -- chain-level support (a non-DepthGap
-// or strong edgel elsewhere in the chain) must not extend to a weak sliver
+// RUN-LEVEL weak-tail trim: on a kept OPEN chain WITHOUT strong self-support
+// (fewer than minStrong strong DepthGap edgels, i.e. kept only via its
+// non-DepthGap edgels), a leading/trailing run of WEAK DepthGap edgels whose
+// outer endpoint corner does NOT junction into another kept chain is erased
+// too -- non-DepthGap chain support must not extend to a weak sliver
 // dangling toward a free end. Without this, the SAME weak cracks would be
 // kept or pruned depending on whether a junction happens to coincide with
 // the class transition (e.g. a mesh strand's grazing-fade line rides a
 // stick's cross-section ObjectId run when the stick touches the strand, but
-// is pruned as a free-end spur when nothing splits it off). After erases the
+// is pruned as a free-end spur when nothing splits it off). A chain with
+// >= minStrong strong edgels is EXEMPT: its weak end runs are the tapering
+// tails of a genuine occlusion contour (hysteresis -- strong evidence
+// extends connected weak cracks), which routinely ends FREE at a cusp over
+// another surface behind with no junction to support it. After erases the
 // consumed bits are cleared and the field is retraced so survivors re-merge
 // across the dissolved junctions; this repeats until stable. Deterministic.
 // viewZ / objectId / surfAlpha are the same buffers given to traceCrackChains.

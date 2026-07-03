@@ -67,6 +67,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    slivers, spurs with a free end, weak lines hugging the outline with both
    ends on it) is erased and the field is retraced, so survivors re-merge
    across the dissolved junctions into maximal chains again.
+   On a kept open chain WITHOUT strong self-support (kept only via its
+   non-DepthGap edgels), a leading/trailing weak DepthGap run whose outer
+   end does not junction into another kept chain is trimmed too: without a
+   junction at the class transition, a grazing-fade sliver fused straight
+   onto e.g. an ObjectId run would ride the whole-chain keep. A chain with
+   enough strong edgels of its own is exempt -- its weak end runs are the
+   tapering tails of a real contour, which routinely ends free at a cusp
+   over another surface behind.
 3. **Cleanup**: collinear collapse, Chaikin corner cutting (endpoints pinned
    at junctions), Douglas-Peucker simplification, junction-aware speck
    filter (isolated specks and free-end spurs drop; short junction-to-

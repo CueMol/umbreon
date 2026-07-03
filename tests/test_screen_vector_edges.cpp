@@ -828,6 +828,52 @@ int main() {
     s.check_eq("weak-tail trim: outline-landing weak run survives", weakKept,
                4);
   }
+  // Strong self-support exemption: a free-ended (deg 1/1) contour chain of
+  // weak-strong-weak composition -- the tapering fold contour over another
+  // surface behind (the edge_ribbon2 regression) -- keeps its weak end runs.
+  // One vertical same-id step whose magnitude varies smoothly along y (linear
+  // ramps, so no horizontal cracks fire): 30 (weak) at both ends, 510
+  // (strong: > stepDominanceK * px) in the middle.
+  {
+    Buffers b(16, 16);
+    const float f[16] = {30, 30, 30, 30, 30, 150, 270, 390, 510, 510, 510,
+                         510, 390, 270, 150, 30};
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 100.0f : 100.0f + f[y]);
+    CrackField cf = classify(b, defaults);
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    s.check_eq("strong exemption: one free-ended chain", chains.size(),
+               static_cast<std::size_t>(1));
+    int strongRaw = 0, weakRaw = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e)
+        if (ch.edgeClass[e] ==
+            static_cast<std::uint8_t>(CrackClass::DepthGap)) {
+          if (ch.edgeFlags[e] & 1)
+            ++strongRaw;
+          else
+            ++weakRaw;
+        }
+    s.check_eq("strong exemption: raw strong edgels", strongRaw, 8);
+    s.check_eq("strong exemption: raw weak edgels", weakRaw, 8);
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    int strongKept = 0, weakKept = 0;
+    for (const ScreenChain& ch : chains)
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e)
+        if (ch.edgeClass[e] ==
+            static_cast<std::uint8_t>(CrackClass::DepthGap)) {
+          if (ch.edgeFlags[e] & 1)
+            ++strongKept;
+          else
+            ++weakKept;
+        }
+    s.check_eq("strong exemption: strong body kept", strongKept, 8);
+    s.check_eq("strong exemption: free-end weak tails kept (not trimmed)",
+               weakKept, 8);
+  }
 
   // ---- (9) bg clearance: terminal weak cracks reach the outline -----------
   // A weak step line PERPENDICULAR to the outline is a contour terminal: its

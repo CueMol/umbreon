@@ -743,19 +743,30 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
       }
     }
 
-    // RUN-LEVEL weak-tail trim on the kept OPEN chains. Chain-level support
-    // must not extend to a weak DepthGap run dangling toward an unsupported
-    // endpoint: without a junction at the class transition, a weak sliver
-    // FUSED to a supported run (e.g. a stick's cross-section ObjectId border
-    // continuing straight into the mesh strand's same-id grazing-fade line)
-    // would ride the whole-chain keep, while the SAME cracks are pruned as a
-    // free-end spur when a junction separates them. Mirror the pure-weak-
-    // chain rule at run granularity: a leading/trailing weak run survives
-    // only when its outer endpoint corner junctions into another kept chain
-    // (its interior side is bracket-supported by the adjacent non-weak run
-    // by construction). Interior weak runs are always bracketed; closed
-    // chains are cyclically bracketed; a whole-weak open chain kept here
-    // passed the both-ends rescue above, so both its ends are supported.
+    // RUN-LEVEL weak-tail trim on the kept OPEN chains WITHOUT strong self-
+    // support. Chain-level support from a NON-DepthGap class must not extend
+    // to a weak DepthGap run dangling toward an unsupported endpoint: without
+    // a junction at the class transition, a weak sliver FUSED to a supported
+    // run (e.g. a stick's cross-section ObjectId border continuing straight
+    // into the mesh strand's same-id grazing-fade line) would ride the
+    // whole-chain keep, while the SAME cracks are pruned as a free-end spur
+    // when a junction separates them. Mirror the pure-weak-chain rule at run
+    // granularity: a leading/trailing weak run survives only when its outer
+    // endpoint corner junctions into another kept chain (its interior side
+    // is bracket-supported by the adjacent non-weak run by construction).
+    //
+    // A chain carrying >= minStrong STRONG DepthGap edgels of its own is
+    // EXEMPT: its weak end runs are the genuine tapering tails of a real
+    // occlusion contour (classic hysteresis -- strong evidence extends the
+    // connected weak cracks), and such contours routinely END FREE mid-
+    // surface at a cusp over another surface behind, with no junction to
+    // support them. Trimming those dashed the ribbon fold contours of
+    // edge_ribbon2/stick3. The transp1 leak this trim exists for has ZERO
+    // strong edgels (it rode an ObjectId run's keep), so it stays trimmed.
+    //
+    // Interior weak runs are always bracketed; closed chains are cyclically
+    // bracketed; a whole-weak open chain kept here passed the both-ends
+    // rescue above, so both its ends are supported.
     std::vector<long> keptEnds;
     for (std::size_t i = 0; i < n; ++i) {
       if (!kept[i] || end0[i] < 0) continue;
@@ -774,6 +785,21 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
       if (!kept[i] || traced[i].closed || end0[i] < 0) continue;
       const ScreenChain& ch = traced[i];
       const std::size_t nE = ch.edgeClass.size();
+      // Strong self-support exemption: a chain that would be kept on its own
+      // strong DepthGap evidence keeps its weak end runs too.
+      {
+        int strong = 0;
+        bool exempt = false;
+        for (std::size_t e = 0; e < ch.edgeFlags.size(); ++e) {
+          if (ch.edgeClass[e] ==
+                  static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+              (ch.edgeFlags[e] & 1) && ++strong >= std::max(1, minStrong)) {
+            exempt = true;
+            break;
+          }
+        }
+        if (exempt) continue;
+      }
       auto weakAt = [&](std::size_t e) {
         return ch.edgeClass[e] ==
                    static_cast<std::uint8_t>(CrackClass::DepthGap) &&
