@@ -1,12 +1,21 @@
 # Unit / integration tests.
 # Parser / IO / scene tests link bench_core (pure C++17, no rendering libs).
 # The fog test links the umbreon library and is built only when umbreon is.
+#
+# Tests that read a Git-LFS-backed data file (data/**/*.inc) are labelled
+# `needs_lfs`. CI checks out WITHOUT LFS (to avoid spending the repo's LFS
+# bandwidth budget) and excludes them with `ctest -LE needs_lfs`; a local
+# `task test` with the LFS files materialised runs the full set. The .pov
+# scene files are plain git content (see .gitattributes: only *.inc/*.png/
+# *.qsc are LFS), so pov_scene_reader and the pt1/render tests need no label.
 
 add_executable(test_mesh2_reader test_mesh2_reader.cpp)
 target_link_libraries(test_mesh2_reader PRIVATE bench_core)
 add_test(
   NAME mesh2_reader
   COMMAND test_mesh2_reader ${CMAKE_SOURCE_DIR}/data/test1.inc)
+# Reads data/test1.inc (LFS) directly.
+set_tests_properties(mesh2_reader PROPERTIES LABELS needs_lfs)
 
 add_executable(test_math test_math.cpp)
 target_link_libraries(test_math PRIVATE bench_core)
@@ -76,5 +85,8 @@ if(TARGET umbreon)
   add_test(NAME screen_vector_integration
            COMMAND test_screen_vector_integration
                    ${CMAKE_SOURCE_DIR}/data/edges/edge_tube1.pov)
+  # Parses a plain .pov but reads the geometry it includes
+  # (data/edges/edge_tube1.inc), which is LFS.
+  set_tests_properties(screen_vector_integration PROPERTIES LABELS needs_lfs)
 
 endif()

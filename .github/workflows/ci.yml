@@ -25,11 +25,12 @@ jobs:
           - { name: macos-arm64, os: macos-latest }
           - { name: windows-x64, os: windows-latest }
     steps:
-      # data/**/*.inc are Git LFS objects the tests read (e.g. mesh2_reader on
-      # data/test1.inc); without lfs the checkout leaves pointer files behind.
+      # Check out WITHOUT Git LFS: pulling the data/**/*.inc (+ *.png/*.qsc)
+      # objects on every push across three runners spends the repo's LFS
+      # bandwidth budget for no build benefit. The few tests that read an LFS
+      # data file are labelled `needs_lfs` and skipped below (ctest -LE); the
+      # build itself and all synthetic-scene tests need no data files.
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       # Provides a recent CMake and Ninja on PATH for every OS. Ninja keeps the
       # build single-config Release, matching the prebuilt Release deplibs.
@@ -49,6 +50,9 @@ jobs:
 
       # Runs through bash on all OSes (Git Bash on Windows) so the Taskfile's
       # POSIX-shell commands and coreutils (curl, tar, mkdir) resolve uniformly.
+      # CTEST_ARGS excludes the LFS-backed data tests (not checked out here).
       - name: Build and test (static deplibs)
         shell: bash
+        env:
+          CTEST_ARGS: -LE needs_lfs
         run: task test:static

@@ -168,7 +168,10 @@ tasks:
     cmds:
       - task: configure:static
       - cmake --build build -j
-      - ctest --test-dir build --output-on-failure
+      # CTEST_ARGS lets CI append `-LE needs_lfs` to skip the Git-LFS-backed
+      # data tests (it checks out without LFS to save bandwidth); empty locally
+      # so a developer `task test` runs the full suite.
+      - ctest --test-dir build --output-on-failure ${CTEST_ARGS:-}
 
   build:
     desc: Configure (static Embree/TBB via CueMol deplibs {{.DEPLIBS_VERSION}}) and build (Release)
@@ -181,7 +184,7 @@ tasks:
     cmds:
       - task: configure:static
       - cmake --build build -j
-      - ctest --test-dir build --output-on-failure
+      - ctest --test-dir build --output-on-failure {{.CLI_ARGS}}
 
   build:system:
     desc: Build against system-installed Embree/TBB (apt/brew); no deplibs download
