@@ -167,104 +167,166 @@ Options parseCli(int argc, char** argv) {
 
     if (a == "-h" || a == "--help") {
       o.showHelp = true;
-    } else if (a == "-o") {
+      continue;
+    }
+    if (a == "-o") {
       o.output = value("-o");
-    } else if (a == "-W" || a == "--width") {
+      continue;
+    }
+    if (a == "-W" || a == "--width") {
       o.width = std::atoi(value("-W").c_str());
       o.widthSet = true;
-    } else if (a == "-H" || a == "--height") {
+      continue;
+    }
+    if (a == "-H" || a == "--height") {
       o.height = std::atoi(value("-H").c_str());
       o.heightSet = true;
-    } else if (a == "--ao-distance") {
+      continue;
+    }
+    if (a == "--ao-distance") {
       o.aoDistance = static_cast<float>(std::atof(value("--ao-distance").c_str()));
-    } else if (a == "--ao-samples") {
+      continue;
+    }
+    if (a == "--ao-samples") {
       o.aoSamples = std::atoi(value("--ao-samples").c_str());
-    } else if (a == "--ao-intensity") {
+      continue;
+    }
+    if (a == "--ao-intensity") {
       o.aoIntensity =
           static_cast<float>(std::atof(value("--ao-intensity").c_str()));
-    } else if (a == "--ao-falloff") {
+      continue;
+    }
+    if (a == "--ao-falloff") {
       o.aoFalloffPower =
           static_cast<float>(std::atof(value("--ao-falloff").c_str()));
-    } else if (a == "--ao-multiscale") {
+      continue;
+    }
+    if (a == "--ao-multiscale") {
       std::string v = value("--ao-multiscale");
       if (o.ok && !parseBool(v, o.aoMultiScale))
         fail("--ao-multiscale expects on/off");
-    } else if (a == "--ao-bent-normal") {
+      continue;
+    }
+    if (a == "--ao-bent-normal") {
       std::string v = value("--ao-bent-normal");
       if (o.ok && !parseBool(v, o.aoBentNormal))
         fail("--ao-bent-normal expects on/off");
-    } else if (a == "--ao-sky") {
+      continue;
+    }
+    if (a == "--ao-sky") {
       std::string v = value("--ao-sky");
       if (o.ok && !parseHexColor(v, o.aoSkyColor))
         fail("--ao-sky expects #RRGGBB");
-    } else if (a == "--ao-ground") {
+      continue;
+    }
+    if (a == "--ao-ground") {
       std::string v = value("--ao-ground");
       if (o.ok && !parseHexColor(v, o.aoGroundColor))
         fail("--ao-ground expects #RRGGBB");
-    } else if (a == "--ao-camera-up") {
+      continue;
+    }
+    if (a == "--ao-camera-up") {
       std::string v = value("--ao-camera-up");
       if (o.ok && !parseBool(v, o.aoUseCameraUp))
         fail("--ao-camera-up expects on/off");
-    } else if (a == "--ao-up") {
+      continue;
+    }
+    if (a == "--ao-up") {
       std::string v = value("--ao-up");
       if (o.ok && !parseVec3(v, o.aoUp)) fail("--ao-up expects x,y,z");
-    } else if (a == "--ao-multibounce") {
+      continue;
+    }
+    if (a == "--ao-multibounce") {
       std::string v = value("--ao-multibounce");
       if (o.ok && !parseBool(v, o.aoMultibounce))
         fail("--ao-multibounce expects on/off");
-    } else if (a == "--ao-ld") {
+      continue;
+    }
+    if (a == "--ao-ld") {
       std::string v = value("--ao-ld");
       if (o.ok && !parseBool(v, o.aoLowDiscrepancy))
         fail("--ao-ld expects on/off");
-    } else if (a == "--ao-diffuse") {
+      continue;
+    }
+    if (a == "--ao-diffuse") {
       o.aoDiffuseFactor =
           static_cast<float>(std::atof(value("--ao-diffuse").c_str()));
-    } else if (a == "--ao-write-aov") {
+      continue;
+    }
+    if (a == "--ao-write-aov") {
       std::string v = value("--ao-write-aov");
       if (o.ok && !parseBool(v, o.aoWriteAov))
         fail("--ao-write-aov expects on/off");
-    } else if (a == "--gi") {
+      continue;
+    }
+    if (a == "--gi") {
       std::string v = value("--gi");
       if (o.ok && !parseBool(v, o.gi)) fail("--gi expects on/off");
-    } else if (a == "--gi-samples") {
+      continue;
+    }
+    if (a == "--gi-samples") {
       o.giSamples = std::atoi(value("--gi-samples").c_str());
-    } else if (a == "--gi-bounces") {
+      continue;
+    }
+    if (a == "--gi-bounces") {
       o.giBounces = std::atoi(value("--gi-bounces").c_str());
-    } else if (a == "--gi-max-dist") {
+      continue;
+    }
+    if (a == "--gi-max-dist") {
       o.giMaxDistance =
           static_cast<float>(std::atof(value("--gi-max-dist").c_str()));
-    } else if (a == "--gi-intensity") {
+      continue;
+    }
+    if (a == "--gi-intensity") {
       o.giIntensity =
           static_cast<float>(std::atof(value("--gi-intensity").c_str()));
-    } else if (a == "--gi-env-intensity") {
+      continue;
+    }
+    if (a == "--gi-env-intensity") {
       o.giEnvIntensity =
           static_cast<float>(std::atof(value("--gi-env-intensity").c_str()));
-    } else if (a == "--gi-accuracy") {
+      continue;
+    }
+    if (a == "--gi-accuracy") {
       o.giAccuracy =
           static_cast<float>(std::atof(value("--gi-accuracy").c_str()));
-    } else if (a == "--gi-spacing") {
+      continue;
+    }
+    if (a == "--gi-spacing") {
       o.giRecordSpacing =
           static_cast<float>(std::atof(value("--gi-spacing").c_str()));
-    } else if (a == "--gi-normal-reject") {
+      continue;
+    }
+    if (a == "--gi-normal-reject") {
       o.giNormalReject =
           static_cast<float>(std::atof(value("--gi-normal-reject").c_str()));
-    } else if (a == "--gi-component-reject") {
+      continue;
+    }
+    if (a == "--gi-component-reject") {
       std::string v = value("--gi-component-reject");
       if (o.ok && !parseBool(v, o.giComponentReject))
         fail("--gi-component-reject expects on/off");
-    } else if (a == "--gi-seed-per-vertex") {
+      continue;
+    }
+    if (a == "--gi-seed-per-vertex") {
       std::string v = value("--gi-seed-per-vertex");
       if (o.ok && !parseBool(v, o.giSeedPerVertex))
         fail("--gi-seed-per-vertex expects on/off");
-    } else if (a == "--gi-gradients") {
+      continue;
+    }
+    if (a == "--gi-gradients") {
       std::string v = value("--gi-gradients");
       if (o.ok && !parseBool(v, o.giGradients))
         fail("--gi-gradients expects on/off");
-    } else if (a == "--gi-outlier-reject") {
+      continue;
+    }
+    if (a == "--gi-outlier-reject") {
       std::string v = value("--gi-outlier-reject");
       if (o.ok && !parseBool(v, o.giOutlierReject))
         fail("--gi-outlier-reject expects on/off");
-    } else if (a == "--integrator") {
+      continue;
+    }
+    if (a == "--integrator") {
       std::string v = value("--integrator");
       if (v == "cache")
         o.giIntegrator = 0;
@@ -272,7 +334,9 @@ Options parseCli(int argc, char** argv) {
         o.giIntegrator = 1;
       else
         fail("--integrator expects cache/pt1");
-    } else if (a == "--quality") {
+      continue;
+    }
+    if (a == "--quality") {
       // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
       // bounces at the point of appearance, so later explicit flags override
       // individual values (put --quality first).
@@ -301,9 +365,13 @@ Options parseCli(int argc, char** argv) {
       } else {
         fail("--quality expects draft/high/ultra");
       }
-    } else if (a == "--spp") {
+      continue;
+    }
+    if (a == "--spp") {
       o.pt1Spp = std::atoi(value("--spp").c_str());
-    } else if (a == "--indirect-res") {
+      continue;
+    }
+    if (a == "--indirect-res") {
       std::string v = value("--indirect-res");
       if (v == "full")
         o.pt1GatherDiv = 1;
@@ -315,11 +383,15 @@ Options parseCli(int argc, char** argv) {
         o.pt1GatherDiv = -1;  // resolved to the supersample factor
       else
         fail("--indirect-res expects full/half/quarter/out");
-    } else if (a == "--denoise") {
+      continue;
+    }
+    if (a == "--denoise") {
       std::string v = value("--denoise");
       if (o.ok && !parseBool(v, o.pt1Denoise))
         fail("--denoise expects on/off");
-    } else if (a == "--sky") {
+      continue;
+    }
+    if (a == "--sky") {
       std::string v = value("--sky");
       if (v == "uniform")
         o.pt1SkyMode = 0;
@@ -327,36 +399,56 @@ Options parseCli(int argc, char** argv) {
         o.pt1SkyMode = 1;
       else
         fail("--sky expects uniform/gradient");
-    } else if (a == "--sky-radiance") {
+      continue;
+    }
+    if (a == "--sky-radiance") {
       std::string v = value("--sky-radiance");
       if (o.ok && !parseVec3(v, o.pt1SkyRadiance))
         fail("--sky-radiance expects r,g,b");
-    } else if (a == "--seed") {
+      continue;
+    }
+    if (a == "--seed") {
       o.pt1Seed = static_cast<unsigned>(
           std::strtoul(value("--seed").c_str(), nullptr, 10));
-    } else if (a == "--pt1-ld") {
+      continue;
+    }
+    if (a == "--pt1-ld") {
       std::string v = value("--pt1-ld");
       if (o.ok && !parseBool(v, o.pt1Ld)) fail("--pt1-ld expects on/off");
-    } else if (a == "--pt1-edge-patch") {
+      continue;
+    }
+    if (a == "--pt1-edge-patch") {
       std::string v = value("--pt1-edge-patch");
       if (o.ok && !parseBool(v, o.pt1EdgePatch))
         fail("--pt1-edge-patch expects on/off");
-    } else if (a == "--pt1-patch-thresh") {
+      continue;
+    }
+    if (a == "--pt1-patch-thresh") {
       o.pt1EdgePatchThresh =
           static_cast<float>(std::atof(value("--pt1-patch-thresh").c_str()));
-    } else if (a == "--pt1-stats") {
+      continue;
+    }
+    if (a == "--pt1-stats") {
       std::string v = value("--pt1-stats");
       if (o.ok && !parseBool(v, o.pt1Stats))
         fail("--pt1-stats expects on/off");
-    } else if (a == "--pt1-clamp") {
+      continue;
+    }
+    if (a == "--pt1-clamp") {
       o.pt1Clamp = static_cast<float>(std::atof(value("--pt1-clamp").c_str()));
-    } else if (a == "--pt1-upsample-normal-pow") {
+      continue;
+    }
+    if (a == "--pt1-upsample-normal-pow") {
       o.pt1UpsampleNormalPow = static_cast<float>(
           std::atof(value("--pt1-upsample-normal-pow").c_str()));
-    } else if (a == "--pt1-upsample-depth-scale") {
+      continue;
+    }
+    if (a == "--pt1-upsample-depth-scale") {
       o.pt1UpsampleDepthScale = static_cast<float>(
           std::atof(value("--pt1-upsample-depth-scale").c_str()));
-    } else if (a == "--denoiser") {
+      continue;
+    }
+    if (a == "--denoiser") {
       std::string v = value("--denoiser");
       if (v == "none")
         o.denoiser = 0;
@@ -366,55 +458,118 @@ Options parseCli(int argc, char** argv) {
         o.denoiser = 2;
       else
         fail("--denoiser expects none/atrous/oidn");
-    } else if (a == "--denoise-iters") {
+      continue;
+    }
+    if (a == "--denoise-iters") {
       o.denoiseIters = std::atoi(value("--denoise-iters").c_str());
-    } else if (a == "--denoise-sigma-z") {
+      continue;
+    }
+    if (a == "--denoise-sigma-z") {
       o.denoiseSigmaZ = static_cast<float>(std::atof(value("--denoise-sigma-z").c_str()));
-    } else if (a == "--denoise-sigma-n") {
+      continue;
+    }
+    if (a == "--denoise-sigma-n") {
       o.denoiseSigmaN = static_cast<float>(std::atof(value("--denoise-sigma-n").c_str()));
-    } else if (a == "--denoise-sigma-l") {
+      continue;
+    }
+    if (a == "--denoise-sigma-l") {
       o.denoiseSigmaL = static_cast<float>(std::atof(value("--denoise-sigma-l").c_str()));
-    } else if (a == "--denoise-demodulate") {
+      continue;
+    }
+    if (a == "--denoise-demodulate") {
       std::string v = value("--denoise-demodulate");
       if (o.ok && !parseBool(v, o.denoiseDemodulateAlbedo))
         fail("--denoise-demodulate expects on/off");
-    } else if (a == "--oidn-clean-aux") {
+      continue;
+    }
+    if (a == "--oidn-clean-aux") {
       std::string v = value("--oidn-clean-aux");
       if (o.ok && !parseBool(v, o.oidnCleanAux))
         fail("--oidn-clean-aux expects on/off");
-    } else if (a == "--shadows") {
+      continue;
+    }
+    if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
-    } else if (a == "--shadow-samples") {
+      continue;
+    }
+    if (a == "--shadow-samples") {
       o.shadowSamples = std::atoi(value("--shadow-samples").c_str());
-    } else if (a == "--light-radius") {
+      continue;
+    }
+    if (a == "--light-radius") {
       o.lightRadius =
           static_cast<float>(std::atof(value("--light-radius").c_str()));
-    } else if (a == "--env-light") {
+      continue;
+    }
+    if (a == "--env-light") {
       o.envLights = std::atoi(value("--env-light").c_str());
-    } else if (a == "--env-intensity") {
+      continue;
+    }
+    if (a == "--env-intensity") {
       o.envIntensity =
           static_cast<float>(std::atof(value("--env-intensity").c_str()));
-    } else if (a == "--env-key-scale") {
+      continue;
+    }
+    if (a == "--env-key-scale") {
       o.envKeyScale =
           static_cast<float>(std::atof(value("--env-key-scale").c_str()));
-    } else if (a == "--env-angle") {
+      continue;
+    }
+    if (a == "--env-angle") {
       o.envAngle = static_cast<float>(std::atof(value("--env-angle").c_str()));
-    } else if (a == "--pov-gain") {
+      continue;
+    }
+    if (a == "--pov-gain") {
       o.povGain = static_cast<float>(std::atof(value("--pov-gain").c_str()));
-    } else if (a == "--outline-scale") {
+      continue;
+    }
+    if (a == "--outline-scale") {
       o.outlineScale =
           static_cast<float>(std::atof(value("--outline-scale").c_str()));
-    } else if (a == "--supersample") {
+      continue;
+    }
+    if (a == "--supersample") {
       o.supersample = std::atoi(value("--supersample").c_str());
       o.supersampleSet = true;
-    } else if (a == "--specular-scale") {
+      continue;
+    }
+    if (a == "--aa") {
+      std::string v = value("--aa");
+      if (v == "grid")
+        o.aaMode = 0;
+      else if (v == "adaptive")
+        o.aaMode = 1;
+      else
+        fail("--aa expects grid/adaptive");
+      continue;
+    }
+    if (a == "--aa-threshold") {
+      o.aaThreshold =
+          static_cast<float>(std::atof(value("--aa-threshold").c_str()));
+      continue;
+    }
+    if (a == "--aa-depth") {
+      o.aaDepth = std::atoi(value("--aa-depth").c_str());
+      continue;
+    }
+    if (a == "--aa-debug") {
+      std::string v = value("--aa-debug");
+      if (o.ok && !parseBool(v, o.aaDebug))
+        fail("--aa-debug expects on/off");
+      continue;
+    }
+    if (a == "--specular-scale") {
       o.specularScale =
           static_cast<float>(std::atof(value("--specular-scale").c_str()));
       o.specularScaleSet = true;
-    } else if (a == "--threads") {
+      continue;
+    }
+    if (a == "--threads") {
       o.threads = std::atoi(value("--threads").c_str());
-    } else if (a == "--declare") {
+      continue;
+    }
+    if (a == "--declare") {
       // --declare name=value (predefined POV constant for the .pov path)
       std::string kv = value("--declare");
       std::size_t eq = kv.find('=');
@@ -424,7 +579,9 @@ Options parseCli(int argc, char** argv) {
         o.declares[kv.substr(0, eq)] =
             std::atof(kv.substr(eq + 1).c_str());
       }
-    } else if (a == "--alpha") {
+      continue;
+    }
+    if (a == "--alpha") {
       // --alpha ID=value : set the opacity of a CueMol section (e.g.
       // _34_35=0.5). The "_show" prefix is accepted and stripped.
       std::string kv = value("--alpha");
@@ -437,16 +594,24 @@ Options parseCli(int argc, char** argv) {
         o.sectionAlpha[id] =
             static_cast<float>(std::atof(kv.substr(eq + 1).c_str()));
       }
-    } else if (a == "--list-groups") {
+      continue;
+    }
+    if (a == "--list-groups") {
       o.listGroups = true;
-    } else if (a == "--edges") {
+      continue;
+    }
+    if (a == "--edges") {
       std::string v = value("--edges");
       if (o.ok && !parseBool(v, o.edges)) fail("--edges expects on/off");
-    } else if (a == "--edges-only") {
+      continue;
+    }
+    if (a == "--edges-only") {
       std::string v = value("--edges-only");
       if (o.ok && !parseBool(v, o.edgesOnly))
         fail("--edges-only expects on/off");
-    } else if (a == "--edge") {
+      continue;
+    }
+    if (a == "--edge") {
       // --edge ID=spec : per-section edge style override (repeatable), mirroring
       // --alpha. Split on the first '=', strip a leading "_show", parse the spec
       // into an EdgeStyle stored under the stripped id.
@@ -465,172 +630,268 @@ Options parseCli(int argc, char** argv) {
         else
           o.sectionEdge[id] = st;
       }
-    } else if (a == "--obj-edges") {
+      continue;
+    }
+    if (a == "--obj-edges") {
       std::string v = value("--obj-edges");
       if (o.ok && !parseBool(v, o.objEdges)) fail("--obj-edges expects on/off");
-    } else if (a == "--obj-edge-width") {
+      continue;
+    }
+    if (a == "--obj-edge-width") {
       o.objEdgeWidth =
           static_cast<float>(std::atof(value("--obj-edge-width").c_str()));
-    } else if (a == "--obj-edge-raise") {
+      continue;
+    }
+    if (a == "--obj-edge-raise") {
       o.objEdgeRaise =
           static_cast<float>(std::atof(value("--obj-edge-raise").c_str()));
-    } else if (a == "--obj-edge-segments") {
+      continue;
+    }
+    if (a == "--obj-edge-segments") {
       o.objEdgeSegments = std::atoi(value("--obj-edge-segments").c_str());
-    } else if (a == "--obj-edge-color") {
+      continue;
+    }
+    if (a == "--obj-edge-color") {
       std::string v = value("--obj-edge-color");
       if (o.ok && !parseHexColor(v, o.objEdgeColor))
         fail("--obj-edge-color expects #RRGGBB");
-    } else if (a == "--obj-edge-clip") {
+      continue;
+    }
+    if (a == "--obj-edge-clip") {
       std::string v = value("--obj-edge-clip");
       if (o.ok && !parseBool(v, o.objEdgeClip))
         fail("--obj-edge-clip expects on/off");
-    } else if (a == "--obj-edge-hard-deg") {
+      continue;
+    }
+    if (a == "--obj-edge-hard-deg") {
       o.objEdgeHardDeg =
           static_cast<float>(std::atof(value("--obj-edge-hard-deg").c_str()));
-    } else if (a == "--obj-edge-crease-deg") {
+      continue;
+    }
+    if (a == "--obj-edge-crease-deg") {
       o.objEdgeCreaseDeg =
           static_cast<float>(std::atof(value("--obj-edge-crease-deg").c_str()));
-    } else if (a == "--obj-edge-crease-smooth-deg") {
+      continue;
+    }
+    if (a == "--obj-edge-crease-smooth-deg") {
       o.objEdgeCreaseSmoothDeg = static_cast<float>(
           std::atof(value("--obj-edge-crease-smooth-deg").c_str()));
-    } else if (a == "--obj-edge-crease-convex-only") {
+      continue;
+    }
+    if (a == "--obj-edge-crease-convex-only") {
       std::string v = value("--obj-edge-crease-convex-only");
       if (o.ok && !parseBool(v, o.objEdgeCreaseConvexOnly))
         fail("--obj-edge-crease-convex-only expects on/off");
-    } else if (a == "--obj-edge-border-coplanar-deg") {
+      continue;
+    }
+    if (a == "--obj-edge-border-coplanar-deg") {
       o.objEdgeBorderCoplanarDeg = static_cast<float>(
           std::atof(value("--obj-edge-border-coplanar-deg").c_str()));
-    } else if (a == "--obj-edge-crease-max-deg") {
+      continue;
+    }
+    if (a == "--obj-edge-crease-max-deg") {
       o.objEdgeCreaseMaxDeg = std::atoi(value("--obj-edge-crease-max-deg").c_str());
-    } else if (a == "--obj-edge-mesh-sil") {
+      continue;
+    }
+    if (a == "--obj-edge-mesh-sil") {
       std::string v = value("--obj-edge-mesh-sil");
       if (o.ok && !parseBool(v, o.objEdgeMeshSil))
         fail("--obj-edge-mesh-sil expects on/off");
-    } else if (a == "--obj-edge-mesh-crease") {
+      continue;
+    }
+    if (a == "--obj-edge-mesh-crease") {
       std::string v = value("--obj-edge-mesh-crease");
       if (o.ok && !parseBool(v, o.objEdgeMeshCrease))
         fail("--obj-edge-mesh-crease expects on/off");
-    } else if (a == "--obj-edge-mesh-border") {
+      continue;
+    }
+    if (a == "--obj-edge-mesh-border") {
       std::string v = value("--obj-edge-mesh-border");
       if (o.ok && !parseBool(v, o.objEdgeMeshBorder))
         fail("--obj-edge-mesh-border expects on/off");
-    } else if (a == "--obj-edge-visibility") {
+      continue;
+    }
+    if (a == "--obj-edge-visibility") {
       std::string v = value("--obj-edge-visibility");
       if (o.ok && !parseBool(v, o.objEdgeVisibility))
         fail("--obj-edge-visibility expects on/off");
-    } else if (a == "--obj-edge-only") {
+      continue;
+    }
+    if (a == "--obj-edge-only") {
       std::string v = value("--obj-edge-only");
       if (o.ok && !parseBool(v, o.objEdgeOnly))
         fail("--obj-edge-only expects on/off");
-    } else if (a == "--stroke-thickness") {
+      continue;
+    }
+    if (a == "--stroke-thickness") {
       o.strokeThickness =
           static_cast<float>(std::atof(value("--stroke-thickness").c_str()));
       o.strokeThicknessSet = true;
-    } else if (a == "--stroke-resample") {
+      continue;
+    }
+    if (a == "--stroke-resample") {
       o.strokeResample =
           static_cast<float>(std::atof(value("--stroke-resample").c_str()));
       o.strokeResampleSet = true;
-    } else if (a == "--edge-crease-deg") {
+      continue;
+    }
+    if (a == "--edge-crease-deg") {
       o.strokeCreaseDeg =
           static_cast<float>(std::atof(value("--edge-crease-deg").c_str()));
       o.strokeCreaseDegSet = true;
-    } else if (a == "--stroke-silhouette") {
+      continue;
+    }
+    if (a == "--stroke-silhouette") {
       std::string v = value("--stroke-silhouette");
       if (o.ok && !parseBool(v, o.strokeSilhouette))
         fail("--stroke-silhouette expects on/off");
-    } else if (a == "--stroke-crease") {
+      continue;
+    }
+    if (a == "--stroke-crease") {
       std::string v = value("--stroke-crease");
       if (o.ok && !parseBool(v, o.strokeCrease))
         fail("--stroke-crease expects on/off");
-    } else if (a == "--stroke-border") {
+      continue;
+    }
+    if (a == "--stroke-border") {
       std::string v = value("--stroke-border");
       if (o.ok && !parseBool(v, o.strokeBorder))
         fail("--stroke-border expects on/off");
-    } else if (a == "--stroke-taper") {
+      continue;
+    }
+    if (a == "--stroke-taper") {
       std::string v = value("--stroke-taper");
       if (o.ok && !parseBool(v, o.strokeTaper))
         fail("--stroke-taper expects on/off");
-    } else if (a == "--stroke-smooth") {
+      continue;
+    }
+    if (a == "--stroke-smooth") {
       std::string v = value("--stroke-smooth");
       if (o.ok && !parseBool(v, o.strokeSmooth))
         fail("--stroke-smooth expects on/off");
-    } else if (a == "--edge-qi-dots") {
+      continue;
+    }
+    if (a == "--edge-qi-dots") {
       std::string v = value("--edge-qi-dots");
       if (o.ok && !parseBool(v, o.strokeQiDots))
         fail("--edge-qi-dots expects on/off");
-    } else if (a == "--edge-qi-vertex-dots") {
+      continue;
+    }
+    if (a == "--edge-qi-vertex-dots") {
       std::string v = value("--edge-qi-vertex-dots");
       if (o.ok && !parseBool(v, o.strokeQiVertexDots))
         fail("--edge-qi-vertex-dots expects on/off");
-    } else if (a == "--edge-qi-vertex-delta") {
+      continue;
+    }
+    if (a == "--edge-qi-vertex-delta") {
       o.strokeQiVertexDelta =
           static_cast<float>(std::atof(value("--edge-qi-vertex-delta").c_str()));
-    } else if (a == "--edge-qi-lift") {
+      continue;
+    }
+    if (a == "--edge-qi-lift") {
       o.strokeQiLift =
           static_cast<float>(std::atof(value("--edge-qi-lift").c_str()));
-    } else if (a == "--edge-qi-split") {
+      continue;
+    }
+    if (a == "--edge-qi-split") {
       std::string v = value("--edge-qi-split");
       if (o.ok && !parseBool(v, o.strokeQiSplit))
         fail("--edge-qi-split expects on/off");
-    } else if (a == "--edge-reject-concave") {
+      continue;
+    }
+    if (a == "--edge-reject-concave") {
       std::string v = value("--edge-reject-concave");
       if (o.ok && !parseBool(v, o.strokeRejectConcave))
         fail("--edge-reject-concave expects on/off");
-    } else if (a == "--stroke-geom-silhouette") {
+      continue;
+    }
+    if (a == "--stroke-geom-silhouette") {
       std::string v = value("--stroke-geom-silhouette");
       if (o.ok && !parseBool(v, o.strokeGeomSilhouette))
         fail("--stroke-geom-silhouette expects on/off");
-    } else if (a == "--stroke-analytic") {
+      continue;
+    }
+    if (a == "--stroke-analytic") {
       std::string v = value("--stroke-analytic");
       if (o.ok && !parseBool(v, o.strokeAnalytic))
         fail("--stroke-analytic expects on/off");
-    } else if (a == "--stroke-analytic-segments") {
+      continue;
+    }
+    if (a == "--stroke-analytic-segments") {
       o.strokeAnalyticSegments =
           std::atoi(value("--stroke-analytic-segments").c_str());
       o.strokeAnalyticSegmentsSet = true;
-    } else if (a == "--stroke-self-exclude-rings") {
+      continue;
+    }
+    if (a == "--stroke-self-exclude-rings") {
       o.strokeSelfExcludeRings =
           std::atoi(value("--stroke-self-exclude-rings").c_str());
       o.strokeSelfExcludeRingsSet = true;
-    } else if (a == "--stroke-depth-gap") {
+      continue;
+    }
+    if (a == "--stroke-depth-gap") {
       o.strokeDepthGap =
           static_cast<float>(std::atof(value("--stroke-depth-gap").c_str()));
-    } else if (a == "--stroke-screen-simplify") {
+      continue;
+    }
+    if (a == "--stroke-screen-simplify") {
       o.strokeScreenSimplify = static_cast<float>(
           std::atof(value("--stroke-screen-simplify").c_str()));
-    } else if (a == "--stroke-screen-smooth") {
+      continue;
+    }
+    if (a == "--stroke-screen-smooth") {
       o.strokeScreenSmooth =
           std::atoi(value("--stroke-screen-smooth").c_str());
-    } else if (a == "--stroke-screen-minlen") {
+      continue;
+    }
+    if (a == "--stroke-screen-minlen") {
       o.strokeScreenMinLen = static_cast<float>(
           std::atof(value("--stroke-screen-minlen").c_str()));
-    } else if (a == "--dump-aov") {
+      continue;
+    }
+    if (a == "--dump-aov") {
       o.dumpAovPrefix = value("--dump-aov");
-    } else if (a == "--keep-baked-edges") {
+      continue;
+    }
+    if (a == "--keep-baked-edges") {
       std::string v = value("--keep-baked-edges");
       if (o.ok && !parseBool(v, o.keepBakedEdges))
         fail("--keep-baked-edges expects on/off");
-    } else if (a == "--transparent-bg") {
+      continue;
+    }
+    if (a == "--transparent-bg") {
       std::string v = value("--transparent-bg");
       if (o.ok && !parseBool(v, o.transparentBackground))
         fail("--transparent-bg expects on/off");
-    } else if (a == "--transparency") {
+      continue;
+    }
+    if (a == "--transparency") {
       std::string v = value("--transparency");
       if (o.ok && !parseBool(v, o.transparency))
         fail("--transparency expects on/off");
-    } else if (a == "--compare") {
+      continue;
+    }
+    if (a == "--compare") {
       o.compareMode = true;
       o.compareA = value("--compare");
       o.compareB = value("--compare");
-    } else if (a == "--convert") {
+      continue;
+    }
+    if (a == "--convert") {
       o.convertMode = true;
       o.convertIn = value("--convert");
       o.convertOut = value("--convert");
-    } else if (!a.empty() && a[0] == '-') {
+      continue;
+    }
+    if (!a.empty() && a[0] == '-') {
       fail("unknown option: " + a);
-    } else if (o.input.empty()) {
+      continue;
+    }
+    if (o.input.empty()) {
       o.input = a;
-    } else {
+      continue;
+    }
+    if (true) {
       fail("unexpected argument: " + a);
     }
   }
@@ -656,6 +917,10 @@ void printUsage(const char* prog) {
       "  --pov-gain <float>       exposure gain for POV lights   [1.20]\n"
       "  --outline-scale <float>  radius x for spheres/cylinders [1.00]\n"
       "  --supersample <int>      render NxN and downsample  [1; .pov: 3]\n"
+      "  --aa <grid|adaptive>     antialiasing: full grid / adaptive refine [grid]\n"
+      "  --aa-threshold <float>   adaptive: color contrast that refines  [0.1]\n"
+      "  --aa-depth <int>         adaptive: edge lattice (>ss = finer)  [0=ss]\n"
+      "  --aa-debug <on|off>      adaptive: dump refinement mask AOV    [off]\n"
       "  --specular-scale <float> cartoon specular x      [.pov: 0 = matte]\n"
       "  --threads <int>          TBB parallelism cap (1 = serial)  [0 = all]\n"
       "  --alpha <ID=value>       section group alpha (e.g. _34_35=0.5),\n"

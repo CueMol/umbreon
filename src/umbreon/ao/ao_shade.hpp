@@ -39,23 +39,28 @@ struct AoShade {
 // is the pigment (for the albedo-aware multibounce lift). `opt` supplies the AO
 // knobs, `ambLight` the scene ambient radiance, and `aoUp` the resolved
 // sky/ground gradient axis (both precomputed once per frame by the caller).
+// sampleMul multiplies opt.aoSamples (adaptive-AA replicated centers use ss^2 so
+// one shared evaluation carries the sample count of the ss^2 subpixels it
+// replaces); wSeed is the RNG lattice width. sampleMul == 1 && wSeed ==
+// opt.width reproduces the legacy path bit-exactly.
 inline AoShade computeAoShade(RTCScene rscene, const RenderOptions& opt,
                               const Vec3& ambLight, const Vec3& aoUp,
                               const Vec3& P, const Vec3& Ng, const Vec3& N,
                               const Vec3& C, float secEps, uint32_t px,
-                              uint32_t py) {
+                              uint32_t py, int sampleMul, int wSeed) {
   AoShade r;
   r.ambLight = ambLight;
   if (opt.aoSamples <= 0) return r;
+  const int nSamples = opt.aoSamples * sampleMul;
   float openness;
   if (opt.aoEnhanced()) {
     AOParams ap;
-    ap.nSamples = opt.aoSamples;
+    ap.nSamples = nSamples;
     ap.radius = opt.aoDistance;
     ap.falloffPower = opt.aoFalloffPower;
     ap.multiScale = opt.aoMultiScale;
     ap.lowDiscrepancy = opt.aoLowDiscrepancy;
-    r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, opt.width);
+    r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, wSeed);
     openness = r.aov.openness;
     // Directional ambient: a 2-color sky/ground hemisphere gradient sampled along
     // the bent normal (the average unoccluded direction). White sky == ground
@@ -70,16 +75,16 @@ inline AoShade computeAoShade(RTCScene rscene, const RenderOptions& opt,
                         ambLight.z * (gz + (sz - gz) * w)};
     }
   } else {
-    openness = computeAO(rscene, P, Ng, N, secEps, opt.aoSamples, opt.aoDistance,
-                         px, py, opt.width);
+    openness = computeAO(rscene, P, Ng, N, secEps, nSamples, opt.aoDistance,
+                         px, py, wSeed);
     // Color stays on the bit-exact legacy path; if AOVs are requested, derive the
     // contact/shape/bent/avgHitDist channels with one extra (single-scale)
     // quality pass that does NOT feed the color.
     if (opt.aoWriteAov) {
       AOParams ap;
-      ap.nSamples = opt.aoSamples;
+      ap.nSamples = nSamples;
       ap.radius = opt.aoDistance;
-      r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, opt.width);
+      r.aov = computeAOQuality(rscene, P, Ng, N, secEps, ap, px, py, wSeed);
     }
   }
   if (opt.aoMultibounce) {

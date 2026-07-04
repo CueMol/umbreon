@@ -68,6 +68,14 @@ struct ShadeContext {
   // Resolved up axis for the bent-normal sky/ground ambient gradient: the camera
   // true-up (view-stable) or an explicit world axis. Computed once per frame.
   Vec3 aoUp{0.0f, 1.0f, 0.0f};
+  // Adaptive-AA overrides, neutral by default so the legacy path is untouched:
+  // seedW is the RNG lattice width for the deterministic per-pixel streams
+  // (0 = opt.width, the hi-res grid); the sample multipliers boost the AO /
+  // soft-shadow ray counts of a shared (replicated) center evaluation so its
+  // effective sample count matches the ss^2 subpixel box-average it replaces.
+  int seedW = 0;
+  int aoSampleMul = 1;
+  int shadowSampleMul = 1;
 };
 
 // Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
@@ -125,7 +133,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // legacy binary computeAO runs verbatim, keeping --ao-samples-only renders
     // bit-identical too.
     AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
-                                secEps, px, py);
+                                secEps, px, py, c.aoSampleMul,
+                                c.seedW ? c.seedW : c.opt.width);
     Vec3 aoFactor = ao.aoFactor;
     Vec3 ambLight = ao.ambLight;
     float diffuseAo = ao.diffuseAo;  // direct-diffuse AO scale (1 = ambient-only)
@@ -140,9 +149,10 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       hs.contactAo = aoAov.contact;
       hs.shapeAo = aoAov.shape;
       hs.avgHitDist = aoAov.avgHitDist;
-    } else if (c.opt.gi) {
+    } else if (c.opt.gi || c.opt.aaMode == 1) {
       // GI cache seeds need the smooth shading normal and pigment at the first
-      // mesh hit even when the AO AOVs are off. This does not feed the color.
+      // mesh hit even when the AO AOVs are off; the adaptive-AA mask needs the
+      // normal for its normal-delta predicate. Neither feeds the color.
       hs.albedo = C;
       hs.normal = N;
     }
@@ -160,7 +170,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
-                          rscene, shadowsActive, c.opt.shadowSamples, px, py);
+                          rscene, shadowsActive,
+                          c.opt.shadowSamples * c.shadowSampleMul, px, py);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
     // Edge G-buffer (only when the stroke edge pass is on; otherwise the
@@ -204,6 +215,9 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                                     : c.built.cylMat[rh.hit.primID];
     Vec3 N = faceForward(
         normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
+    // Adaptive-AA mask needs the analytic normal for its normal-delta predicate
+    // (otherwise only filled under strokeEdges / pt1 below). Never feeds color.
+    if (c.opt.aaMode == 1) hs.normal = N;
     const Vec3 C = {fc.x, fc.y, fc.z};
     const Vec3 P{org.x + rd.x * rh.ray.tfar, org.y + rd.y * rh.ray.tfar,
                  org.z + rd.z * rh.ray.tfar};
@@ -229,7 +243,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     float diffuseAo = 1.0f;
     if (!fromEdge) {
       AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
-                                secEps, px, py);
+                                secEps, px, py, c.aoSampleMul,
+                                c.seedW ? c.seedW : c.opt.width);
       aoFactor = ao.aoFactor;
       ambLight = ao.ambLight;
       diffuseAo = ao.diffuseAo;
@@ -252,7 +267,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     const bool primShadows = !fromEdge && shadowsActive;
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
-                          rscene, primShadows, c.opt.shadowSamples, px, py);
+                          rscene, primShadows,
+                          c.opt.shadowSamples * c.shadowSampleMul, px, py);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]

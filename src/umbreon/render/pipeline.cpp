@@ -48,6 +48,18 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
   // pt1 "output resolution" gather sentinel: the renderer only sees the hi-res
   // grid, so resolve -1 to the supersample factor here (ss == 1 -> full res).
   if (hi.pt1GatherDiv < 0) hi.pt1GatherDiv = ss;
+  // Adaptive AA is not validated with the GI integrators yet: both consume
+  // per-hi-res-pixel seeds (position/normal/albedo/giRefl), and replicated
+  // blocks would feed them blockwise-constant guides (plausibly fine for the
+  // world-space cache, unvalidated for the pt1 full-res gather). Fall back to
+  // the grid path with a warning. Normalizing HERE keeps the group-alpha
+  // multipass consistent (every pass sees the same normalized options).
+  if (hi.aaMode == 1 && hi.gi) {
+    std::fprintf(stderr,
+                 "warning: --aa adaptive is not supported with --gi yet; "
+                 "falling back to grid supersampling\n");
+    hi.aaMode = 0;
+  }
 
   EmbreeRenderer renderer;
   FrameResult frame = renderer.render(scene, hi);
