@@ -41,6 +41,9 @@ add_library(bench_core STATIC
   src/bench/pov/pov_lexer.cpp
   src/bench/pov/pov_scene_reader.cpp
   src/bench/geom/mesh2_reader.cpp
+  src/bench/geom/mesh2_texture_parse.cpp
+  src/bench/geom/mesh2_block_parser.cpp
+  src/bench/geom/mesh2_build.cpp
   src/bench/image/image_io.cpp
   src/bench/cli.cpp
 )
