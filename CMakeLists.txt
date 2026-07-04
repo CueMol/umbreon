@@ -191,8 +191,9 @@ endif()
 # Public-surface SSOT: keep the install(FILES) list below in sync with the
 # table in docs/api/libumbreon.md and the per-header visibility markers
 # ("libumbreon PUBLIC API header" vs "... INTERNAL header"). All three must
-# list the same 4 public headers (umbreon.hpp, scene.hpp,
-# render/render_types.hpp, postprocess/image_ops.hpp).
+# list the same 7 public headers (umbreon.hpp, scene.hpp,
+# render/render_types.hpp and its three sub-headers edge_types.hpp /
+# render_options.hpp / frame_result.hpp, postprocess/image_ops.hpp).
 # --------------------------------------------------------------------------
 if(TARGET umbreon)
   install(TARGETS umbreon EXPORT umbreonTargets
@@ -201,7 +202,12 @@ if(TARGET umbreon)
   # render/render_types.hpp) so an installed <umbreon/umbreon.hpp> resolves them.
   install(FILES src/umbreon/umbreon.hpp src/umbreon/scene.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
+  # render_types.hpp is an umbrella over the three sub-headers; all four ship
+  # so both the historical single include and per-concern includes resolve.
   install(FILES src/umbreon/render/render_types.hpp
+    src/umbreon/render/edge_types.hpp
+    src/umbreon/render/render_options.hpp
+    src/umbreon/render/frame_result.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
   # NPR edges are public only through their OPTION types (StrokeEdgeOptions /
   # ObjectSpaceEdgeOptions / EdgeStyle in render/render_types.hpp) driven via
