@@ -277,16 +277,22 @@ Options parseCli(int argc, char** argv) {
       // bounces at the point of appearance, so later explicit flags override
       // individual values (put --quality first).
       std::string v = value("--quality");
+      // draft/high gather at OUTPUT resolution with stratified sampling and
+      // the silhouette-rim patch (user-approved 2026-07: visually matches
+      // the old full-hi-res-grid presets at ~12x less cost). ultra stays on
+      // the full supersampled grid as the reference preset.
       if (v == "draft") {
         o.giIntegrator = 1;
-        o.pt1HalfRes = true;
+        o.pt1GatherDiv = -1;  // output resolution
         o.pt1Spp = 8;
         o.giBounces = 1;
+        o.pt1Ld = true;
       } else if (v == "high") {
         o.giIntegrator = 1;
-        o.pt1HalfRes = false;
-        o.pt1Spp = 64;
+        o.pt1GatherDiv = -1;  // output resolution
+        o.pt1Spp = 32;
         o.giBounces = 2;
+        o.pt1Ld = true;
       } else if (v == "ultra") {
         o.giIntegrator = 1;
         o.pt1HalfRes = false;
@@ -745,10 +751,10 @@ void printUsage(const char* prog) {
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
       "  --integrator <cache|pt1> indirect GI integrator (pt1 implies --gi on)\n"
-      "  --quality <draft|high|ultra> pt1 preset: 8spp half 1-bounce /\n"
-      "                           64spp full 2-bounce / 256spp full 3-bounce\n"
-      "                           (put it FIRST; later flags override)\n"
-      "                           [cache]\n"
+      "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
+      "                           32spp out-res ld 2-bounce / 256spp full\n"
+      "                           3-bounce (put it FIRST; later flags\n"
+      "                           override)  [cache]\n"
       "  --spp <int>              pt1 gather rays per pixel             [8]\n"
       "  --indirect-res <full|half|quarter|out> pt1 gather grid = render\n"
       "                           grid / {1,2,4,ss} (out = final size)  [half]\n"

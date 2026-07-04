@@ -110,7 +110,10 @@ umbreon_cli <scene>.pov --integrator pt1 --spp 8
 |---|---|---|
 | `--integrator <cache\|pt1>` | cache | 間接光インテグレータの選択。`pt1` は `--gi on` を含意 |
 | `--spp <int>` | 8 | pt1: ピクセルあたりの gather レイ数 |
-| `--indirect-res <full\|half>` | half | pt1: gather 解像度。half はレンダーグリッドの半分 + joint bilateral upsample |
+| `--indirect-res <full\|half\|quarter\|out>` | half | pt1: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
+| `--pt1-edge-patch <on\|off>` | on | 縮小 gather グリッドが解決できないシルエット縁ピクセルを full-res で再 gather |
+| `--pt1-patch-thresh <w>` | 0.3 | パッチ対象の upsample 重み閾値（大きいほど広く・高品質・低速） |
+| `--pt1-stats <on\|off>` | off | OIDN 段階分解（device/filter/execute）を stderr に出力 |
 | `--denoise <on\|off>` | on | pt1: 間接照度バッファのみを OIDN デノイズ(direct/albedo は触らない) |
 | `--sky <uniform\|gradient>` | uniform | pt1: gather の sky モデル。gradient は天頂=`--sky-radiance`、地面=`--ao-ground` |
 | `--sky-radiance r,g,b` | 1,1,1 | pt1: sky のティント(ambient エネルギーに乗算) |

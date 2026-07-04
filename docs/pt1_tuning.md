@@ -18,13 +18,24 @@ This gives physically-grounded indirect diffuse illumination in about 0.9 s for 
 
 `--quality <draft|high|ultra>` expands to a pt1 configuration at the point of
 appearance; put it FIRST so later explicit flags override individual values.
-Measured on the 97k-triangle scene at 1200x1200, `--supersample 1`:
+draft/high gather the indirect irradiance at OUTPUT resolution
+(`--indirect-res out`: the gather grid is the final image size, not the
+supersampled render grid) with stratified first-bounce sampling (`--pt1-ld`)
+and the silhouette-rim patch (`--pt1-edge-patch`, on by default); E is
+joint-bilateral-upsampled back to the render grid. This matches the old
+full-grid presets visually at roughly 12x less cost (user-evaluated against
+1024-spp converged references and the previous presets). ultra keeps
+gathering on the full supersampled grid as the near-converged reference.
+Measured on ao_test1_hi (34k tris + CSG) at 1200x1200, supersample 3:
 
 | Preset | Expansion | pt1 time | Character |
 |---|---|---|---|
-| `draft` | 8 spp, half res, 1 bounce | ~0.6 s | interactive checks |
-| `high` | 64 spp, full res, 2 bounces | ~11 s | full-res detail + multi-bounce fill |
-| `ultra` | 256 spp, full res, 3 bounces | ~48 s | near-converged reference |
+| `draft` | 8 spp, out res, ld, 1 bounce | ~4 s | interactive checks |
+| `high` | 32 spp, out res, ld, 2 bounces | ~8.5 s | production default |
+| `ultra` | 256 spp, full res, 3 bounces | ~7 min | near-converged reference |
+
+(The previous full-grid `high` -- 64 spp on the supersampled grid -- measured
+107 s under the same conditions; PSNR between the two is 44.6 dB / SSIM 0.995.)
 
 All presets imply `--integrator pt1` (and therefore `--gi on`). Multi-bounce
 (`--gi-bounces`) routes light around corners, so deep pockets brighten
