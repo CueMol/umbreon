@@ -335,6 +335,9 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--pt1-edge-patch");
       if (o.ok && !parseBool(v, o.pt1EdgePatch))
         fail("--pt1-edge-patch expects on/off");
+    } else if (a == "--pt1-patch-thresh") {
+      o.pt1EdgePatchThresh =
+          static_cast<float>(std::atof(value("--pt1-patch-thresh").c_str()));
     } else if (a == "--pt1-stats") {
       std::string v = value("--pt1-stats");
       if (o.ok && !parseBool(v, o.pt1Stats))

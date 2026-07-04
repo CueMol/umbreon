@@ -443,6 +443,15 @@ struct RenderOptions {
   // went black). The rim set is a few percent of the frame, so the patch
   // gather costs little. Applies only when the gather grid is reduced.
   bool pt1EdgePatch = true;
+  // spp multiplier for the edge-patch re-gather. Patched rim pixels skip the
+  // low-grid denoise, so they carry raw Monte-Carlo variance; oversampling
+  // just those pixels (0.1-0.2% of the frame) is nearly free and cuts the
+  // rim speckle variance by the same factor.
+  int pt1EdgePatchSppMul = 4;
+  // Also patch LOW-CONFIDENCE upsampled pixels: total guide weight below this
+  // threshold (0 = only dead-weight pixels). The upsample weight sums to ~1
+  // for well-supported interior pixels.
+  float pt1EdgePatchThresh = 0.3f;
   // Print pt1 diagnostics to stderr: the OIDN stage split (device / filter /
   // execute) inside the denoiser. Ray counts are always collected (negligible
   // cost, reported via FrameResult::pt1Rays); this flag only adds the prints.

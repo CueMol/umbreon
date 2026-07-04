@@ -48,7 +48,8 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
                                    int fallbackRadius = 0,
                                    std::atomic<uint64_t>* outHoles = nullptr,
                                    std::vector<uint8_t>* outNeedsPatch =
-                                       nullptr) {
+                                       nullptr,
+                                   float patchWeightThresh = 0.0f) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   outE.assign(npix * 3, 0.0f);
   outOcc.assign(npix, 0.0f);
@@ -114,6 +115,12 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
         }
 
         if (wSum >= 1e-6f) {
+          // Mark LOW-CONFIDENCE pixels for the full-res patch too: the guide
+          // weights survive but carry little support (grazing silhouettes
+          // whose compatible neighbors sit slightly off-surface), which is
+          // where the upsampled rim drifts from the converged reference.
+          if (outNeedsPatch && wSum < patchWeightThresh)
+            (*outNeedsPatch)[pix] = 1;
           const float inv = 1.0f / wSum;
           outE[pix * 3 + 0] = eSum.x * inv;
           outE[pix * 3 + 1] = eSum.y * inv;
@@ -163,6 +170,70 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
             outHoles->fetch_add(1, std::memory_order_relaxed);
           }
         }
+      }
+    }
+  });
+}
+
+// Guided local smoothing of the PATCHED pixels only: each masked pixel's E
+// (and occ) is re-estimated as the guide-weighted mean of its (2r+1)^2
+// neighborhood in the FULL-res E field -- the same normal/depth edge-stops as
+// the upsample, plus the center's own value at full weight. Patched pixels
+// carry raw (un-denoised) Monte-Carlo variance; their compatible neighbors
+// are mostly denoised upsampled values, so this pulls the rim toward the
+// smooth field where the guides agree and keeps the raw value where they do
+// not (no cross-silhouette leakage). Reads from a snapshot so the result is
+// order-independent and deterministic. Cost is proportional to the patched
+// pixel count (0.1-0.2% of the frame).
+inline void smoothPatchedPixels(int W, int H, const std::vector<uint8_t>& mask,
+                                const float* fullNormal, const float* fullDepth,
+                                const uint8_t* fullEligible, float normalPow,
+                                float depthScale, int radius,
+                                std::vector<float>& E, std::vector<float>& occ) {
+  const std::vector<float> Esrc = E;      // snapshot (order independence)
+  const std::vector<float> occSrc = occ;
+  tbb::parallel_for(tbb::blocked_range<int>(0, H),
+                    [&](const tbb::blocked_range<int>& rows) {
+    for (int py = rows.begin(); py != rows.end(); ++py) {
+      for (int px = 0; px < W; ++px) {
+        const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+        if (!mask[pix]) continue;
+        const Vec3 Nf{fullNormal[pix * 3 + 0], fullNormal[pix * 3 + 1],
+                      fullNormal[pix * 3 + 2]};
+        const float zf = fullDepth[pix];
+        float wSum = 1.0f;  // self at full weight
+        Vec3 eSum{Esrc[pix * 3 + 0], Esrc[pix * 3 + 1], Esrc[pix * 3 + 2]};
+        float occSum = occSrc[pix];
+        for (int dy = -radius; dy <= radius; ++dy) {
+          const int ny = py + dy;
+          if (ny < 0 || ny >= H) continue;
+          for (int dx = -radius; dx <= radius; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const int nx = px + dx;
+            if (nx < 0 || nx >= W) continue;
+            const std::size_t npix2 = static_cast<std::size_t>(ny) * W + nx;
+            if (!fullEligible[npix2]) continue;
+            const Vec3 Nn{fullNormal[npix2 * 3 + 0], fullNormal[npix2 * 3 + 1],
+                          fullNormal[npix2 * 3 + 2]};
+            const float wn =
+                std::pow(std::fmax(0.0f, dot(Nf, Nn)), normalPow);
+            const float zn = fullDepth[npix2];
+            const float wz =
+                std::exp(-std::fabs(zf - zn) / (depthScale * zf + 1e-6f));
+            const float w = wn * wz;
+            if (w < 1e-4f) continue;
+            wSum += w;
+            eSum.x += w * Esrc[npix2 * 3 + 0];
+            eSum.y += w * Esrc[npix2 * 3 + 1];
+            eSum.z += w * Esrc[npix2 * 3 + 2];
+            occSum += w * occSrc[npix2];
+          }
+        }
+        const float inv = 1.0f / wSum;
+        E[pix * 3 + 0] = eSum.x * inv;
+        E[pix * 3 + 1] = eSum.y * inv;
+        E[pix * 3 + 2] = eSum.z * inv;
+        occ[pix] = occSum * inv;
       }
     }
   });

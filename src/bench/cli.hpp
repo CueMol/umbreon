@@ -60,6 +60,7 @@ struct Options {
   bool pt1HalfRes = true;       // legacy default (presets override)
   int pt1GatherDiv = 0;         // --indirect-res full|half|quarter|out
   bool pt1EdgePatch = true;     // --pt1-edge-patch on|off
+  float pt1EdgePatchThresh = 0.3f;  // --pt1-patch-thresh <w>
   bool pt1Denoise = true;       // --denoise on|off (indirect-only OIDN)
   unsigned pt1Seed = 0;         // --seed: deterministic per-pixel RNG seed
   int pt1SkyMode = 0;           // --sky uniform|gradient

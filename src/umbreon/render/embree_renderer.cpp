@@ -585,7 +585,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
           occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
           occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles,
-          opt.pt1EdgePatch ? &needsPatch : nullptr);
+          opt.pt1EdgePatch ? &needsPatch : nullptr,
+          opt.pt1EdgePatchThresh);
       const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
       if (holes > 0 && !opt.pt1EdgePatch)
         std::fprintf(stderr,
@@ -609,10 +610,14 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           patchCount += needsPatch[i];
         if (patchCount > 0) {
           const auto tp0 = std::chrono::high_resolution_clock::now();
+          // Oversample the patched pixels (they skip the low-grid denoise, so
+          // buy the variance down with spp instead -- the set is tiny).
+          const int patchSpp =
+              spp * std::max(1, opt.pt1EdgePatchSppMul);
           std::vector<float> Ep, occp;
           detail::gatherPt1Grid(gp, W, H, res.position.data(),
                                 res.normal.data(), /*geomNormal=*/nullptr,
-                                needsPatch.data(), res.depth.data(), spp,
+                                needsPatch.data(), res.depth.data(), patchSpp,
                                 opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
                                 opt.pt1Clamp, &rayStats);
           for (std::size_t i = 0; i < needsPatch.size(); ++i) {
@@ -622,6 +627,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
             Ebuf[i * 3 + 2] = Ep[i * 3 + 2];
             occBuf[i] = occp[i];
           }
+          // Blend the patched rims into the surrounding (denoised, upsampled)
+          // field with the same normal/depth guides -- keeps the raw value
+          // where no neighbor is compatible, so no cross-silhouette leakage.
+          detail::smoothPatchedPixels(
+              W, H, needsPatch, res.normal.data(), res.depth.data(),
+              eligible.data(), opt.pt1UpsampleNormalPow,
+              opt.pt1UpsampleDepthScale, /*radius=*/2, Ebuf, occBuf);
           const auto tp1 = std::chrono::high_resolution_clock::now();
           res.pt1Timing.gather +=
               std::chrono::duration<double>(tp1 - tp0).count();
