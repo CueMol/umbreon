@@ -309,46 +309,58 @@ bool EmbreeRenderer::occluded(const Vec3& p, const Vec3& q,
   return r.tfar < 0.0f;  // a NON-excluded occluder was found
 }
 
-FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
-  // A renderer instance renders one scene; if reused, drop the previous BVH
-  // before building the new one (keeps the lifetime invariant simple).
-  releaseEmbree();
+namespace {
 
-  RTCDevice device = rtcNewDevice(nullptr);
-  if (!device) throw std::runtime_error("rtcNewDevice failed");
-  rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
+// ---------------------------------------------------------------------------
+// Cold per-frame phases of EmbreeRenderer::render(), factored out of the
+// monolithic body. All run once per frame; the hot primary-ray pixel loop
+// stays inline in render() (its inlining context is part of the bit-exact
+// guarantee).
 
-  // Build all Embree geometry (cold, once per frame). On a build error this
-  // releases the partial scene and throws; release the device too before
-  // propagating so render() leaks neither handle.
-  BuiltScene built;
-  const auto tBvh0 = std::chrono::high_resolution_clock::now();
-  try {
-    built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
-  } catch (...) {
-    rtcReleaseDevice(device);
-    throw;
-  }
-  const auto tBvh1 = std::chrono::high_resolution_clock::now();
-
-  const Mesh& m = scene.mesh;
-
-  // --- camera basis (POV orthographic framing) ---
-  const Camera& cam = scene.camera;
-  const int W = opt.width, H = opt.height;
-  const float aspect = static_cast<float>(W) / static_cast<float>(H);
-
-  const Vec3 dir = normalize(cam.direction);
-  const Vec3 right = normalize(cross(dir, cam.up));
-  const Vec3 trueUp = normalize(cross(right, dir));
-
-  const float halfH = cam.height * 0.5f;
-  const float halfW = halfH * aspect;
+// Camera basis (POV orthographic framing) + projection half-extents.
+struct CameraBasis {
+  Vec3 dir, right, trueUp;
+  float halfW = 0.0f, halfH = 0.0f;
   // Perspective fallback half-extents at unit distance from the image plane.
-  const float persHalfH = std::tan(radians(cam.fovy) * 0.5f);
-  const float persHalfW = persHalfH * aspect;
+  float persHalfW = 0.0f, persHalfH = 0.0f;
+};
 
-  // --- POV-native lights: direction the light travels -> direction to light. ---
+CameraBasis computeCameraBasis(const Camera& cam, int W, int H) {
+  CameraBasis cb;
+  const float aspect = static_cast<float>(W) / static_cast<float>(H);
+  cb.dir = normalize(cam.direction);
+  cb.right = normalize(cross(cb.dir, cam.up));
+  cb.trueUp = normalize(cross(cb.right, cb.dir));
+  cb.halfH = cam.height * 0.5f;
+  cb.halfW = cb.halfH * aspect;
+  cb.persHalfH = std::tan(radians(cam.fovy) * 0.5f);
+  cb.persHalfW = cb.persHalfH * aspect;
+  return cb;
+}
+
+// The camera basis in the form the pt1 G-buffer tracer consumes (also reused
+// by the coarse-AO pre-pass).
+detail::Pt1CameraBasis toPt1Basis(const Camera& cam, const CameraBasis& cb) {
+  detail::Pt1CameraBasis camb;
+  camb.position = cam.position;
+  camb.dir = cb.dir;
+  camb.right = cb.right;
+  camb.trueUp = cb.trueUp;
+  camb.orthographic = cam.orthographic;
+  camb.halfW = cb.halfW;
+  camb.halfH = cb.halfH;
+  camb.persHalfW = cb.persHalfW;
+  camb.persHalfH = cb.persHalfH;
+  return camb;
+}
+
+// POV-native lights (direction the light travels -> direction to light), plus
+// the optional environment dome fill (opt.envLights > 0): a hemisphere of
+// distant diffuse-only lights around the camera-forward axis, meant to be
+// used together with AO (estimator in ao/env_dome.hpp).
+std::vector<Light> buildSceneLights(const Scene& scene,
+                                    const RenderOptions& opt,
+                                    const CameraBasis& cb) {
   std::vector<Light> lights;
   lights.reserve(scene.lights.size());
   for (const DistantLight& dl : scene.lights) {
@@ -360,16 +372,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     l.radius = radians(opt.lightRadius);  // soft-shadow angular radius (0 = hard)
     lights.push_back(l);
   }
-  // Environment dome fill (opt.envLights > 0): a hemisphere of distant diffuse-
-  // only lights around the camera-forward axis, meant to be used together with
-  // AO. Appended to `lights` here; the estimator lives in ao/env_dome.hpp.
-  buildEnvDomeLights(lights, opt, dir, right, trueUp);
-  // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
-  // term is material.ambient * pigment, applied below via ambK.
-  const Vec3 ambLight = scene.ambientColor;  // expected <1,1,1> on the embree path
-  const Vec3 bg = {scene.background.x, scene.background.y, scene.background.z};
+  buildEnvDomeLights(lights, opt, cb.dir, cb.right, cb.trueUp);
+  return lights;
+}
 
-  FrameResult res;
+// Frame color/depth buffers + conditional AOV allocation. Every AOV is sized
+// ONLY when a feature needs it, so the default path touches no extra memory
+// and stays byte-identical.
+void allocateFrameBuffers(const Scene& scene, const RenderOptions& opt, int W,
+                          int H, FrameResult& res) {
   res.width = W;
   res.height = H;
   res.color.assign(static_cast<std::size_t>(W) * H * 4, 0.0f);
@@ -418,14 +429,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
-
-  // Resolve the bent-normal ambient gradient axis once: the camera true-up
-  // (view-stable soft-box, the default) or an explicit world axis. Only read
-  // when aoBentNormal is on; harmless otherwise.
-  const Vec3 aoUpAxis =
-      opt.aoUseCameraUp
-          ? trueUp
-          : safeNormalize(Vec3{opt.aoUp[0], opt.aoUp[1], opt.aoUp[2]}, trueUp);
+}
 
   // Everything the per-hit shader reads, gathered once.
   // --- coarse-grid AO (--ao-res out): gather the AO once per coarse cell on a
@@ -433,22 +437,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // the pixel loop; hits then interpolate it via ShadeContext::coarseAo with
   // an exact inline fallback at the rims. aoResDiv was resolved (sentinel ->
   // supersample factor, gi fallback) by renderFrame; <= 1 = inline, no work.
+std::unique_ptr<CoarseAoGrid> runCoarseAoPrepass(
+    const Scene& scene, const RenderOptions& opt, const BuiltScene& built,
+    const Mesh& m, const CameraBasis& cb, int W, int H, FrameResult& res) {
   std::unique_ptr<CoarseAoGrid> aoGrid;
   if (opt.aoResDiv > 1 && opt.aoSamples > 0 &&
       (meshPresent(built) || realCsgPresent(built))) {
     const auto ta0 = std::chrono::high_resolution_clock::now();
     const int div = opt.aoResDiv;
     const int hw = (W + div - 1) / div, hh = (H + div - 1) / div;
-    detail::Pt1CameraBasis camb;
-    camb.position = cam.position;
-    camb.dir = dir;
-    camb.right = right;
-    camb.trueUp = trueUp;
-    camb.orthographic = cam.orthographic;
-    camb.halfW = halfW;
-    camb.halfH = halfH;
-    camb.persHalfW = persHalfW;
-    camb.persHalfH = persHalfH;
+    const detail::Pt1CameraBasis camb = toPt1Basis(scene.camera, cb);
     detail::IrradianceCacheParams tp;  // the tracer reads scene/built/mesh only
     tp.scene = built.scene;
     tp.built = &built;
@@ -464,6 +462,443 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     if (opt.aoResDebug)
       res.aoPatchMask.assign(static_cast<std::size_t>(W) * H, 0.0f);
   }
+  return aoGrid;
+}
+
+// pt1 diffuse-GI post-pass (opt.giIntegrator == 1): per-pixel path-traced
+// gather on a reduced grid, denoise, joint-bilateral upsample, silhouette-rim
+// patch, then the [E] composite L += giIntensity * giReflectance * E.
+void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
+                  const BuiltScene& built, const Mesh& m,
+                  const std::vector<Light>& lights, const Vec3& ambLight,
+                  const Vec3& aoUpAxis, const CameraBasis& cb, int W, int H,
+                  const std::vector<float>& giRefl,
+                  const std::vector<uint8_t>& giElig, FrameResult& res) {
+    // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
+    // the sky through its miss term, so the combination counts the sky twice.
+    if (opt.envLights > 0)
+      std::fprintf(stderr,
+                   "warning: --integrator pt1 with env-dome lights (--env-light"
+                   " %d) double-counts the sky energy; use the gather sky "
+                   "(--sky/--sky-radiance) instead\n",
+                   opt.envLights);
+    const Aabb b = scene.mesh.bounds();
+    const float diag = b.valid() ? b.diagonal() : 1.0f;
+    detail::IrradianceCacheParams gp;
+    gp.scene = built.scene;
+    gp.built = &built;
+    gp.mesh = &m;
+    gp.lights = &lights;
+    gp.ambLight = ambLight;
+    gp.envUp = aoUpAxis;
+    // Gather sky: uniform (sky == ground == --sky-radiance; the all-white
+    // default matches the cache's environment exactly) or gradient (zenith =
+    // --sky-radiance, ground = --ao-ground). Radiance = this tint * ambLight *
+    // --gi-env-intensity, evaluated ONLY at gather misses (see pt1_design.md).
+    {
+      const Vec3 skyR{opt.pt1SkyRadiance[0], opt.pt1SkyRadiance[1],
+                      opt.pt1SkyRadiance[2]};
+      gp.skyColor = skyR;
+      gp.groundColor = (opt.pt1SkyMode == 1)
+                           ? Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1],
+                                  opt.aoGroundColor[2]}
+                           : skyR;
+    }
+    gp.envIntensity = opt.giEnvIntensity;
+    gp.samples = std::max(1, opt.pt1Spp);
+    // Path length for the pt1 gather walk (--gi-bounces; 1 = classic
+    // one-bounce). Unlike the cache's prevCache interpolation stages, pt1
+    // continues each path with one cosine-sampled ray per vertex.
+    gp.bounces = std::max(1, opt.giBounces);
+    // Unlike the cache (which truncates at 0.1 * diag for concavity contrast),
+    // pt1 is the ground-truth reference: gather to infinity unless the user
+    // caps it explicitly.
+    gp.maxDistance = (opt.giMaxDistance > 0.0f)
+                         ? opt.giMaxDistance
+                         : std::numeric_limits<float>::infinity();
+    gp.spacing = diag * 0.007f;  // unused by the per-pixel gather; keep valid
+    gp.shadows = opt.shadows;
+    gp.shadowSamples = opt.shadowSamples;
+
+    const int spp = std::max(1, opt.pt1Spp);
+    detail::Pt1RayStats rayStats;
+    // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
+    // REAL CSG primitives (atom balls / bonds); outline decoration and the
+    // background stay 0. Unlike the cache's geomID/kind gate this is primID-
+    // aware, which the fromEdge distinction requires.
+    const std::vector<uint8_t>& eligible = giElig;
+
+    // Gather-grid divisor k relative to the RENDER grid (which is the
+    // supersampled hi-res W x H). Legacy (pt1GatherDiv == 0) derives 1 or 2
+    // from pt1HalfRes; the -1 "output resolution" sentinel was resolved to
+    // the supersample factor in renderFrame. k == 2 reproduces the historical
+    // half-res grid exactly ((W+1)/2 == ceil(W/2)).
+    int gatherDiv = opt.pt1GatherDiv;
+    if (gatherDiv == 0) gatherDiv = opt.pt1HalfRes ? 2 : 1;
+    if (gatherDiv < 1) gatherDiv = 1;
+
+    std::vector<float> Ebuf, occBuf;
+    if (gatherDiv > 1) {
+      // Reduced gather grid: shoot one primary ray per low-grid pixel center
+      // (the two grids share the same normalized [-1,1] plane) into a private
+      // G-buffer, gather and denoise there, then joint-bilateral-upsample E
+      // to the render grid.
+      const int hw = (W + gatherDiv - 1) / gatherDiv,
+                hh = (H + gatherDiv - 1) / gatherDiv;
+      const detail::Pt1CameraBasis camb = toPt1Basis(scene.camera, cb);
+      detail::Pt1GBuffer g;
+      std::vector<float> Eh, occh;
+      const auto tg0 = std::chrono::high_resolution_clock::now();
+      detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats);
+      // The private G-buffer carries the geometric normal, so the gather's
+      // below-horizon guard is exact here (full-res mode approximates Ng = N).
+      detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
+                            g.geomNormal.data(), g.hit.data(), g.depth.data(),
+                            spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
+                            opt.pt1Clamp, &rayStats);
+      const auto tg1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      if (opt.pt1Denoise) {
+        const auto td0 = std::chrono::high_resolution_clock::now();
+        detail::denoisePt1E(hw, hh, Eh, g.albedo.data(), g.normal.data(),
+                            g.position.data(), opt);
+        const auto td1 = std::chrono::high_resolution_clock::now();
+        res.pt1Timing.denoise =
+            std::chrono::duration<double>(td1 - td0).count();
+      }
+
+      const auto tu0 = std::chrono::high_resolution_clock::now();
+      // At k <= 2 keep the historical 2x2-quad-only fallback (byte-identical
+      // legacy half-res); coarser grids widen the all-invalid-quad fallback
+      // search so sub-k-pixel features keep SOME indirect instead of none.
+      std::atomic<uint64_t> upsampleHoles{0};
+      std::vector<uint8_t> needsPatch;
+      detail::upsampleJointBilateral(
+          W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
+          occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
+          occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles,
+          opt.pt1EdgePatch ? &needsPatch : nullptr,
+          opt.pt1EdgePatchThresh);
+      const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
+      if (holes > 0 && !opt.pt1EdgePatch)
+        std::fprintf(stderr,
+                     "pt1: %llu eligible pixel(s) found no valid gather "
+                     "sample in the upsample window (thin features at 1/%d "
+                     "gather res lose their indirect)\n",
+                     static_cast<unsigned long long>(holes), gatherDiv);
+      const auto tu1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
+
+      // Silhouette-rim patch: the masked pixels have NO compatible low-res
+      // sample (their surface is unrepresented in their upsample window), so
+      // the copied/zero E above is wrong there. Re-gather exactly those
+      // pixels at full resolution -- typically a few percent of the frame --
+      // and overwrite. The patched E skips the low-grid denoise (it never
+      // belonged to that field); rim noise at low spp is the tradeoff for
+      // removing the dark-rim artifact, judged via the comparison images.
+      if (opt.pt1EdgePatch && !needsPatch.empty()) {
+        std::size_t patchCount = 0;
+        for (std::size_t i = 0; i < needsPatch.size(); ++i)
+          patchCount += needsPatch[i];
+        if (patchCount > 0) {
+          const auto tp0 = std::chrono::high_resolution_clock::now();
+          // Oversample the patched pixels (they skip the low-grid denoise, so
+          // buy the variance down with spp instead -- the set is tiny).
+          const int patchSpp =
+              spp * std::max(1, opt.pt1EdgePatchSppMul);
+          std::vector<float> Ep, occp;
+          detail::gatherPt1Grid(gp, W, H, res.position.data(),
+                                res.normal.data(), /*geomNormal=*/nullptr,
+                                needsPatch.data(), res.depth.data(), patchSpp,
+                                opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
+                                opt.pt1Clamp, &rayStats);
+          for (std::size_t i = 0; i < needsPatch.size(); ++i) {
+            if (!needsPatch[i]) continue;
+            Ebuf[i * 3 + 0] = Ep[i * 3 + 0];
+            Ebuf[i * 3 + 1] = Ep[i * 3 + 1];
+            Ebuf[i * 3 + 2] = Ep[i * 3 + 2];
+            occBuf[i] = occp[i];
+          }
+          // Blend the patched rims into the surrounding (denoised, upsampled)
+          // field with the same normal/depth guides -- keeps the raw value
+          // where no neighbor is compatible, so no cross-silhouette leakage.
+          detail::smoothPatchedPixels(
+              W, H, needsPatch, res.normal.data(), res.depth.data(),
+              eligible.data(), opt.pt1UpsampleNormalPow,
+              opt.pt1UpsampleDepthScale, /*radius=*/2, Ebuf, occBuf);
+          const auto tp1 = std::chrono::high_resolution_clock::now();
+          res.pt1Timing.gather +=
+              std::chrono::duration<double>(tp1 - tp0).count();
+          std::fprintf(stderr,
+                       "pt1: edge patch re-gathered %zu rim pixel(s) "
+                       "(%.1f%% of grid) at full res\n",
+                       patchCount,
+                       100.0 * static_cast<double>(patchCount) /
+                           static_cast<double>(needsPatch.size()));
+        }
+      }
+    } else {
+      const auto tg0 = std::chrono::high_resolution_clock::now();
+      detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
+                            /*geomNormal=*/nullptr, eligible.data(),
+                            res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
+                            occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats);
+      const auto tg1 = std::chrono::high_resolution_clock::now();
+      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
+
+      // Denoise the indirect irradiance ONLY (pre-composite; direct light and
+      // albedo are noise-free): OIDN on E with the reflectance/normal guides.
+      if (opt.pt1Denoise) {
+        const auto td0 = std::chrono::high_resolution_clock::now();
+        detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
+                            res.position.data(), opt);
+        const auto td1 = std::chrono::high_resolution_clock::now();
+        res.pt1Timing.denoise =
+            std::chrono::duration<double>(td1 - td0).count();
+      }
+    }
+
+    // [E] composite -- same form as the cache path: L += giIntensity *
+    // (mat.diffuse * pigment) * E. The constant ambient was already dropped in
+    // the shade (gi path); occlusion lives inside E, counted exactly once.
+    const float gI = opt.giIntensity;
+    tbb::parallel_for(tbb::blocked_range<int>(0, H),
+                      [&](const tbb::blocked_range<int>& rows) {
+      for (int py = rows.begin(); py != rows.end(); ++py) {
+        for (int px = 0; px < W; ++px) {
+          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+          if (!eligible[pix]) continue;
+          const Vec3 ind{gI * giRefl[pix * 3 + 0] * Ebuf[pix * 3 + 0],
+                         gI * giRefl[pix * 3 + 1] * Ebuf[pix * 3 + 1],
+                         gI * giRefl[pix * 3 + 2] * Ebuf[pix * 3 + 2]};
+          res.color[pix * 4 + 0] += ind.x;
+          res.color[pix * 4 + 1] += ind.y;
+          res.color[pix * 4 + 2] += ind.z;
+          res.indirect[pix * 3 + 0] = ind.x;
+          res.indirect[pix * 3 + 1] = ind.y;
+          res.indirect[pix * 3 + 2] = ind.z;
+          res.giOcclusion[pix] = occBuf[pix];
+        }
+      }
+    });
+
+    res.pt1Rays.gatherRays =
+        rayStats.gatherRays.load(std::memory_order_relaxed);
+    res.pt1Rays.gatherHits =
+        rayStats.gatherHits.load(std::memory_order_relaxed);
+    res.pt1Rays.neeRays = rayStats.neeRays.load(std::memory_order_relaxed);
+    res.pt1Rays.neeOccluded =
+        rayStats.neeOccluded.load(std::memory_order_relaxed);
+    res.pt1Rays.gbufferRays =
+        rayStats.gbufferRays.load(std::memory_order_relaxed);
+    const double totalRays = static_cast<double>(
+        res.pt1Rays.gatherRays + res.pt1Rays.neeRays + res.pt1Rays.gbufferRays);
+    const double neeFrac =
+        totalRays > 0.0 ? static_cast<double>(res.pt1Rays.neeRays) / totalRays
+                        : 0.0;
+    const double mraysPerSec =
+        res.pt1Timing.gather > 0.0
+            ? totalRays / res.pt1Timing.gather / 1.0e6
+            : 0.0;
+    std::fprintf(stderr,
+                 "pt1: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
+                 "%.3fs upsample %.3fs\n"
+                 "pt1: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
+                 "nee_frac %.2f  %.1f Mrays/s\n",
+                 gatherDiv, W, H, spp,
+                 res.pt1Timing.gather, res.pt1Timing.denoise,
+                 res.pt1Timing.upsample,
+                 res.pt1Rays.gatherRays / 1.0e6,
+                 res.pt1Rays.gatherRays
+                     ? 100.0 * res.pt1Rays.gatherHits / res.pt1Rays.gatherRays
+                     : 0.0,
+                 res.pt1Rays.neeRays / 1.0e6,
+                 res.pt1Rays.neeRays
+                     ? 100.0 * res.pt1Rays.neeOccluded / res.pt1Rays.neeRays
+                     : 0.0,
+                 neeFrac, mraysPerSec);
+}
+
+// Surface-irradiance-cache diffuse-GI post-pass (the default integrator):
+// [B] placement + [C] gather/fill + neighbor clamp, then [D] interpolation
+// into the indirect (E_cached) and giRecordViz AOVs and the [E] composite.
+void runIrradianceCacheGiPass(const Scene& scene, const RenderOptions& opt,
+                              const BuiltScene& built, const Mesh& m,
+                              const std::vector<Light>& lights,
+                              const Vec3& ambLight, const Vec3& aoUpAxis,
+                              int W, int H, const std::vector<int>& giGroup,
+                              const std::vector<uint32_t>& giGeom,
+                              const std::vector<float>& giRefl,
+                              FrameResult& res) {
+    const Aabb b = scene.mesh.bounds();
+    const float diag = b.valid() ? b.diagonal() : 1.0f;
+    detail::IrradianceCacheParams gp;
+    gp.scene = built.scene;
+    gp.built = &built;
+    gp.mesh = &m;
+    gp.lights = &lights;
+    gp.ambLight = ambLight;
+    gp.envUp = aoUpAxis;
+    gp.skyColor = Vec3{opt.aoSkyColor[0], opt.aoSkyColor[1], opt.aoSkyColor[2]};
+    gp.groundColor =
+        Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1], opt.aoGroundColor[2]};
+    // Environment (sky/ground miss) radiance = scene.ambientColor (gp.ambLight)
+    // times the user gi-env-intensity multiplier. scene.ambientColor IS the
+    // ambient light energy the GI gathers occlusion-aware; GI is meaningful only
+    // when that ambient carries real energy, so the harness moves a fraction of
+    // the lighting energy into it when GI is on (the POV radiosity _amb_frac
+    // balance) -- otherwise an all-direct lighting starves GI to a near no-op.
+    gp.envIntensity = opt.giEnvIntensity;
+    gp.samples = std::max(1, opt.giSamples);
+    gp.bounces = std::max(1, opt.giBounces);
+    gp.gradients = opt.giGradients;
+    gp.outlierReject = opt.giOutlierReject;
+    // Auto gather distance: a fraction of the scene diagonal. Full-diagonal
+    // gather lets distant surfaces fill the hemisphere uniformly, washing out the
+    // concavity contrast (every point sees ~the same far geometry); a contact-
+    // scale fraction keeps near occluders dominant so pockets read darker, while
+    // still collecting the local one-bounce indirect. Tune with --gi-max-dist.
+    gp.maxDistance = (opt.giMaxDistance > 0.0f) ? opt.giMaxDistance : diag * 0.1f;
+    // Auto record spacing = a small fraction of the scene diagonal. k0 = 0.007
+    // (~140 records across the diagonal) is a balanced default: fine enough that
+    // the interpolated cache resolves surface concavities without the blocky look
+    // of the coarser k0 = 0.01, at ~2x the record count. Override with
+    // --gi-spacing; the adaptive step will later refine tight (small-R_i) regions.
+    gp.spacing = (opt.giRecordSpacing > 0.0f) ? opt.giRecordSpacing : diag * 0.007f;
+    if (gp.spacing <= 0.0f) gp.spacing = 1.0f;
+    gp.accuracy = opt.giAccuracy;
+    gp.normalReject = opt.giNormalReject;
+    gp.componentReject = opt.giComponentReject;
+    gp.shadows = opt.shadows;
+    gp.shadowSamples = opt.shadowSamples;
+
+    detail::IrradianceCache cache = detail::buildIrradianceCache(
+        gp, W, H, res.position.data(), res.normal.data(), giGroup.data(),
+        giGeom.data(), opt.giSeedPerVertex);
+
+    // Record-radius heatmap normalization. A record's harmonic-mean radius R_i
+    // is small in a concavity (nearby occluders dominate) and large on an open
+    // surface; the two extremes span orders of magnitude (Rmin .. maxDistance),
+    // so map log(R_i) linearly into [0,1]. Dark = small radius = tight/concave
+    // record, bright = large radius = open surface.
+    const float densRmin = std::fmax(0.25f * gp.spacing, 1.0e-6f);
+    const float densLogLo = std::log(densRmin);
+    const float densLogSpan =
+        std::fmax(std::log(std::fmax(gp.maxDistance, densRmin)) - densLogLo, 1.0e-6f);
+
+    // [D] per-pixel interpolation into the debug AOVs (parallel, read-only).
+    tbb::parallel_for(tbb::blocked_range<int>(0, H),
+                      [&](const tbb::blocked_range<int>& rows) {
+      for (int py = rows.begin(); py != rows.end(); ++py) {
+        for (int px = 0; px < W; ++px) {
+          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+          const uint32_t g = giGeom[pix];
+          if (g == 0xFFFFFFFFu) continue;
+          if (built.records[g].kind != GeomKind::Mesh) continue;
+          const Vec3 X{res.position[pix * 3 + 0], res.position[pix * 3 + 1],
+                       res.position[pix * 3 + 2]};
+          const Vec3 Nx{res.normal[pix * 3 + 0], res.normal[pix * 3 + 1],
+                        res.normal[pix * 3 + 2]};
+          Vec3 E{0.0f, 0.0f, 0.0f};
+          float occ = 0.0f;
+          float rad = gp.maxDistance;
+          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E, &occ,
+                                        &rad);
+          // [E] A-route composite: L += giIntensity * (mat.diffuse * pigment) *
+          // E_cached. The constant ambient was already dropped from res.color in
+          // the shade (gi path), and no AO multiplies here -- occlusion lives
+          // inside E_cached, so it is counted exactly once. indirect AOV stores
+          // this added term (for denoise demodulation / debug).
+          const float gI = opt.giIntensity;
+          const Vec3 ind{gI * giRefl[pix * 3 + 0] * E.x,
+                         gI * giRefl[pix * 3 + 1] * E.y,
+                         gI * giRefl[pix * 3 + 2] * E.z};
+          res.color[pix * 4 + 0] += ind.x;
+          res.color[pix * 4 + 1] += ind.y;
+          res.color[pix * 4 + 2] += ind.z;
+          res.indirect[pix * 3 + 0] = ind.x;
+          res.indirect[pix * 3 + 1] = ind.y;
+          res.indirect[pix * 3 + 2] = ind.z;
+          res.giOcclusion[pix] = occ;  // AO-like concavity map (env-independent)
+          // Trust-radius heatmap: the interpolated (smooth) record radius R_i.
+          // R_i is the harmonic-mean distance to surrounding geometry, so it is
+          // SMALL where the surface folds in on itself (a record there only
+          // covers a tight area => that is where adaptive seeding would add more
+          // records) and LARGE on open surfaces. log-mapped: dark = small R_i =
+          // tight concavity / contact, bright = large R_i = open.
+          if (rad > 0.0f) {
+            float h = (std::log(rad) - densLogLo) / densLogSpan;
+            if (h < 0.0f) h = 0.0f;
+            if (h > 1.0f) h = 1.0f;
+            res.giRecordViz[pix * 3 + 0] = h;
+            res.giRecordViz[pix * 3 + 1] = h;
+            res.giRecordViz[pix * 3 + 2] = h;
+          }
+        }
+      }
+    });
+
+    std::fprintf(stderr,
+                 "gi: irradiance cache built -- %zu records (spacing %.4g, "
+                 "samples %d, maxDist %.4g)\n",
+                 cache.records.size(), gp.spacing, gp.samples, gp.maxDistance);
+}
+
+}  // namespace
+
+FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
+  // A renderer instance renders one scene; if reused, drop the previous BVH
+  // before building the new one (keeps the lifetime invariant simple).
+  releaseEmbree();
+
+  RTCDevice device = rtcNewDevice(nullptr);
+  if (!device) throw std::runtime_error("rtcNewDevice failed");
+  rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
+
+  // Build all Embree geometry (cold, once per frame). On a build error this
+  // releases the partial scene and throws; release the device too before
+  // propagating so render() leaks neither handle.
+  BuiltScene built;
+  const auto tBvh0 = std::chrono::high_resolution_clock::now();
+  try {
+    built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
+  } catch (...) {
+    rtcReleaseDevice(device);
+    throw;
+  }
+  const auto tBvh1 = std::chrono::high_resolution_clock::now();
+
+  const Mesh& m = scene.mesh;
+
+  // --- camera basis / lights / frame buffers (cold setup helpers above) ---
+  const Camera& cam = scene.camera;
+  const int W = opt.width, H = opt.height;
+  const CameraBasis cb = computeCameraBasis(cam, W, H);
+  // Local aliases so the pixel loop below reads exactly as before.
+  const Vec3 dir = cb.dir, right = cb.right, trueUp = cb.trueUp;
+  const float halfW = cb.halfW, halfH = cb.halfH;
+  const float persHalfW = cb.persHalfW, persHalfH = cb.persHalfH;
+
+  const std::vector<Light> lights = buildSceneLights(scene, opt, cb);
+  // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
+  // term is material.ambient * pigment, applied below via ambK.
+  const Vec3 ambLight = scene.ambientColor;  // expected <1,1,1> on the embree path
+  const Vec3 bg = {scene.background.x, scene.background.y, scene.background.z};
+  FrameResult res;
+  allocateFrameBuffers(scene, opt, W, H, res);
+
+  // Resolve the bent-normal ambient gradient axis once: the camera true-up
+  // (view-stable soft-box, the default) or an explicit world axis. Only read
+  // when aoBentNormal is on; harmless otherwise.
+  const Vec3 aoUpAxis =
+      opt.aoUseCameraUp
+          ? trueUp
+          : safeNormalize(Vec3{opt.aoUp[0], opt.aoUp[1], opt.aoUp[2]}, trueUp);
+  // Coarse-grid AO pre-pass (--ao-res out); <= 1 = inline per-hit gather.
+  std::unique_ptr<CoarseAoGrid> aoGrid =
+      runCoarseAoPrepass(scene, opt, built, m, cb, W, H, res);
+
 
   const ShadeContext sc{built,     m,   lights, ambLight,
                         bg,        opt, aoUpAxis, aoGrid.get()};
@@ -781,377 +1216,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // the unchanged direct shading from the pixel loop above.
   if (opt.gi && (meshPresent(built) || realCsgPresent(built)) &&
       opt.giIntegrator == 1) {
-    // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
-    // the sky through its miss term, so the combination counts the sky twice.
-    if (opt.envLights > 0)
-      std::fprintf(stderr,
-                   "warning: --integrator pt1 with env-dome lights (--env-light"
-                   " %d) double-counts the sky energy; use the gather sky "
-                   "(--sky/--sky-radiance) instead\n",
-                   opt.envLights);
-    const Aabb b = scene.mesh.bounds();
-    const float diag = b.valid() ? b.diagonal() : 1.0f;
-    detail::IrradianceCacheParams gp;
-    gp.scene = built.scene;
-    gp.built = &built;
-    gp.mesh = &m;
-    gp.lights = &lights;
-    gp.ambLight = ambLight;
-    gp.envUp = aoUpAxis;
-    // Gather sky: uniform (sky == ground == --sky-radiance; the all-white
-    // default matches the cache's environment exactly) or gradient (zenith =
-    // --sky-radiance, ground = --ao-ground). Radiance = this tint * ambLight *
-    // --gi-env-intensity, evaluated ONLY at gather misses (see pt1_design.md).
-    {
-      const Vec3 skyR{opt.pt1SkyRadiance[0], opt.pt1SkyRadiance[1],
-                      opt.pt1SkyRadiance[2]};
-      gp.skyColor = skyR;
-      gp.groundColor = (opt.pt1SkyMode == 1)
-                           ? Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1],
-                                  opt.aoGroundColor[2]}
-                           : skyR;
-    }
-    gp.envIntensity = opt.giEnvIntensity;
-    gp.samples = std::max(1, opt.pt1Spp);
-    // Path length for the pt1 gather walk (--gi-bounces; 1 = classic
-    // one-bounce). Unlike the cache's prevCache interpolation stages, pt1
-    // continues each path with one cosine-sampled ray per vertex.
-    gp.bounces = std::max(1, opt.giBounces);
-    // Unlike the cache (which truncates at 0.1 * diag for concavity contrast),
-    // pt1 is the ground-truth reference: gather to infinity unless the user
-    // caps it explicitly.
-    gp.maxDistance = (opt.giMaxDistance > 0.0f)
-                         ? opt.giMaxDistance
-                         : std::numeric_limits<float>::infinity();
-    gp.spacing = diag * 0.007f;  // unused by the per-pixel gather; keep valid
-    gp.shadows = opt.shadows;
-    gp.shadowSamples = opt.shadowSamples;
-
-    const int spp = std::max(1, opt.pt1Spp);
-    detail::Pt1RayStats rayStats;
-    // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
-    // REAL CSG primitives (atom balls / bonds); outline decoration and the
-    // background stay 0. Unlike the cache's geomID/kind gate this is primID-
-    // aware, which the fromEdge distinction requires.
-    const std::vector<uint8_t>& eligible = giElig;
-
-    // Gather-grid divisor k relative to the RENDER grid (which is the
-    // supersampled hi-res W x H). Legacy (pt1GatherDiv == 0) derives 1 or 2
-    // from pt1HalfRes; the -1 "output resolution" sentinel was resolved to
-    // the supersample factor in renderFrame. k == 2 reproduces the historical
-    // half-res grid exactly ((W+1)/2 == ceil(W/2)).
-    int gatherDiv = opt.pt1GatherDiv;
-    if (gatherDiv == 0) gatherDiv = opt.pt1HalfRes ? 2 : 1;
-    if (gatherDiv < 1) gatherDiv = 1;
-
-    std::vector<float> Ebuf, occBuf;
-    if (gatherDiv > 1) {
-      // Reduced gather grid: shoot one primary ray per low-grid pixel center
-      // (the two grids share the same normalized [-1,1] plane) into a private
-      // G-buffer, gather and denoise there, then joint-bilateral-upsample E
-      // to the render grid.
-      const int hw = (W + gatherDiv - 1) / gatherDiv,
-                hh = (H + gatherDiv - 1) / gatherDiv;
-      detail::Pt1CameraBasis camb;
-      camb.position = cam.position;
-      camb.dir = dir;
-      camb.right = right;
-      camb.trueUp = trueUp;
-      camb.orthographic = cam.orthographic;
-      camb.halfW = halfW;
-      camb.halfH = halfH;
-      camb.persHalfW = persHalfW;
-      camb.persHalfH = persHalfH;
-
-      detail::Pt1GBuffer g;
-      std::vector<float> Eh, occh;
-      const auto tg0 = std::chrono::high_resolution_clock::now();
-      detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats);
-      // The private G-buffer carries the geometric normal, so the gather's
-      // below-horizon guard is exact here (full-res mode approximates Ng = N).
-      detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
-                            g.geomNormal.data(), g.hit.data(), g.depth.data(),
-                            spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
-                            opt.pt1Clamp, &rayStats);
-      const auto tg1 = std::chrono::high_resolution_clock::now();
-      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
-
-      if (opt.pt1Denoise) {
-        const auto td0 = std::chrono::high_resolution_clock::now();
-        detail::denoisePt1E(hw, hh, Eh, g.albedo.data(), g.normal.data(),
-                            g.position.data(), opt);
-        const auto td1 = std::chrono::high_resolution_clock::now();
-        res.pt1Timing.denoise =
-            std::chrono::duration<double>(td1 - td0).count();
-      }
-
-      const auto tu0 = std::chrono::high_resolution_clock::now();
-      // At k <= 2 keep the historical 2x2-quad-only fallback (byte-identical
-      // legacy half-res); coarser grids widen the all-invalid-quad fallback
-      // search so sub-k-pixel features keep SOME indirect instead of none.
-      std::atomic<uint64_t> upsampleHoles{0};
-      std::vector<uint8_t> needsPatch;
-      detail::upsampleJointBilateral(
-          W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
-          occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
-          occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles,
-          opt.pt1EdgePatch ? &needsPatch : nullptr,
-          opt.pt1EdgePatchThresh);
-      const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
-      if (holes > 0 && !opt.pt1EdgePatch)
-        std::fprintf(stderr,
-                     "pt1: %llu eligible pixel(s) found no valid gather "
-                     "sample in the upsample window (thin features at 1/%d "
-                     "gather res lose their indirect)\n",
-                     static_cast<unsigned long long>(holes), gatherDiv);
-      const auto tu1 = std::chrono::high_resolution_clock::now();
-      res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
-
-      // Silhouette-rim patch: the masked pixels have NO compatible low-res
-      // sample (their surface is unrepresented in their upsample window), so
-      // the copied/zero E above is wrong there. Re-gather exactly those
-      // pixels at full resolution -- typically a few percent of the frame --
-      // and overwrite. The patched E skips the low-grid denoise (it never
-      // belonged to that field); rim noise at low spp is the tradeoff for
-      // removing the dark-rim artifact, judged via the comparison images.
-      if (opt.pt1EdgePatch && !needsPatch.empty()) {
-        std::size_t patchCount = 0;
-        for (std::size_t i = 0; i < needsPatch.size(); ++i)
-          patchCount += needsPatch[i];
-        if (patchCount > 0) {
-          const auto tp0 = std::chrono::high_resolution_clock::now();
-          // Oversample the patched pixels (they skip the low-grid denoise, so
-          // buy the variance down with spp instead -- the set is tiny).
-          const int patchSpp =
-              spp * std::max(1, opt.pt1EdgePatchSppMul);
-          std::vector<float> Ep, occp;
-          detail::gatherPt1Grid(gp, W, H, res.position.data(),
-                                res.normal.data(), /*geomNormal=*/nullptr,
-                                needsPatch.data(), res.depth.data(), patchSpp,
-                                opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
-                                opt.pt1Clamp, &rayStats);
-          for (std::size_t i = 0; i < needsPatch.size(); ++i) {
-            if (!needsPatch[i]) continue;
-            Ebuf[i * 3 + 0] = Ep[i * 3 + 0];
-            Ebuf[i * 3 + 1] = Ep[i * 3 + 1];
-            Ebuf[i * 3 + 2] = Ep[i * 3 + 2];
-            occBuf[i] = occp[i];
-          }
-          // Blend the patched rims into the surrounding (denoised, upsampled)
-          // field with the same normal/depth guides -- keeps the raw value
-          // where no neighbor is compatible, so no cross-silhouette leakage.
-          detail::smoothPatchedPixels(
-              W, H, needsPatch, res.normal.data(), res.depth.data(),
-              eligible.data(), opt.pt1UpsampleNormalPow,
-              opt.pt1UpsampleDepthScale, /*radius=*/2, Ebuf, occBuf);
-          const auto tp1 = std::chrono::high_resolution_clock::now();
-          res.pt1Timing.gather +=
-              std::chrono::duration<double>(tp1 - tp0).count();
-          std::fprintf(stderr,
-                       "pt1: edge patch re-gathered %zu rim pixel(s) "
-                       "(%.1f%% of grid) at full res\n",
-                       patchCount,
-                       100.0 * static_cast<double>(patchCount) /
-                           static_cast<double>(needsPatch.size()));
-        }
-      }
-    } else {
-      const auto tg0 = std::chrono::high_resolution_clock::now();
-      detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
-                            /*geomNormal=*/nullptr, eligible.data(),
-                            res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
-                            occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats);
-      const auto tg1 = std::chrono::high_resolution_clock::now();
-      res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
-
-      // Denoise the indirect irradiance ONLY (pre-composite; direct light and
-      // albedo are noise-free): OIDN on E with the reflectance/normal guides.
-      if (opt.pt1Denoise) {
-        const auto td0 = std::chrono::high_resolution_clock::now();
-        detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
-                            res.position.data(), opt);
-        const auto td1 = std::chrono::high_resolution_clock::now();
-        res.pt1Timing.denoise =
-            std::chrono::duration<double>(td1 - td0).count();
-      }
-    }
-
-    // [E] composite -- same form as the cache path: L += giIntensity *
-    // (mat.diffuse * pigment) * E. The constant ambient was already dropped in
-    // the shade (gi path); occlusion lives inside E, counted exactly once.
-    const float gI = opt.giIntensity;
-    tbb::parallel_for(tbb::blocked_range<int>(0, H),
-                      [&](const tbb::blocked_range<int>& rows) {
-      for (int py = rows.begin(); py != rows.end(); ++py) {
-        for (int px = 0; px < W; ++px) {
-          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
-          if (!eligible[pix]) continue;
-          const Vec3 ind{gI * giRefl[pix * 3 + 0] * Ebuf[pix * 3 + 0],
-                         gI * giRefl[pix * 3 + 1] * Ebuf[pix * 3 + 1],
-                         gI * giRefl[pix * 3 + 2] * Ebuf[pix * 3 + 2]};
-          res.color[pix * 4 + 0] += ind.x;
-          res.color[pix * 4 + 1] += ind.y;
-          res.color[pix * 4 + 2] += ind.z;
-          res.indirect[pix * 3 + 0] = ind.x;
-          res.indirect[pix * 3 + 1] = ind.y;
-          res.indirect[pix * 3 + 2] = ind.z;
-          res.giOcclusion[pix] = occBuf[pix];
-        }
-      }
-    });
-
-    res.pt1Rays.gatherRays =
-        rayStats.gatherRays.load(std::memory_order_relaxed);
-    res.pt1Rays.gatherHits =
-        rayStats.gatherHits.load(std::memory_order_relaxed);
-    res.pt1Rays.neeRays = rayStats.neeRays.load(std::memory_order_relaxed);
-    res.pt1Rays.neeOccluded =
-        rayStats.neeOccluded.load(std::memory_order_relaxed);
-    res.pt1Rays.gbufferRays =
-        rayStats.gbufferRays.load(std::memory_order_relaxed);
-    const double totalRays = static_cast<double>(
-        res.pt1Rays.gatherRays + res.pt1Rays.neeRays + res.pt1Rays.gbufferRays);
-    const double neeFrac =
-        totalRays > 0.0 ? static_cast<double>(res.pt1Rays.neeRays) / totalRays
-                        : 0.0;
-    const double mraysPerSec =
-        res.pt1Timing.gather > 0.0
-            ? totalRays / res.pt1Timing.gather / 1.0e6
-            : 0.0;
-    std::fprintf(stderr,
-                 "pt1: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
-                 "%.3fs upsample %.3fs\n"
-                 "pt1: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
-                 "nee_frac %.2f  %.1f Mrays/s\n",
-                 gatherDiv, W, H, spp,
-                 res.pt1Timing.gather, res.pt1Timing.denoise,
-                 res.pt1Timing.upsample,
-                 res.pt1Rays.gatherRays / 1.0e6,
-                 res.pt1Rays.gatherRays
-                     ? 100.0 * res.pt1Rays.gatherHits / res.pt1Rays.gatherRays
-                     : 0.0,
-                 res.pt1Rays.neeRays / 1.0e6,
-                 res.pt1Rays.neeRays
-                     ? 100.0 * res.pt1Rays.neeOccluded / res.pt1Rays.neeRays
-                     : 0.0,
-                 neeFrac, mraysPerSec);
+    runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
+                 giRefl, giElig, res);
   } else if (opt.gi && meshPresent(built)) {
-    // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
-    // clamp, then [D] interpolation into the `indirect` (E_cached) and
-    // `giRecordViz` (record-density) AOVs and the [E] color composite.
-    const Aabb b = scene.mesh.bounds();
-    const float diag = b.valid() ? b.diagonal() : 1.0f;
-    detail::IrradianceCacheParams gp;
-    gp.scene = built.scene;
-    gp.built = &built;
-    gp.mesh = &m;
-    gp.lights = &lights;
-    gp.ambLight = ambLight;
-    gp.envUp = aoUpAxis;
-    gp.skyColor = Vec3{opt.aoSkyColor[0], opt.aoSkyColor[1], opt.aoSkyColor[2]};
-    gp.groundColor =
-        Vec3{opt.aoGroundColor[0], opt.aoGroundColor[1], opt.aoGroundColor[2]};
-    // Environment (sky/ground miss) radiance = scene.ambientColor (gp.ambLight)
-    // times the user gi-env-intensity multiplier. scene.ambientColor IS the
-    // ambient light energy the GI gathers occlusion-aware; GI is meaningful only
-    // when that ambient carries real energy, so the harness moves a fraction of
-    // the lighting energy into it when GI is on (the POV radiosity _amb_frac
-    // balance) -- otherwise an all-direct lighting starves GI to a near no-op.
-    gp.envIntensity = opt.giEnvIntensity;
-    gp.samples = std::max(1, opt.giSamples);
-    gp.bounces = std::max(1, opt.giBounces);
-    gp.gradients = opt.giGradients;
-    gp.outlierReject = opt.giOutlierReject;
-    // Auto gather distance: a fraction of the scene diagonal. Full-diagonal
-    // gather lets distant surfaces fill the hemisphere uniformly, washing out the
-    // concavity contrast (every point sees ~the same far geometry); a contact-
-    // scale fraction keeps near occluders dominant so pockets read darker, while
-    // still collecting the local one-bounce indirect. Tune with --gi-max-dist.
-    gp.maxDistance = (opt.giMaxDistance > 0.0f) ? opt.giMaxDistance : diag * 0.1f;
-    // Auto record spacing = a small fraction of the scene diagonal. k0 = 0.007
-    // (~140 records across the diagonal) is a balanced default: fine enough that
-    // the interpolated cache resolves surface concavities without the blocky look
-    // of the coarser k0 = 0.01, at ~2x the record count. Override with
-    // --gi-spacing; the adaptive step will later refine tight (small-R_i) regions.
-    gp.spacing = (opt.giRecordSpacing > 0.0f) ? opt.giRecordSpacing : diag * 0.007f;
-    if (gp.spacing <= 0.0f) gp.spacing = 1.0f;
-    gp.accuracy = opt.giAccuracy;
-    gp.normalReject = opt.giNormalReject;
-    gp.componentReject = opt.giComponentReject;
-    gp.shadows = opt.shadows;
-    gp.shadowSamples = opt.shadowSamples;
-
-    detail::IrradianceCache cache = detail::buildIrradianceCache(
-        gp, W, H, res.position.data(), res.normal.data(), giGroup.data(),
-        giGeom.data(), opt.giSeedPerVertex);
-
-    // Record-radius heatmap normalization. A record's harmonic-mean radius R_i
-    // is small in a concavity (nearby occluders dominate) and large on an open
-    // surface; the two extremes span orders of magnitude (Rmin .. maxDistance),
-    // so map log(R_i) linearly into [0,1]. Dark = small radius = tight/concave
-    // record, bright = large radius = open surface.
-    const float densRmin = std::fmax(0.25f * gp.spacing, 1.0e-6f);
-    const float densLogLo = std::log(densRmin);
-    const float densLogSpan =
-        std::fmax(std::log(std::fmax(gp.maxDistance, densRmin)) - densLogLo, 1.0e-6f);
-
-    // [D] per-pixel interpolation into the debug AOVs (parallel, read-only).
-    tbb::parallel_for(tbb::blocked_range<int>(0, H),
-                      [&](const tbb::blocked_range<int>& rows) {
-      for (int py = rows.begin(); py != rows.end(); ++py) {
-        for (int px = 0; px < W; ++px) {
-          const std::size_t pix = static_cast<std::size_t>(py) * W + px;
-          const uint32_t g = giGeom[pix];
-          if (g == 0xFFFFFFFFu) continue;
-          if (built.records[g].kind != GeomKind::Mesh) continue;
-          const Vec3 X{res.position[pix * 3 + 0], res.position[pix * 3 + 1],
-                       res.position[pix * 3 + 2]};
-          const Vec3 Nx{res.normal[pix * 3 + 0], res.normal[pix * 3 + 1],
-                        res.normal[pix * 3 + 2]};
-          Vec3 E{0.0f, 0.0f, 0.0f};
-          float occ = 0.0f;
-          float rad = gp.maxDistance;
-          detail::interpolateIrradiance(cache, gp, X, Nx, giGroup[pix], E, &occ,
-                                        &rad);
-          // [E] A-route composite: L += giIntensity * (mat.diffuse * pigment) *
-          // E_cached. The constant ambient was already dropped from res.color in
-          // the shade (gi path), and no AO multiplies here -- occlusion lives
-          // inside E_cached, so it is counted exactly once. indirect AOV stores
-          // this added term (for denoise demodulation / debug).
-          const float gI = opt.giIntensity;
-          const Vec3 ind{gI * giRefl[pix * 3 + 0] * E.x,
-                         gI * giRefl[pix * 3 + 1] * E.y,
-                         gI * giRefl[pix * 3 + 2] * E.z};
-          res.color[pix * 4 + 0] += ind.x;
-          res.color[pix * 4 + 1] += ind.y;
-          res.color[pix * 4 + 2] += ind.z;
-          res.indirect[pix * 3 + 0] = ind.x;
-          res.indirect[pix * 3 + 1] = ind.y;
-          res.indirect[pix * 3 + 2] = ind.z;
-          res.giOcclusion[pix] = occ;  // AO-like concavity map (env-independent)
-          // Trust-radius heatmap: the interpolated (smooth) record radius R_i.
-          // R_i is the harmonic-mean distance to surrounding geometry, so it is
-          // SMALL where the surface folds in on itself (a record there only
-          // covers a tight area => that is where adaptive seeding would add more
-          // records) and LARGE on open surfaces. log-mapped: dark = small R_i =
-          // tight concavity / contact, bright = large R_i = open.
-          if (rad > 0.0f) {
-            float h = (std::log(rad) - densLogLo) / densLogSpan;
-            if (h < 0.0f) h = 0.0f;
-            if (h > 1.0f) h = 1.0f;
-            res.giRecordViz[pix * 3 + 0] = h;
-            res.giRecordViz[pix * 3 + 1] = h;
-            res.giRecordViz[pix * 3 + 2] = h;
-          }
-        }
-      }
-    });
-
-    std::fprintf(stderr,
-                 "gi: irradiance cache built -- %zu records (spacing %.4g, "
-                 "samples %d, maxDist %.4g)\n",
-                 cache.records.size(), gp.spacing, gp.samples, gp.maxDistance);
+    runIrradianceCacheGiPass(scene, opt, built, m, lights, ambLight, aoUpAxis,
+                             W, H, giGroup, giGeom, giRefl, res);
   }
+
 
   // Record the mesh geometry identity so occluded() can map an excluded
   // mesh-triangle id to an Embree (geomID, primID) hit for Freestyle self-face
