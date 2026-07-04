@@ -183,7 +183,13 @@ add_subdirectory(tests)
 # --------------------------------------------------------------------------
 if(TARGET umbreon)
   message(STATUS "Building 'umbreon_cli'")
-  add_executable(umbreon_cli src/bench/main.cpp)
+  add_executable(umbreon_cli
+    src/bench/main.cpp
+    src/bench/scene_setup.cpp
+    src/bench/modes.cpp
+    src/bench/timing_report.cpp
+    src/bench/aov_dump.cpp
+  )
   target_link_libraries(umbreon_cli PRIVATE bench_core umbreon::umbreon)
   target_compile_options(umbreon_cli PRIVATE ${UMBREON_WARNINGS})
 else()
