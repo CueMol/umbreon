@@ -45,6 +45,9 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
   RenderOptions hi = opt;
   hi.width = finalW * ss;
   hi.height = finalH * ss;
+  // pt1 "output resolution" gather sentinel: the renderer only sees the hi-res
+  // grid, so resolve -1 to the supersample factor here (ss == 1 -> full res).
+  if (hi.pt1GatherDiv < 0) hi.pt1GatherDiv = ss;
 
   EmbreeRenderer renderer;
   FrameResult frame = renderer.render(scene, hi);

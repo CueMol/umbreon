@@ -474,6 +474,9 @@ int main(int argc, char** argv) {
     ropt.giIntegrator = opt.giIntegrator;
     ropt.pt1Spp = opt.pt1Spp;
     ropt.pt1HalfRes = opt.pt1HalfRes;
+    ropt.pt1GatherDiv = opt.pt1GatherDiv;
+    ropt.pt1EdgePatch = opt.pt1EdgePatch;
+    ropt.pt1EdgePatchThresh = opt.pt1EdgePatchThresh;
     ropt.pt1Denoise = opt.pt1Denoise;
     ropt.pt1Seed = opt.pt1Seed;
     ropt.pt1SkyMode = opt.pt1SkyMode;
@@ -482,6 +485,7 @@ int main(int argc, char** argv) {
     ropt.pt1UpsampleDepthScale = opt.pt1UpsampleDepthScale;
     ropt.pt1Ld = opt.pt1Ld;
     ropt.pt1Clamp = opt.pt1Clamp;
+    ropt.pt1Stats = opt.pt1Stats;
     // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
     // None otherwise. An explicit --denoiser (0/1/2) is honored as-is. On the
     // pt1 path the default is None: pt1 denoises its indirect irradiance
@@ -497,13 +501,27 @@ int main(int argc, char** argv) {
     ropt.denoiseSigmaL = opt.denoiseSigmaL;
     ropt.denoiseDemodulateAlbedo = opt.denoiseDemodulateAlbedo;
     ropt.oidnCleanAux = opt.oidnCleanAux;
-    if (ropt.gi && ropt.giIntegrator == 1)
+    if (ropt.gi && ropt.giIntegrator == 1) {
+      // Gather-grid label: explicit divisor / "out" sentinel / legacy
+      // pt1HalfRes-derived (see RenderOptions::pt1GatherDiv).
+      char gridDesc[32];
+      if (ropt.pt1GatherDiv < 0)
+        std::snprintf(gridDesc, sizeof(gridDesc), "out");
+      else if (ropt.pt1GatherDiv == 0)
+        std::snprintf(gridDesc, sizeof(gridDesc), "%s",
+                      ropt.pt1HalfRes ? "half" : "full");
+      else if (ropt.pt1GatherDiv == 1)
+        std::snprintf(gridDesc, sizeof(gridDesc), "full");
+      else
+        std::snprintf(gridDesc, sizeof(gridDesc), "1/%d", ropt.pt1GatherDiv);
       std::printf(
           "  diffuse GI: pt1 path-traced gather, %d spp, %d bounce%s, %s res, "
-          "denoise %s, intensity %.2f, env %.2f\n",
+          "ld %s, denoise %s, intensity %.2f, env %.2f\n",
           ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
-          ropt.pt1HalfRes ? "half" : "full", ropt.pt1Denoise ? "on" : "off",
-          ropt.giIntensity, ropt.giEnvIntensity);
+          gridDesc, ropt.pt1Ld ? "on" : "off",
+          ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
+          ropt.giEnvIntensity);
+    }
     else if (ropt.gi)
       std::printf(
           "  diffuse GI: irradiance cache, %d samples/record, intensity %.2f, "
@@ -643,6 +661,9 @@ int main(int argc, char** argv) {
       try {
         std::filesystem::create_directories("outputs");
         if (std::FILE* jf = std::fopen("outputs/timing.json", "w")) {
+          const umbreon::Pt1RayCounts& rc = frame.pt1Rays;
+          const double totalRays = static_cast<double>(
+              rc.gatherRays + rc.neeRays + rc.gbufferRays);
           std::fprintf(jf,
                        "{\n"
                        "  \"bvh_build\": %.6f,\n"
@@ -652,11 +673,21 @@ int main(int argc, char** argv) {
                        "  \"denoise\": %.6f,\n"
                        "  \"upsample\": %.6f,\n"
                        "  \"total\": %.6f,\n"
+                       "  \"rays_gather\": %llu,\n"
+                       "  \"rays_nee\": %llu,\n"
+                       "  \"rays_gbuffer\": %llu,\n"
+                       "  \"nee_fraction\": %.4f,\n"
+                       "  \"mrays_per_sec\": %.2f,\n"
                        "  \"note\": \"direct shading is fused into the "
                        "primary-ray loop; its cost is under 'primary'\"\n"
                        "}\n",
                        t.bvhBuild, t.primary, t.direct, t.gather, t.denoise,
-                       t.upsample, t.total);
+                       t.upsample, t.total,
+                       static_cast<unsigned long long>(rc.gatherRays),
+                       static_cast<unsigned long long>(rc.neeRays),
+                       static_cast<unsigned long long>(rc.gbufferRays),
+                       totalRays > 0.0 ? rc.neeRays / totalRays : 0.0,
+                       t.gather > 0.0 ? totalRays / t.gather / 1.0e6 : 0.0);
           std::fclose(jf);
           std::printf("  wrote outputs/timing.json\n");
         }

@@ -518,20 +518,30 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     gp.shadowSamples = opt.shadowSamples;
 
     const int spp = std::max(1, opt.pt1Spp);
+    detail::Pt1RayStats rayStats;
     // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
     // REAL CSG primitives (atom balls / bonds); outline decoration and the
     // background stay 0. Unlike the cache's geomID/kind gate this is primID-
     // aware, which the fromEdge distinction requires.
     const std::vector<uint8_t>& eligible = giElig;
 
+    // Gather-grid divisor k relative to the RENDER grid (which is the
+    // supersampled hi-res W x H). Legacy (pt1GatherDiv == 0) derives 1 or 2
+    // from pt1HalfRes; the -1 "output resolution" sentinel was resolved to
+    // the supersample factor in renderFrame. k == 2 reproduces the historical
+    // half-res grid exactly ((W+1)/2 == ceil(W/2)).
+    int gatherDiv = opt.pt1GatherDiv;
+    if (gatherDiv == 0) gatherDiv = opt.pt1HalfRes ? 2 : 1;
+    if (gatherDiv < 1) gatherDiv = 1;
+
     std::vector<float> Ebuf, occBuf;
-    if (opt.pt1HalfRes) {
-      // Half of the RENDER grid (which is the supersampled hi-res W x H; use
-      // --supersample 1 for benchmarks so "half" means half the output). The
-      // half pass shoots its own primary rays at the half-pixel centers (=
-      // full-grid 2x2 block centers) into a private G-buffer, gathers and
-      // denoises there, then joint-bilateral-upsamples E to the render grid.
-      const int hw = (W + 1) / 2, hh = (H + 1) / 2;
+    if (gatherDiv > 1) {
+      // Reduced gather grid: shoot one primary ray per low-grid pixel center
+      // (the two grids share the same normalized [-1,1] plane) into a private
+      // G-buffer, gather and denoise there, then joint-bilateral-upsample E
+      // to the render grid.
+      const int hw = (W + gatherDiv - 1) / gatherDiv,
+                hh = (H + gatherDiv - 1) / gatherDiv;
       detail::Pt1CameraBasis camb;
       camb.position = cam.position;
       camb.dir = dir;
@@ -546,13 +556,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       detail::Pt1GBuffer g;
       std::vector<float> Eh, occh;
       const auto tg0 = std::chrono::high_resolution_clock::now();
-      detail::tracePt1GBuffer(gp, camb, hw, hh, g);
+      detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats);
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), g.depth.data(),
                             spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
-                            opt.pt1Clamp);
+                            opt.pt1Clamp, &rayStats);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -566,18 +576,81 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       }
 
       const auto tu0 = std::chrono::high_resolution_clock::now();
+      // At k <= 2 keep the historical 2x2-quad-only fallback (byte-identical
+      // legacy half-res); coarser grids widen the all-invalid-quad fallback
+      // search so sub-k-pixel features keep SOME indirect instead of none.
+      std::atomic<uint64_t> upsampleHoles{0};
+      std::vector<uint8_t> needsPatch;
       detail::upsampleJointBilateral(
           W, H, res.normal.data(), res.depth.data(), eligible.data(), g, Eh,
           occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
-          occBuf);
+          occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles,
+          opt.pt1EdgePatch ? &needsPatch : nullptr,
+          opt.pt1EdgePatchThresh);
+      const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
+      if (holes > 0 && !opt.pt1EdgePatch)
+        std::fprintf(stderr,
+                     "pt1: %llu eligible pixel(s) found no valid gather "
+                     "sample in the upsample window (thin features at 1/%d "
+                     "gather res lose their indirect)\n",
+                     static_cast<unsigned long long>(holes), gatherDiv);
       const auto tu1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
+
+      // Silhouette-rim patch: the masked pixels have NO compatible low-res
+      // sample (their surface is unrepresented in their upsample window), so
+      // the copied/zero E above is wrong there. Re-gather exactly those
+      // pixels at full resolution -- typically a few percent of the frame --
+      // and overwrite. The patched E skips the low-grid denoise (it never
+      // belonged to that field); rim noise at low spp is the tradeoff for
+      // removing the dark-rim artifact, judged via the comparison images.
+      if (opt.pt1EdgePatch && !needsPatch.empty()) {
+        std::size_t patchCount = 0;
+        for (std::size_t i = 0; i < needsPatch.size(); ++i)
+          patchCount += needsPatch[i];
+        if (patchCount > 0) {
+          const auto tp0 = std::chrono::high_resolution_clock::now();
+          // Oversample the patched pixels (they skip the low-grid denoise, so
+          // buy the variance down with spp instead -- the set is tiny).
+          const int patchSpp =
+              spp * std::max(1, opt.pt1EdgePatchSppMul);
+          std::vector<float> Ep, occp;
+          detail::gatherPt1Grid(gp, W, H, res.position.data(),
+                                res.normal.data(), /*geomNormal=*/nullptr,
+                                needsPatch.data(), res.depth.data(), patchSpp,
+                                opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
+                                opt.pt1Clamp, &rayStats);
+          for (std::size_t i = 0; i < needsPatch.size(); ++i) {
+            if (!needsPatch[i]) continue;
+            Ebuf[i * 3 + 0] = Ep[i * 3 + 0];
+            Ebuf[i * 3 + 1] = Ep[i * 3 + 1];
+            Ebuf[i * 3 + 2] = Ep[i * 3 + 2];
+            occBuf[i] = occp[i];
+          }
+          // Blend the patched rims into the surrounding (denoised, upsampled)
+          // field with the same normal/depth guides -- keeps the raw value
+          // where no neighbor is compatible, so no cross-silhouette leakage.
+          detail::smoothPatchedPixels(
+              W, H, needsPatch, res.normal.data(), res.depth.data(),
+              eligible.data(), opt.pt1UpsampleNormalPow,
+              opt.pt1UpsampleDepthScale, /*radius=*/2, Ebuf, occBuf);
+          const auto tp1 = std::chrono::high_resolution_clock::now();
+          res.pt1Timing.gather +=
+              std::chrono::duration<double>(tp1 - tp0).count();
+          std::fprintf(stderr,
+                       "pt1: edge patch re-gathered %zu rim pixel(s) "
+                       "(%.1f%% of grid) at full res\n",
+                       patchCount,
+                       100.0 * static_cast<double>(patchCount) /
+                           static_cast<double>(needsPatch.size()));
+        }
+      }
     } else {
       const auto tg0 = std::chrono::high_resolution_clock::now();
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(),
                             res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
-                            occBuf, opt.pt1Ld, opt.pt1Clamp);
+                            occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats);
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -617,12 +690,41 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       }
     });
 
+    res.pt1Rays.gatherRays =
+        rayStats.gatherRays.load(std::memory_order_relaxed);
+    res.pt1Rays.gatherHits =
+        rayStats.gatherHits.load(std::memory_order_relaxed);
+    res.pt1Rays.neeRays = rayStats.neeRays.load(std::memory_order_relaxed);
+    res.pt1Rays.neeOccluded =
+        rayStats.neeOccluded.load(std::memory_order_relaxed);
+    res.pt1Rays.gbufferRays =
+        rayStats.gbufferRays.load(std::memory_order_relaxed);
+    const double totalRays = static_cast<double>(
+        res.pt1Rays.gatherRays + res.pt1Rays.neeRays + res.pt1Rays.gbufferRays);
+    const double neeFrac =
+        totalRays > 0.0 ? static_cast<double>(res.pt1Rays.neeRays) / totalRays
+                        : 0.0;
+    const double mraysPerSec =
+        res.pt1Timing.gather > 0.0
+            ? totalRays / res.pt1Timing.gather / 1.0e6
+            : 0.0;
     std::fprintf(stderr,
-                 "pt1: %s-res gather %dx%d spp=%d -> gather %.3fs denoise "
-                 "%.3fs upsample %.3fs\n",
-                 opt.pt1HalfRes ? "half" : "full", W, H, spp,
+                 "pt1: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
+                 "%.3fs upsample %.3fs\n"
+                 "pt1: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
+                 "nee_frac %.2f  %.1f Mrays/s\n",
+                 gatherDiv, W, H, spp,
                  res.pt1Timing.gather, res.pt1Timing.denoise,
-                 res.pt1Timing.upsample);
+                 res.pt1Timing.upsample,
+                 res.pt1Rays.gatherRays / 1.0e6,
+                 res.pt1Rays.gatherRays
+                     ? 100.0 * res.pt1Rays.gatherHits / res.pt1Rays.gatherRays
+                     : 0.0,
+                 res.pt1Rays.neeRays / 1.0e6,
+                 res.pt1Rays.neeRays
+                     ? 100.0 * res.pt1Rays.neeOccluded / res.pt1Rays.neeRays
+                     : 0.0,
+                 neeFrac, mraysPerSec);
   } else if (opt.gi && meshPresent(built)) {
     // Surface irradiance cache: [B] placement + [C] gather/fill + neighbor
     // clamp, then [D] interpolation into the `indirect` (E_cached) and

@@ -427,6 +427,35 @@ struct RenderOptions {
   // (0 = off). Both default off so the flag-less pt1 render is unchanged.
   bool pt1Ld = false;
   float pt1Clamp = 0.0f;
+  // Gather-grid divisor relative to the RENDER grid (which is the supersampled
+  // hi-res grid): the indirect irradiance is gathered on a ceil(W/k) x
+  // ceil(H/k) grid and joint-bilateral-upsampled back (the E field is
+  // low-frequency; the denoise and the ss box-downsample smooth it anyway).
+  //   0  = legacy: derive 1 or 2 from pt1HalfRes (default; byte-identical)
+  //   k>=1 = explicit divisor (1 = gather on the render grid)
+  //   -1 = "output resolution": resolved to the supersample factor by
+  //        renderFrame, so the gather grid matches the FINAL image size.
+  int pt1GatherDiv = 0;
+  // Re-gather silhouette-rim pixels at FULL resolution when the reduced
+  // gather grid has no compatible sample for them (the joint-bilateral guide
+  // weights die at depth/normal discontinuities whose surface the low grid
+  // never sampled -- historically those pixels copied a wrong-surface E or
+  // went black). The rim set is a few percent of the frame, so the patch
+  // gather costs little. Applies only when the gather grid is reduced.
+  bool pt1EdgePatch = true;
+  // spp multiplier for the edge-patch re-gather. Patched rim pixels skip the
+  // low-grid denoise, so they carry raw Monte-Carlo variance; oversampling
+  // just those pixels (0.1-0.2% of the frame) is nearly free and cuts the
+  // rim speckle variance by the same factor.
+  int pt1EdgePatchSppMul = 4;
+  // Also patch LOW-CONFIDENCE upsampled pixels: total guide weight below this
+  // threshold (0 = only dead-weight pixels). The upsample weight sums to ~1
+  // for well-supported interior pixels.
+  float pt1EdgePatchThresh = 0.3f;
+  // Print pt1 diagnostics to stderr: the OIDN stage split (device / filter /
+  // execute) inside the denoiser. Ray counts are always collected (negligible
+  // cost, reported via FrameResult::pt1Rays); this flag only adds the prints.
+  bool pt1Stats = false;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised
@@ -510,6 +539,18 @@ struct Pt1Timing {
   double total = 0.0;     // filled by the caller (wall time around render())
 };
 
+// pt1 ray counts for the frame (gather intersects, NEE shadow rays, half-res
+// G-buffer primaries). Filled only when the pt1 integrator runs; counting is
+// per-pixel-flushed so its overhead is negligible (see Pt1RayStats in
+// pt1_integrator.hpp).
+struct Pt1RayCounts {
+  std::uint64_t gatherRays = 0;
+  std::uint64_t gatherHits = 0;
+  std::uint64_t neeRays = 0;
+  std::uint64_t neeOccluded = 0;
+  std::uint64_t gbufferRays = 0;
+};
+
 // Rendered frame: linear HDR color plus AOV channels, top-left pixel origin.
 struct FrameResult {
   int width = 0;
@@ -553,6 +594,7 @@ struct FrameResult {
   // pt1 stage timing (zero-filled unless the pt1 integrator ran; bvhBuild and
   // primary are recorded on every render since the timers are free).
   Pt1Timing pt1Timing;
+  Pt1RayCounts pt1Rays;
 };
 
 }  // namespace umbreon

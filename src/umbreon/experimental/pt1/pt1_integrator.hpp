@@ -25,6 +25,7 @@
 //     point would double-count it. oneBounceRadiance implements exactly this.
 #pragma once
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -57,6 +58,30 @@ struct Pt1CameraBasis {
   float persHalfW = 1.0f, persHalfH = 1.0f;  // perspective, at unit distance
 };
 
+// Per-pixel ray counters, accumulated as plain integers inside the gather
+// loops and flushed ONCE per pixel into the atomic totals (per-ray atomics
+// would cost ~0.1-0.3 s at the 50M+ rays of the high preset).
+struct Pt1RayStatsLocal {
+  uint64_t gatherRays = 0;   // intersectFull calls (all bounces)
+  uint64_t gatherHits = 0;   // of which hit geometry
+  uint64_t neeRays = 0;      // NEE shadow rays (rtcOccluded1)
+  uint64_t neeOccluded = 0;  // of which occluded
+};
+
+struct Pt1RayStats {
+  std::atomic<uint64_t> gatherRays{0};
+  std::atomic<uint64_t> gatherHits{0};
+  std::atomic<uint64_t> neeRays{0};
+  std::atomic<uint64_t> neeOccluded{0};
+  std::atomic<uint64_t> gbufferRays{0};  // half-res G-buffer primary rays
+  void flush(const Pt1RayStatsLocal& l) {
+    gatherRays.fetch_add(l.gatherRays, std::memory_order_relaxed);
+    gatherHits.fetch_add(l.gatherHits, std::memory_order_relaxed);
+    neeRays.fetch_add(l.neeRays, std::memory_order_relaxed);
+    neeOccluded.fetch_add(l.neeOccluded, std::memory_order_relaxed);
+  }
+};
+
 // First-hit G-buffer for an independently traced (typically half-res) grid.
 // Normals are face-forwarded toward the viewer; misses and outline-decoration
 // hits have hit == 0 with zeroed position/normal/albedo (a zero normal marks
@@ -78,7 +103,7 @@ struct Pt1GBuffer {
 // full grid's 2x2 pixel blocks.
 inline void tracePt1GBuffer(const IrradianceCacheParams& p,
                             const Pt1CameraBasis& cam, int w, int h,
-                            Pt1GBuffer& g) {
+                            Pt1GBuffer& g, Pt1RayStats* stats = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(w) * h;
   g.w = w;
   g.h = h;
@@ -88,6 +113,9 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
   g.albedo.assign(npix * 3, 0.0f);
   g.depth.assign(npix, 0.0f);
   g.hit.assign(npix, 0);
+
+  if (stats)
+    stats->gbufferRays.fetch_add(npix, std::memory_order_relaxed);
 
   tbb::parallel_for(tbb::blocked_range<int>(0, h),
                     [&](const tbb::blocked_range<int>& rows) {
@@ -204,7 +232,8 @@ struct Pt1Vertex {
 // The cache keeps calling oneBounceRadiance directly, so its mesh-only
 // behavior (and byte-identical output) is untouched.
 inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
-                          const Vec3& O, const Vec3& wi, Pt1Vertex& v) {
+                          const Vec3& O, const Vec3& wi, Pt1Vertex& v,
+                          Pt1RayStatsLocal* stats = nullptr) {
   const GeomRecord& rec = p.built->records[rh.hit.geomID];
   Vec3 Ny, Cy, NgShadow;
   float kd;
@@ -257,6 +286,10 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
     const float ndl = dot(Ny, l.L);
     if (ndl <= 0.0f) continue;
     const float sh = computeShadow(p.scene, Py, NgShadow, Ny, eps, l, 1, s0, s1);
+    if (stats) {
+      ++stats->neeRays;
+      if (sh == 0.0f) ++stats->neeOccluded;
+    }
     E.x += ndl * l.color.x * sh;
     E.y += ndl * l.color.y * sh;
     E.z += ndl * l.color.z * sh;
@@ -315,7 +348,8 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
 inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
                            const Vec3& N, const Vec3& Ng, int spp,
                            uint32_t seed, float epsT, float* outOcclusion,
-                           bool ld = false, float clampLum = 0.0f) {
+                           bool ld = false, float clampLum = 0.0f,
+                           Pt1RayStatsLocal* stats = nullptr) {
   const Frame f = frameFromNormal(N);
   const float eps = selfIntersectEps(P, N, epsT);
   const Vec3 O = P + N * eps;
@@ -355,6 +389,7 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     for (int b = 1; b <= maxB; ++b) {
       const RTCRayHit rh = intersectFull(p.scene, org, wi, tnear,
                                          p.maxDistance);
+      if (stats) ++stats->gatherRays;
       if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID) {
         const Vec3 env = environmentRadiance(p, wi);
         L.x += throughput.x * env.x;
@@ -363,8 +398,9 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
         break;
       }
       if (b == 1) ++nOccluded;
+      if (stats) ++stats->gatherHits;
       Pt1Vertex v;
-      if (!pt1EvalVertex(p, rh, org, wi, v)) break;  // outline: absorbed
+      if (!pt1EvalVertex(p, rh, org, wi, v, stats)) break;  // outline: absorbed
       L.x += throughput.x * v.radiance.x;
       L.y += throughput.y * v.radiance.y;
       L.z += throughput.z * v.radiance.z;
@@ -443,7 +479,8 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                           const float* depth, int spp, uint32_t frameSeed,
                           float epsT, std::vector<float>& E,
                           std::vector<float>& occ, bool ld = false,
-                          float clampLum = 0.0f) {
+                          float clampLum = 0.0f,
+                          Pt1RayStats* stats = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   E.assign(npix * 3, 0.0f);
   occ.assign(npix, 0.0f);
@@ -468,9 +505,12 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                 hashU32(static_cast<uint32_t>(pix) ^ seedMix);
             const float tEps =
                 (depth != nullptr && depth[pix] > 0.0f) ? depth[pix] : epsT;
+            Pt1RayStatsLocal local;
             float o = 0.0f;
             const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, tEps, &o,
-                                          ld, clampLum);
+                                          ld, clampLum,
+                                          stats ? &local : nullptr);
+            if (stats) stats->flush(local);
             E[pix * 3 + 0] = e.x;
             E[pix * 3 + 1] = e.y;
             E[pix * 3 + 2] = e.z;

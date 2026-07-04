@@ -57,7 +57,10 @@ struct Options {
   // implies --gi on so the GI plumbing/energy rebalance applies identically) ---
   int giIntegrator = 0;         // 0 = irradiance cache (default), 1 = pt1
   int pt1Spp = 8;               // --spp: gather rays per pixel
-  bool pt1HalfRes = true;       // --indirect-res half|full
+  bool pt1HalfRes = true;       // legacy default (presets override)
+  int pt1GatherDiv = 0;         // --indirect-res full|half|quarter|out
+  bool pt1EdgePatch = true;     // --pt1-edge-patch on|off
+  float pt1EdgePatchThresh = 0.3f;  // --pt1-patch-thresh <w>
   bool pt1Denoise = true;       // --denoise on|off (indirect-only OIDN)
   unsigned pt1Seed = 0;         // --seed: deterministic per-pixel RNG seed
   int pt1SkyMode = 0;           // --sky uniform|gradient
@@ -66,6 +69,7 @@ struct Options {
   float pt1UpsampleDepthScale = 0.02f;  // --pt1-upsample-depth-scale
   bool pt1Ld = false;                   // --pt1-ld on|off (stratified sampling)
   float pt1Clamp = 0.0f;                // --pt1-clamp (luminance; 0 = off)
+  bool pt1Stats = false;                // --pt1-stats (OIDN stage split print)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI
