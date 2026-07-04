@@ -122,6 +122,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/postprocess/fog.cpp
     src/umbreon/postprocess/image_ops.cpp
     src/umbreon/edges/stroke_edges.cpp
+    src/umbreon/edges/stroke_render.cpp
     src/umbreon/edges/screen_edge_classify.cpp
     src/umbreon/edges/screen_edge_trace.cpp
     src/umbreon/edges/screen_edge_prune.cpp
