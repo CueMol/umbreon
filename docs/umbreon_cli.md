@@ -120,6 +120,20 @@ umbreon_cli <scene>.pov ... --ao-res out --ao-res-debug on
   高速化が効くようになる**（従来は AO コスト中立）。
 - メモリ: 粗グリッドは約 48B ×（W/ss）×（H/ss）。
 
+### GTAO レシピ vs pt1（速度の目安）
+
+深み表現が目的なら **pt1 の方が速く、拡大時のざらつきも無い**（AO 経路にはデノイザが
+無く supersample 平均だけが頼りなので高サンプルが要るのに対し、pt1 は out-res gather +
+LD + OIDN デノイズで 8〜32spp で済む）。ao_test1 700² ss=3 の実測 wall time:
+
+| 手法 | wall | 備考 |
+|---|---|---|
+| GTAO レシピ full（256spp） | 53.6s | 従来 |
+| GTAO レシピ `--ao-res out` | 7.7s | 見た目ほぼ同等、拡大でざらつき |
+| GTAO `--ao-res out` + 64spp + `--ao-ld` | 2.3s | GTAO の見た目を保つ現実解 |
+| `--integrator pt1 --quality draft` | 1.5s | GI（トーンは別物）、デノイズ済み |
+| `--integrator pt1 --quality high` | 3.6s | 同上、2 バウンス |
+
 ## 奥行きを強く出す（OpenGL GTAO 相当）
 
 分子表面で「凹は暗く・凸は明るく」をはっきり出すための実測レシピ。既定の AO
