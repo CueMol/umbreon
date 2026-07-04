@@ -124,6 +124,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/edges/stroke_edges.cpp
     src/umbreon/edges/screen_vector_edges.cpp
     src/umbreon/edges/mesh_feature_edges.cpp
+    src/umbreon/edges/screen_projection.cpp
     src/umbreon/edges/object_space_edges.cpp
     src/umbreon/edges/edge_mesh_bvh.cpp
     src/umbreon/edges/analytic_silhouette.cpp
