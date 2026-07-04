@@ -60,6 +60,20 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
                  "falling back to grid supersampling\n");
     hi.aaMode = 0;
   }
+  // Coarse-AO "output resolution" sentinel: resolve -1 to the supersample
+  // factor (ss == 1 -> 1 = plain inline AO, correct degenerate semantics).
+  if (hi.aoResDiv < 0) hi.aoResDiv = ss;
+  // Coarse AO + GI is unvalidated (GI drops the mesh ambient term AO
+  // modulates, while cache-integrator primitives keep ambient+AO -- a mixed
+  // interaction). Fall back to inline AO with a warning; normalizing HERE
+  // keeps the group-alpha multipass consistent (every pass sees the same
+  // normalized options).
+  if (hi.aoResDiv > 1 && hi.gi) {
+    std::fprintf(stderr,
+                 "warning: --ao-res out is not supported with --gi yet; "
+                 "falling back to full-resolution AO\n");
+    hi.aoResDiv = 0;
+  }
 
   EmbreeRenderer renderer;
   FrameResult frame = renderer.render(scene, hi);

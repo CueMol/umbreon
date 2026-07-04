@@ -85,6 +85,12 @@ if(TARGET umbreon)
   target_link_libraries(test_adaptive_aa PRIVATE umbreon)
   add_test(NAME adaptive_aa COMMAND test_adaptive_aa)
 
+  # Coarse-grid AO tests (--ao-res out): bilateral lookup units and
+  # coarse-vs-full render equivalences (synthetic scenes only, no LFS data).
+  add_executable(test_ao_coarse test_ao_coarse.cpp)
+  target_link_libraries(test_ao_coarse PRIVATE umbreon)
+  add_test(NAME ao_coarse COMMAND test_ao_coarse)
+
   add_executable(test_screen_vector_integration
                  test_screen_vector_integration.cpp)
   target_link_libraries(test_screen_vector_integration PRIVATE umbreon

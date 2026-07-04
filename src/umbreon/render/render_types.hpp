@@ -385,6 +385,19 @@ struct RenderOptions {
   float aoDiffuseFactor = 0.0f;  // 0 = ambient-only; >0 also darkens direct diffuse
   bool aoWriteAov = false;       // emit AO/G-buffer AOVs into FrameResult (phase 5)
 
+  // --- coarse-grid AO (--ao-res out) --- gather the AO once per COARSE cell
+  // (the hi-res render grid divided by aoResDiv) on a low-res first-hit
+  // G-buffer; every shading hit interpolates it with a normal/depth-guided
+  // bilateral lookup and falls back to the exact inline gather where the
+  // guides reject (silhouette rims, transparency layers, sub-cell features).
+  // 0 or 1 = inline per-hit gather (default, byte-identical); -1 = "output
+  // resolution" sentinel, resolved to the supersample factor by renderFrame
+  // (the pt1GatherDiv pattern); k > 1 = explicit divisor. AO rays drop by
+  // ~aoResDiv^2 in smooth regions. Not supported with gi yet (renderFrame
+  // falls back with a warning).
+  int aoResDiv = 0;
+  bool aoResDebug = false;  // fill FrameResult::aoPatchMask (fallback pixels)
+
   // True when any AO enhancement is requested. Drives the hit shader's
   // enhanced-vs-legacy branch: false => bit-exact legacy computeAO path.
   bool aoEnhanced() const {
@@ -612,7 +625,15 @@ struct FrameResult {
   // value per OUTPUT pixel, 1 = refined, 0 = replicated -- and written ONLY when
   // aaMode == 1 and aaDebug is on (else empty). Never downsampled.
   std::vector<float> aaMask;
+  // Coarse-AO fallback mask debug AOV: hi-res width*height, 1 = the first hit's
+  // bilateral lookup was rejected and the pixel gathered inline (silhouette
+  // rim / transparency / sub-cell feature). Written ONLY when aoResDiv > 1 and
+  // aoResDebug is on (else empty). Never downsampled.
+  std::vector<float> aoPatchMask;
   double renderSeconds = 0.0;
+  // Coarse-AO pre-pass wall time (low-res G-buffer trace + per-cell gather);
+  // 0 unless aoResDiv > 1 activated the coarse grid.
+  double aoCoarseSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
   // pt1 stage timing (zero-filled unless the pt1 integrator ran; bvhBuild and
   // primary are recorded on every render since the timers are free).

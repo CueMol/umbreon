@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -196,6 +197,10 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
     res.shapeAo[pix] = pr.shapeAo;
     res.avgHitDist[pix] = pr.avgHitDist;
   }
+  // Coarse-AO fallback mask (debug AOV): written whenever allocated
+  // (aoResDiv > 1 with aoResDebug on).
+  if (!res.aoPatchMask.empty())
+    res.aoPatchMask[pix] = static_cast<float>(pr.aoPatched);
 }
 
 void storeGBufChannels(FrameResult& res, const RenderOptions& opt,
@@ -423,7 +428,45 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           : safeNormalize(Vec3{opt.aoUp[0], opt.aoUp[1], opt.aoUp[2]}, trueUp);
 
   // Everything the per-hit shader reads, gathered once.
-  const ShadeContext sc{built, m, lights, ambLight, bg, opt, aoUpAxis};
+  // --- coarse-grid AO (--ao-res out): gather the AO once per coarse cell on a
+  // private low-res first-hit G-buffer (the pt1 reduced-grid pattern) BEFORE
+  // the pixel loop; hits then interpolate it via ShadeContext::coarseAo with
+  // an exact inline fallback at the rims. aoResDiv was resolved (sentinel ->
+  // supersample factor, gi fallback) by renderFrame; <= 1 = inline, no work.
+  std::unique_ptr<CoarseAoGrid> aoGrid;
+  if (opt.aoResDiv > 1 && opt.aoSamples > 0 &&
+      (meshPresent(built) || realCsgPresent(built))) {
+    const auto ta0 = std::chrono::high_resolution_clock::now();
+    const int div = opt.aoResDiv;
+    const int hw = (W + div - 1) / div, hh = (H + div - 1) / div;
+    detail::Pt1CameraBasis camb;
+    camb.position = cam.position;
+    camb.dir = dir;
+    camb.right = right;
+    camb.trueUp = trueUp;
+    camb.orthographic = cam.orthographic;
+    camb.halfW = halfW;
+    camb.halfH = halfH;
+    camb.persHalfW = persHalfW;
+    camb.persHalfH = persHalfH;
+    detail::IrradianceCacheParams tp;  // the tracer reads scene/built/mesh only
+    tp.scene = built.scene;
+    tp.built = &built;
+    tp.mesh = &m;
+    detail::Pt1GBuffer g;
+    detail::tracePt1GBuffer(tp, camb, hw, hh, g);
+    aoGrid = std::make_unique<CoarseAoGrid>();
+    buildCoarseAoGrid(built.scene, opt, hw, hh, g.position.data(),
+                      g.normal.data(), g.geomNormal.data(), g.depth.data(),
+                      g.hit.data(), *aoGrid);
+    const auto ta1 = std::chrono::high_resolution_clock::now();
+    res.aoCoarseSeconds = std::chrono::duration<double>(ta1 - ta0).count();
+    if (opt.aoResDebug)
+      res.aoPatchMask.assign(static_cast<std::size_t>(W) * H, 0.0f);
+  }
+
+  const ShadeContext sc{built,     m,   lights, ambLight,
+                        bg,        opt, aoUpAxis, aoGrid.get()};
 
   // Per-pixel GI cache seed side-channels (component id / Embree geomID of the
   // first hit). Kept local to render() (not in FrameResult): the cache build
@@ -644,10 +687,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // path and a boost would silently switch the estimator. With no stochastic
     // effect at all the boosted evaluation would be bitwise the Phase-1 value,
     // so it is skipped entirely (the AO-off fast path).
+    // With the coarse AO grid active the AO is already smooth (interpolated),
+    // so the ss^2 AO boost is skipped: it would only multiply the inline-
+    // fallback patch gathers at exactly the expensive pixels. Soft shadows
+    // keep their boost regardless.
+    const bool coarseAoOn = aoGrid != nullptr;
     const bool softShadows = opt.shadowSamples > 1 && opt.lightRadius > 0.0f;
-    const bool needBoost = ss > 1 && (opt.aoSamples > 0 || softShadows);
+    const bool needBoost =
+        ss > 1 && ((opt.aoSamples > 0 && !coarseAoOn) || softShadows);
     ShadeContext scBoost = sc;
-    scBoost.aoSampleMul = ss * ss;
+    scBoost.aoSampleMul = coarseAoOn ? 1 : ss * ss;
     scBoost.shadowSampleMul = softShadows ? ss * ss : 1;
 
     // Phase 3: flagged pixels shade EVERY subpixel cell at its true seed and
