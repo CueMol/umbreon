@@ -446,6 +446,10 @@ int main(int argc, char** argv) {
     ropt.aoLowDiscrepancy = opt.aoLowDiscrepancy;
     ropt.aoDiffuseFactor = opt.aoDiffuseFactor;
     ropt.aoWriteAov = opt.aoWriteAov;
+    // Coarse-grid AO: -1 "out" sentinel is resolved to the supersample factor
+    // (and gi-checked) inside renderFrame.
+    ropt.aoResDiv = opt.aoResDiv;
+    ropt.aoResDebug = opt.aoResDebug;
     ropt.shadows = opt.shadows;
     ropt.shadowSamples = opt.shadowSamples;
     ropt.lightRadius = opt.lightRadius;
@@ -530,8 +534,9 @@ int main(int argc, char** argv) {
           ropt.giSeedPerVertex ? " (per-vertex seed)" : "");
     if (ropt.aoSamples > 0)
       std::printf(
-          "  ambient occlusion: %d samples, radius %.3f, intensity %.2f\n",
-          ropt.aoSamples, ropt.aoDistance, ropt.aoIntensity);
+          "  ambient occlusion: %d samples, radius %.3f, intensity %.2f%s\n",
+          ropt.aoSamples, ropt.aoDistance, ropt.aoIntensity,
+          ropt.aoResDiv != 0 ? ", coarse grid (--ao-res out)" : "");
     if (ropt.shadows) {
       if (ropt.lightRadius > 0.0f && ropt.shadowSamples > 1)
         std::printf("  soft shadows: %d samples, light radius %.2f deg\n",
@@ -658,6 +663,8 @@ int main(int argc, char** argv) {
     umbreon::FrameResult frame = umbreon::render(scene, ropt);
     const auto tRender1 = std::chrono::high_resolution_clock::now();
     std::printf("  render time:  %.3f s\n", frame.renderSeconds);
+    if (frame.aoCoarseSeconds > 0.0)
+      std::printf("  coarse AO pre-pass:  %.3f s\n", frame.aoCoarseSeconds);
 
     // pt1 stage timing: table to stdout + outputs/timing.json (plan Phase 6).
     // `direct` is 0 by architecture (direct shading is fused into the primary
@@ -738,6 +745,31 @@ int main(int argc, char** argv) {
                             3);
         std::printf("  dumped adaptive-AA mask: %s_aaMask.png (%dx%d)\n",
                     prefix.c_str(), finalW, finalH);
+      }
+    }
+
+    // Coarse-AO fallback mask dump (--ao-res-debug): grayscale at the hi-res
+    // (supersampled) grid, 1 = first-hit lookup rejected -> gathered inline.
+    // The tuning aid for judging how much of the frame patches inline.
+    if (!frame.aoPatchMask.empty()) {
+      std::string prefix = opt.dumpAovPrefix;
+      if (prefix.empty()) {
+        prefix = opt.output;
+        const std::size_t dot = prefix.find_last_of('.');
+        if (dot != std::string::npos) prefix = prefix.substr(0, dot);
+      }
+      const int hiW = finalW * ss, hiH = finalH * ss;
+      const std::size_t np = static_cast<std::size_t>(hiW) * hiH;
+      if (frame.aoPatchMask.size() == np) {
+        std::vector<float> mimg(np * 3);
+        for (std::size_t i = 0; i < np; ++i)
+          mimg[i * 3 + 0] = mimg[i * 3 + 1] = mimg[i * 3 + 2] =
+              frame.aoPatchMask[i];
+        umbreon::writeImage(prefix + "_aoPatchMask.png", hiW, hiH, mimg.data(),
+                            3);
+        std::printf("  dumped coarse-AO patch mask: %s_aoPatchMask.png "
+                    "(%dx%d)\n",
+                    prefix.c_str(), hiW, hiH);
       }
     }
 

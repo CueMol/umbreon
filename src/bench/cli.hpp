@@ -111,6 +111,11 @@ struct Options {
   float aaThreshold = 0.1f;   // per-channel linear contrast that flags a pair
   int aaDepth = 0;            // flagged-pixel lattice (rounded up to n*ss)
   bool aaDebug = false;       // dump the refinement mask AOV
+  // Coarse-grid AO (--ao-res out): gather the AO once per output pixel on a
+  // low-res first-hit G-buffer and interpolate per hit (bilateral, with an
+  // exact inline fallback at silhouettes/transparency). ~1/ss^2 the AO rays.
+  int aoResDiv = 0;           // 0 = full (inline), -1 = out (resolved to ss)
+  bool aoResDebug = false;    // dump the fallback (patch) mask AOV
   // Specular control: multiplies the per-material POV finish specular weight.
   // Defaults to 1.0 (the finish highlight is rendered at full strength); pass
   // --specular-scale 0 for a matte look with no highlight.

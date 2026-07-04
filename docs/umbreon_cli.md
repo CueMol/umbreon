@@ -84,6 +84,56 @@ umbreon_cli <scene>.pov --supersample 3 --aa adaptive --aa-debug on
   `--supersample 3` を維持すること（`--aa-depth` はストロークには効かない）。
 - `--gi` とは未対応（警告を出してグリッドにフォールバック）。
 
+## 粗解像度 AO（--ao-res out）
+
+`--ao-res out` は、AO ギャザーを**出力ピクセルごとに 1 回**（supersample 前の解像度、
+pt1 の `--indirect-res out` と同じ発想）だけ実行し、各ヒットが法線・深度ガイド付きの
+bilateral 補間で参照する。ガイドが合わない画素（シルエットのリム・透明の奥層・
+セル未満の細部）は**その場で従来どおりの正確な inline ギャザーにフォールバック**し、
+supersample の box 平均がそのままデノイズする。AO レイ数は平滑領域で約 1/ss²
+（ss=3 で 1/9）。既定は `full`（従来の per-hit ギャザー、バイト一致）。
+
+```sh
+# AO を含む標準構成の高速化
+umbreon_cli <scene>.pov --supersample 3 --ao-samples 32 --ao-res out --ao-ld on
+
+# フォールバック率の確認（<出力名>_aoPatchMask.png を出力）
+umbreon_cli <scene>.pov ... --ao-res out --ao-res-debug on
+```
+
+| フラグ | 既定 | 効果 |
+|---|---|---|
+| `--ao-res full\|out` | full | out で粗解像度ギャザー + per-hit 補間 |
+| `--ao-res-debug` | off | フォールバック（inline パッチ）マスク AOV を PNG 出力 |
+
+注意点:
+
+- **実効サンプル数のトレードオフ**: full は出力 1px あたり `aoSamples × ss²` 本の
+  box 平均、out は `aoSamples` 本の補間。GTAO レシピ級（`--ao-samples 256`）では
+  実質差なし。低サンプル（≤32）ではセル単位の斑が出うるため **`--ao-ld` 併用を推奨**
+  （セル内分散削減 + per-pixel Cranley-Patterson 回転でセル間非相関。ただし
+  `--ao-ld` は enhanced 推定器に切り替わるため、legacy 出力とはビット非互換）。
+- ss=1 では out は inline に退化（粗グリッド = レンダ解像度なので正しい意味論）。
+- `--gi` とは未対応（警告を出して full にフォールバック）。
+- 適応 AA（`--aa adaptive`）と併用可: coarse AO 有効時は複製中心の AO ブースト
+  （samples×ss²）が不要になり自動で無効化されるため、**AO シーンでも適応 AA の
+  高速化が効くようになる**（従来は AO コスト中立）。
+- メモリ: 粗グリッドは約 48B ×（W/ss）×（H/ss）。
+
+### GTAO レシピ vs pt1（速度の目安）
+
+深み表現が目的なら **pt1 の方が速く、拡大時のざらつきも無い**（AO 経路にはデノイザが
+無く supersample 平均だけが頼りなので高サンプルが要るのに対し、pt1 は out-res gather +
+LD + OIDN デノイズで 8〜32spp で済む）。ao_test1 700² ss=3 の実測 wall time:
+
+| 手法 | wall | 備考 |
+|---|---|---|
+| GTAO レシピ full（256spp） | 53.6s | 従来 |
+| GTAO レシピ `--ao-res out` | 7.7s | 見た目ほぼ同等、拡大でざらつき |
+| GTAO `--ao-res out` + 64spp + `--ao-ld` | 2.3s | GTAO の見た目を保つ現実解 |
+| `--integrator pt1 --quality draft` | 1.5s | GI（トーンは別物）、デノイズ済み |
+| `--integrator pt1 --quality high` | 3.6s | 同上、2 バウンス |
+
 ## 奥行きを強く出す（OpenGL GTAO 相当）
 
 分子表面で「凹は暗く・凸は明るく」をはっきり出すための実測レシピ。既定の AO

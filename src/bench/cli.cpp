@@ -191,6 +191,22 @@ Options parseCli(int argc, char** argv) {
       o.aoSamples = std::atoi(value("--ao-samples").c_str());
       continue;
     }
+    if (a == "--ao-res") {
+      std::string v = value("--ao-res");
+      if (v == "full")
+        o.aoResDiv = 0;
+      else if (v == "out")
+        o.aoResDiv = -1;  // resolved to the supersample factor
+      else
+        fail("--ao-res expects full/out");
+      continue;
+    }
+    if (a == "--ao-res-debug") {
+      std::string v = value("--ao-res-debug");
+      if (o.ok && !parseBool(v, o.aoResDebug))
+        fail("--ao-res-debug expects on/off");
+      continue;
+    }
     if (a == "--ao-intensity") {
       o.aoIntensity =
           static_cast<float>(std::atof(value("--ao-intensity").c_str()));
@@ -975,6 +991,8 @@ void printUsage(const char* prog) {
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
+      "  --ao-res <full|out>      AO gather grid: per-hit / per-output-px [full]\n"
+      "  --ao-res-debug <on|off>  dump the coarse-AO fallback mask AOV   [off]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
       "  --ao-falloff <power>     AO distance falloff exponent  [0 = binary]\n"

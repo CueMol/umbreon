@@ -14,6 +14,7 @@
 
 #include <embree4/rtcore.h>
 
+#include "ao/ao_coarse.hpp"
 #include "ao/ao_shade.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
@@ -53,6 +54,9 @@ struct HitShade {
   float contactAo = 1.0f;          // small-radius (contact) openness
   float shapeAo = 1.0f;            // mid+large-radius (shape) openness
   float avgHitDist = 0.0f;         // mean occluder distance (world units)
+  // Coarse-AO debug: 1 = this hit's bilateral lookup was rejected and the AO
+  // gathered inline (only ever set when ShadeContext::coarseAo is active).
+  uint8_t aoPatched = 0;
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -68,6 +72,11 @@ struct ShadeContext {
   // Resolved up axis for the bent-normal sky/ground ambient gradient: the camera
   // true-up (view-stable) or an explicit world axis. Computed once per frame.
   Vec3 aoUp{0.0f, 1.0f, 0.0f};
+  // Coarse-grid AO (--ao-res out): when non-null, hits interpolate the
+  // precomputed grid instead of gathering inline, falling back to the exact
+  // inline gather where the bilateral guides reject. Null (default) = the
+  // unchanged per-hit gather path.
+  const CoarseAoGrid* coarseAo = nullptr;
   // Adaptive-AA overrides, neutral by default so the legacy path is untouched:
   // seedW is the RNG lattice width for the deterministic per-pixel streams
   // (0 = opt.width, the hi-res grid); the sample multipliers boost the AO /
@@ -77,6 +86,33 @@ struct ShadeContext {
   int aoSampleMul = 1;
   int shadowSampleMul = 1;
 };
+
+// AO factors for one hit: with the coarse grid active (--ao-res out), try the
+// bilateral lookup first -- the hit is its own guide (N + primary hit distance
+// hitT) -- and derive the shading factors from the interpolated openness/bent;
+// where the guides reject (silhouette rim, transparency layer behind the
+// front surface, sub-cell feature) fall back to the EXACT inline gather with
+// the unchanged hi-res seeds, marking `patched` for the debug mask. With the
+// grid off (coarseAo == nullptr) this is byte-for-byte the plain inline path.
+inline AoShade aoShadeForHit(const ShadeContext& c, RTCScene rscene,
+                             const Vec3& P, const Vec3& Ng, const Vec3& N,
+                             const Vec3& C, float secEps, float hitT,
+                             uint32_t px, uint32_t py, uint8_t* patched) {
+  if (c.coarseAo != nullptr && c.opt.aoSamples > 0) {
+    const int latW = c.seedW ? c.seedW : c.opt.width;
+    const int latH = static_cast<int>(static_cast<int64_t>(latW) *
+                                      c.opt.height / c.opt.width);
+    float openness;
+    AOResult aov;
+    if (sampleCoarseAo(*c.coarseAo, latW, latH, px, py, N, hitT, openness,
+                       aov))
+      return aoApplyFactors(c.opt, c.ambLight, c.aoUp, openness, aov, C);
+    if (patched != nullptr) *patched = 1;
+  }
+  return computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C, secEps,
+                        px, py, c.aoSampleMul,
+                        c.seedW ? c.seedW : c.opt.width);
+}
 
 // Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
 // the ray origin, and (px, py) the hi-res pixel (for deterministic AO/shadow
@@ -132,9 +168,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // (aoEnhanced) the multi-scale/falloff estimator runs instead; otherwise the
     // legacy binary computeAO runs verbatim, keeping --ao-samples-only renders
     // bit-identical too.
-    AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
-                                secEps, px, py, c.aoSampleMul,
-                                c.seedW ? c.seedW : c.opt.width);
+    AoShade ao = aoShadeForHit(c, rscene, P, Ng, N, C, secEps, rh.ray.tfar, px,
+                               py, &hs.aoPatched);
     Vec3 aoFactor = ao.aoFactor;
     Vec3 ambLight = ao.ambLight;
     float diffuseAo = ao.diffuseAo;  // direct-diffuse AO scale (1 = ambient-only)
@@ -242,9 +277,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     Vec3 ambLight = c.ambLight;
     float diffuseAo = 1.0f;
     if (!fromEdge) {
-      AoShade ao = computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
-                                secEps, px, py, c.aoSampleMul,
-                                c.seedW ? c.seedW : c.opt.width);
+      AoShade ao = aoShadeForHit(c, rscene, P, Ng, N, C, secEps, rh.ray.tfar,
+                                 px, py, &hs.aoPatched);
       aoFactor = ao.aoFactor;
       ambLight = ao.ambLight;
       diffuseAo = ao.diffuseAo;

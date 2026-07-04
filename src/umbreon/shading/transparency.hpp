@@ -60,6 +60,9 @@ struct PixelResult {
   // its opaque default when the ray escapes. Only consumed when strokeEdges
   // is enabled.
   float firstOpacity = 1.0f;
+  // Coarse-AO debug: 1 = the FIRST hit's bilateral lookup was rejected and
+  // gathered inline. Only meaningful with RenderOptions::aoResDebug.
+  uint8_t aoPatched = 0;
 };
 
 // First-hit edge G-buffer of one primary ray, WITHOUT shading: what the
@@ -209,6 +212,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   Vec3 firstGiReflectance{0.0f, 0.0f, 0.0f};
   uint8_t firstGiEligible = 0;
   float firstOpacity = 1.0f;
+  uint8_t firstAoPatched = 0;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -269,6 +273,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       firstGiReflectance = hs.giReflectance;
       firstGiEligible = hs.giEligible;
       firstOpacity = hs.opacity;
+      firstAoPatched = hs.aoPatched;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -337,7 +342,8 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                      firstGeomID,
                      firstGiReflectance,
                      firstGiEligible,
-                     firstOpacity};
+                     firstOpacity,
+                     firstAoPatched};
 }
 
 }  // namespace detail
