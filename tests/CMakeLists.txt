@@ -62,9 +62,27 @@ if(TARGET umbreon)
   target_link_libraries(test_image_ops PRIVATE umbreon)
   add_test(NAME image_ops COMMAND test_image_ops)
 
-  add_executable(test_render test_render.cpp)
-  target_link_libraries(test_render PRIVATE umbreon)
-  add_test(NAME render COMMAND test_render)
+  # The render integration suite, split by feature area (all synthetic
+  # in-code scenes, no LFS data). Shared scene builders: render_test_util.hpp.
+  add_executable(test_render_shading test_render_shading.cpp)
+  target_link_libraries(test_render_shading PRIVATE umbreon)
+  add_test(NAME render_shading COMMAND test_render_shading)
+
+  add_executable(test_render_transparency test_render_transparency.cpp)
+  target_link_libraries(test_render_transparency PRIVATE umbreon)
+  add_test(NAME render_transparency COMMAND test_render_transparency)
+
+  add_executable(test_render_edges test_render_edges.cpp)
+  target_link_libraries(test_render_edges PRIVATE umbreon)
+  add_test(NAME render_edges COMMAND test_render_edges)
+
+  add_executable(test_render_ao test_render_ao.cpp)
+  target_link_libraries(test_render_ao PRIVATE umbreon)
+  add_test(NAME render_ao COMMAND test_render_ao)
+
+  add_executable(test_render_shadows_gi test_render_shadows_gi.cpp)
+  target_link_libraries(test_render_shadows_gi PRIVATE umbreon)
+  add_test(NAME render_shadows_gi COMMAND test_render_shadows_gi)
 
   add_executable(test_mesh_indexed test_mesh_indexed.cpp)
   target_link_libraries(test_mesh_indexed PRIVATE umbreon)

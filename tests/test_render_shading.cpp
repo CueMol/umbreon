@@ -1,0 +1,246 @@
+// Primary-ray direct shading, background/miss, flat outline primitives and
+// the render() facade steps (assumed_gamma, supersample).
+// Split out of the monolithic test_render.cpp (same assertions, relocated).
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+#include "render_test_util.hpp"
+#include "test_util.hpp"
+#include "umbreon.hpp"
+
+int main() {
+  umbreon::test::Suite s("render_shading");
+  const umbreon::Vec4 pigment{0.5f, 0.6f, 0.7f, 1.0f};
+
+  // --- mesh direct shading: out = C * (Ka*ambLight + Kd * max(N.L,0) * Lc) ---
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0.4f, 0.1f, 0.2f};
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("mesh: center R = C.r*0.6", approx(f.color[kCenterRgba + 0], 0.30f, 1e-4f));
+    s.check("mesh: center G = C.g*0.6", approx(f.color[kCenterRgba + 1], 0.36f, 1e-4f));
+    s.check("mesh: center B = C.b*0.6", approx(f.color[kCenterRgba + 2], 0.42f, 1e-4f));
+    s.check("mesh: alpha = 1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    s.check("mesh: center depth = ortho cam distance (10)",
+            approx(f.depth[kCenterPix], 10.0f, 1e-3f));
+  }
+
+  // --- background / miss path: empty scene -> every ray misses -> bg, depth 0 ---
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0.4f, 0.1f, 0.2f};
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("background: R", approx(f.color[kCenterRgba + 0], 0.4f, 1e-6f));
+    s.check("background: G", approx(f.color[kCenterRgba + 1], 0.1f, 1e-6f));
+    s.check("background: B", approx(f.color[kCenterRgba + 2], 0.2f, 1e-6f));
+    s.check("background: depth 0 on miss", approx(f.depth[kCenterPix], 0.0f, 1e-6f));
+  }
+
+  // --- flat outline primitive: a sphere is rendered with its raw color and no
+  // lighting (ambient 1, diffuse 0), so outlines stay exactly their color
+  // (black outlines stay black) regardless of the light present in the scene. ---
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());  // present, but must not affect the sphere
+    sc.background = {0.4f, 0.1f, 0.2f};
+    umbreon::Sphere sp;
+    sp.center = {0, 0, 0};
+    sp.radius = 1.0f;
+    sp.color = {0.3f, 0.4f, 0.5f, 1.0f};
+    sc.spheres.push_back(sp);
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("outline: sphere keeps raw R (no shading)", approx(f.color[kCenterRgba + 0], 0.3f, 1e-4f));
+    s.check("outline: sphere keeps raw G (no shading)", approx(f.color[kCenterRgba + 1], 0.4f, 1e-4f));
+    s.check("outline: sphere keeps raw B (no shading)", approx(f.color[kCenterRgba + 2], 0.5f, 1e-4f));
+  }
+
+  // --- facade: assumed_gamma raises the linear output to the power g after
+  // shading. lit pigment 0.30/0.36/0.42 at g=2 -> squared; alpha untouched. ---
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+
+    sc.assumedGamma = 2.0f;
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("gamma: R squared", approx(f.color[kCenterRgba + 0], 0.30f * 0.30f, 1e-4f));
+    s.check("gamma: G squared", approx(f.color[kCenterRgba + 1], 0.36f * 0.36f, 1e-4f));
+    s.check("gamma: alpha unchanged by gamma", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+  }
+
+  // --- facade: supersample renders at width*ss then box-averages back down. Over
+  // a uniformly shaded region the value is preserved, and the final framebuffer
+  // is the requested (non-supersampled) size. ---
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad(pigment);
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+
+    umbreon::RenderOptions o;
+    o.width = 5;
+    o.height = 5;
+    o.supersample = 2;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check_eq("supersample: final width", f.width, 5);
+    s.check_eq("supersample: final height", f.height, 5);
+    s.check("supersample: uniform region value preserved",
+            approx(f.color[kCenterRgba + 0], 0.30f, 1e-4f));
+  }
+
+  // ===== Per-material sphere shading (shadeLocal model) =====
+  // Head-on geometry: N=V=L=(0,0,1), so every cos term is 1. The key light is
+  // white at intensity 0.5 (Lc=0.5); ambientColor defaults to (1,1,1).
+
+  // Matte (ambient 0, diffuse 0.8, brilliance 0): out = diffuse*Lc*C = 0.4*C.
+  {
+    umbreon::Material m;
+    m.ambient = 0.0f; m.diffuse = 0.8f; m.brilliance = 0.0f;
+    m.specular = 0.0f; m.phong = 0.0f; m.metallic = false; m.reflection = 0.0f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("matte sphere: R = 0.4*C.r", approx(f.color[kCenterRgba + 0], 0.24f, 1e-4f));
+    s.check("matte sphere: G = 0.4*C.g", approx(f.color[kCenterRgba + 1], 0.16f, 1e-4f));
+    s.check("matte sphere: B = 0.4*C.b", approx(f.color[kCenterRgba + 2], 0.08f, 1e-4f));
+  }
+
+  // Metallic F_MetalA (ambient 0.35, diffuse 0.3 brilliance 2, specular 0.80
+  // roughness 0.05, metallic). Head-on, bg=0 (no reflection): ambient 0.35*C +
+  // diffuse 0.3*0.5*C + metallic Blinn 0.80*(C*0.5) = (0.35+0.15+0.40)*C = 0.90*C.
+  {
+    umbreon::Material m;
+    m.ambient = 0.35f; m.diffuse = 0.3f; m.brilliance = 2.0f;
+    m.specular = 0.80f; m.roughness = 1.0f / 20.0f; m.metallic = true;
+    m.phong = 0.0f; m.reflection = 0.10f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("metallic sphere: R = 0.90*C.r", approx(f.color[kCenterRgba + 0], 0.54f, 1e-3f));
+    s.check("metallic sphere: G = 0.90*C.g", approx(f.color[kCenterRgba + 1], 0.36f, 1e-3f));
+    s.check("metallic sphere: B = 0.90*C.b", approx(f.color[kCenterRgba + 2], 0.18f, 1e-3f));
+  }
+
+  // Reflection term: the same metallic material on a WHITE background adds
+  // reflection*bg = 0.10*(1,1,1) on top of the 0.90*C body.
+  {
+    umbreon::Material m;
+    m.ambient = 0.35f; m.diffuse = 0.3f; m.brilliance = 2.0f;
+    m.specular = 0.80f; m.roughness = 1.0f / 20.0f; m.metallic = true;
+    m.phong = 0.0f; m.reflection = 0.10f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {1, 1, 1});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("reflection: R = 0.90*C.r + 0.10*bg", approx(f.color[kCenterRgba + 0], 0.64f, 1e-3f));
+    s.check("reflection: G = 0.90*C.g + 0.10*bg", approx(f.color[kCenterRgba + 1], 0.46f, 1e-3f));
+  }
+
+  // Phong highlight (ambient 0.3, diffuse 0.5 brilliance 0, phong 10000
+  // phong_size 50, non-metallic). For C=(0.2,0.4,0.6) the body without the
+  // highlight is 0.55*C = (0.11,0.22,0.33); phong adds an ACHROMATIC lift (the
+  // same scalar to each channel, since not metallic). POV-faithful (no clamp):
+  // head-on R.V=1, so the lift is phong*pow(1,phong_size)*Lc = 10000*0.5 = 5000.
+  {
+    umbreon::Material m;
+    m.ambient = 0.3f; m.diffuse = 0.5f; m.brilliance = 0.0f;
+    m.specular = 0.0f; m.phong = 10000.0f; m.phongSize = 50.0f;
+    m.metallic = false; m.reflection = 0.0f;
+    umbreon::Scene sc =
+        makeMaterialSphereScene({0.2f, 0.4f, 0.6f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    const float liftR = f.color[kCenterRgba + 0] - 0.11f;
+    const float liftG = f.color[kCenterRgba + 1] - 0.22f;
+    const float liftB = f.color[kCenterRgba + 2] - 0.33f;
+    s.check("phong: unclamped POV lift = phong*Lc (=5000)", approx(liftR, 5000.0f, 1.0f));
+    s.check("phong: achromatic lift (R==G)", approx(liftR, liftG, 1e-4f));
+    s.check("phong: achromatic lift (G==B)", approx(liftG, liftB, 1e-4f));
+  }
+
+  // Fill (shadowless) light: POV computes diffuse only for a FILL_LIGHT_SOURCE,
+  // no specular/phong highlight. Pure-highlight material (ambient 0, diffuse 0,
+  // specular 0.5) head-on: a normal light yields the highlight
+  // specular*Lc = 0.5*0.5 = 0.25 (achromatic); a fill light yields nothing.
+  {
+    umbreon::Material m;
+    m.ambient = 0.0f; m.diffuse = 0.0f; m.brilliance = 1.0f;
+    m.specular = 0.5f; m.roughness = 0.05f; m.phong = 0.0f;
+    m.metallic = false; m.reflection = 0.0f;
+
+    umbreon::Scene lit =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult fl = umbreon::render(lit, o);
+    s.check("highlight light: specular present (R=0.25)",
+            approx(fl.color[kCenterRgba + 0], 0.25f, 1e-3f));
+
+    umbreon::Scene fill =
+        makeMaterialSphereScene({0.6f, 0.4f, 0.2f, 1.0f}, m, {0, 0, 0});
+    fill.lights[0].castsHighlight = false;
+    umbreon::FrameResult ff = umbreon::render(fill, o);
+    s.check("fill light: no specular highlight (R=0)",
+            approx(ff.color[kCenterRgba + 0], 0.0f, 1e-4f));
+    s.check("fill light: no specular highlight (G=0)",
+            approx(ff.color[kCenterRgba + 1], 0.0f, 1e-4f));
+  }
+
+  // Metallic Fresnel de-tint at a grazing angle (POV ComputeSpecularColour):
+  // the highlight lerps pigment->light by f(N.L), so a pure-red metallic shows a
+  // non-zero green/blue highlight (de-tinted toward white), not pure red.
+  // Flat quad N=V=(0,0,1); light L=(sin60,0,cos60) => N.L=0.5, N.H=cos30.
+  // specular 1.0 roughness 0.5 (exp 2): specW = 1.0*pow(cos30,2) = 0.75.
+  // f(0.5)=0.05927; hl=l*(f+(1-f)*C); out = 0.75*hl = (0.75, 0.04445, 0.04445).
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad({1.0f, 0.0f, 0.0f, 1.0f});  // pure red pigment
+    sc.mesh.material.ambient = 0.0f; sc.mesh.material.diffuse = 0.0f;
+    sc.mesh.material.specular = 1.0f; sc.mesh.material.roughness = 0.5f;
+    sc.mesh.material.brilliance = 1.0f; sc.mesh.material.metallic = true;
+    sc.mesh.material.phong = 0.0f; sc.mesh.material.reflection = 0.0f;
+    sc.camera = makeOrthoCam();
+    umbreon::DistantLight l;
+    l.direction = {-0.8660254f, 0.0f, -0.5f};  // travels opposite L=(sin60,0,cos60)
+    l.color = {1, 1, 1}; l.intensity = 1.0f;
+    sc.lights.push_back(l);
+    sc.background = {0, 0, 0};
+    umbreon::RenderOptions o; o.width = 5; o.height = 5;
+    umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("metallic fresnel: R highlight (0.75)",
+            approx(f.color[kCenterRgba + 0], 0.75f, 2e-3f));
+    s.check("metallic fresnel: G de-tinted toward white (0.0445)",
+            approx(f.color[kCenterRgba + 1], 0.04445f, 2e-3f));
+    s.check("metallic fresnel: achromatic de-tint (G==B)",
+            approx(f.color[kCenterRgba + 1], f.color[kCenterRgba + 2], 1e-5f));
+  }
+
+
+  return s.report();
+}
