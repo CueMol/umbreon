@@ -1,0 +1,332 @@
+// libumbreon PUBLIC API header (installed). Part of the supported public
+// API surface; keep in sync with install(FILES) in CMakeLists.txt.
+// NPR edge styling and edge-pass option types (stroke edges / object-space
+// edges), re-exported through render/render_types.hpp. Pure C++17 data, no
+// rendering-library dependency.
+#pragma once
+
+#include <cstdint>
+
+namespace umbreon {
+
+// --- NPR edge styling types (shared) --------------------------------------
+// These styling types are consumed by the Freestyle-style STROKE edge pass
+// (render/stroke_edges.cpp, --edges): the stroke pipeline maps each EdgeNature
+// onto an EdgeClass slot for per-section coloring (see Scene::groupEdgeStyle).
+// They are also consumed by the OBJECT-SPACE (3D geometry) edge pass via
+// ObjectSpaceEdgeOptions (defined below); its implementation lives in
+// edges/object_space_edges.hpp (--obj-edges).
+//
+// The five edge classes. The stroke pass uses Silhouette / Object (border) /
+// Crease as its per-nature styling slots and composites in a fixed precedence
+// order (most-specific structural edge wins). `Count` is the array size, not a
+// class.
+enum class EdgeClass : uint8_t {
+  Silhouette = 0,    // object vs background boundary
+  Disconnected = 1,  // same object, depth discontinuity (signature Warabi line)
+  Object = 2,        // different object id across the boundary
+  Material = 3,      // different material id across the boundary
+  Crease = 4,        // ridge/valley fold on the world-normal field
+  Count = 5
+};
+
+// Independent styling for one edge class. Color is linear RGB (composited in
+// linear space); width is the mask dilation radius in hi-res (supersample) px.
+struct EdgeClassStyle {
+  bool enabled = false;
+  float color[3] = {0.0f, 0.0f, 0.0f};  // linear RGB
+  float opacity = 1.0f;                 // 0..1
+  float width = 2.0f;                   // dilation radius, hi-res px
+};
+
+// Per CueMol section (per transparency group): a bundle of the five class
+// styles. A section without an explicit override uses
+// StrokeEdgeOptions::defaultStyle.
+struct EdgeStyle {
+  EdgeClassStyle cls[static_cast<int>(EdgeClass::Count)];
+};
+
+// --- Freestyle-style stroke edge rendering (--edges) ----------------------
+// Options for the STROKE edge pipeline (render/stroke_edges.cpp), the
+// Freestyle-faithful replacement for the retired per-pixel screen-space pass.
+// It extracts topology-tagged feature edges (silhouette/crease/border), chains
+// them into continuous polylines, computes ray-cast visibility against the live
+// Embree BVH, then rasterizes variable-width ribbons composited in linear space.
+// Per-section styling reuses EdgeStyle/EdgeClassStyle/Scene::groupEdgeStyle.
+//
+// The master `enable` flag gates ALL new work: a default-constructed
+// StrokeEdgeOptions (enable == false) runs no extra pass, so the renderer output
+// stays byte-identical to the no-edge path.
+struct StrokeEdgeOptions {
+  bool enable = false;  // MASTER gate; false => zero new work, byte-identical
+
+  // --- screen-source (crack tracer) tuning ---
+  // DepthGap threshold, world units per lateral pixel (a slope cutoff; the
+  // one-sided planar extrapolation makes it curvature-tolerant). See
+  // ScreenClassifyParams::depthGapPx.
+  float screenDepthGapPx = 12.0f;
+  float screenSlopeClampPx = 300.0f;  // extrapolation slope clamp, px units
+  float screenSimplifyPx = 0.4f;     // Douglas-Peucker eps, FINAL px
+  int screenSmoothIters = 2;         // Chaikin corner-cut iterations
+  float screenMinLenPx = 4.0f;       // drop chains shorter than this, FINAL px
+  // Relabel a class run shorter than this (FINAL px) when bracketed by two
+  // runs of one same class (style-flicker suppression; geometry unchanged).
+  int screenClassMergeLen = 2;
+  float screenGrazeK = 1.0f;  // crease grazing-angle widening factor
+
+  // --- which natures to extract/draw ---
+  bool silhouette = true;  // smooth n.v==0 contour + hard-edge straddle
+  // Interior fold (dihedral) creases. DEFAULT OFF to match CueMol2, whose crease
+  // line is gated on creaseLimit > 0 and defaults to -1 (off): a crease would
+  // over-ink the deliberate degenerate-vertex sharp edges of a rectangular ribbon
+  // sheet body (the n.v silhouette already outlines it). Enable with
+  // --stroke-crease on when a faceted crease look is wanted.
+  bool crease = false;
+  // Screen source: gates the CROSS-section object-id boundary (a line between
+  // two different CueMol sections). When on, borders are drawn only across a
+  // depth step (occlusion); depth-continuous contact/intersection contours
+  // (e.g. a stick penetrating a ribbon of another section, a bond embedded in
+  // an atom) are always suppressed. Same-section primitive boundaries follow
+  // the same depth rule but ink as depth-gap lines under the silhouette
+  // toggle, not this one.
+  bool border = true;
+
+  // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
+  // Ray-cast visibility is analytic, so no 3D lift is needed (raise == 0).
+  float raise = 0.0f;                      // outward contour offset, world units
+  // DRAW the analytic silhouettes of the analytic primitives (spheres/cylinders):
+  // their n.v==0 contour is emitted as Silhouette feature segments and MERGED into
+  // the same chain/visibility/ribbon pipeline as the mesh edges, so ball-and-stick
+  // geometry is outlined by --edges too (with true cross-primitive QI hidden-line
+  // against the live BVH). ON by default so a bare "--edges on" outlines mesh +
+  // spheres + cylinders alike.
+  //
+  // NOTE this flag gates only RASTERIZATION. The analytic silhouettes are ALWAYS
+  // extracted (when `silhouette` is on) and ALWAYS participate in the visibility
+  // pass, because an analytic primitive's silhouette is a real occluder boundary:
+  // it splits the mesh ViewEdges at the occlusion boundary so the QI per-span vote
+  // hides the part of a ribbon edge passing BEHIND a ball/stick. So `analytic =
+  // false` (--stroke-analytic off) gives a MESH-ONLY outline whose hidden-line is
+  // still correct behind ball-and-stick (the ball-stick simply gets no outline) --
+  // it does NOT reintroduce the leak a naive mesh-only pass would have.
+  bool analytic = true;
+  int analyticSegments = 48;               // sphere ring / cap circle tessellation
+  float meshHardEdgeDeg = 40.0f;           // hard-edge straddle / cluster split
+  float creaseAngleDeg = 30.0f;            // crease dihedral threshold (degrees)
+  float meshCreaseSmoothVetoDeg = 35.0f;   // smooth-facet crease veto (0 = off)
+  bool meshCreaseConvexOnly = true;        // keep convex creases, drop valleys
+  float meshBorderCoplanarVetoDeg = 35.0f; // coplanar-continuation border veto
+  int meshCreaseMaxDegree = 4;             // drop crease hubs above this degree
+  // Silhouette method (--stroke-geom-silhouette). false (default) = SMOOTH contour
+  // (interpolated n.v==0) + hard-edge straddle; matches the smooth-shaded outline.
+  // true = GEOMETRIC per-edge silhouette (face-normal straddle on ALL mesh edges):
+  // follows mesh edges at mesh resolution (denser at grazing folds) but is faceted
+  // and breaks up under grazing QI. See ExtractParams::geomSilhouette.
+  bool meshGeomSilhouette = false;
+  // Drop CONCAVE (valley) feature edges across ALL natures (crease + hard-edge
+  // silhouette) via the two adjacent faces' geometric normals (--edge-reject-
+  // concave). On by default for stroke edges.
+  bool rejectConcaveEdges = true;
+  // QI self-occlusion exclude radius (edge-adjacency rings over the true surface;
+  // see ExtractParams::selfExcludeRings). >0 stops a twisted ribbon over-hiding its
+  // own silhouette where its across-width fold self-occludes it, without leaking a
+  // genuine (geodesically-far) occluder. Default 6 ≈ a ribbon's width in faces;
+  // 0 restores the former {f0,f1}-only self-exclude.
+  int selfExcludeRings = 6;
+
+  // --- visibility (FREESTYLE-FAITHFUL image-space hidden-line) ---
+  // Visibility is decided in two complementary image-space stages, run per chain
+  // by applyStrokeEdges (NO primary z-buffer / G-buffer is read, keeping this
+  // distinct from --obj-edges):
+  //  (A) Quantitative Invisibility: a ray cast from each feature SEGMENT's 3D
+  //      center toward the eye, counting solid surfaces, with the segment's OWN
+  //      incident mesh faces excluded as self-occluders (Freestyle
+  //      ViewMapBuilder self/adjacent-face skip, live via the Embree argument
+  //      filter). qi>0 => hidden.
+  //  (B) a 2D crossing pass over the PROJECTED feature segments: where two drawn
+  //      lines cross in screen space, the farther one (larger eye-space view-z
+  //      at the crossing) is hidden (Freestyle CreateTVertex).
+  // A stroke point is visible iff QI says visible AND it is not inside a (B)
+  // hidden notch. There are no tuning knobs: the zTol that guards a coincident-
+  // depth junction is derived from the mesh mean edge length internally.
+
+  // --- stylization ---
+  // Stroke geometry in FINAL-resolution pixels; applyStrokeEdges scales these by
+  // the supersample factor since it runs on the hi-res (pre-downsample) frame, so
+  // a line keeps its requested final width at any --supersample.
+  int thickness = 2;        // stroke FULL width, final px (phase-1 const)
+  int resampleStepPx = 2;   // arc-length resample step, final px
+  float color[3] = {0.0f, 0.0f, 0.0f};  // default linear RGB
+  float opacity = 1.0f;                 // 0..1
+  // Demo stylization shader: taper each stroke's width toward its two ends as a
+  // function of the curvilinear abscissa u (a "spindle"/calligraphic look). Off by
+  // default so the stroke pass stays byte-identical; --stroke-taper on enables it.
+  bool taper = false;
+  // Demo GEOMETRY shader: Laplacian-smooth the backbone to remove tessellation-
+  // induced jaggedness, while PRESERVING endpoints and sharp corners (turn angle
+  // above a threshold) so genuine angular features are not rounded. Off by default
+  // (byte-identical); --stroke-smooth on enables it.
+  bool smooth = false;
+  // VERIFICATION mode (--edges-only): draw ONLY the edge strokes over a blank
+  // background (the surface color is cleared to the scene background before the
+  // stroke pass; the AOVs -- and thus edge extraction / surfAlpha -- are
+  // captured from the real surfaces first, so the drawn line set is identical
+  // to the production render). Strokes ink at FULL opacity (surface alpha and
+  // per-section style opacity are ignored) so faint / alpha-following lines
+  // stay clearly visible for annotating missing edges. Off by default.
+  bool edgesOnly = false;
+
+  // Per-section styling: a section without an override uses defaultStyle. The
+  // stroke pipeline maps each EdgeNature onto a styling slot in EdgeStyle (see
+  // Scene::groupEdgeStyle).
+  EdgeStyle defaultStyle;
+
+  // DEBUG visualization: overlay one dot per sub-span at its screen midpoint,
+  // colored by the PRE-majority QI class vs the FINAL (post per-ViewEdge majority)
+  // decision, so the majority rule's effect is visible on the render:
+  //   green  = pre-visible, drawn   (correctly shown)
+  //   blue   = pre-hidden,  dropped (correctly hidden)
+  //   red    = pre-hidden,  drawn   (LEAK: majority dragged a hidden span visible)
+  //   orange = pre-visible, dropped (over-hidden by the majority)
+  // Off by default (no overlay, output unchanged). --edge-qi-dots on enables it.
+  bool debugQiDots = false;
+
+  // DEBUG (--edge-qi-vertex-dots): overlay the RAW per-backbone-VERTEX QI result
+  // (one ray per vertex, no sub-span pooling or per-ViewEdge majority) as dots --
+  // blue = hidden, green = visible -- to verify the bare QI test is self-consistent
+  // vertex by vertex. Off by default (no overlay, output unchanged).
+  bool debugQiVertexDots = false;
+
+  // DEBUG (--edge-qi-vertex-delta): when nonzero, the --edge-qi-vertex-dots probe
+  // is pushed off the surface by this distance (world units) along the ORIGINAL
+  // mesh vertex normal before the visibility ray is cast (analogue of the old
+  // eye-ward camBias, but along the surface normal). 0 = probe at the vertex.
+  float debugQiVertexDelta = 0.0f;
+
+  // PRODUCTION QI normal-lift (--edge-qi-lift), ABSOLUTE world units. When > 0 the
+  // per-ViewEdge QI sampling (subSpanHidden) pushes each sample point off the
+  // surface by this distance along the INTERPOLATED input-mesh vertex normal (GPU-
+  // shader-style lerp of the segment's two endpoint normals) and casts a PURE
+  // occlusion ray (no self-face exclude / grazing / coplanar). This replaces those
+  // self-occlusion heuristics with a geometric self-surface clearance, fixing the
+  // hidden-line leak at tight folds. Absolute (not mesh-relative) because molecular
+  // coordinates have a fixed Angstrom scale. Default 0 = legacy heuristic QI
+  // (concave-reject alone is the production fix; lift is opt-in for tight folds).
+  // Falls back to legacy per-sample when the interpolated normal is degenerate
+  // (e.g. analytic sphere/cylinder chains with no mesh normal).
+  float qiNormalLift = 0.0f;
+
+  // QI aggregation mode when qiNormalLift > 0 (--edge-qi-split). true = approach B:
+  // per-sample visibility split into runs at transitions (no majority), so a hidden
+  // fold-back on a partly-visible edge is cut off. false (default) = approach A:
+  // per-ViewEdge majority (legacy aggregation, just with the lifted pure sample).
+  // Ignored when qiNormalLift == 0.
+  bool qiSplit = false;
+};
+
+// --- Analytic OBJECT-SPACE silhouette edges (--obj-edges) ------------------
+// Options for the analytic object-space edge pass (edges/object_space_edges.cpp).
+// This is the counterpart of the Freestyle STROKE method (StrokeEdgeOptions):
+// for each analytic primitive (Sphere, Cylinder) and the triangle mesh it emits
+// the n.v == 0 silhouette (plus mesh crease/border edges) as thin flat-black
+// "open" cylinders that the Embree ray tracer then occludes/antialiases for free.
+// Camera dependent. Driven through RenderOptions::objectSpaceEdges; render()
+// runs the pass internally (on a private scene copy) before tracing. The two
+// edge methods are mutually exclusive -- enabling both is an error (they would
+// double-draw). enable == false (the default) is a no-op, byte-identical to the
+// no-edge path. Pure data; defined here so it is part of the installed public
+// API surface (the extraction implementation header stays internal).
+struct ObjectSpaceEdgeOptions {
+  bool enable = false;   // master gate; false => no-op, byte-identical default
+  float width = 0.03f;   // edge cylinder radius, world units
+  float raise = 0.0f;    // outward offset of the contour, world units
+  int segments = 48;     // ring tessellation (sphere ring / cylinder is 2 lines)
+  float color[3] = {0.0f, 0.0f, 0.0f};  // edge color, linear RGB (w = 1 opacity)
+  // Union-boundary clip: drop the parts of each primitive's silhouette that lie
+  // INSIDE another primitive's solid, so connecting primitives (a bond entering
+  // an atom) join along the intersection instead of crossing -- the per-primitive
+  // "junction notch" otherwise left at coincident depth. Sampled along each
+  // segment at ~`width` spacing (finer => cleaner, like a higher tessellation).
+  bool clip = true;
+
+  // --- triangle-mesh edges (ribbon / SES / cartoon) ---
+  // The mesh silhouette is the SMOOTH n.v == 0 contour: per interpolated VERTEX
+  // normal a DotP = n.v is taken at each face vertex, and where it changes sign
+  // across a face the zero-crossing is interpolated and connected through the
+  // face (Freestyle WXFaceLayer::BuildSmoothEdge). This follows the shaded
+  // silhouette smoothly instead of snapping to mesh edges (which is what CueMol's
+  // face-normal extraction does, leaving a faceted line). Crease and border edges
+  // DO lie on mesh edges and are emitted there.
+  //
+  // STRATEGY (geometry only, no color): the SMOOTH SILHOUETTE is the primary
+  // edge and reproduces the CueMol OpenGL "outline" look on its own. CREASE and
+  // BORDER over-ink a smooth ribbon (helix-barrel facet hatching, strip-seam
+  // dashes on the coil tube, valley lines at SS-element junctions), so they are
+  // GEOMETRICALLY GATED to fire only on genuine features:
+  //   * a crease is a real sharp FOLD only where the interpolated vertex normals
+  //     across the edge actually DISAGREE (a smooth-shaded facet seam has them
+  //     near-parallel => tessellation, not a fold) -> meshCreaseSmoothVetoDeg;
+  //   * a real outline fold is CONVEX (a ridge bulging toward the viewer); the
+  //     concave valleys are where two ribbon strips meet at a junction step, which
+  //     CueMol's builder marks NO-EDGE -> meshCreaseConvexOnly drops them;
+  //   * a border that continues smoothly into another border edge at each end (a
+  //     near-collinear, near-coplanar chain) is an internal strip SEAM, not a
+  //     geometric terminus -> meshBorderCoplanarVetoDeg suppresses those, keeping
+  //     only true open boundaries (cap rims, strand termini).
+  // Struct defaults keep the new geometric gates OFF (neutral) so the bare-library
+  // crease/border semantics are unchanged; the ribbon-tuned values that reproduce
+  // the clean CueMol OpenGL outline live in the CLI (Options::objEdge*), which is
+  // the user-facing knob for this feature.
+  bool meshSilhouette = true;  // smooth n.v==0 contour through faces (primary)
+  bool meshCrease = true;      // sharp folds (gated below), face-normal dihedral
+  bool meshBorder = true;      // open boundary edges (gated below)
+
+  // Object-space HIDDEN-LINE clip for the triangle-mesh edges (CueMol
+  // RendIntData_AABBTree visibility/clipping ported to Embree). When false (the
+  // default) each mesh FeatureSeg is emitted verbatim and the ray tracer alone
+  // occludes the resulting cylinders -- byte-identical to the legacy path. When
+  // true, a throwaway mesh BVH (edges/edge_mesh_bvh) splits each edge into its
+  // VISIBLE spans before emission, so an edge raised off the surface (or behind a
+  // transparent surface) is correctly hidden where it dips behind geometry,
+  // exactly as CueMol pre-removed the hidden parts before emitting edge_line.
+  // Analytic sphere/cylinder silhouettes still use the union-boundary clip + ray
+  // tracer (they are not part of the triangle mesh).
+  bool visibilityClip = false;
+  // Hard-edge angle (degrees). CueMol ribbon meshes are deliberately NOT
+  // water-tight: a sharp (rectangular beta-sheet) cross-section duplicates its
+  // box-corner vertices with normals this far apart or more to encode the angular
+  // shape + flat shading. The mesh-silhouette pass uses this twofold: (1) incident
+  // corner normals at a welded position that differ by MORE than this are kept in
+  // SEPARATE smoothing clusters (not averaged), so the smooth n.v==0 contour is
+  // not computed from a meaningless diagonal and stops breaking into dashes on
+  // sharp ribbons; (2) an interior edge whose two FACE normals differ by more than
+  // this is a HARD edge, drawn on the silhouette by the CueMol-style face-normal
+  // straddle test (one face front-, the other back-facing) -- a crisp continuous
+  // box-edge line the per-vertex smooth contour cannot produce. A smooth tube has
+  // all normals within this angle, so it is unaffected.
+  float meshHardEdgeDeg = 40.0f;
+  float creaseAngleDeg = 30.0f;  // dihedral threshold for a crease edge (degrees)
+  // Smooth-facet veto: suppress a face-normal crease when BOTH faces' normals lie
+  // within this angle of the shared edge's interpolated vertex normals (the mesh
+  // is smooth-shaded across the edge => the dihedral is tessellation facetting,
+  // not a CueMol-style crease). 0 disables the veto. Degrees.
+  float meshCreaseSmoothVetoDeg = 0.0f;
+  // Keep only CONVEX creases (ridges that bulge toward the average outward
+  // normal); drop CONCAVE creases (valleys), the geometric stand-in for CueMol's
+  // MFMOD_MESHXX no-edge junction-step faces.
+  bool meshCreaseConvexOnly = false;
+  // Coplanar-continuation border veto: suppress a border edge whose two endpoints
+  // each continue into another border edge that is near-collinear (a smooth border
+  // chain) -- an internal strip seam, not a true terminus. The angle is the max
+  // bend (in degrees) of the border chain that still counts as "smoothly
+  // continuing". 0 disables the veto.
+  float meshBorderCoplanarVetoDeg = 0.0f;
+  // Crease-cluster degree filter: drop a crease edge incident to a vertex where
+  // MORE than this many crease edges meet. A clean fold LINE has crease degree
+  // <=2 along it (<=~4 at a junction); a CAP/terminus blob radiates many creases
+  // from one hub vertex. Removes the tube/chain-end cap scribbles geometrically
+  // while keeping fold lines. 0 disables (emit every gated crease).
+  int meshCreaseMaxDegree = 0;
+};
+
+}  // namespace umbreon
