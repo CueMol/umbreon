@@ -16,6 +16,7 @@
 #include <tbb/parallel_for.h>
 
 #include "ao/env_dome.hpp"
+#include "render/adaptive_aa.hpp"
 #include "shading/hit_shader.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_integrator.hpp"
@@ -146,6 +147,81 @@ bool realCsgPresent(const detail::BuiltScene& built) {
   return anyReal(built.sphereFromEdge, built.sphereColor.size()) ||
          anyReal(built.cylFromEdge, built.cylColor.size()) ||
          anyReal(built.cylCapFromEdge, built.cylCapColor.size());
+}
+
+// Per-pixel framebuffer store, factored out of the pixel loop VERBATIM (pure
+// code move; every statement and gate is unchanged) so the grid and adaptive-AA
+// paths share it. Split in two: the shading channels (color/depth + gated GI
+// seeds / albedo / AO AOVs) and the edge/fog G-buffer channels (viewZ, normal,
+// objectId/materialId/surfAlpha). The adaptive path replicates ONLY the shading
+// channels into an unflagged block when the Phase-0 probe owns the G-buffer
+// (edges on); everywhere else both halves run, exactly like the grid loop.
+void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
+                          std::vector<int>& giGroup,
+                          std::vector<uint32_t>& giGeom,
+                          std::vector<float>& giRefl,
+                          std::vector<uint8_t>& giElig, std::size_t pix,
+                          const PixelResult& pr) {
+  res.color[pix * 4 + 0] = pr.r;
+  res.color[pix * 4 + 1] = pr.g;
+  res.color[pix * 4 + 2] = pr.b;
+  res.color[pix * 4 + 3] = pr.a;
+  res.depth[pix] = pr.depth;
+  // GI cache seed: world-space first-hit position + per-pixel component /
+  // geomID side-channels read by the cache build below.
+  if (opt.gi) {
+    res.position[pix * 3 + 0] = pr.worldPos.x;
+    res.position[pix * 3 + 1] = pr.worldPos.y;
+    res.position[pix * 3 + 2] = pr.worldPos.z;
+    giGroup[pix] = pr.firstGroup;
+    giGeom[pix] = pr.firstGeomID;
+    giRefl[pix * 3 + 0] = pr.giReflectance.x;
+    giRefl[pix * 3 + 1] = pr.giReflectance.y;
+    giRefl[pix * 3 + 2] = pr.giReflectance.z;
+    giElig[pix] = pr.giEligible;
+  }
+  // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
+  // buffer was allocated above (wantAlbedoGuide).
+  if (!res.albedo.empty()) {
+    res.albedo[pix * 3 + 0] = pr.albedo.x;
+    res.albedo[pix * 3 + 1] = pr.albedo.y;
+    res.albedo[pix * 3 + 2] = pr.albedo.z;
+  }
+  // AO AOVs: contact/shape + bent normal + mean occluder distance.
+  if (opt.aoWriteAov) {
+    res.bentNormal[pix * 3 + 0] = pr.bentNormal.x;
+    res.bentNormal[pix * 3 + 1] = pr.bentNormal.y;
+    res.bentNormal[pix * 3 + 2] = pr.bentNormal.z;
+    res.contactAo[pix] = pr.contactAo;
+    res.shapeAo[pix] = pr.shapeAo;
+    res.avgHitDist[pix] = pr.avgHitDist;
+  }
+}
+
+void storeGBufChannels(FrameResult& res, const RenderOptions& opt,
+                       std::size_t pix, const PixelResult& pr) {
+  // Plane eye-z store: written whenever allocated (edges or fog).
+  if (!res.viewZ.empty()) res.viewZ[pix] = pr.viewZ;
+  // Normal: written whenever allocated (edge pass or AO AOV dump).
+  if (!res.normal.empty()) {
+    res.normal[pix * 3 + 0] = pr.worldNormal.x;
+    res.normal[pix * 3 + 1] = pr.worldNormal.y;
+    res.normal[pix * 3 + 2] = pr.worldNormal.z;
+  }
+  // Remaining edge G-buffer: gated so the default path writes nothing extra.
+  if (opt.strokeEdges.enable) {
+    res.objectId[pix] = pr.objectId;
+    res.materialId[pix] = pr.materialId;
+    res.surfAlpha[pix] = pr.firstOpacity;
+  }
+}
+
+void storePixelResult(FrameResult& res, const RenderOptions& opt,
+                      std::vector<int>& giGroup, std::vector<uint32_t>& giGeom,
+                      std::vector<float>& giRefl, std::vector<uint8_t>& giElig,
+                      std::size_t pix, const PixelResult& pr) {
+  storeShadingChannels(res, opt, giGroup, giGeom, giRefl, giElig, pix, pr);
+  storeGBufChannels(res, opt, pix, pr);
 }
 
 }  // namespace
@@ -370,6 +446,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // far transmission is observable (warned once below) rather than silent.
   std::atomic<long long> cappedRays{0};
 
+  // Adaptive-AA gate: opt-in (aaMode == 1), needs a supersampled grid whose
+  // dimensions divide by ss (guards direct-API misuse; the pipeline always
+  // satisfies it), and is normalized away for GI in renderFrame (the second
+  // gi check here only protects direct EmbreeRenderer::render callers).
+  const int ssAA = std::max(1, opt.supersample);
+  const bool adaptiveAa = opt.aaMode == 1 && (ssAA > 1 || opt.aaDepth > 1) &&
+                          (W % ssAA == 0) && (H % ssAA == 0) && !opt.gi;
+
+  if (!adaptiveAa) {
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
   // primitive). Each ray is independent and rtcIntersect1 on a committed scene
   // is thread-safe; pixels write to disjoint framebuffer indices.
@@ -397,57 +482,233 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
                          static_cast<uint32_t>(py), dir, cappedRays);
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
-      res.color[pix * 4 + 0] = pr.r;
-      res.color[pix * 4 + 1] = pr.g;
-      res.color[pix * 4 + 2] = pr.b;
-      res.color[pix * 4 + 3] = pr.a;
-      res.depth[pix] = pr.depth;
-      // Plane eye-z store: written whenever allocated (edges or fog).
-      if (!res.viewZ.empty()) res.viewZ[pix] = pr.viewZ;
-      // Normal: written whenever allocated (edge pass or AO AOV dump).
-      if (!res.normal.empty()) {
-        res.normal[pix * 3 + 0] = pr.worldNormal.x;
-        res.normal[pix * 3 + 1] = pr.worldNormal.y;
-        res.normal[pix * 3 + 2] = pr.worldNormal.z;
-      }
-      // Remaining edge G-buffer: gated so the default path writes nothing extra.
-      if (opt.strokeEdges.enable) {
-        res.objectId[pix] = pr.objectId;
-        res.materialId[pix] = pr.materialId;
-        res.surfAlpha[pix] = pr.firstOpacity;
-      }
-      // GI cache seed: world-space first-hit position + per-pixel component /
-      // geomID side-channels read by the cache build below.
-      if (opt.gi) {
-        res.position[pix * 3 + 0] = pr.worldPos.x;
-        res.position[pix * 3 + 1] = pr.worldPos.y;
-        res.position[pix * 3 + 2] = pr.worldPos.z;
-        giGroup[pix] = pr.firstGroup;
-        giGeom[pix] = pr.firstGeomID;
-        giRefl[pix * 3 + 0] = pr.giReflectance.x;
-        giRefl[pix * 3 + 1] = pr.giReflectance.y;
-        giRefl[pix * 3 + 2] = pr.giReflectance.z;
-        giElig[pix] = pr.giEligible;
-      }
-      // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
-      // buffer was allocated above (wantAlbedoGuide).
-      if (!res.albedo.empty()) {
-        res.albedo[pix * 3 + 0] = pr.albedo.x;
-        res.albedo[pix * 3 + 1] = pr.albedo.y;
-        res.albedo[pix * 3 + 2] = pr.albedo.z;
-      }
-      // AO AOVs: contact/shape + bent normal + mean occluder distance.
-      if (opt.aoWriteAov) {
-        res.bentNormal[pix * 3 + 0] = pr.bentNormal.x;
-        res.bentNormal[pix * 3 + 1] = pr.bentNormal.y;
-        res.bentNormal[pix * 3 + 2] = pr.bentNormal.z;
-        res.contactAo[pix] = pr.contactAo;
-        res.shapeAo[pix] = pr.shapeAo;
-        res.avgHitDist[pix] = pr.avgHitDist;
-      }
+      storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, pix, pr);
     }
   }
   });
+  } else {
+    // --- adaptive AA driver (three deterministic phases; each parallel loop
+    // writes disjoint indices and reads only earlier-phase data, so the output
+    // is thread-count invariant exactly like the grid loop). ---
+    const int ss = ssAA;
+    const int Wf = W / ss, Hf = H / ss;
+    const int cSub = ss / 2;  // center subpixel of an output-pixel block
+
+    // Shade one sample at plane coordinates (u, v) with RNG seed (sx, sy) --
+    // the same camera math as the grid loop, under the given shade context.
+    auto shadeAt = [&](const ShadeContext& scx, float u, float v, uint32_t sx,
+                       uint32_t sy) {
+      Vec3 org, rd;
+      if (cam.orthographic) {
+        org = cam.position + right * (u * halfW) + trueUp * (v * halfH);
+        rd = dir;
+      } else {
+        org = cam.position;
+        rd = normalize(dir + right * (u * persHalfW) + trueUp * (v * persHalfH));
+      }
+      return integratePixel(scx, org, rd, sx, sy, dir, cappedRays);
+    };
+
+    // Shade one hi-res subpixel with the SAME u/v math as the grid loop
+    // (bitwise-identical rays).
+    auto shadeSub = [&](const ShadeContext& scx, int px, int py) {
+      const float v = 1.0f - 2.0f * (static_cast<float>(py) + 0.5f) /
+                                 static_cast<float>(H);
+      const float u = 2.0f * (static_cast<float>(px) + 0.5f) /
+                          static_cast<float>(W) - 1.0f;
+      return shadeAt(scx, u, v, static_cast<uint32_t>(px),
+                     static_cast<uint32_t>(py));
+    };
+
+    // Edges mode fills the per-subpixel G-buffer the stroke pass consumes.
+    // Rather than a separate full-frame probe pass (which would trace every
+    // subpixel's primary ray a SECOND time, on top of the shading traces
+    // below), the G-buffer is filled inline in Phase 3: subpixels that are
+    // shaded anyway (a flagged block's cells, or an unflagged block's center)
+    // take it from their integratePixel first hit; the remaining REPLICATED
+    // subpixels get it from a shading-free first-hit probe. Every subpixel is
+    // then traced exactly once, so edges mode saves shading like the non-edges
+    // path instead of paying a redundant primary sweep. probeGBuffer mirrors
+    // shadeHit's capture (locked by the parity test), so the extracted line set
+    // is IDENTICAL to the grid render either way.
+    const bool edgesGbuf = opt.strokeEdges.enable;
+    // Write a probed first-hit G-buffer for one replicated subpixel.
+    auto storeProbeGBuf = [&](int px, int py, std::size_t pix) {
+      const float v = 1.0f - 2.0f * (static_cast<float>(py) + 0.5f) /
+                                 static_cast<float>(H);
+      const float u = 2.0f * (static_cast<float>(px) + 0.5f) /
+                          static_cast<float>(W) - 1.0f;
+      Vec3 org, rd;
+      if (cam.orthographic) {
+        org = cam.position + right * (u * halfW) + trueUp * (v * halfH);
+        rd = dir;
+      } else {
+        org = cam.position;
+        rd = normalize(dir + right * (u * persHalfW) + trueUp * (v * persHalfH));
+      }
+      const GBufProbe gp = probeGBuffer(sc, org, rd, dir);
+      res.viewZ[pix] = gp.viewZ;
+      res.normal[pix * 3 + 0] = gp.normal.x;
+      res.normal[pix * 3 + 1] = gp.normal.y;
+      res.normal[pix * 3 + 2] = gp.normal.z;
+      res.objectId[pix] = gp.objectId;
+      res.materialId[pix] = gp.materialId;
+      res.surfAlpha[pix] = gp.surfAlpha;
+    };
+
+    // Phase 1: shade ONE center subpixel per output pixel at its true hi-res
+    // (px, py) seed and PLAIN sample counts -- each value is bitwise the grid
+    // render's value of that subpixel, so a flagged pixel reuses it as its
+    // center cell (no wasted work) and the mask sees exactly the contrast a
+    // grid render would produce.
+    std::vector<PixelResult> centers(static_cast<std::size_t>(Wf) * Hf);
+    tbb::parallel_for(tbb::blocked_range<int>(0, Hf),
+                      [&](const tbb::blocked_range<int>& rows) {
+      for (int Y = rows.begin(); Y != rows.end(); ++Y)
+        for (int X = 0; X < Wf; ++X)
+          centers[static_cast<std::size_t>(Y) * Wf + X] =
+              shadeSub(sc, X * ss + cSub, Y * ss + cSub);
+    });
+
+    // Phase 2: refinement mask over the output grid -- a pure function of the
+    // Phase-1 centers (predicates + one dilation; see adaptive_aa.hpp). The
+    // mask governs only where the SURFACE color is refined vs replicated; in
+    // edges mode the G-buffer the stroke pass reads is filled full-res
+    // regardless (Phase 3 below), so a sub-center sliver missed by the mask
+    // costs at most a slightly-off surface color under a stroke that is drawn
+    // anyway -- no need for a hi-res intra-block probe here.
+    AaMaskParams mp;
+    mp.threshold = opt.aaThreshold;
+    mp.perspective = !cam.orthographic;
+    const float pixelWorldSize =
+        cam.orthographic ? (cam.height / static_cast<float>(Hf))
+                         : (2.0f * persHalfH / static_cast<float>(Hf));
+    const std::vector<uint8_t> mask =
+        buildAaMask(Wf, Hf, centers.data(), pixelWorldSize, mp);
+    if (opt.aaDebug) res.aaMask.assign(mask.begin(), mask.end());
+
+    // --aa-depth fine lattice: a FLAGGED pixel's cells can sample finer than
+    // the ss grid. k fine samples per hi-res-cell axis (effective per-output-
+    // pixel lattice ss*k, i.e. aaDepth rounded up to a multiple of ss); the k^2
+    // samples of a cell are box-averaged into that cell, so the framebuffer
+    // stays at ss resolution and the pipeline downsample is unchanged. Seeds
+    // live on the virtual (W*k) x (H*k) lattice (seedW = W*k). k == 1 is
+    // structurally the plain subpixel sample: same u/v expression, same seed
+    // lattice (seedW = W), so flagged blocks stay bitwise-equal to the grid.
+    const int kFine = std::max(1, (opt.aaDepth + ss - 1) / ss);
+    ShadeContext scFine = sc;
+    scFine.seedW = W * kFine;
+    auto shadeCell = [&](int px, int py) {
+      if (kFine == 1) return shadeSub(sc, px, py);
+      PixelResult acc;
+      for (int b = 0; b < kFine; ++b) {
+        for (int a = 0; a < kFine; ++a) {
+          const int pxk = px * kFine + a, pyk = py * kFine + b;
+          const float v = 1.0f - 2.0f * (static_cast<float>(pyk) + 0.5f) /
+                                     static_cast<float>(H * kFine);
+          const float u = 2.0f * (static_cast<float>(pxk) + 0.5f) /
+                              static_cast<float>(W * kFine) - 1.0f;
+          const PixelResult pr = shadeAt(scFine, u, v,
+                                         static_cast<uint32_t>(pxk),
+                                         static_cast<uint32_t>(pyk));
+          if (a == 0 && b == 0) {
+            acc = pr;  // discrete fields (ids/group/geomID/seeds): first sample
+          } else {
+            acc.r += pr.r;
+            acc.g += pr.g;
+            acc.b += pr.b;
+            acc.a += pr.a;
+            acc.depth += pr.depth;
+            acc.viewZ += pr.viewZ;
+          }
+        }
+      }
+      // Box-average the continuous display channels only. The AO/GI guide AOVs
+      // keep the first sample (debug/guide channels; GI is grid-only anyway).
+      const float inv = 1.0f / static_cast<float>(kFine * kFine);
+      acc.r *= inv;
+      acc.g *= inv;
+      acc.b *= inv;
+      acc.a *= inv;
+      acc.depth *= inv;
+      acc.viewZ *= inv;
+      return acc;
+    };
+
+    // Replication context for UNFLAGGED pixels: the AO / soft-shadow sample
+    // counts are boosted by ss^2 so the one shared center evaluation carries
+    // the effective sample count of the ss^2 subpixel box-average it replaces
+    // (plan decision: flat-region AO quality is preserved, cost stays ~grid).
+    // Soft shadows boost only when they are actually stochastic (samples > 1
+    // AND a light radius), because samples <= 1 selects the hard single-ray
+    // path and a boost would silently switch the estimator. With no stochastic
+    // effect at all the boosted evaluation would be bitwise the Phase-1 value,
+    // so it is skipped entirely (the AO-off fast path).
+    const bool softShadows = opt.shadowSamples > 1 && opt.lightRadius > 0.0f;
+    const bool needBoost = ss > 1 && (opt.aoSamples > 0 || softShadows);
+    ShadeContext scBoost = sc;
+    scBoost.aoSampleMul = ss * ss;
+    scBoost.shadowSampleMul = softShadows ? ss * ss : 1;
+
+    // Phase 3: flagged pixels shade EVERY subpixel cell at its true seed and
+    // plain sample counts -- bitwise-identical to the grid render there when
+    // kFine == 1 (the center cell reuses the Phase-1 value, which IS the grid
+    // value of that subpixel). Unflagged blocks replicate one center result --
+    // re-evaluated with the boosted sample counts when a stochastic effect
+    // benefits. In edges mode the G-buffer is filled inline: a shaded subpixel
+    // (flagged cell or the unflagged center) carries the G-buffer of its own
+    // integratePixel first hit; the other replicated subpixels get it from a
+    // shading-free probe. Every subpixel is traced exactly once.
+    tbb::parallel_for(tbb::blocked_range<int>(0, Hf),
+                      [&](const tbb::blocked_range<int>& rows) {
+      for (int Y = rows.begin(); Y != rows.end(); ++Y) {
+        for (int X = 0; X < Wf; ++X) {
+          const std::size_t XY = static_cast<std::size_t>(Y) * Wf + X;
+          if (!mask[XY]) {
+            const bool boosted = needBoost;
+            const PixelResult rep =
+                boosted ? shadeSub(scBoost, X * ss + cSub, Y * ss + cSub)
+                        : centers[XY];
+            for (int j = 0; j < ss; ++j) {
+              for (int i = 0; i < ss; ++i) {
+                const int px = X * ss + i, py = Y * ss + j;
+                const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+                if (edgesGbuf) {
+                  storeShadingChannels(res, opt, giGroup, giGeom, giRefl,
+                                       giElig, pix, rep);
+                  // Center subpixel: exact G-buffer from its own first hit
+                  // (centers[XY] traced this subpixel). Others: probe.
+                  if (i == cSub && j == cSub)
+                    storeGBufChannels(res, opt, pix, centers[XY]);
+                  else
+                    storeProbeGBuf(px, py, pix);
+                } else {
+                  storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
+                                   pix, rep);
+                }
+              }
+            }
+            continue;
+          }
+          for (int j = 0; j < ss; ++j) {
+            for (int i = 0; i < ss; ++i) {
+              const int px = X * ss + i, py = Y * ss + j;
+              const std::size_t pix = static_cast<std::size_t>(py) * W + px;
+              const PixelResult pr =
+                  (kFine == 1 && i == cSub && j == cSub)
+                      ? centers[XY]
+                      : shadeCell(px, py);
+              // Flagged cells are shaded (kFine==1) or box-averaged (kFine>1);
+              // either way pr carries the first-hit G-buffer, so a full store
+              // reproduces the grid render's G-buffer bitwise.
+              storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, pix,
+                               pr);
+            }
+          }
+        }
+      }
+    });
+  }
 
   if (const long long capped = cappedRays.load(std::memory_order_relaxed);
       capped > 0) {

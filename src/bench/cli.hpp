@@ -101,6 +101,16 @@ struct Options {
   // defaults to 3 when not set explicitly.
   int supersample = 1;
   bool supersampleSet = false;
+  // Adaptive antialiasing (--aa adaptive): shade one center sample per output
+  // pixel, refine only the pixels whose neighborhood shows a discontinuity
+  // (geometry id / color contrast / normal / depth), replicate the rest.
+  // Deterministic, no jitter; grid (0) keeps the legacy full-supersample path
+  // byte-identical. aaDepth > ss samples flagged pixels FINER than the grid
+  // (edge quality above --supersample at flat-region cost); 0 = ss density.
+  int aaMode = 0;             // 0 = grid, 1 = adaptive
+  float aaThreshold = 0.1f;   // per-channel linear contrast that flags a pair
+  int aaDepth = 0;            // flagged-pixel lattice (rounded up to n*ss)
+  bool aaDebug = false;       // dump the refinement mask AOV
   // Specular control: multiplies the per-material POV finish specular weight.
   // Defaults to 1.0 (the finish highlight is rendered at full strength); pass
   // --specular-scale 0 for a matte look with no highlight.

@@ -408,6 +408,23 @@ Options parseCli(int argc, char** argv) {
     } else if (a == "--supersample") {
       o.supersample = std::atoi(value("--supersample").c_str());
       o.supersampleSet = true;
+    } else if (a == "--aa") {
+      std::string v = value("--aa");
+      if (v == "grid")
+        o.aaMode = 0;
+      else if (v == "adaptive")
+        o.aaMode = 1;
+      else
+        fail("--aa expects grid/adaptive");
+    } else if (a == "--aa-threshold") {
+      o.aaThreshold =
+          static_cast<float>(std::atof(value("--aa-threshold").c_str()));
+    } else if (a == "--aa-depth") {
+      o.aaDepth = std::atoi(value("--aa-depth").c_str());
+    } else if (a == "--aa-debug") {
+      std::string v = value("--aa-debug");
+      if (o.ok && !parseBool(v, o.aaDebug))
+        fail("--aa-debug expects on/off");
     } else if (a == "--specular-scale") {
       o.specularScale =
           static_cast<float>(std::atof(value("--specular-scale").c_str()));
@@ -656,6 +673,10 @@ void printUsage(const char* prog) {
       "  --pov-gain <float>       exposure gain for POV lights   [1.20]\n"
       "  --outline-scale <float>  radius x for spheres/cylinders [1.00]\n"
       "  --supersample <int>      render NxN and downsample  [1; .pov: 3]\n"
+      "  --aa <grid|adaptive>     antialiasing: full grid / adaptive refine [grid]\n"
+      "  --aa-threshold <float>   adaptive: color contrast that refines  [0.1]\n"
+      "  --aa-depth <int>         adaptive: edge lattice (>ss = finer)  [0=ss]\n"
+      "  --aa-debug <on|off>      adaptive: dump refinement mask AOV    [off]\n"
       "  --specular-scale <float> cartoon specular x      [.pov: 0 = matte]\n"
       "  --threads <int>          TBB parallelism cap (1 = serial)  [0 = all]\n"
       "  --alpha <ID=value>       section group alpha (e.g. _34_35=0.5),\n"

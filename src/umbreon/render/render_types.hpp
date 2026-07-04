@@ -343,6 +343,25 @@ struct RenderOptions {
   // width x height in linear space (antialiasing). 1 = off.
   int supersample = 1;
 
+  // --- adaptive antialiasing (--aa adaptive) --- default 0 (grid) keeps the
+  // full-grid supersample path untouched, so flag-less output stays byte-
+  // identical. Mode 1 (adaptive) shades ONE center subpixel per output pixel
+  // first, flags output pixels whose neighborhood shows a discontinuity
+  // (geomID/group change, color contrast > aaThreshold, normal delta, depth
+  // crack), then shades every subpixel of flagged pixels only; unflagged
+  // blocks replicate the center result. Fully deterministic (no jitter): the
+  // flagged region is bitwise-identical to the grid render, and thread count
+  // never changes the output. Not supported with gi yet (renderFrame falls
+  // back to grid with a warning).
+  int aaMode = 0;             // 0 = grid (legacy full supersample), 1 = adaptive
+  float aaThreshold = 0.1f;   // per-channel linear color contrast that flags a pair
+  // Edge-quality lattice for FLAGGED pixels: subdivide each output pixel
+  // aaDepth x aaDepth (rounded up to a multiple of ss) instead of ss x ss.
+  // 0 or ss = same density as the supersample grid (bitwise-equal there);
+  // > ss = finer edge sampling than the grid at unchanged flat-region cost.
+  int aaDepth = 0;
+  bool aaDebug = false;       // fill FrameResult::aaMask (refinement mask AOV)
+
   // --- ambient occlusion (mesh hits only; modulates the ambient term) ---
   // Default 0 = AO off, so flag-less output stays the bit-exact POV-matched
   // local shading. AO never darkens flat outline primitives (spheres/cylinders).
@@ -589,6 +608,10 @@ struct FrameResult {
   std::vector<float> indirect;    // width*height*3 interpolated E_cached
   std::vector<float> giRecordViz; // width*height*3 record-radius (log R_i) heatmap
   std::vector<float> giOcclusion; // width*height   gather occlusion fraction (AO-like)
+  // Adaptive-AA refinement mask debug AOV: sized (width/ss)*(height/ss) -- one
+  // value per OUTPUT pixel, 1 = refined, 0 = replicated -- and written ONLY when
+  // aaMode == 1 and aaDebug is on (else empty). Never downsampled.
+  std::vector<float> aaMask;
   double renderSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
   // pt1 stage timing (zero-filled unless the pt1 integrator ran; bvhBuild and

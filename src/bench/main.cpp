@@ -553,6 +553,18 @@ int main(int argc, char** argv) {
       std::printf("  supersample %dx (%dx%d -> %dx%d)\n", ss, finalW * ss,
                   finalH * ss, finalW, finalH);
 
+    // Adaptive antialiasing (--aa adaptive): center-sample + discontinuity-
+    // driven refinement instead of the full supersample grid. render() falls
+    // back to grid for --gi (unvalidated combination, warns on stderr).
+    ropt.aaMode = opt.aaMode;
+    ropt.aaThreshold = opt.aaThreshold;
+    ropt.aaDepth = opt.aaDepth;
+    ropt.aaDebug = opt.aaDebug;
+    if (opt.aaMode == 1)
+      std::printf("  antialias: adaptive (threshold %.3g, depth %d%s)\n",
+                  opt.aaThreshold, opt.aaDepth > 0 ? opt.aaDepth : ss,
+                  opt.aaDebug ? ", mask dump" : "");
+
     // Optional TBB parallelism cap for a no-rebuild speed comparison:
     // --threads 1 runs the row-parallel render serially, --threads N caps at N,
     // 0 leaves TBB at its default (all cores). global_control must outlive the
@@ -705,6 +717,29 @@ int main(int argc, char** argv) {
     umbreon::writeImage(opt.output, frame.width, frame.height,
                         frame.color.data(), 4);
     std::printf("wrote %s\n", opt.output.c_str());
+
+    // Adaptive-AA refinement mask dump (--aa-debug): grayscale, one value per
+    // OUTPUT pixel (1 = refined, 0 = replicated center). Written under the
+    // --dump-aov prefix when given, else next to the output image; the tuning
+    // aid for --aa-threshold.
+    if (!frame.aaMask.empty()) {
+      std::string prefix = opt.dumpAovPrefix;
+      if (prefix.empty()) {
+        prefix = opt.output;
+        const std::size_t dot = prefix.find_last_of('.');
+        if (dot != std::string::npos) prefix = prefix.substr(0, dot);
+      }
+      const std::size_t np = static_cast<std::size_t>(finalW) * finalH;
+      if (frame.aaMask.size() == np) {
+        std::vector<float> mimg(np * 3);
+        for (std::size_t i = 0; i < np; ++i)
+          mimg[i * 3 + 0] = mimg[i * 3 + 1] = mimg[i * 3 + 2] = frame.aaMask[i];
+        umbreon::writeImage(prefix + "_aaMask.png", finalW, finalH, mimg.data(),
+                            3);
+        std::printf("  dumped adaptive-AA mask: %s_aaMask.png (%dx%d)\n",
+                    prefix.c_str(), finalW, finalH);
+      }
+    }
 
     // Debug AOV dump (verification only): false-color the captured AOVs. Two
     // independent sources feed it: the edge pass G-buffer (--edges on, kept at

@@ -78,6 +78,13 @@ if(TARGET umbreon)
   target_link_libraries(test_screen_vector_edges PRIVATE umbreon)
   add_test(NAME screen_vector_edges COMMAND test_screen_vector_edges)
 
+  # Adaptive-AA tests: sample-multiplier / seed plumbing, refinement mask
+  # predicates and adaptive-vs-grid render equivalences (synthetic scenes only,
+  # no LFS data).
+  add_executable(test_adaptive_aa test_adaptive_aa.cpp)
+  target_link_libraries(test_adaptive_aa PRIVATE umbreon)
+  add_test(NAME adaptive_aa COMMAND test_adaptive_aa)
+
   add_executable(test_screen_vector_integration
                  test_screen_vector_integration.cpp)
   target_link_libraries(test_screen_vector_integration PRIVATE umbreon
