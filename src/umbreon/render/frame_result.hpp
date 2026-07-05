@@ -91,6 +91,11 @@ struct FrameResult {
   // 0 unless aoResDiv > 1 activated the coarse grid.
   double aoCoarseSeconds = 0.0;
   std::size_t effectiveTriangles = 0;
+  // True when the render was cooperatively cancelled (RenderProgress::
+  // requestCancel) before finishing: the buffers hold a PARTIAL frame (rows past
+  // the cancel point, and skipped post-passes, are unfilled). Always false for a
+  // render that ran to completion, so the default path is unchanged.
+  bool cancelled = false;
   // pt1 stage timing (zero-filled unless the pt1 integrator ran; bvhBuild and
   // primary are recorded on every render since the timers are free).
   Pt1Timing pt1Timing;

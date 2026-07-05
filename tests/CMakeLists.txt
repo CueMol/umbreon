@@ -84,6 +84,11 @@ if(TARGET umbreon)
   target_link_libraries(test_render_shadows_gi PRIVATE umbreon)
   add_test(NAME render_shadows_gi COMMAND test_render_shadows_gi)
 
+  # Async render handle + progress/cancel channel (synthetic scenes, no LFS).
+  add_executable(test_render_async test_render_async.cpp)
+  target_link_libraries(test_render_async PRIVATE umbreon)
+  add_test(NAME render_async COMMAND test_render_async)
+
   add_executable(test_mesh_indexed test_mesh_indexed.cpp)
   target_link_libraries(test_mesh_indexed PRIVATE umbreon)
   add_test(NAME mesh_indexed COMMAND test_mesh_indexed)

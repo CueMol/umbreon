@@ -11,10 +11,17 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <tbb/global_control.h>
 #include <tbb/version.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "aov_dump.hpp"
 #include "cli.hpp"
@@ -28,6 +35,31 @@ namespace {
 bool endsWith(const std::string& s, const std::string& suffix) {
   return s.size() >= suffix.size() &&
          s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// True when stderr is an interactive terminal, so the in-place progress bar
+// (which uses '\r') is worth drawing; a pipe/file/CI run gets no bar.
+bool stderrIsTty() {
+#if defined(_WIN32)
+  return _isatty(_fileno(stderr)) != 0;
+#else
+  return isatty(fileno(stderr)) != 0;
+#endif
+}
+
+// Redraw the single-line progress bar on stderr (leading '\r', no newline).
+void drawProgressBar(float frac, umbreon::RenderPhase phase) {
+  frac = std::fmax(0.0f, std::fmin(1.0f, frac));
+  constexpr int kWidth = 24;
+  const int filled = static_cast<int>(frac * kWidth + 0.5f);
+  char bar[kWidth + 1];
+  for (int i = 0; i < kWidth; ++i) bar[i] = (i < filled) ? '#' : '-';
+  bar[kWidth] = '\0';
+  // %-11s pads the phase name (longest is "Postprocess") so shorter names never
+  // leave stale characters behind on the reused line.
+  std::fprintf(stderr, "\r  render [%s] %3d%%  %-11s", bar,
+               static_cast<int>(frac * 100.0f + 0.5f), umbreon::toString(phase));
+  std::fflush(stderr);
 }
 }  // namespace
 
@@ -96,7 +128,20 @@ int main(int argc, char** argv) {
         tbb::global_control::active_value(
             tbb::global_control::max_allowed_parallelism));
     const auto tRender0 = std::chrono::high_resolution_clock::now();
-    umbreon::FrameResult frame = umbreon::render(scene, ropt);
+    // Render asynchronously and poll a text progress bar (TTY only; stderr keeps
+    // stdout clean). This is functionally identical to the blocking render() but
+    // exercises the async API end-to-end. scene/ropt are copied into the task, so
+    // they stay valid for the reporting below.
+    const bool showBar = stderrIsTty();
+    umbreon::RenderTask task = umbreon::renderAsync(scene, ropt);
+    while (!task.wait_for(std::chrono::milliseconds(100))) {
+      if (showBar) drawProgressBar(task.progress(), task.phase());
+    }
+    umbreon::FrameResult frame = task.get();
+    if (showBar) {
+      drawProgressBar(1.0f, umbreon::RenderPhase::Done);
+      std::fprintf(stderr, "\n");
+    }
     const auto tRender1 = std::chrono::high_resolution_clock::now();
     std::printf("  render time:  %.3f s\n", frame.renderSeconds);
     if (frame.aoCoarseSeconds > 0.0)

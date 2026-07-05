@@ -14,6 +14,10 @@ namespace umbreon {
 
 // Run the full frame pipeline at opt.supersample and return the final LINEAR HDR
 // framebuffer (top-left pixel origin). opt.width/height are the FINAL output size.
-FrameResult renderFrame(const Scene& scene, const RenderOptions& opt);
+// When `progress` is non-null it receives phase/row updates and is polled for
+// cooperative cancellation at pass boundaries (a cancelled render returns a
+// partial frame with cancelled == true). Null keeps the default path unchanged.
+FrameResult renderFrame(const Scene& scene, const RenderOptions& opt,
+                        RenderProgress* progress = nullptr);
 
 }  // namespace umbreon
