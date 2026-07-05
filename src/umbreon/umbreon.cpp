@@ -1,7 +1,11 @@
 #include "umbreon.hpp"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdio>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "postprocess/image_ops.hpp"
@@ -73,8 +77,16 @@ Scene hideGroups(const Scene& s, const std::vector<uint8_t>& hide) {
 // PNG layers. GI therefore sees each pass's geometry consistently: the
 // background pass gathers without the blend groups occluding, each layer pass
 // with its group fully opaque.
-FrameResult render(const Scene& scene, const RenderOptions& opt) {
-  if (scene.groupBlend.empty()) return renderFrame(scene, opt);
+// Shared body for both public render() overloads. `progress` is null for the
+// zero-overhead 2-arg path; when non-null it is threaded into renderFrame (phase
+// / row progress + cooperative cancel) and marked Done on a successful finish.
+static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
+                              RenderProgress* progress) {
+  if (scene.groupBlend.empty()) {
+    FrameResult f = renderFrame(scene, opt, progress);
+    if (progress && !f.cancelled) progress->markDone();
+    return f;
+  }
 
   float sumA = 0.0f;
   uint16_t maxGroup = 0;
@@ -104,8 +116,17 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   std::vector<float> acc;
   double seconds = 0.0;
   Pt1Timing timing{};
+  // Each blend group renders as its own full-pipeline pass; report progress as
+  // one slot per pass (background + one per group) so fraction() spans them.
+  const std::uint64_t passCount = 1 + scene.groupBlend.size();
+  std::uint64_t passIndex = 0;
+  bool cancelled = false;
   auto addPass = [&](const Scene& ps, float w) {
-    FrameResult f = renderFrame(ps, opt);
+    if (cancelled) return;  // a prior pass was cancelled: stop the chain
+    if (progress) progress->beginPass(passIndex, passCount);
+    ++passIndex;
+    FrameResult f = renderFrame(ps, opt, progress);
+    if (f.cancelled) cancelled = true;
     seconds += f.renderSeconds;
     timing.bvhBuild += f.pt1Timing.bvhBuild;
     timing.primary += f.pt1Timing.primary;
@@ -146,7 +167,96 @@ FrameResult render(const Scene& scene, const RenderOptions& opt) {
   carrier.color = std::move(acc);
   carrier.renderSeconds = seconds;
   carrier.pt1Timing = timing;
+  carrier.cancelled = cancelled;
+  if (progress && !cancelled) progress->markDone();
   return carrier;
+}
+
+// Public entry points -----------------------------------------------------------
+
+FrameResult render(const Scene& scene, const RenderOptions& opt) {
+  return renderImpl(scene, opt, nullptr);
+}
+
+FrameResult render(const Scene& scene, const RenderOptions& opt,
+                   RenderProgress& progress) {
+  return renderImpl(scene, opt, &progress);
+}
+
+// Background render handle (PIMPL) -----------------------------------------------
+// Impl owns the worker thread, the progress channel, and the marshalled result /
+// exception. Its destructor cancels and joins, so RenderTask's move and destroy
+// are trivial (defaulted) and never leak the thread.
+struct RenderTask::Impl {
+  RenderProgress progress;
+  Scene scene;
+  RenderOptions opt;
+  FrameResult result;
+  std::exception_ptr err;
+  std::atomic<bool> done{false};
+  std::mutex m;
+  std::condition_variable cv;
+  std::thread worker;
+
+  ~Impl() {
+    if (worker.joinable()) {
+      progress.requestCancel();
+      worker.join();
+    }
+  }
+};
+
+RenderTask::RenderTask(std::unique_ptr<Impl> impl) noexcept
+    : p_(std::move(impl)) {}
+RenderTask::RenderTask(RenderTask&&) noexcept = default;
+RenderTask& RenderTask::operator=(RenderTask&&) noexcept = default;
+RenderTask::~RenderTask() = default;
+
+float RenderTask::progress() const noexcept { return p_->progress.fraction(); }
+RenderPhase RenderTask::phase() const noexcept { return p_->progress.phase(); }
+bool RenderTask::done() const noexcept {
+  return p_->done.load(std::memory_order_acquire);
+}
+void RenderTask::cancel() noexcept { p_->progress.requestCancel(); }
+
+bool RenderTask::wait_for(std::chrono::milliseconds timeout) const {
+  std::unique_lock<std::mutex> lk(p_->m);
+  return p_->cv.wait_for(lk, timeout, [this] {
+    return p_->done.load(std::memory_order_acquire);
+  });
+}
+
+void RenderTask::wait() const {
+  std::unique_lock<std::mutex> lk(p_->m);
+  p_->cv.wait(lk,
+              [this] { return p_->done.load(std::memory_order_acquire); });
+}
+
+FrameResult RenderTask::get() {
+  if (p_->worker.joinable()) p_->worker.join();
+  if (p_->err) std::rethrow_exception(p_->err);
+  return std::move(p_->result);
+}
+
+RenderTask renderAsync(Scene scene, RenderOptions opt) {
+  auto impl = std::make_unique<RenderTask::Impl>();
+  impl->scene = std::move(scene);
+  impl->opt = std::move(opt);
+  RenderTask::Impl* raw = impl.get();
+  // Start the worker LAST: it reads scene/opt, which must be fully in place.
+  impl->worker = std::thread([raw] {
+    try {
+      raw->result = render(raw->scene, raw->opt, raw->progress);
+    } catch (...) {
+      raw->err = std::current_exception();
+    }
+    {
+      std::lock_guard<std::mutex> lk(raw->m);
+      raw->done.store(true, std::memory_order_release);
+    }
+    raw->cv.notify_all();
+  });
+  return RenderTask(std::move(impl));
 }
 
 }  // namespace umbreon

@@ -112,11 +112,14 @@ endif()
 # --------------------------------------------------------------------------
 if(EMBREE_LINK AND TBB_LINK)
   message(STATUS "Building 'umbreon' (Embree backend)")
+  # renderAsync()/RenderTask own a std::thread; pull in the platform thread lib.
+  find_package(Threads REQUIRED)
   add_library(umbreon STATIC
     src/umbreon/render/embree_renderer.cpp
     src/umbreon/render/scene_build.cpp
     src/umbreon/render/curve_build.cpp
     src/umbreon/render/pipeline.cpp
+    src/umbreon/render/render_progress.cpp
     src/umbreon/experimental/irradiance_cache/denoise_atrous.cpp
     src/umbreon/experimental/pt1/pt1_denoise.cpp
     src/umbreon/postprocess/fog.cpp
@@ -149,7 +152,7 @@ if(EMBREE_LINK AND TBB_LINK)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/umbreon>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/umbreon>)
-  target_link_libraries(umbreon PUBLIC ${EMBREE_LINK} ${TBB_LINK})
+  target_link_libraries(umbreon PUBLIC ${EMBREE_LINK} ${TBB_LINK} Threads::Threads)
   target_compile_options(umbreon PRIVATE ${UMBREON_WARNINGS})
   set_target_properties(umbreon PROPERTIES VERSION ${PROJECT_VERSION})
 
@@ -228,6 +231,7 @@ if(TARGET umbreon)
     src/umbreon/render/edge_types.hpp
     src/umbreon/render/render_options.hpp
     src/umbreon/render/frame_result.hpp
+    src/umbreon/render/render_progress.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/render)
   # NPR edges are public only through their OPTION types (StrokeEdgeOptions /
   # ObjectSpaceEdgeOptions / EdgeStyle in render/render_types.hpp) driven via

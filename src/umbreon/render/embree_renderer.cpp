@@ -847,11 +847,13 @@ void runIrradianceCacheGiPass(const Scene& scene, const RenderOptions& opt,
 
 }  // namespace
 
-FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt) {
+FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
+                                   RenderProgress* progress) {
   // A renderer instance renders one scene; if reused, drop the previous BVH
   // before building the new one (keeps the lifetime invariant simple).
   releaseEmbree();
 
+  if (progress) progress->beginPhase(RenderPhase::Setup);
   RTCDevice device = rtcNewDevice(nullptr);
   if (!device) throw std::runtime_error("rtcNewDevice failed");
   rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
@@ -896,6 +898,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           ? trueUp
           : safeNormalize(Vec3{opt.aoUp[0], opt.aoUp[1], opt.aoUp[2]}, trueUp);
   // Coarse-grid AO pre-pass (--ao-res out); <= 1 = inline per-hit gather.
+  if (progress) progress->beginPhase(RenderPhase::CoarseAo);
   std::unique_ptr<CoarseAoGrid> aoGrid =
       runCoarseAoPrepass(scene, opt, built, m, cb, W, H, res);
 
@@ -932,12 +935,18 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   const bool adaptiveAa = opt.aaMode == 1 && (ssAA > 1 || opt.aaDepth > 1) &&
                           (W % ssAA == 0) && (H % ssAA == 0) && !opt.gi;
 
+  if (progress) progress->beginPhase(RenderPhase::Primary,
+                                     static_cast<std::uint64_t>(H));
   if (!adaptiveAa) {
   // Parallelize over image rows with TBB (CueMol's unified CPU parallel
   // primitive). Each ray is independent and rtcIntersect1 on a committed scene
   // is thread-safe; pixels write to disjoint framebuffer indices.
   tbb::parallel_for(tbb::blocked_range<int>(0, H),
                     [&](const tbb::blocked_range<int>& rows) {
+  // Cooperative cancel: bail before this chunk's rows (any in-flight chunk stops
+  // at its next row). A plain atomic load, so the null/default path is untouched
+  // and the pixel values stay thread-count invariant.
+  if (progress && progress->cancelRequested()) return;
   for (int py = rows.begin(); py != rows.end(); ++py) {
     // Top-left origin: row 0 maps to v = +1 (top), last row to v = -1 (bottom).
     const float v = 1.0f - 2.0f * (static_cast<float>(py) + 0.5f) /
@@ -963,6 +972,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
       storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, pix, pr);
     }
   }
+  if (progress) progress->advance(
+      static_cast<std::uint64_t>(rows.end() - rows.begin()));
   });
   } else {
     // --- adaptive AA driver (three deterministic phases; each parallel loop
@@ -971,6 +982,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     const int ss = ssAA;
     const int Wf = W / ss, Hf = H / ss;
     const int cSub = ss / 2;  // center subpixel of an output-pixel block
+    // Two shading phases (center pass + flagged pass), each Hf output rows.
+    if (progress)
+      progress->beginPhase(RenderPhase::Primary,
+                           static_cast<std::uint64_t>(2) * Hf);
 
     // Shade one sample at plane coordinates (u, v) with RNG seed (sx, sy) --
     // the same camera math as the grid loop, under the given shade context.
@@ -1042,10 +1057,13 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     std::vector<PixelResult> centers(static_cast<std::size_t>(Wf) * Hf);
     tbb::parallel_for(tbb::blocked_range<int>(0, Hf),
                       [&](const tbb::blocked_range<int>& rows) {
+      if (progress && progress->cancelRequested()) return;
       for (int Y = rows.begin(); Y != rows.end(); ++Y)
         for (int X = 0; X < Wf; ++X)
           centers[static_cast<std::size_t>(Y) * Wf + X] =
               shadeSub(sc, X * ss + cSub, Y * ss + cSub);
+      if (progress) progress->advance(
+          static_cast<std::uint64_t>(rows.end() - rows.begin()));
     });
 
     // Phase 2: refinement mask over the output grid -- a pure function of the
@@ -1145,6 +1163,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
     // shading-free probe. Every subpixel is traced exactly once.
     tbb::parallel_for(tbb::blocked_range<int>(0, Hf),
                       [&](const tbb::blocked_range<int>& rows) {
+      if (progress && progress->cancelRequested()) return;
       for (int Y = rows.begin(); Y != rows.end(); ++Y) {
         for (int X = 0; X < Wf; ++X) {
           const std::size_t XY = static_cast<std::size_t>(Y) * Wf + X;
@@ -1191,6 +1210,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
           }
         }
       }
+      if (progress) progress->advance(
+          static_cast<std::uint64_t>(rows.end() - rows.begin()));
     });
   }
 
@@ -1214,14 +1235,21 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // (opt.giIntegrator == 1; experimental/pt1/). Both add giIntensity *
   // giReflectance * E to res.color and fill the same `indirect` AOV, on top of
   // the unchanged direct shading from the pixel loop above.
-  if (opt.gi && (meshPresent(built) || realCsgPresent(built)) &&
-      opt.giIntegrator == 1) {
+  // Progress-tracked at a coarse grain: one GlobalIllum phase slot (the pt1 /
+  // cache internals are not row-instrumented). If cancellation was requested
+  // during the primary loop, skip the GI pass -- the partial frame is returned
+  // below with cancelled == true.
+  if (progress) progress->beginPhase(RenderPhase::GlobalIllum);
+  const bool giCancelled = progress && progress->cancelRequested();
+  if (!giCancelled && opt.gi &&
+      (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator == 1) {
     runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
                  giRefl, giElig, res);
-  } else if (opt.gi && meshPresent(built)) {
+  } else if (!giCancelled && opt.gi && meshPresent(built)) {
     runIrradianceCacheGiPass(scene, opt, built, m, lights, ambLight, aoUpAxis,
                              W, H, giGroup, giGeom, giRefl, res);
   }
+  if (progress) progress->advance(1);
 
 
   // Record the mesh geometry identity so occluded() can map an excluded
@@ -1242,6 +1270,9 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt)
   // occluded(). They are released in the destructor / on the next render().
   device_ = device;
   scene_ = built.scene;
+  // Flag a cooperative cancel so renderFrame skips the post-passes and the
+  // caller sees a partial frame. False (unchanged) whenever no cancel was asked.
+  if (progress) res.cancelled = progress->cancelRequested();
   return res;
 }
 

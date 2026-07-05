@@ -9,6 +9,7 @@
 // consumers may also include a sub-header directly (all three are installed).
 #pragma once
 
-#include "render/edge_types.hpp"      // EdgeClass/EdgeStyle, Stroke/ObjectSpaceEdgeOptions
-#include "render/frame_result.hpp"    // FrameResult, Pt1Timing, Pt1RayCounts
-#include "render/render_options.hpp"  // RenderOptions
+#include "render/edge_types.hpp"       // EdgeClass/EdgeStyle, Stroke/ObjectSpaceEdgeOptions
+#include "render/frame_result.hpp"     // FrameResult, Pt1Timing, Pt1RayCounts
+#include "render/render_options.hpp"   // RenderOptions
+#include "render/render_progress.hpp"  // RenderPhase, RenderProgress

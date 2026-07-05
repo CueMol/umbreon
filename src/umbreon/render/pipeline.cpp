@@ -15,7 +15,8 @@
 
 namespace umbreon {
 
-FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
+FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
+                        RenderProgress* progress) {
   // The two NPR edge methods both draw the silhouette and would double-ink if
   // run together (stroke ribbons over object-space edge cylinders); reject the
   // combination rather than silently picking one.
@@ -76,7 +77,11 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
   }
 
   EmbreeRenderer renderer;
-  FrameResult frame = renderer.render(scene, hi);
+  FrameResult frame = renderer.render(scene, hi, progress);
+  // Setup / CoarseAo / Primary / GlobalIllum phases ran inside render(); if it
+  // was cancelled mid-flight the buffers are partial -- skip the post-passes and
+  // return what we have (frame.cancelled is already set).
+  if (frame.cancelled) return frame;
 
   // OpenGL linear fog at full (supersampled) resolution, before downsampling, so
   // the box-average mirrors antialiased, fogged samples. Uses the plane eye-z
@@ -91,6 +96,13 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
   // BEFORE the box-downsample, so antialiasing works. Gated on the master flag;
   // with edges off this is never entered, keeping the default path byte-identical.
   if (opt.strokeEdges.enable) {
+    if (progress) {
+      progress->beginPhase(RenderPhase::Edges);
+      if (progress->cancelRequested()) {
+        frame.cancelled = true;
+        return frame;
+      }
+    }
     // VERIFICATION (--edges-only): blank the surface color to the scene
     // background BEFORE the stroke pass, so only the edges are drawn. The AOVs
     // captured above (viewZ/objectId/normal/surfAlpha) are untouched, so the
@@ -110,6 +122,16 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt) {
       }
     }
     applyStrokeEdges(frame, scene, opt, OcclusionQuery{}, OcclusionQuery{});
+  }
+
+  // Fog / downsample / denoise / gamma: the finishing pass. One last cancel
+  // check at its boundary; the steps themselves are not row-instrumented.
+  if (progress) {
+    progress->beginPhase(RenderPhase::Postprocess);
+    if (progress->cancelRequested()) {
+      frame.cancelled = true;
+      return frame;
+    }
   }
 
   if (ss > 1) {

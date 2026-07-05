@@ -32,7 +32,12 @@ class EmbreeRenderer {
   EmbreeRenderer(const EmbreeRenderer&) = delete;
   EmbreeRenderer& operator=(const EmbreeRenderer&) = delete;
 
-  FrameResult render(const Scene& scene, const RenderOptions& opt);
+  // Renders one frame. When `progress` is non-null it receives Setup/CoarseAo/
+  // Primary/GlobalIllum phase + per-row updates and is polled for cooperative
+  // cancellation at row and pass boundaries; a cancelled render returns a partial
+  // FrameResult with cancelled == true. Null keeps the default path byte-identical.
+  FrameResult render(const Scene& scene, const RenderOptions& opt,
+                     RenderProgress* progress = nullptr);
 
   // Any-hit occlusion test against the live committed scene along the segment
   // P->Q, trimmed by `eps` (relative + absolute floor) at both ends to skip
