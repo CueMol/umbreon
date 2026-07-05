@@ -139,11 +139,16 @@ if(EMBREE_LINK AND TBB_LINK)
   # 'umbreon::umbreon' target name an installed find_package() would provide.
   add_library(umbreon::umbreon ALIAS umbreon)
   # Public headers live under src/umbreon in-tree and under <prefix>/include/umbreon
-  # when installed; the public API headers #include each other with paths
-  # relative to that root (e.g. "render/render_types.hpp"), so both layouts work.
+  # when installed; the public API headers #include each other with paths relative
+  # to that root (e.g. render_types.hpp does #include "render/edge_types.hpp"). The
+  # in-tree root is src/umbreon (BUILD_INTERFACE) and the installed root is
+  # <prefix>/include/umbreon, so that directory must be on the consumer include
+  # path for those root-relative includes to resolve. Also keep <prefix>/include so
+  # the umbreon-prefixed form (<umbreon/umbreon.hpp>) still works for consumers.
   target_include_directories(umbreon PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/umbreon>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/umbreon>)
   target_link_libraries(umbreon PUBLIC ${EMBREE_LINK} ${TBB_LINK})
   target_compile_options(umbreon PRIVATE ${UMBREON_WARNINGS})
   set_target_properties(umbreon PROPERTIES VERSION ${PROJECT_VERSION})
