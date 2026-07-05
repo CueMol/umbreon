@@ -1008,5 +1008,97 @@ int main() {
     s.check_eq("uniform 0.5 stroke: exact half ink", lum(20, 8), 0.5f);
   }
 
+  // ---- (13) draw stage: DEPTH FOG fades edge lines with distance, keyed on the
+  // per-vertex plane eye-z (vz), mirroring the surface fog post-process. A near-
+  // to-far black stroke over a white frame with RED fog (start=10, end=30):
+  //   * opaque background: the ink COLOR melts toward the fog color -> the near
+  //     end stays black, the far end turns red (opacity untouched);
+  //   * transparent background: the ink OPACITY fades -> the near end stays
+  //     black, the far end drops out entirely (stays white; color NOT baked).
+  // The two modes are told apart at the far end: opaque -> red, transparent ->
+  // white. This locks the "edges fog like the 3D geometry under them" contract.
+  {
+    const int W = 40, H = 12;
+    umbreon::Scene scene;
+    scene.fog.enabled = true;
+    scene.fog.start = 10.0f;
+    scene.fog.end = 30.0f;
+    scene.fog.color = {1.0f, 0.0f, 0.0f};  // red fog
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.thickness = 2;  // black, opacity 1 (defaults)
+
+    // near end vz=10 (f=1, unfogged) -> far end vz=30 (f=0, full fog).
+    std::vector<umbreon::StrokeChainInput> chain(1);
+    chain[0].pts = {{4.5f, 3.5f, 10.0f, 1.0f, true},
+                    {35.5f, 3.5f, 30.0f, 1.0f, true}};
+
+    auto chanAt = [&](const umbreon::FrameResult& fr, int x, int y, int c) {
+      return fr.color[(static_cast<std::size_t>(y) * W + x) * 4 + c];
+    };
+
+    // Opaque background: color melts toward red with depth.
+    {
+      umbreon::FrameResult fr;
+      fr.width = W;
+      fr.height = H;
+      fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);  // white
+      opt.transparentBackground = false;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      s.check("fog opaque: near end stays black (unfogged)",
+              chanAt(fr, 5, 3, 0) < 0.1f && chanAt(fr, 5, 3, 1) < 0.1f);
+      s.check("fog opaque: far end melts toward fog color (red)",
+              chanAt(fr, 34, 3, 0) > 0.9f && chanAt(fr, 34, 3, 1) < 0.1f);
+      s.check("fog opaque: mid-span is a partial mix",
+              chanAt(fr, 20, 3, 0) > 0.3f && chanAt(fr, 20, 3, 0) < 0.7f &&
+                  chanAt(fr, 20, 3, 1) < 0.2f);
+    }
+
+    // Transparent background: coverage fades, ink color NOT baked.
+    {
+      umbreon::FrameResult fr;
+      fr.width = W;
+      fr.height = H;
+      fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);  // white
+      opt.transparentBackground = true;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      s.check("fog transparent: near end stays black (full coverage)",
+              chanAt(fr, 5, 3, 0) < 0.1f && chanAt(fr, 5, 3, 1) < 0.1f);
+      // Far end drops out -> stays the white base (NOT red): the fog color is
+      // never baked, distinguishing this mode from the opaque one above.
+      s.check("fog transparent: far end fades out (stays white, not red)",
+              chanAt(fr, 34, 3, 0) > 0.9f && chanAt(fr, 34, 3, 1) > 0.9f);
+    }
+  }
+
+  // ---- (14) draw stage: with fog OFF the stroke is unaffected (control for the
+  // gated fog path -- the enable flag is what gates it, nothing else changes).
+  {
+    const int W = 40, H = 12;
+    umbreon::FrameResult fr;
+    fr.width = W;
+    fr.height = H;
+    fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    umbreon::Scene scene;  // fog disabled by default
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.thickness = 2;
+    std::vector<umbreon::StrokeChainInput> chain(1);
+    chain[0].pts = {{4.5f, 3.5f, 10.0f, 1.0f, true},
+                    {35.5f, 3.5f, 30.0f, 1.0f, true}};
+    umbreon::renderStrokeChains(fr, scene, opt, chain);
+    auto lum = [&](int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * W + x) * 4];
+    };
+    s.check("fog off: near end fully inked", lum(5, 3) < 0.1f);
+    s.check("fog off: far end fully inked (no depth fade)", lum(34, 3) < 0.1f);
+  }
+
   return s.report();
 }

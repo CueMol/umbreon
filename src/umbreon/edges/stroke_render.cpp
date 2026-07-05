@@ -16,6 +16,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
+#include "postprocess/fog.hpp"
 
 namespace umbreon {
 namespace {
@@ -96,6 +97,12 @@ struct StyledStrip {
   float color[3] = {0.0f, 0.0f, 0.0f};
   float opacity = 1.0f;
   std::vector<float> alphas;
+  // Per-backbone-vertex ink color (one entry per strip pair) when the color
+  // varies along the run -- the depth-fog gradient path (ink melts toward the
+  // fog color with distance). EMPTY means the constant `color` applies to the
+  // whole strip (the exact legacy path; no fog, or fog with a transparent
+  // background where only the alpha fades).
+  std::vector<std::array<float, 3>> colors;
   int precedence = 0;     // nature tie-break key (lower paints first)
   float depthKey = 0.0f;  // min view-z over the run (FARTHER = larger); primary sort
 };
@@ -274,21 +281,78 @@ void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
   }
 }
 
+// As fillTriangleAlpha, but with a PER-VERTEX color (colA at `a`, colB at `b`,
+// colC at `c`) interpolated barycentrically per pixel as well -- the depth-fog
+// gradient path for a stroke whose ink color varies along the backbone (the ink
+// melting toward the fog color with distance). The constant-color strips keep
+// the fillTriangle / fillTriangleAlpha paths above (bit-identical legacy output).
+void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
+                            int rowEnd, const Vec2& a, const Vec2& b,
+                            const Vec2& c, const float colA[3],
+                            const float colB[3], const float colC[3], float aA,
+                            float aB, float aC) {
+  if (notValid(a) || notValid(b) || notValid(c)) return;
+  float minXf = std::min({a.x, b.x, c.x});
+  float maxXf = std::max({a.x, b.x, c.x});
+  float minYf = std::min({a.y, b.y, c.y});
+  float maxYf = std::max({a.y, b.y, c.y});
+  int minX = std::max(0, static_cast<int>(std::floor(minXf)));
+  int maxX = std::min(W - 1, static_cast<int>(std::ceil(maxXf)));
+  int minY = std::max(rowBegin, static_cast<int>(std::floor(minYf)));
+  int maxY = std::min(rowEnd - 1, static_cast<int>(std::ceil(maxYf)));
+  if (minX > maxX || minY > maxY) return;
+
+  const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  if (std::fabs(area) < 1.0e-7f) return;
+  const float inv = 1.0f / area;
+
+  for (int y = minY; y <= maxY; ++y) {
+    const float py = static_cast<float>(y);
+    for (int x = minX; x <= maxX; ++x) {
+      const float px = static_cast<float>(x);
+      const float w0 =
+          ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) * inv;
+      const float w1 =
+          ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
+      const float w2 = 1.0f - w0 - w1;
+      if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
+      const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
+      const float col[3] = {w0 * colA[0] + w1 * colB[0] + w2 * colC[0],
+                            w0 * colA[1] + w1 * colB[1] + w2 * colC[1],
+                            w0 * colA[2] + w1 * colB[2] + w2 * colC[2]};
+      compositeOver(&color[idx], col, w0 * aA + w1 * aB + w2 * aC);
+    }
+  }
+}
+
 // Rasterize one ribbon strip (2*N border vertices, pairs per backbone vertex) as
 // a triangle strip, restricted to rows [rowBegin,rowEnd). Two triangles per quad
 // between consecutive backbone vertices. `alphas`, when non-null, holds one
 // opacity per backbone vertex (strip pair) and switches the quad to the
 // alpha-interpolating fill; null keeps the constant-opacity legacy fill.
+// `colors`, when non-null, holds one ink color per backbone vertex and switches
+// the quad to the color+alpha-interpolating fill (the depth-fog gradient); it
+// composes with `alphas` (constant `opacity` is used where `alphas` is null).
 void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
                     const Strip& strip, const float col[3], float opacity,
-                    const float* alphas = nullptr) {
+                    const float* alphas = nullptr,
+                    const std::array<float, 3>* colors = nullptr) {
   const std::size_t pairs = strip.size() / 2;
   for (std::size_t k = 0; k + 1 < pairs; ++k) {
     const Vec2& l0 = strip[2 * k];
     const Vec2& r0 = strip[2 * k + 1];
     const Vec2& l1 = strip[2 * (k + 1)];
     const Vec2& r1 = strip[2 * (k + 1) + 1];
-    if (alphas) {
+    if (colors) {
+      const float* c0 = colors[k].data();
+      const float* c1 = colors[k + 1].data();
+      const float a0 = alphas ? alphas[k] : opacity;
+      const float a1 = alphas ? alphas[k + 1] : opacity;
+      fillTriangleColorAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, c0, c0, c1,
+                             a0, a0, a1);
+      fillTriangleColorAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, c0, c1, c1,
+                             a0, a1, a1);
+    } else if (alphas) {
       const float a0 = alphas[k], a1 = alphas[k + 1];
       fillTriangleAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, col, a0, a0,
                         a1);
@@ -382,6 +446,41 @@ struct ConstantColorShader : StrokeShader {
       v.attr.color[1] = color[1];
       v.attr.color[2] = color[2];
       v.attr.alpha = alpha;
+    }
+    return 0;
+  }
+};
+
+// Depth fog as a per-vertex stroke shader: fade each vertex by the SAME OpenGL
+// linear fog the surface post-process uses (postprocess/fog.hpp), keyed on the
+// vertex plane eye-z `vz` (the crack tracer already carried it end-to-end from
+// the owner pixel's viewZ AOV -- the same depth fog reads for 3D surfaces). This
+// is what makes edge lines recede into the fog like the geometry under them:
+// applyFog runs on frame.color BEFORE the stroke pass, so without this shader the
+// ink would be painted at full strength over the already-fogged surface. Mirrors
+// applyFog's two background modes EXACTLY --
+//   * opaque background: mix the ink color toward fog.color by (1 - f); opacity
+//     unchanged (the color melts into the fog-colored background).
+//   * transparent background: fade the ink opacity by f; color unchanged (the
+//     coverage drops so the straight-alpha output can be re-composited later).
+// Runs after the color shader (which stamps the resolved ink color/alpha) so it
+// modulates the final attribute. f=1 near (unfogged), f=0 far (full fog).
+struct FogShader : StrokeShader {
+  Fog fog;
+  bool transparentBackground;
+  FogShader(const Fog& f, bool transparent)
+      : fog(f), transparentBackground(transparent) {}
+  int shade(Stroke& s) const override {
+    for (StrokeVertex& v : s.verts) {
+      const float f = fogFactor(fog, v.vz);
+      if (transparentBackground) {
+        v.attr.alpha *= f;  // fade coverage; keep ink color
+      } else {
+        const float g = 1.0f - f;
+        v.attr.color[0] = fog.color.x * g + v.attr.color[0] * f;
+        v.attr.color[1] = fog.color.y * g + v.attr.color[1] * f;
+        v.attr.color[2] = fog.color.z * g + v.attr.color[2] * f;
+      }
     }
     return 0;
   }
@@ -623,6 +722,7 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
   const std::size_t minRun = 2;
   std::vector<Vec2> pos;
   std::vector<float> lw, rw, av;
+  std::vector<std::array<float, 3>> cv;  // per-vertex ink color (fog gradient)
   float col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
   float depthMin = 0.0f;  // min view-z over the current run
   auto flush = [&]() {
@@ -644,6 +744,16 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
       } else {
         ss.alphas = av;  // per-vertex gradient path
       }
+      // Per-vertex ink color varies only when the depth-fog shader ran on an
+      // opaque background; a uniform run keeps the constant `color` (byte-
+      // identical legacy path, and the case where fog fades alpha not color).
+      bool colUniform = true;
+      for (const std::array<float, 3>& c : cv)
+        if (c != cv.front()) {
+          colUniform = false;
+          break;
+        }
+      if (!colUniform) ss.colors = cv;  // per-vertex fog color gradient
       ss.precedence = precedence;
       ss.depthKey = depthMin;
       out.push_back(std::move(ss));
@@ -652,6 +762,7 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
     lw.clear();
     rw.clear();
     av.clear();
+    cv.clear();
   };
   for (const StrokeVertex& v : s.verts) {
     if (!v.visible) {
@@ -671,6 +782,7 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
     lw.push_back(v.attr.leftThick);
     rw.push_back(v.attr.rightThick);
     av.push_back(v.attr.alpha * v.surfA);
+    cv.push_back({v.attr.color[0], v.attr.color[1], v.attr.color[2]});
   }
   flush();
 }
@@ -781,6 +893,15 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
     if (se.taper)  // demo f(u) shader: taper width toward stroke ends
       shaders.push_back(std::make_unique<TaperShader>(0.5f, 0.15f));
+    // Depth fog LAST (after the color shader stamps the ink color/alpha), so
+    // distant edge lines recede into the fog exactly like the 3D surface under
+    // them (the surface was fogged in the pipeline before this pass). Gated on
+    // fog.enabled so the no-fog render stays byte-identical; skipped in the
+    // --edges-only verification mode, which forces every line fully opaque to
+    // keep faint/distant edges visible for annotation.
+    if (scene.fog.enabled && !se.edgesOnly)
+      shaders.push_back(std::make_unique<FogShader>(
+          scene.fog, opt.transparentBackground));
     for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
 
     // Build the variable-width ribbon strips (one per maximal visible run).
@@ -813,7 +934,8 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
         for (const StyledStrip& ss : strips)
           rasterizeStrip(frame.color, W, rb, re, ss.strip, ss.color,
                          ss.opacity,
-                         ss.alphas.empty() ? nullptr : ss.alphas.data());
+                         ss.alphas.empty() ? nullptr : ss.alphas.data(),
+                         ss.colors.empty() ? nullptr : ss.colors.data());
       });
 }
 
