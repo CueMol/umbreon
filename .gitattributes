@@ -1,3 +1,4 @@
 data/**/*.inc filter=lfs diff=lfs merge=lfs -text
 data/**/*.png filter=lfs diff=lfs merge=lfs -text
 data/**/*.qsc filter=lfs diff=lfs merge=lfs -text
+docs/images/*.png filter=lfs diff=lfs merge=lfs -text

@@ -2,7 +2,9 @@
 
 `umbreon_cli` で Ambient Occlusion・ソフト影を使い、きれいな静止画を出すための設定指針。
 CLI の全オプションは `umbreon_cli --help`、ライブラリ API は
-[api/libumbreon.md](api/libumbreon.md) を参照。
+[api/libumbreon.md](api/libumbreon.md) を参照。設定を **client UI 向けの品質プリセット
+（AO/GI の low/medium/high 等）** にグループ分けした一覧は
+[quality_presets.md](quality_presets.md) を参照。
 
 ## 推奨「高品質」設定
 
