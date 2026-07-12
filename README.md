@@ -42,7 +42,8 @@ links), **`src/bench/`** is the CLI harness. The dependency is one-way —
 - **`umbreon_cli`** (executable, `src/bench/main.cpp`) — parses a `.pov` scene
   (which may `#include` `.inc` geometry), renders it through Umbreon and writes
   the image; also offers `--compare` / `--convert`. Quality-tuning guide:
-  [docs/umbreon_cli.md](docs/umbreon_cli.md).
+  [docs/umbreon_cli.md](docs/umbreon_cli.md). Preset grouping for client UIs
+  (AO/GI quality tiers): [docs/quality_presets.md](docs/quality_presets.md).
 - **`examples/`** — a standalone `find_package(umbreon)` consumer
   (`minimal_render.cpp`) demonstrating the library API end to end.
 
