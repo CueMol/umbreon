@@ -62,9 +62,11 @@ int main() {
 
   const umbreon::FrameResult base = makeNoisyFrame(24, 24, 4);
 
-  // The spawn failure path (prints one warning) must fall back to a-trous.
+  // The spawn failure path (prints one warning) must fall back to a-trous and
+  // report false (worker did not run).
   umbreon::FrameResult viaOidn = base;
-  umbreon::denoiseOidn(viaOidn, opt);
+  const bool workerRan = umbreon::denoiseOidn(viaOidn, opt);
+  s.check("denoiseOidn returns false on fallback", !workerRan);
 
   umbreon::FrameResult viaAtrous = base;
   umbreon::denoiseAtrous(viaAtrous, opt);

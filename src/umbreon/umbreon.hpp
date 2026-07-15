@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <memory>
+#include <string>
 
 #include "render/render_types.hpp"
 #include "scene.hpp"
@@ -78,5 +79,34 @@ class RenderTask {
 // immediately. The scene and options are taken by value (move to avoid the copy),
 // so the caller need not keep them alive.
 RenderTask renderAsync(Scene scene, RenderOptions opt);
+
+// --- Out-of-process OIDN denoiser control -------------------------------------
+// The OIDN denoiser (RenderOptions::denoiser == 2, or the pt1 integrator's
+// RenderOptions::pt1Denoise) runs in a separate umbreon_oidn_worker process
+// that libumbreon spawns and reuses; these functions manage that persistent
+// worker explicitly. Both are thread-safe and serialized with any denoise in
+// flight, and are safe to call even in builds without the worker.
+
+// Probe the out-of-process OIDN denoiser: resolve the worker executable, spawn
+// it and complete the handshake. On success the worker stays warm, so the
+// first render's denoise pays no startup cost, and true is returned. workerPath
+// has the same meaning as RenderOptions::oidnWorkerPath -- when non-empty it is
+// the ONLY candidate; when empty the search order is the UMBREON_OIDN_WORKER
+// environment variable, then next to the host executable, then PATH. Returns
+// false when the worker cannot be started, and ALWAYS false in a build without
+// the IPC client (UMBREON_WITH_OIDN=OFF). A failed probe latches the denoiser
+// disabled for that path; the latch clears when a different path is tried or
+// after shutdownOidnDenoiser(). Use it to pre-flight the UI ("GI denoise
+// available?") and to warm the worker before a render.
+bool oidnDenoiserAvailable(const std::string& workerPath = std::string());
+
+// Gracefully stop the persistent OIDN worker (close its stdin; escalate to a
+// kill only if it does not exit within ~2s) and release the shared-memory
+// region. The next denoise or oidnDenoiserAvailable() call spawns a fresh
+// worker (the disable latch, if any, is cleared). Use it to free the worker's
+// memory between rendering sessions or to clear a disabled state after fixing
+// the worker path. No-op when no worker is running or the build has no IPC
+// client.
+void shutdownOidnDenoiser();
 
 }  // namespace umbreon

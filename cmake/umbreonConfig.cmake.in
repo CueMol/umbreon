@@ -9,4 +9,11 @@ find_dependency(TBB)
 
 include("${CMAKE_CURRENT_LIST_DIR}/umbreonTargets.cmake")
 
+# umbreonTargets.cmake may additionally define umbreon::umbreon_oidn_worker
+# (IMPORTED executable) -- present ONLY when the providing umbreon build had
+# UMBREON_WITH_OIDN enabled. It is not a package component; consumers test
+#   if(TARGET umbreon::umbreon_oidn_worker)
+# and can stage it into their own layout, e.g.
+#   install(PROGRAMS $<TARGET_FILE:umbreon::umbreon_oidn_worker> DESTINATION bin)
+
 check_required_components(umbreon)

@@ -29,11 +29,12 @@ namespace umbreon {
 // pt1Stats timing parity note: the "device" figure is the worker's one-time
 // OIDN device init, so it is real on the first denoise of the process and
 // 0.000 afterwards (the persistent worker reuses the device).
-void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
+bool denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   const int W = frame.width;
   const int H = frame.height;
   const std::size_t N = static_cast<std::size_t>(W) * H;
-  if (W <= 0 || H <= 0 || frame.color.size() < N * 4) return;
+  // Degenerate frame: nothing to denoise (unreachable via render(); defensive).
+  if (W <= 0 || H <= 0 || frame.color.size() < N * 4) return false;
 
   const bool haveNormal = frame.normal.size() == N * 3;
   const bool haveAlbedo = frame.albedo.size() == N * 3;
@@ -79,6 +80,7 @@ void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
                  "a-trous denoiser\n");
     denoiseAtrous(frame, opt);
   }
+  return ok;
 }
 
 }  // namespace umbreon

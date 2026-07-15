@@ -36,6 +36,8 @@ void denoiseAtrous(FrameResult& frame, const RenderOptions& opt);
 // guides. Background pixels (no geometry) keep their original color. When the
 // worker is unavailable or fails, falls back to denoiseAtrous with a stderr
 // warning (see RenderOptions::oidnWorkerPath for how the worker is located).
-void denoiseOidn(FrameResult& frame, const RenderOptions& opt);
+// Returns true when the worker processed the frame, false when it fell back to
+// a-trous (callers use this to fill FrameResult::denoiserUsed = 2 vs 1).
+bool denoiseOidn(FrameResult& frame, const RenderOptions& opt);
 
 }  // namespace umbreon

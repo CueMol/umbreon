@@ -561,8 +561,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
 
       if (opt.pt1Denoise) {
         const auto td0 = std::chrono::high_resolution_clock::now();
-        detail::denoisePt1E(hw, hh, Eh, g.albedo.data(), g.normal.data(),
-                            g.position.data(), opt);
+        res.pt1DenoiserUsed =
+            detail::denoisePt1E(hw, hh, Eh, g.albedo.data(), g.normal.data(),
+                                g.position.data(), opt);
         const auto td1 = std::chrono::high_resolution_clock::now();
         res.pt1Timing.denoise =
             std::chrono::duration<double>(td1 - td0).count();
@@ -651,8 +652,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       // albedo are noise-free): OIDN on E with the reflectance/normal guides.
       if (opt.pt1Denoise) {
         const auto td0 = std::chrono::high_resolution_clock::now();
-        detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
-                            res.position.data(), opt);
+        res.pt1DenoiserUsed =
+            detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
+                                res.position.data(), opt);
         const auto td1 = std::chrono::high_resolution_clock::now();
         res.pt1Timing.denoise =
             std::chrono::duration<double>(td1 - td0).count();

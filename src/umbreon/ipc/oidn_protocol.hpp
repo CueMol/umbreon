@@ -64,7 +64,7 @@ static_assert(sizeof(HelloMsg) == 24, "HelloMsg layout is pinned");
 
 // One denoise job. All buffers are float triplets (RGB / xyz), tightly packed
 // N = width*height pixels, living at the given byte offsets inside the shared
-// memory region named shmName. outputOffset == colorOffset requests in-place
+// region identified by regionId. outputOffset == colorOffset requests in-place
 // denoising (supported by OIDN and used by the client to halve the region).
 struct DenoiseRequest {
   std::uint32_t magic;    // kOidnMagic
@@ -78,9 +78,13 @@ struct DenoiseRequest {
   std::uint64_t albedoOffset;  // guide, N*3 floats, valid iff kFlagHasAlbedo
   std::uint64_t normalOffset;  // guide, N*3 floats, valid iff kFlagHasNormal
   std::uint64_t outputOffset;  // denoised color, N*3 floats
-  char shmName[64];            // NUL-terminated shared-memory region name
+  // Region identifier: on POSIX the absolute path of the memory-mapped file
+  // (client-owned temp file, see ipc/shm_region.hpp); on Windows the name of
+  // the windows_shared_memory kernel object. NUL-terminated. 192 bytes fit a
+  // long temp-dir path plus the "um-<pid>-<counter>" basename.
+  char regionId[192];
 };
-static_assert(sizeof(DenoiseRequest) == 128, "DenoiseRequest layout is pinned");
+static_assert(sizeof(DenoiseRequest) == 256, "DenoiseRequest layout is pinned");
 
 // Reply to one DenoiseRequest. The timing fields feed the client's pt1Stats
 // diagnostic line; tDevice is the one-time OIDN device init cost, reported on
@@ -99,14 +103,13 @@ struct DenoiseResponse {
 static_assert(sizeof(DenoiseResponse) == 256,
               "DenoiseResponse layout is pinned");
 
-// Shared-memory region name: "um-<pid>-<counter>". Must stay short: macOS
-// limits POSIX shm names to 31 characters (including the implementation's
-// leading '/'). pid (truncated to 32 bits, real pids fit) plus a per-process
-// counter gives at most 24 characters and avoids stale-name collisions across
-// client restarts.
-inline void makeShmName(char (&out)[64], std::uint64_t pid,
-                        std::uint32_t counter) {
-  std::snprintf(out, sizeof(out), "um-%u-%u",
+// Unique basename for a region: "um-<pid>-<counter>". The client prepends the
+// temp directory on POSIX (the file path) and uses it verbatim as the kernel
+// object name on Windows. pid (truncated to 32 bits; real pids fit) plus a
+// per-process counter avoids stale-name collisions across client restarts.
+inline void makeRegionBasename(char* out, std::size_t cap, std::uint64_t pid,
+                               std::uint32_t counter) {
+  std::snprintf(out, cap, "um-%u-%u",
                 static_cast<unsigned>(pid & 0xffffffffu), counter);
 }
 

@@ -100,6 +100,18 @@ struct FrameResult {
   // primary are recorded on every render since the timers are free).
   Pt1Timing pt1Timing;
   Pt1RayCounts pt1Rays;
+  // Which denoiser actually ran (DenoiserBackend as int, matching
+  // RenderOptions::denoiser: 0=None, 1=AtrousBilateral, 2=OIDN). denoiserUsed
+  // is the final-color denoise stage: 2 only when the out-of-process OIDN
+  // worker really processed the frame; 1 covers both an explicit a-trous
+  // request AND every OIDN fallback (client not built, worker missing / dead /
+  // error); 0 when no final-color denoise ran. pt1DenoiserUsed reports the pt1
+  // integrator's internal indirect-irradiance (E) denoise (RenderOptions::
+  // pt1Denoise) the same way -- this is the field CueMol's GI path cares about,
+  // since giDenoise maps to pt1Denoise. Group-alpha multipass renders report
+  // the final (carrier) pass. Additive fields: pixel output is unaffected.
+  int denoiserUsed = 0;
+  int pt1DenoiserUsed = 0;
 };
 
 }  // namespace umbreon

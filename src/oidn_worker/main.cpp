@@ -100,7 +100,7 @@ void handleDenoise(const DenoiseRequest& req, oidn::DeviceRef& device,
 
   ShmRegion shm;
   try {
-    shm = ShmRegion::open(req.shmName);
+    shm = ShmRegion::open(req.regionId);
   } catch (const std::exception& e) {
     resp.status = kStatusShmOpenFailed;
     setErrMsg(resp, e.what());
@@ -207,7 +207,7 @@ int main() {
       writeExact(&resp, sizeof(resp));
       return 1;
     }
-    req.shmName[sizeof(req.shmName) - 1] = '\0';
+    req.regionId[sizeof(req.regionId) - 1] = '\0';
 
     try {
       handleDenoise(req, device, deviceErrPtr, resp);

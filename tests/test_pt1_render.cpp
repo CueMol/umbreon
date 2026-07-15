@@ -327,5 +327,25 @@ int main() {
     s.check("gatherDiv=4: finite color", finite);
   }
 
+  // --- pt1DenoiserUsed reporting (construction-independent of the OIDN build).
+  // pt1Denoise off => the E-buffer denoise stage never runs (reports 0). With
+  // pt1Denoise on and a bogus explicit worker path, the OIDN attempt fails and
+  // falls back to a-trous (reports 1); in a build without the IPC client the
+  // #else branch also runs a-trous and reports 1. Either way the value is a
+  // deterministic 1, so this test needs no worker binary.
+  {
+    umbreon::RenderOptions o = makeGiOptions(1, 1.0f);
+    o.pt1Denoise = false;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("pt1DenoiserUsed == 0 when pt1Denoise off", f.pt1DenoiserUsed == 0);
+  }
+  {
+    umbreon::RenderOptions o = makeGiOptions(1, 1.0f);
+    o.pt1Denoise = true;
+    o.oidnWorkerPath = "/nonexistent/umbreon_oidn_worker_bogus";
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("pt1DenoiserUsed == 1 (a-trous fallback)", f.pt1DenoiserUsed == 1);
+  }
+
   return s.report();
 }

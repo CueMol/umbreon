@@ -76,6 +76,32 @@ bool readExact(bp2::popen& p, void* dst, std::size_t n) {
 
 std::uint64_t align64(std::uint64_t x) { return (x + 63u) & ~std::uint64_t(63); }
 
+#ifndef _WIN32
+// Cache the temp directory once: temp_directory_path() does a getenv + stat on
+// every call and its result is stable for the process lifetime.
+const std::string& tempDirCached() {
+  static const std::string dir = [] {
+    std::error_code ec;
+    const std::filesystem::path p = std::filesystem::temp_directory_path(ec);
+    return (ec ? std::filesystem::path("/tmp") : p).string();
+  }();
+  return dir;
+}
+#endif
+
+// Region identifier: "<tmpdir>/um-<pid>-<counter>" on POSIX (a mapped-file
+// path), "um-<pid>-<counter>" on Windows (a kernel object name).
+std::string makeRegionId(std::uint32_t counter) {
+  char base[64];
+  makeRegionBasename(base, sizeof(base),
+                     static_cast<std::uint64_t>(bp2::current_pid()), counter);
+#ifdef _WIN32
+  return std::string(base);
+#else
+  return tempDirCached() + "/" + base;
+#endif
+}
+
 // Resolve the worker executable. An explicit path is authoritative: it is
 // returned as-is (existing or not) so a misconfiguration fails loudly instead
 // of silently running some other worker found on PATH.
@@ -108,7 +134,6 @@ struct OidnClient::Impl {
   WorkerState state = WorkerState::Idle;
   int deathsSinceSuccess = 0;
   std::string disabledPath;  // explicitPath in effect when disabled
-  bool firstDenoise = true;
 
   ShmRegion shm;
   std::uint32_t shmCounter = 0;
@@ -116,26 +141,27 @@ struct OidnClient::Impl {
   std::uint64_t albedoOff = 0;
   std::uint64_t normalOff = 0;
 
-  ~Impl() {
-    if (state == WorkerState::Running && proc) {
-      // Closing stdin asks the worker to exit on its own; escalate to a kill
-      // only if it does not oblige. No logging here: this runs during static
-      // teardown.
-      boost::system::error_code ec;
-      proc->get_stdin().close(ec);
-      bool exited = false;
-      proc->async_wait([&exited](boost::system::error_code, int) {
-        exited = true;
-      });
+  ~Impl() { stopWorkerGracefully(); }
+
+  // Close the worker's stdin (it exits on EOF), wait briefly, then escalate to
+  // a kill if it has not exited. Safe to call with no worker running; used by
+  // both the destructor and shutdown(). No logging (may run during static
+  // teardown).
+  void stopWorkerGracefully() {
+    if (!proc) return;
+    boost::system::error_code ec;
+    proc->get_stdin().close(ec);
+    bool exited = false;
+    proc->async_wait(
+        [&exited](boost::system::error_code, int) { exited = true; });
+    ctx.restart();
+    ctx.run_for(std::chrono::seconds(2));
+    if (!exited) {
+      proc->terminate(ec);
       ctx.restart();
-      ctx.run_for(std::chrono::seconds(2));
-      if (!exited) {
-        proc->terminate(ec);
-        ctx.restart();
-        ctx.run_for(std::chrono::seconds(1));
-      }
-      proc.reset();
+      ctx.run_for(std::chrono::seconds(1));
     }
+    proc.reset();
   }
 
   void disable(const std::string& explicitPath) {
@@ -258,10 +284,10 @@ struct OidnClient::Impl {
     return spawnWorker(explicitPath);
   }
 
-  // Lays out (and if needed (re)creates) the shared-memory region for a
-  // width*height frame. Regions are never resized (macOS shm objects cannot
-  // be re-truncated): when the frame outgrows the region, a fresh one is
-  // created under a bumped-counter name and the old one is removed.
+  // Lays out (and if needed (re)creates) the shared region for a width*height
+  // frame. Regions are never resized: when the frame outgrows the region, a
+  // fresh one is created under a bumped-counter identifier and the old one is
+  // removed.
   bool ensureShm(int w, int h, bool hasAlbedo, bool hasNormal) {
     const std::uint64_t bufBytes =
         std::uint64_t(w) * std::uint64_t(h) * 3u * sizeof(float);
@@ -279,11 +305,9 @@ struct OidnClient::Impl {
     }
     if (shm.valid() && shm.size() >= end) return true;
     shm.reset();
-    char name[64];
-    makeShmName(name, static_cast<std::uint64_t>(bp2::current_pid()),
-                ++shmCounter);
     try {
-      shm = ShmRegion::create(name, static_cast<std::size_t>(end));
+      shm = ShmRegion::create(makeRegionId(++shmCounter),
+                              static_cast<std::size_t>(end));
     } catch (const std::exception& e) {
       std::fprintf(stderr,
                    "warning: failed to create the OIDN shared-memory region "
@@ -347,8 +371,8 @@ bool OidnClient::Session::run(bool cleanAux, bool stats) {
   req.albedoOffset = im->albedoOff;
   req.normalOffset = im->normalOff;
   req.outputOffset = im->colorOff;  // in-place (OIDN-supported)
-  std::snprintf(req.shmName, sizeof(req.shmName), "%s",
-                im->shm.name().c_str());
+  std::snprintf(req.regionId, sizeof(req.regionId), "%s",
+                im->shm.id().c_str());
 
   if (!writeExact(*im->proc, &req, sizeof(req))) {
     im->onWorkerDeath();
@@ -420,6 +444,20 @@ OidnClient::Session OidnClient::begin(int width, int height, bool hasAlbedo,
     st->lock.unlock();  // invalid session: nothing left to protect
   }
   return Session(std::move(st));
+}
+
+bool OidnClient::probe(const std::string& explicitPath) {
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  return impl_->ensureWorker(explicitPath);
+}
+
+void OidnClient::shutdown() {
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  impl_->stopWorkerGracefully();
+  impl_->shm.reset();  // release the mapping; ensureShm recreates on demand
+  impl_->state = Impl::WorkerState::Idle;  // respawnable, not Disabled
+  impl_->deathsSinceSuccess = 0;
+  impl_->disabledPath.clear();
 }
 
 }  // namespace ipc

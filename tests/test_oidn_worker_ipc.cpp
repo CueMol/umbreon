@@ -12,7 +12,9 @@
 #include <vector>
 
 #include "experimental/irradiance_cache/denoise.hpp"
+#include "render_test_util.hpp"
 #include "test_util.hpp"
+#include "umbreon.hpp"
 
 namespace {
 
@@ -149,6 +151,68 @@ int main(int argc, char** argv) {
     s.check("smaller frame (shm reuse): finite and background untouched",
             allFinite(g.color) && bgUntouched(g, small, 4));
     s.check("smaller frame: worker ran (output changed)", g.color != small.color);
+  }
+
+  // --- public control API: shutdown / probe / respawn. Order matters: f1 above
+  // is the deterministic reference; each scenario resets state explicitly.
+  {
+    umbreon::FrameResult g = base;
+    s.check("denoiseOidn reports the worker ran",
+            umbreon::denoiseOidn(g, opt) == true);
+  }
+
+  // shutdown() then a denoise must respawn a fresh worker and reproduce f1.
+  umbreon::shutdownOidnDenoiser();
+  {
+    umbreon::FrameResult g = base;
+    umbreon::denoiseOidn(g, opt);
+    s.check("denoise after shutdown respawns (== first run)",
+            g.color == f1.color);
+  }
+
+  // A bogus explicit path disables the client; a repeat probe stays quietly
+  // false (no respawn storm).
+  umbreon::shutdownOidnDenoiser();
+  s.check("probe(bogus) == false",
+          !umbreon::oidnDenoiserAvailable("/nonexistent/umbreon_worker_bogus"));
+  s.check("probe(bogus) again stays false (quiet disabled latch)",
+          !umbreon::oidnDenoiserAvailable("/nonexistent/umbreon_worker_bogus"));
+
+  // A DIFFERENT (real) path clears the disabled latch and warms the worker.
+  s.check("probe(real) re-enables after disabled(bogus)",
+          umbreon::oidnDenoiserAvailable(argv[1]));
+  {
+    umbreon::FrameResult g = base;
+    umbreon::denoiseOidn(g, opt);
+    s.check("denoise after probe uses the warm worker (== first run)",
+            g.color == f1.color);
+  }
+
+  // probe() must itself respawn after a shutdown.
+  umbreon::shutdownOidnDenoiser();
+  s.check("probe respawns after shutdown", umbreon::oidnDenoiserAvailable(argv[1]));
+
+  // --- render() facade reporting: with the worker available, a GI+pt1 render
+  // with final-color OIDN reports 2 for both denoise stages.
+  {
+    umbreon::Scene sc;
+    sc.mesh = makeQuad({0.7f, 0.7f, 0.7f, 1.0f});
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0.0f, 0.0f, 0.0f};
+    umbreon::RenderOptions o;
+    o.width = 32;
+    o.height = 24;
+    o.gi = true;
+    o.giIntegrator = 1;  // pt1
+    o.pt1Spp = 4;
+    o.pt1Denoise = true;       // pt1 E-buffer denoise via the worker
+    o.denoiser = 2;            // final-color OIDN via the worker
+    o.oidnWorkerPath = argv[1];
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("render: denoiserUsed == 2 (OIDN worker)", f.denoiserUsed == 2);
+    s.check("render: pt1DenoiserUsed == 2 (OIDN worker)",
+            f.pt1DenoiserUsed == 2);
   }
 
   return s.report();

@@ -71,6 +71,19 @@ class OidnClient {
   Session begin(int width, int height, bool hasAlbedo, bool hasNormal,
                 const std::string& explicitPath);
 
+  // Ensure a worker is running (resolve + spawn + handshake) WITHOUT running a
+  // denoise; on success the worker stays warm. Same discovery + failure matrix
+  // as begin() (a failed explicitPath latches Disabled for that path). Backs
+  // the public oidnDenoiserAvailable().
+  bool probe(const std::string& explicitPath);
+
+  // Gracefully stop the worker (close stdin -> bounded wait -> terminate) and
+  // release the shared region. Resets the state machine to Idle and clears the
+  // death/disable latches so the next begin()/probe() spawns afresh (the shm
+  // counter is NOT reset, keeping region identifiers unique). Backs the public
+  // shutdownOidnDenoiser().
+  void shutdown();
+
   OidnClient(const OidnClient&) = delete;
   OidnClient& operator=(const OidnClient&) = delete;
 

@@ -10,6 +10,9 @@
 
 #include "postprocess/image_ops.hpp"
 #include "render/pipeline.hpp"
+#ifdef UMBREON_HAVE_OIDN
+#include "ipc/oidn_client.hpp"
+#endif
 
 namespace umbreon {
 namespace {
@@ -258,5 +261,20 @@ RenderTask renderAsync(Scene scene, RenderOptions opt) {
   });
   return RenderTask(std::move(impl));
 }
+
+// Out-of-process OIDN denoiser control. Defined HERE (a single library TU) so
+// UMBREON_HAVE_OIDN -- a target-private macro set for every umbreon TU when the
+// IPC client is compiled in -- is evaluated exactly once; an inline header
+// definition would give library and consumer TUs different bodies (ODR
+// violation). Same rule as the denoise glue in experimental/*/pt1_denoise.cpp.
+#ifdef UMBREON_HAVE_OIDN
+bool oidnDenoiserAvailable(const std::string& workerPath) {
+  return ipc::OidnClient::instance().probe(workerPath);
+}
+void shutdownOidnDenoiser() { ipc::OidnClient::instance().shutdown(); }
+#else
+bool oidnDenoiserAvailable(const std::string&) { return false; }
+void shutdownOidnDenoiser() {}
+#endif
 
 }  // namespace umbreon

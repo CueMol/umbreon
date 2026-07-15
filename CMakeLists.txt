@@ -226,7 +226,15 @@ if(UMBREON_WITH_OIDN AND Boost_FOUND AND OpenImageDenoise_FOUND)
   if(UNIX AND NOT APPLE)
     target_link_libraries(umbreon_oidn_worker PRIVATE rt)
   endif()
-  install(TARGETS umbreon_oidn_worker
+  # Part of the exported target set: find_package(umbreon) consumers see it as
+  # the IMPORTED executable umbreon::umbreon_oidn_worker so they can stage it
+  # into their own app bundle (e.g. install(PROGRAMS $<TARGET_FILE:...>)). It is
+  # NOT a package component (present only in UMBREON_WITH_OIDN builds); consumers
+  # gate on if(TARGET umbreon::umbreon_oidn_worker). Executables export no link
+  # interface, so this adds no consumer dependency. (When embree/TBB were found
+  # via fallback the install(EXPORT) below is skipped and this registration is
+  # simply inert; the worker still installs to bin/.)
+  install(TARGETS umbreon_oidn_worker EXPORT umbreonTargets
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   message(STATUS
     "Building 'umbreon_oidn_worker' (OpenImageDenoise ${OpenImageDenoise_VERSION})")

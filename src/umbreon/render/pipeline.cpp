@@ -185,15 +185,20 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // client was not compiled in and, at runtime, when the worker is unavailable.
   if (opt.denoiser == static_cast<int>(DenoiserBackend::OIDN)) {
 #ifdef UMBREON_HAVE_OIDN
-    denoiseOidn(frame, opt);
+    frame.denoiserUsed =
+        denoiseOidn(frame, opt)
+            ? static_cast<int>(DenoiserBackend::OIDN)           // worker ran
+            : static_cast<int>(DenoiserBackend::AtrousBilateral);  // fell back
 #else
     std::fprintf(stderr,
                  "warning: OIDN denoiser backend not built (UMBREON_WITH_OIDN "
                  "off); falling back to the built-in a-trous denoiser\n");
     denoiseAtrous(frame, opt);
+    frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
 #endif
   } else if (opt.denoiser != static_cast<int>(DenoiserBackend::None)) {
     denoiseAtrous(frame, opt);
+    frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
   }
 
   applyAssumedGamma(frame, scene.assumedGamma);

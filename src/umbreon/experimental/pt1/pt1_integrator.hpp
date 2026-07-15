@@ -58,10 +58,12 @@ namespace detail {
 // [0,1] (the giRefl side-channel at full res, the pt1 G-buffer at half res);
 // normal marks background with zero vectors; position feeds the a-trous depth
 // edge-stop. Any guide may be null. Defined in pt1_denoise.cpp (NOT inline:
-// UMBREON_HAVE_OIDN is a target-private macro, see there).
-void denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
-                 const float* normal, const float* position,
-                 const RenderOptions& opt);
+// UMBREON_HAVE_OIDN is a target-private macro, see there). Returns the
+// DenoiserBackend that actually ran (2=OIDN worker, 1=a-trous fallback,
+// 0=degenerate no-op) for FrameResult::pt1DenoiserUsed.
+int denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
+                const float* normal, const float* position,
+                const RenderOptions& opt);
 
 }  // namespace detail
 }  // namespace umbreon
