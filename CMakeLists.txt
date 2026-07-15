@@ -156,30 +156,85 @@ if(EMBREE_LINK AND TBB_LINK)
   target_compile_options(umbreon PRIVATE ${UMBREON_WARNINGS})
   set_target_properties(umbreon PROPERTIES VERSION ${PROJECT_VERSION})
 
-  # Optional Intel Open Image Denoise backend (DenoiserBackend::OIDN). Provided by
-  # the CueMol deplibs bundle (oidn-2.5.0, static). Default OFF so a bare configure
-  # without the bundle still builds; the Taskfile's static path turns it ON and
-  # adds the OIDN prefix to CMAKE_PREFIX_PATH. find_package is QUIET + guarded so an
-  # ON build that cannot locate OIDN downgrades to a warning (the runtime then
-  # falls back to the built-in a-trous denoiser) instead of failing.
-  option(UMBREON_WITH_OIDN "Enable Intel OIDN denoiser backend" OFF)
+  # Out-of-process Intel Open Image Denoise backend (DenoiserBackend::OIDN).
+  # libumbreon does NOT link OIDN: it embeds an IPC client (Boost.Process v2 +
+  # Boost.Interprocess, header-only usage) that spawns the separate
+  # umbreon_oidn_worker executable (the only binary linking OIDN, see below)
+  # and exchanges image buffers through shared memory. Default OFF so a bare
+  # configure without the CueMol deplibs bundle stays Boost-free; the
+  # Taskfile's static path turns it ON and adds the Boost/OIDN prefixes to
+  # CMAKE_PREFIX_PATH. ON but Boost missing: the client is not compiled and
+  # the runtime falls back to the built-in a-trous denoiser. Boost present but
+  # OIDN missing: the client IS compiled and only the worker build is skipped
+  # (a worker from another build can still be supplied at runtime via
+  # RenderOptions::oidnWorkerPath or UMBREON_OIDN_WORKER).
+  option(UMBREON_WITH_OIDN
+    "Enable the out-of-process Intel OIDN denoiser (IPC client + worker)" OFF)
   if(UMBREON_WITH_OIDN)
+    find_package(Boost 1.84 CONFIG QUIET)
     find_package(OpenImageDenoise 2 CONFIG QUIET)
-    if(OpenImageDenoise_FOUND)
+    if(Boost_FOUND)
       target_sources(umbreon PRIVATE
-        src/umbreon/experimental/irradiance_cache/denoise_oidn.cpp)
-      target_compile_definitions(umbreon PRIVATE UMBREON_HAVE_OIDN)
-      target_link_libraries(umbreon PUBLIC OpenImageDenoise)
+        src/umbreon/experimental/irradiance_cache/denoise_oidn.cpp
+        src/umbreon/ipc/oidn_client.cpp)
+      # BOOST_PROCESS_USE_STD_FS switches process v2 to std::filesystem so the
+      # Boost usage stays header-only (no compiled Boost library to link).
+      target_compile_definitions(umbreon PRIVATE
+        UMBREON_HAVE_OIDN BOOST_PROCESS_USE_STD_FS)
+      # Include dirs only -- deliberately NOT target_link_libraries(Boost::headers):
+      # even a PRIVATE link on a STATIC library is recorded in the exported link
+      # interface ($<LINK_ONLY:...>) and would force find_dependency(Boost) on
+      # every find_package(umbreon) consumer for a build-time-only dependency.
+      get_target_property(_umbreon_boost_inc
+        Boost::headers INTERFACE_INCLUDE_DIRECTORIES)
+      target_include_directories(umbreon SYSTEM PRIVATE ${_umbreon_boost_inc})
+      if(WIN32)
+        # Boost.Asio (under process v2) needs winsock; plain system libraries,
+        # safe to appear in the export as $<LINK_ONLY:...>.
+        target_link_libraries(umbreon PRIVATE ws2_32 mswsock)
+      elseif(UNIX AND NOT APPLE)
+        target_link_libraries(umbreon PRIVATE rt)  # shm_open/shm_unlink
+      endif()
+      set(UMBREON_OIDN_CLIENT ON)  # read by tests/CMakeLists.txt
       message(STATUS
-        "umbreon: OIDN backend enabled (OpenImageDenoise ${OpenImageDenoise_VERSION})")
+        "umbreon: OIDN IPC client enabled (Boost ${Boost_VERSION})")
     else()
       message(WARNING
-        "umbreon: UMBREON_WITH_OIDN=ON but OpenImageDenoise not found; "
-        "OIDN backend disabled (runtime falls back to a-trous)")
+        "umbreon: UMBREON_WITH_OIDN=ON but Boost not found; "
+        "OIDN IPC client disabled (runtime falls back to a-trous)")
     endif()
   endif()
 else()
   message(WARNING "Embree/TBB not found - 'umbreon' library not built")
+endif()
+
+# --------------------------------------------------------------------------
+# umbreon_oidn_worker: the out-of-process OIDN denoise service and the ONLY
+# binary that links OpenImageDenoise (deplibs oidn-2.5.0, static). A
+# persistent child process driven over stdin/stdout by libumbreon's IPC
+# client. Installed (unlike umbreon_cli, which is a test harness): the worker
+# ships next to the host application, which is also where the client's
+# default discovery looks for it.
+# --------------------------------------------------------------------------
+if(UMBREON_WITH_OIDN AND Boost_FOUND AND OpenImageDenoise_FOUND)
+  add_executable(umbreon_oidn_worker src/oidn_worker/main.cpp)
+  # For ipc/oidn_protocol.hpp + ipc/shm_region.hpp only; does not link umbreon.
+  target_include_directories(umbreon_oidn_worker PRIVATE src/umbreon)
+  target_link_libraries(umbreon_oidn_worker PRIVATE
+    OpenImageDenoise Boost::headers)
+  target_compile_options(umbreon_oidn_worker PRIVATE ${UMBREON_WARNINGS})
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(umbreon_oidn_worker PRIVATE rt)
+  endif()
+  install(TARGETS umbreon_oidn_worker
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  message(STATUS
+    "Building 'umbreon_oidn_worker' (OpenImageDenoise ${OpenImageDenoise_VERSION})")
+elseif(UMBREON_WITH_OIDN AND Boost_FOUND)
+  message(WARNING
+    "umbreon_oidn_worker: OpenImageDenoise not found; worker not built "
+    "(the IPC client will fall back to a-trous unless a worker binary is "
+    "supplied at runtime)")
 endif()
 
 enable_testing()

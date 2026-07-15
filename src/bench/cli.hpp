@@ -82,6 +82,9 @@ struct Options {
   float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
   bool denoiseDemodulateAlbedo = true;  // denoise color/albedo then re-multiply
   bool oidnCleanAux = true;     // OIDN: treat primary-hit aux as noise-free
+  // --oidn-worker: path of the umbreon_oidn_worker executable. Empty = the
+  // library's default search (UMBREON_OIDN_WORKER env, exe-adjacent, PATH).
+  std::string oidnWorkerPath;
 
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults

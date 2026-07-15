@@ -180,8 +180,9 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // Edge-aware denoise on the linear HDR color, at final resolution, before the
   // gamma encode (OIDN/SVGF operate in linear HDR; the supersample box-average is
   // the primary denoise, this is the finishing pass). No-op when denoiser == None,
-  // keeping the default render byte-identical. OIDN falls back to the built-in
-  // a-trous when the library was not compiled in.
+  // keeping the default render byte-identical. OIDN runs out of process (see
+  // denoise_oidn.cpp); it falls back to the built-in a-trous both when the IPC
+  // client was not compiled in and, at runtime, when the worker is unavailable.
   if (opt.denoiser == static_cast<int>(DenoiserBackend::OIDN)) {
 #ifdef UMBREON_HAVE_OIDN
     denoiseOidn(frame, opt);

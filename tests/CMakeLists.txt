@@ -21,6 +21,13 @@ add_executable(test_math test_math.cpp)
 target_link_libraries(test_math PRIVATE bench_core)
 add_test(NAME math COMMAND test_math)
 
+# OIDN IPC wire protocol (ipc/oidn_protocol.hpp is self-contained: no Boost,
+# no OIDN, no umbreon target), so this builds on a bare configure too.
+add_executable(test_oidn_protocol test_oidn_protocol.cpp)
+target_include_directories(test_oidn_protocol
+  PRIVATE ${CMAKE_SOURCE_DIR}/src/umbreon)
+add_test(NAME oidn_protocol COMMAND test_oidn_protocol)
+
 add_executable(test_pov_scene_reader test_pov_scene_reader.cpp)
 target_link_libraries(test_pov_scene_reader PRIVATE bench_core)
 add_test(
@@ -113,6 +120,31 @@ if(TARGET umbreon)
   add_executable(test_ao_coarse test_ao_coarse.cpp)
   target_link_libraries(test_ao_coarse PRIVATE umbreon)
   add_test(NAME ao_coarse COMMAND test_ao_coarse)
+
+  # Out-of-process OIDN denoiser tests. The fallback test needs the IPC client
+  # compiled into umbreon (UMBREON_OIDN_CLIENT, set by the root CMakeLists);
+  # the round-trip test additionally needs the worker binary, whose path is
+  # passed as argv so the test drives the exact artifact this build produced.
+  if(UMBREON_OIDN_CLIENT)
+    add_executable(test_oidn_client_fallback test_oidn_client_fallback.cpp)
+    target_link_libraries(test_oidn_client_fallback PRIVATE umbreon)
+    add_test(NAME oidn_client_fallback COMMAND test_oidn_client_fallback)
+    if(TARGET umbreon_oidn_worker)
+      add_executable(test_oidn_worker_ipc test_oidn_worker_ipc.cpp)
+      target_link_libraries(test_oidn_worker_ipc PRIVATE umbreon)
+      add_test(NAME oidn_worker_ipc
+               COMMAND test_oidn_worker_ipc $<TARGET_FILE:umbreon_oidn_worker>)
+      # Worker-death recovery (kills its own child worker with pkill -P;
+      # POSIX-only tooling, so not registered on Windows).
+      if(NOT WIN32)
+        add_executable(test_oidn_worker_respawn test_oidn_worker_respawn.cpp)
+        target_link_libraries(test_oidn_worker_respawn PRIVATE umbreon)
+        add_test(NAME oidn_worker_respawn
+                 COMMAND test_oidn_worker_respawn
+                         $<TARGET_FILE:umbreon_oidn_worker>)
+      endif()
+    endif()
+  endif()
 
   add_executable(test_screen_vector_integration
                  test_screen_vector_integration.cpp)

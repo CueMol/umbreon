@@ -26,12 +26,16 @@ enum class DenoiserBackend { None = 0, AtrousBilateral = 1, OIDN = 2 };
 // untouched. Deterministic: a pure function of the input buffers.
 void denoiseAtrous(FrameResult& frame, const RenderOptions& opt);
 
-// Intel Open Image Denoise backend (DenoiserBackend::OIDN). Defined only when the
-// library is built with UMBREON_HAVE_OIDN (CMake option UMBREON_WITH_OIDN + a
-// located OpenImageDenoise package); callers must guard the call with the same
-// macro. Denoises frame.color (linear HDR) with the "RT" filter, using
-// frame.albedo / frame.normal as clean auxiliary guides. Background pixels (no
-// geometry) keep their original color.
+// Intel Open Image Denoise backend (DenoiserBackend::OIDN), out of process:
+// the umbreon_oidn_worker executable is spawned once (lazily) and driven over
+// pipes + shared memory by ipc/oidn_client.hpp; libumbreon itself does not
+// link OIDN. Defined only when the library is built with UMBREON_HAVE_OIDN
+// (CMake option UMBREON_WITH_OIDN + a located Boost package); callers must
+// guard the call with the same macro. Denoises frame.color (linear HDR) with
+// the "RT" filter, using frame.albedo / frame.normal as clean auxiliary
+// guides. Background pixels (no geometry) keep their original color. When the
+// worker is unavailable or fails, falls back to denoiseAtrous with a stderr
+// warning (see RenderOptions::oidnWorkerPath for how the worker is located).
 void denoiseOidn(FrameResult& frame, const RenderOptions& opt);
 
 }  // namespace umbreon

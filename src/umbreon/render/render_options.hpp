@@ -4,6 +4,8 @@
 // render/render_types.hpp. Pure C++17 data, no rendering-library dependency.
 #pragma once
 
+#include <string>
+
 #include "render/edge_types.hpp"
 
 namespace umbreon {
@@ -179,6 +181,12 @@ struct RenderOptions {
   float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
   bool denoiseDemodulateAlbedo = true;  // denoise color/albedo, then re-multiply
   bool oidnCleanAux = true;     // OIDN: primary-hit albedo/normal are noise-free
+  // OIDN runs out of process: libumbreon spawns the umbreon_oidn_worker
+  // executable (the only binary linking OIDN) once and reuses it. Empty
+  // (default) = search the UMBREON_OIDN_WORKER environment variable, then
+  // next to the host executable, then PATH. When set, only this path is
+  // tried; any failure falls back to the built-in a-trous denoiser.
+  std::string oidnWorkerPath;
 
   // --- shadows (per-light visibility; never applied to outline primitives) ---
   bool shadows = false;        // cast shadows from the lights; false = off

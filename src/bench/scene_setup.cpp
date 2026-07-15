@@ -438,6 +438,7 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.denoiseSigmaL = opt.denoiseSigmaL;
   ropt.denoiseDemodulateAlbedo = opt.denoiseDemodulateAlbedo;
   ropt.oidnCleanAux = opt.oidnCleanAux;
+  ropt.oidnWorkerPath = opt.oidnWorkerPath;
   if (ropt.gi && ropt.giIntegrator == 1) {
     // Gather-grid label: explicit divisor / "out" sentinel / legacy
     // pt1HalfRes-derived (see RenderOptions::pt1GatherDiv).
