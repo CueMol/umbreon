@@ -78,11 +78,16 @@ int main(int argc, char** argv) {
   umbreon::denoiseOidn(first, opt);
   s.check("initial run used the worker", first.color != viaAtrous.color);
 
-  // 2) Kill the worker (only our own child) and let the signal land. -f
-  // matches the full command line: on Linux the comm name is truncated to 15
-  // characters, so a plain name match would miss "umbreon_oidn_worker".
+  // 2) Kill the worker (our own child) and let the signal land. -f matches the
+  // full command line because Linux truncates the comm name to 15 chars, so a
+  // plain name match would miss "umbreon_oidn_worker". The "[u]..." bracket is
+  // the classic self-exclusion trick: std::system runs pkill through a child
+  // shell that -P <pid> also selects, and a literal pattern would appear in
+  // that shell's own argv and be killed too -- corrupting the exit status. The
+  // regex "[u]mbreon_oidn_worker" still matches the worker's command line but
+  // not the "[u]mbreon_oidn_worker" literal in the shell's argv.
   const std::string kill =
-      "pkill -9 -P " + std::to_string(getpid()) + " -f umbreon_oidn_worker";
+      "pkill -9 -P " + std::to_string(getpid()) + " -f '[u]mbreon_oidn_worker'";
   s.check("worker process found and killed", std::system(kill.c_str()) == 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
