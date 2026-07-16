@@ -346,18 +346,90 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--integrator");
       if (v == "cache")
         o.giIntegrator = 0;
-      else if (v == "pt1") {
-        // Asking for pt1 EXPLICITLY implies the GI pipeline: the gi gate drives
-        // the ambient zeroing, the _amb_frac energy rebalance and the GI AOV
-        // plumbing, which pt1 shares with the cache -- without it a bare
-        // "--integrator pt1" would silently render with no GI at all. The
-        // implication lives here, on the explicit flag, and NOT on
-        // giIntegrator == 1: that is the default now, so keying off it would
-        // turn GI on for every render. A later --gi off still wins.
-        o.giIntegrator = 1;
+      else if (v == "pt1" || v == "pt2") {
+        // Asking for pt1/pt2 EXPLICITLY implies the GI pipeline: the gi gate
+        // drives the ambient zeroing, the _amb_frac energy rebalance and the
+        // GI AOV plumbing, which they share with the cache -- without it a
+        // bare "--integrator pt1" would silently render with no GI at all.
+        // The implication lives here, on the explicit flag, and NOT on the
+        // giIntegrator value: pt1 is the default, so keying off it would turn
+        // GI on for every render. A later --gi off still wins.
+        o.giIntegrator = (v == "pt2") ? 2 : 1;
         o.gi = true;
       } else
-        fail("--integrator expects cache/pt1");
+        fail("--integrator expects cache/pt1/pt2");
+      continue;
+    }
+    if (a == "--pt2-pattern") {
+      std::string v = value("--pt2-pattern");
+      if (v == "sobol")
+        o.pt2Pattern = 0;
+      else if (v == "bluenoise")
+        o.pt2Pattern = 1;
+      else
+        fail("--pt2-pattern expects sobol/bluenoise");
+      continue;
+    }
+    if (a == "--pt2-emissive") {
+      std::string v = value("--pt2-emissive");
+      if (o.ok && !parseBool(v, o.pt2Emissive))
+        fail("--pt2-emissive expects on/off");
+      continue;
+    }
+    if (a == "--pt2-rounds") {
+      o.pt2Rounds = std::atoi(value("--pt2-rounds").c_str());
+      if (o.ok && o.pt2Rounds < 0) fail("--pt2-rounds expects >= 0");
+      continue;
+    }
+    if (a == "--pt2-radius") {
+      o.pt2Radius = static_cast<float>(std::atof(value("--pt2-radius").c_str()));
+      if (o.ok && o.pt2Radius <= 0.0f) fail("--pt2-radius expects > 0");
+      continue;
+    }
+    if (a == "--pt2-unbiased") {
+      std::string v = value("--pt2-unbiased");
+      if (o.ok && !parseBool(v, o.pt2Unbiased))
+        fail("--pt2-unbiased expects on/off");
+      continue;
+    }
+    if (a == "--pt2-mcap") {
+      o.pt2MCap = static_cast<float>(std::atof(value("--pt2-mcap").c_str()));
+      if (o.ok && o.pt2MCap < 1.0f) fail("--pt2-mcap expects >= 1");
+      continue;
+    }
+    if (a == "--pt2-wclamp") {
+      o.pt2WClamp = static_cast<float>(std::atof(value("--pt2-wclamp").c_str()));
+      if (o.ok && o.pt2WClamp < 0.0f) fail("--pt2-wclamp expects >= 0 (0 = off)");
+      continue;
+    }
+    if (a == "--pt2-adaptive") {
+      std::string v = value("--pt2-adaptive");
+      if (o.ok && !parseBool(v, o.pt2Adaptive))
+        fail("--pt2-adaptive expects on/off");
+      continue;
+    }
+    if (a == "--pt2-adaptive-thresh") {
+      o.pt2AdaptiveThresh =
+          static_cast<float>(std::atof(value("--pt2-adaptive-thresh").c_str()));
+      if (o.ok && o.pt2AdaptiveThresh <= 0.0f)
+        fail("--pt2-adaptive-thresh expects > 0");
+      continue;
+    }
+    if (a == "--pt2-adaptive-mul") {
+      o.pt2AdaptiveMul = std::atoi(value("--pt2-adaptive-mul").c_str());
+      if (o.ok && o.pt2AdaptiveMul < 2) fail("--pt2-adaptive-mul expects >= 2");
+      continue;
+    }
+    if (a == "--pt2-reflect") {
+      std::string v = value("--pt2-reflect");
+      if (o.ok && !parseBool(v, o.pt2Reflect))
+        fail("--pt2-reflect expects on/off");
+      continue;
+    }
+    if (a == "--pt2-emissive-nee") {
+      std::string v = value("--pt2-emissive-nee");
+      if (o.ok && !parseBool(v, o.pt2EmissiveNee))
+        fail("--pt2-emissive-nee expects on/off");
       continue;
     }
     if (a == "--quality") {
@@ -529,6 +601,7 @@ Options parseCli(int argc, char** argv) {
     }
     if (a == "--shadow-samples") {
       o.shadowSamples = std::atoi(value("--shadow-samples").c_str());
+      o.shadowSamplesSet = true;
       continue;
     }
     if (a == "--light-radius") {
@@ -1052,8 +1125,30 @@ void printUsage(const char* prog) {
       "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
-      "  --integrator <cache|pt1> indirect GI integrator; cache is\n"
-      "                           experimental (pt1 implies --gi on)    [pt1]\n"
+      "  --integrator <cache|pt1|pt2> indirect GI integrator; pt2 = pt1 +\n"
+      "                           Sobol/blue-noise sampler + emissive GI;\n"
+      "                           cache is experimental (pt1/pt2 imply\n"
+      "                           --gi on)                              [pt1]\n"
+      "  --pt2-pattern <sobol|bluenoise> pt2 first-bounce sample\n"
+      "                           arrangement                     [bluenoise]\n"
+      "  --pt2-emissive <on|off>  pt2: emissive geometry lights its\n"
+      "                           surroundings (GI transport)           [on]\n"
+      "  --pt2-rounds <int>       pt2 ReSTIR spatial resampling rounds\n"
+      "                           (experimental; wins only at spp=1)     [0]\n"
+      "  --pt2-radius <px>        pt2 round-0 reuse kernel radius on the\n"
+      "                           gather grid (halves per round)        [16]\n"
+      "  --pt2-unbiased <on|off>  pt2 Z-normalization with visibility\n"
+      "                           re-check rays                        [off]\n"
+      "  --pt2-mcap <f>           pt2 reservoir history clamp M        [100]\n"
+      "  --pt2-adaptive <on|off>  pt2 variance-adaptive spp: refine only\n"
+      "                           unconverged pixels                   [off]\n"
+      "  --pt2-adaptive-thresh <f> pt2 adaptive noise threshold        [0.15]\n"
+      "  --pt2-adaptive-mul <int> pt2 adaptive total budget = mul*spp    [4]\n"
+      "  --pt2-reflect <on|off>   pt2 traced mirror reflection (replaces\n"
+      "                           the fake reflection*background)        [on]\n"
+      "  --pt2-emissive-nee <on|off> pt2 emissive-triangle NEE + MIS\n"
+      "                           (off = BSDF-only, for A/B)             [on]\n"
+      "  --pt2-wclamp <f>         pt2 contribution weight clamp (0=off)  [0]\n"
       "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"
       "                           3-bounce (put it FIRST; later flags\n"

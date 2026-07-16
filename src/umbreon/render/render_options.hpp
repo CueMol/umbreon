@@ -114,10 +114,13 @@ struct RenderOptions {
 
   // --- pt1: path-traced indirect integrator (per-pixel one-bounce gather; see
   // experimental/pt1/pt1_integrator.hpp). This is the DEFAULT indirect
-  // integrator. giIntegrator == 0 selects the older irradiance cache instead,
-  // which is experimental and kept for comparison only. Either way the
-  // integrator runs only when gi is on.
-  int giIntegrator = 1;         // 1 = pt1 (default), 0 = irradiance cache
+  // integrator. giIntegrator == 2 selects pt2, which layers an Owen-scrambled
+  // Sobol / blue-noise sampler, emissive-at-bounce and (in progress) ReSTIR-GI
+  // spatial resampling onto the same gather core (experimental/pt2/).
+  // giIntegrator == 0 selects the older irradiance cache, experimental and
+  // kept for comparison only. Either way the integrator runs only when gi is
+  // on.
+  int giIntegrator = 1;  // 1 = pt1 (default), 2 = pt2, 0 = irradiance cache
   int pt1Spp = 8;               // gather rays per pixel
   bool pt1HalfRes = true;       // LEGACY gather-grid selector, consulted only
                                 // when pt1GatherDiv == 0: half the render grid
@@ -170,6 +173,65 @@ struct RenderOptions {
   // execute) inside the denoiser. Ray counts are always collected (negligible
   // cost, reported via FrameResult::pt1Rays); this flag only adds the prints.
   bool pt1Stats = false;
+
+  // --- pt2 (giIntegrator == 2): extensions layered onto the pt1 gather core.
+  // The pt1* knobs above (spp, gather grid, denoise, sky, edge patch, seed)
+  // all apply to pt2 as well; these fields only control what pt2 adds.
+  // First-bounce sample arrangement: 0 = an independent Owen-scrambled Sobol
+  // sequence per pixel; 1 = blue noise (ONE global sequence walked along a
+  // hierarchically shuffled Morton curve, so the residual error distributes
+  // as blue noise in screen space -- kinder to OIDN and the eye).
+  int pt2Pattern = 1;
+  // Add Material::emission at gather bounce vertices, so emissive geometry
+  // lights its surroundings. Not a double count: the direct pass applies
+  // emission only as self-illumination on camera-visible pixels and never
+  // transports it to other surfaces.
+  bool pt2Emissive = true;
+  // ReSTIR-GI spatial resampling rounds (0 = OFF, the default). Implemented
+  // and deterministic, but MEASURED NOT TO PAY OFF in umbreon's regime
+  // (stills, LD-stratified gather at >= 4 spp, sky-dominant diffuse, OIDN):
+  // on 1ab0_scene1 at spp=8 the reservoir estimator lands ~7-8 dB BELOW the
+  // plain gather mean, and only wins at spp=1 (+1.3 dB). Spatial-only ReSTIR
+  // compresses a pixel's spp samples into ONE survivor; without the temporal
+  // accumulation the reference implementations lean on (M up to ~30 across
+  // frames), that discard outweighs the neighborhood reuse. Kept as an
+  // opt-in experiment and as the reservoir substrate for a future temporal
+  // mode (pt3 / RenderSession).
+  int pt2Rounds = 0;
+  // Round-0 kernel radius in GATHER-grid pixels (halves each round, floor 3).
+  float pt2Radius = 16.0f;
+  // Z-normalization with one visibility ray per contributor (Ouyang eq. 16):
+  // removes the reuse visibility bias (slightly lightened contact shadows)
+  // at ~K+1 occlusion rays per pixel per round.
+  bool pt2Unbiased = false;
+  // Clamp on a streamed reservoir's M (bounds how much history a single
+  // reservoir can claim), and an optional clamp on the finalized contribution
+  // weight W (0 = off). W-clamping breaks the exact luminance cancellation of
+  // the creation-stage reservoir (grazing winners legitimately carry a large
+  // W), so it is OFF by default; the MIS normalization already bounds reuse.
+  float pt2MCap = 100.0f;
+  float pt2WClamp = 0.0f;
+  // Variance-adaptive spp (Cycles' split-buffer scheme): after the base
+  // gather, pixels whose mean-vs-half-mean luminance difference exceeds
+  // pt2AdaptiveThresh * normalization get ONE refinement pass that continues
+  // their sample sequence, up to a total of pt2AdaptiveMul * pt1Spp samples.
+  // Concentrates rays in the noisy minority (pockets, contact shadows) at a
+  // hard cost bound. Mutually exclusive with pt2Rounds > 0 (the reservoir
+  // bookkeeping does not compose with a two-pass merge).
+  bool pt2Adaptive = false;
+  float pt2AdaptiveThresh = 0.15f;
+  int pt2AdaptiveMul = 4;
+  // Emissive-triangle NEE + MIS (full-PT stage 3): sample emissive mesh
+  // triangles as light sources at gather origins, balance-weighted against
+  // the cosine gather. Off = BSDF-only emissive transport (the m1 behavior);
+  // exists mainly for A/B comparisons.
+  bool pt2EmissiveNee = true;
+  // Traced mirror reflection (full-PT track, stage 1): surfaces with
+  // Material::reflection > 0 trace one mirror ray per pixel in a GI post-pass
+  // and composite reflection * L(hit: NEE direct + ambient approx; miss: the
+  // gather sky), replacing shadeLocal's fake reflection*background term. POV's
+  // reflection is a sharp mirror, so one deterministic ray suffices (no spp).
+  bool pt2Reflect = true;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised

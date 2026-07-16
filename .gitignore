@@ -4,6 +4,9 @@ deps/
 compile_commands.json
 .cache/
 
+# Local checkouts of reference implementations (see docs/pt2_survey.md section 6)
+refs/
+
 # Rendered images at the repo root
 /out*.png
 /out*.ppm

@@ -53,6 +53,13 @@ constexpr double kGammaPerPixel = 5.8e-9;
 constexpr double kAtrousPerPixel = 0.31e-6;
 // Embree device + BVH build, ~0.003s for 40k triangles.
 constexpr double kSetupSeconds = 0.003;
+// pt2 ReSTIR spatial resampling: per streamed neighbor (target pdf + Jacobian
+// + reservoir update, no rays), and per visibility ray in unbiased mode.
+constexpr double kSpatialPerNeighborPixel = 40.0e-9;
+constexpr double kSpatialRayPerPixel = 150.0e-9;
+// pt2 traced reflection: one mirror ray + NEE on reflective pixels; budgeted
+// at the full grid (the pass skips non-reflective pixels cheaply).
+constexpr double kReflectPerPixel = 30.0e-9;
 // "edge patch re-gathered 11138 rim pixel(s) (0.1% of grid)".
 constexpr double kEdgePatchPixelFrac = 0.001;
 // The irradiance cache is experimental and its pass is NOT instrumented (see
@@ -82,12 +89,15 @@ inline int pt1GatherDivisor(const RenderOptions& opt) noexcept {
 struct GiCostEstimate {
   double gbuffer = 0.0;
   double gather = 0.0;
+  double spatial = 0.0;  // pt2 ReSTIR spatial resampling rounds
+  double reflect = 0.0;  // pt2 traced mirror reflection
   double denoise = 0.0;
   double upsample = 0.0;
   double edgePatch = 0.0;
   double composite = 0.0;
   double total() const noexcept {
-    return gbuffer + gather + denoise + upsample + edgePatch + composite;
+    return gbuffer + gather + spatial + reflect + denoise + upsample +
+           edgePatch + composite;
   }
 };
 
@@ -97,9 +107,10 @@ inline GiCostEstimate giCostEstimate(const RenderOptions& opt, int W,
   if (!opt.gi || W <= 0 || H <= 0) return e;
   const double nHi = static_cast<double>(W) * static_cast<double>(H);
 
-  if (opt.giIntegrator != 1) {
+  if (opt.giIntegrator == 0) {
     // Irradiance cache: experimental and off the default path, so its internals
-    // are not instrumented and the whole pass is one lump.
+    // are not instrumented and the whole pass is one lump. pt2 (== 2) shares
+    // the pt1 pass and falls through to the per-substage estimate below.
     e.gather = kCacheGiPerSamplePixel * nHi * std::max(1, opt.giSamples);
     return e;
   }
@@ -120,6 +131,19 @@ inline GiCostEstimate giCostEstimate(const RenderOptions& opt, int W,
                     std::max(1, opt.pt1EdgePatchSppMul);
   }
   e.gather = kGatherPerSamplePixel * nLow * spp;
+  if (opt.giIntegrator == 2 && opt.pt2Rounds > 0) {
+    // ReSTIR spatial: pure buffer arithmetic per streamed neighbor (8 the
+    // first round, 5 after); the unbiased mode adds one occlusion ray per
+    // contributor per round.
+    const double neighbors =
+        8.0 + 5.0 * static_cast<double>(opt.pt2Rounds - 1);
+    e.spatial = kSpatialPerNeighborPixel * nLow * neighbors;
+    if (opt.pt2Unbiased)
+      e.spatial += kSpatialRayPerPixel * nLow *
+                   (neighbors + static_cast<double>(opt.pt2Rounds));
+  }
+  if (opt.giIntegrator == 2 && opt.pt2Reflect)
+    e.reflect = kReflectPerPixel * nHi;
   if (opt.pt1Denoise) e.denoise = kDenoisePerPixel * nLow;
   e.composite = kCompositePerPixel * nHi;
   return e;
@@ -133,6 +157,8 @@ struct GiProgressBudget {
   std::uint64_t total = 1;
   ProgressSlice gbuffer;
   ProgressSlice gather;
+  ProgressSlice spatial;
+  ProgressSlice reflect;
   ProgressSlice denoise;
   ProgressSlice upsample;
   ProgressSlice edgePatch;
@@ -153,6 +179,8 @@ inline GiProgressBudget makeGiBudget(RenderProgress* progress,
   };
   b.gbuffer = slice(est.gbuffer);
   b.gather = slice(est.gather);
+  b.spatial = slice(est.spatial);
+  b.reflect = slice(est.reflect);
   b.denoise = slice(est.denoise);
   b.upsample = slice(est.upsample);
   b.edgePatch = slice(est.edgePatch);
@@ -202,7 +230,7 @@ inline RenderCostEstimate renderCostEstimate(const Scene& scene,
   // freezes, and under-counting is impossible here.
   const bool giRuns =
       hi.gi && (scene.mesh.triangleCount() > 0 ||
-                (hi.giIntegrator == 1 &&
+                (hi.giIntegrator >= 1 &&
                  (!scene.spheres.empty() || !scene.cylinders.empty())));
   if (giRuns) e.globalIllum = giCostEstimate(hi, hi.width, hi.height).total();
 

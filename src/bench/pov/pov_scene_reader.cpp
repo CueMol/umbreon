@@ -612,6 +612,14 @@ class SceneReader {
     double spread = (args.size() > 0) ? comp(args[0], 0) : 1.0;
     double shadow = (args.size() > 3) ? comp(args[3], 0) : 0.0;
     L.castsHighlight = (spread > 1.0) || (shadow != 0.0);
+    // area_light geometry (aLightSpread > 1): the macro places a square of
+    // side aDist*spread/10, perpendicular to the light direction, at distance
+    // 2*aDist -- so its angular half-radius is atan((side/2) / (2*aDist)) =
+    // atan(spread/40), independent of aDist. Recorded for the pt2 integrator;
+    // the other integrators keep treating the light as purely directional.
+    if (spread > 1.0)
+      L.angularRadius =
+          static_cast<float>(std::atan(spread / 40.0));
     lights_.push_back(L);
   }
 

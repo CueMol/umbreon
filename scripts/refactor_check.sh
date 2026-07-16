@@ -90,6 +90,8 @@ render_case aa      data/test1.pov --aa adaptive
 render_case ao      data/test1.pov --ao-samples 16 --ao-res out --ao-ld on
 render_case gi      data/1ab0_scene1.pov --gi on
 render_case pt1     data/1ab0_scene1.pov --integrator pt1 --quality draft --seed 1
+render_case pt2     data/1ab0_scene1.pov --integrator pt2 --seed 1
+render_case pt2em   data/emissive_test.pov --integrator pt2 --seed 1
 render_case edges   data/edges/edge_ribbon1.pov --edges on
 render_case transp  data/1ab0_scene5_transp.pov --alpha _52_53=0.5
 render_case objedge data/test1.pov --obj-edges on

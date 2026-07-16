@@ -59,7 +59,8 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
                        const Vec3& ambLight, const Vec3& bg, float specularScale,
                        const Vec3& aoFactor, float diffuseAo, const Vec3& P,
                        const Vec3& Ng, float eps, RTCScene rscene, bool shadowsOn,
-                       int shadowSamples, uint32_t px, uint32_t py) {
+                       int shadowSamples, uint32_t px, uint32_t py,
+                       bool traceReflection = false) {
   Vec3 out{mat.emission * C.x + aoFactor.x * mat.ambient * C.x * ambLight.x,
            mat.emission * C.y + aoFactor.y * mat.ambient * C.y * ambLight.y,
            mat.emission * C.z + aoFactor.z * mat.ambient * C.z * ambLight.z};
@@ -151,7 +152,10 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
 
   // Cheap reflection: add reflection * background (no second ray). On scene4's
   // white background with no env geometry this matches POV non-radiosity.
-  if (mat.reflection > 0.0f) {
+  // Under pt2's traced-reflection pass (traceReflection) this fake term is
+  // OWNED by the post-pass instead, which traces a mirror ray and composites
+  // reflection * L(hit or sky) -- adding both would double-count.
+  if (mat.reflection > 0.0f && !traceReflection) {
     out.x += mat.reflection * bg.x;
     out.y += mat.reflection * bg.y;
     out.z += mat.reflection * bg.z;

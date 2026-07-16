@@ -386,6 +386,26 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.shadows = opt.shadows;
   ropt.shadowSamples = opt.shadowSamples;
   ropt.lightRadius = opt.lightRadius;
+  // pt2 + POV area light (SpecLighting _light_spread > 1): soften the DIRECT
+  // shadows by default. One sample per hi-res pixel is too noisy for a
+  // penumbra; 4 with the supersample box-average lands near POV's 10x10 grid
+  // smoothness. An explicit --shadow-samples always wins, and the other
+  // integrators are unaffected (their per-light radius stays 0, see
+  // buildSceneLights).
+  if (opt.giIntegrator == 2 && !opt.shadowSamplesSet) {
+    bool hasArea = false;
+    for (const umbreon::DistantLight& dl : scene.lights)
+      hasArea = hasArea || dl.angularRadius > 0.0f;
+    if (hasArea) {
+      ropt.shadowSamples = 4;
+      if (!ropt.shadows)
+        std::fprintf(stderr,
+                     "warning: the scene carries an area light "
+                     "(_light_spread > 1) but shadows are off; pass "
+                     "--shadows on (or --declare _shadow=1) to see the soft "
+                     "shadows\n");
+    }
+  }
   ropt.envLights = opt.envLights;
   ropt.envIntensity = opt.envIntensity;
   ropt.envKeyScale = opt.envKeyScale;
@@ -424,15 +444,28 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.pt1Ld = opt.pt1Ld;
   ropt.pt1Clamp = opt.pt1Clamp;
   ropt.pt1Stats = opt.pt1Stats;
-  // GI-conditional denoise default: unset (-1) becomes atrous when GI is on,
-  // None otherwise. An explicit --denoiser (0/1/2) is honored as-is. On the
-  // pt1 path the default is None: pt1 denoises its indirect irradiance
-  // buffer itself (--denoise, pre-composite), so a final-color denoise on
-  // top would smooth the same signal twice.
+  // pt2 knobs (giIntegrator == 2; layered onto the same gather pass).
+  ropt.pt2Pattern = opt.pt2Pattern;
+  ropt.pt2Emissive = opt.pt2Emissive;
+  ropt.pt2Rounds = opt.pt2Rounds;
+  ropt.pt2Radius = opt.pt2Radius;
+  ropt.pt2Unbiased = opt.pt2Unbiased;
+  ropt.pt2MCap = opt.pt2MCap;
+  ropt.pt2WClamp = opt.pt2WClamp;
+  ropt.pt2Adaptive = opt.pt2Adaptive;
+  ropt.pt2AdaptiveThresh = opt.pt2AdaptiveThresh;
+  ropt.pt2AdaptiveMul = opt.pt2AdaptiveMul;
+  ropt.pt2Reflect = opt.pt2Reflect;
+  ropt.pt2EmissiveNee = opt.pt2EmissiveNee;
+  // GI-conditional denoise default: unset (-1) becomes atrous when the CACHE
+  // integrator runs GI, None otherwise. An explicit --denoiser (0/1/2) is
+  // honored as-is. On the pt1/pt2 paths the default is None: they denoise
+  // their indirect irradiance buffer themselves (--denoise, pre-composite),
+  // so a final-color denoise on top would smooth the same signal twice.
   ropt.denoiser =
       opt.denoiser >= 0
           ? opt.denoiser
-          : ((ropt.gi && ropt.giIntegrator != 1) ? 1 : 0);
+          : ((ropt.gi && ropt.giIntegrator == 0) ? 1 : 0);
   ropt.denoiseIters = opt.denoiseIters;
   ropt.denoiseSigmaZ = opt.denoiseSigmaZ;
   ropt.denoiseSigmaN = opt.denoiseSigmaN;
@@ -440,7 +473,7 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.denoiseDemodulateAlbedo = opt.denoiseDemodulateAlbedo;
   ropt.oidnCleanAux = opt.oidnCleanAux;
   ropt.oidnMaxMemoryMB = opt.oidnMaxMemoryMB;
-  if (ropt.gi && ropt.giIntegrator == 1) {
+  if (ropt.gi && ropt.giIntegrator >= 1) {
     // Gather-grid label: explicit divisor / "out" sentinel / legacy
     // pt1HalfRes-derived (see RenderOptions::pt1GatherDiv).
     char gridDesc[32];
@@ -453,13 +486,35 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
       std::snprintf(gridDesc, sizeof(gridDesc), "full");
     else
       std::snprintf(gridDesc, sizeof(gridDesc), "1/%d", ropt.pt1GatherDiv);
-    std::printf(
-        "  diffuse GI: pt1 path-traced gather, %d spp, %d bounce%s, %s res, "
-        "ld %s, denoise %s, intensity %.2f, env %.2f\n",
-        ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
-        gridDesc, ropt.pt1Ld ? "on" : "off",
-        ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
-        ropt.giEnvIntensity);
+    if (ropt.giIntegrator == 2) {
+      float areaDeg = 0.0f;
+      for (const umbreon::DistantLight& dl : scene.lights)
+        areaDeg = std::max(areaDeg, dl.angularRadius * 57.29578f);
+      char areaDesc[32];
+      if (areaDeg > 0.0f)
+        std::snprintf(areaDesc, sizeof(areaDesc), ", area %.1fdeg x%d",
+                      areaDeg, ropt.shadowSamples);
+      else
+        areaDesc[0] = '\0';
+      std::printf(
+          "  diffuse GI: pt2 path-traced gather, %d spp, %d bounce%s, %s res, "
+          "%s sampling, restir %dx%s, emissive %s, denoise %s, "
+          "intensity %.2f, env %.2f%s\n",
+          ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
+          gridDesc, ropt.pt2Pattern == 1 ? "blue-noise" : "sobol",
+          ropt.pt2Rounds, ropt.pt2Unbiased ? " unbiased" : "",
+          ropt.pt2Emissive ? "on" : "off",
+          ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
+          ropt.giEnvIntensity, areaDesc);
+    }
+    else
+      std::printf(
+          "  diffuse GI: pt1 path-traced gather, %d spp, %d bounce%s, %s res, "
+          "ld %s, denoise %s, intensity %.2f, env %.2f\n",
+          ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
+          gridDesc, ropt.pt1Ld ? "on" : "off",
+          ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
+          ropt.giEnvIntensity);
   }
   else if (ropt.gi)
     std::printf(

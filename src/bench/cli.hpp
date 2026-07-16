@@ -30,6 +30,7 @@ struct Options {
   bool aoWriteAov = false;      // emit AO/G-buffer AOVs (albedo/normal/contact/...)
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
+  bool shadowSamplesSet = false;  // true when --shadow-samples was explicit
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows
 
   // --- environment dome lighting (synthetic; replaces flashlight look) ---
@@ -72,6 +73,22 @@ struct Options {
   bool pt1Ld = true;                    // --pt1-ld on|off (stratified sampling)
   float pt1Clamp = 0.0f;                // --pt1-clamp (luminance; 0 = off)
   bool pt1Stats = false;                // --pt1-stats (OIDN stage split print)
+
+  // --- pt2 (--integrator pt2): extensions on the pt1 gather core. Mirrors
+  // RenderOptions; scene_setup copies these over unconditionally.
+  int pt2Pattern = 1;    // --pt2-pattern sobol|bluenoise (blue noise default)
+  bool pt2Emissive = true;  // --pt2-emissive on|off (emission at bounces)
+  int pt2Rounds = 0;        // --pt2-rounds (ReSTIR spatial; 0 = off, see
+                            // RenderOptions -- measured not to pay off)
+  float pt2Radius = 16.0f;  // --pt2-radius (round-0 kernel, gather px)
+  bool pt2Unbiased = false; // --pt2-unbiased on|off (Z-norm visibility rays)
+  float pt2MCap = 100.0f;   // --pt2-mcap (reservoir history clamp)
+  float pt2WClamp = 0.0f;   // --pt2-wclamp (W clamp; 0 = off)
+  bool pt2Adaptive = false; // --pt2-adaptive on|off (variance-guided spp)
+  float pt2AdaptiveThresh = 0.15f;  // --pt2-adaptive-thresh
+  int pt2AdaptiveMul = 4;   // --pt2-adaptive-mul (total = mul * spp)
+  bool pt2Reflect = true;   // --pt2-reflect on|off (traced mirror reflection)
+  bool pt2EmissiveNee = true;  // --pt2-emissive-nee on|off (NEE+MIS vs BSDF-only)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI

@@ -23,6 +23,9 @@
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_integrator.hpp"
 #include "experimental/pt1/pt1_upsample.hpp"
+#include "experimental/pt2/pt2_adaptive.hpp"
+#include "experimental/pt2/pt2_reflect.hpp"
+#include "experimental/pt2/pt2_spatial.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -162,7 +165,8 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
                           std::vector<int>& giGroup,
                           std::vector<uint32_t>& giGeom,
                           std::vector<float>& giRefl,
-                          std::vector<uint8_t>& giElig, std::size_t pix,
+                          std::vector<uint8_t>& giElig,
+                          std::vector<float>& reflAmt, std::size_t pix,
                           const PixelResult& pr) {
   res.color[pix * 4 + 0] = pr.r;
   res.color[pix * 4 + 1] = pr.g;
@@ -181,6 +185,9 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
     giRefl[pix * 3 + 1] = pr.giReflectance.y;
     giRefl[pix * 3 + 2] = pr.giReflectance.z;
     giElig[pix] = pr.giEligible;
+    // pt2 traced-reflection amount of the first hit (buffer allocated only
+    // when the pass will run; see the reflAmt sizing in render()).
+    if (!reflAmt.empty()) reflAmt[pix] = pr.reflectivity;
   }
   // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
   // buffer was allocated above (wantAlbedoGuide).
@@ -225,8 +232,10 @@ void storeGBufChannels(FrameResult& res, const RenderOptions& opt,
 void storePixelResult(FrameResult& res, const RenderOptions& opt,
                       std::vector<int>& giGroup, std::vector<uint32_t>& giGeom,
                       std::vector<float>& giRefl, std::vector<uint8_t>& giElig,
-                      std::size_t pix, const PixelResult& pr) {
-  storeShadingChannels(res, opt, giGroup, giGeom, giRefl, giElig, pix, pr);
+                      std::vector<float>& reflAmt, std::size_t pix,
+                      const PixelResult& pr) {
+  storeShadingChannels(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt, pix,
+                       pr);
   storeGBufChannels(res, opt, pix, pr);
 }
 
@@ -370,7 +379,13 @@ std::vector<Light> buildSceneLights(const Scene& scene,
     l.color = Vec3{dl.color.x * dl.intensity, dl.color.y * dl.intensity,
                    dl.color.z * dl.intensity};
     l.highlight = dl.castsHighlight;
-    l.radius = radians(opt.lightRadius);  // soft-shadow angular radius (0 = hard)
+    // Soft-shadow angular radius (0 = hard). pt2 honors a per-light AREA
+    // radius when the scene carries one (POV area_light via SpecLighting);
+    // pt1/cache keep the global CLI radius so their sample streams -- and
+    // therefore their byte-exact outputs -- are untouched by area scenes.
+    l.radius = (opt.giIntegrator == 2 && dl.angularRadius > 0.0f)
+                   ? dl.angularRadius
+                   : radians(opt.lightRadius);
     lights.push_back(l);
   }
   buildEnvDomeLights(lights, opt, cb.dir, cb.right, cb.trueUp);
@@ -476,7 +491,8 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                   const std::vector<Light>& lights, const Vec3& ambLight,
                   const Vec3& aoUpAxis, const CameraBasis& cb, int W, int H,
                   const std::vector<float>& giRefl,
-                  const std::vector<uint8_t>& giElig, FrameResult& res,
+                  const std::vector<uint8_t>& giElig,
+                  const std::vector<float>& reflAmt, FrameResult& res,
                   const detail::GiProgressBudget& budget) {
     // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
     // the sky through its miss term, so the combination counts the sky twice.
@@ -526,6 +542,89 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
 
     const int spp = std::max(1, opt.pt1Spp);
     detail::Pt1RayStats rayStats;
+    // pt2 (giIntegrator == 2) layers its extensions onto this same pass: the
+    // Owen-scrambled Sobol / blue-noise sampler and emissive-at-bounce are
+    // grid-level opt-ins resolved per pixel inside gatherPt1Grid. pt1 passes
+    // null and stays bit-identical.
+    detail::Pt2GatherCfg pt2CfgStorage;
+    const detail::Pt2GatherCfg* pt2Cfg = nullptr;
+    const bool pt2Restir = (opt.giIntegrator == 2) && opt.pt2Rounds > 0;
+    // Adaptive spp needs a meaningful half-split estimate (spp >= 2) and does
+    // not compose with the reservoir bookkeeping (mutually exclusive).
+    const bool pt2Adapt = (opt.giIntegrator == 2) && opt.pt2Adaptive &&
+                          !pt2Restir && spp >= 2;
+    const int pt2AdaptExtra =
+        pt2Adapt ? spp * (std::max(2, opt.pt2AdaptiveMul) - 1) : 0;
+    if ((opt.giIntegrator == 2) && opt.pt2Adaptive && pt2Restir)
+      std::fprintf(stderr,
+                   "warning: --pt2-adaptive is ignored with --pt2-rounds > 0 "
+                   "(reservoirs do not compose with the two-pass merge)\n");
+    // ReSTIR reservoirs live on the gather grid, sized in each branch below.
+    std::vector<detail::Pt2Reservoir> reservoirs;
+    detail::Pt2SpatialParams sparams;
+    // Emissive-triangle NEE (pt2 stage 3): built once per GI pass; empty
+    // when the scene has no emissive mesh material, which disables both the
+    // NEE draws and the MIS weighting (bit-exact with the pre-NEE pt2).
+    detail::Pt2EmissiveLights emissiveLights;
+    if (opt.giIntegrator == 2) {
+      pt2CfgStorage.pattern = opt.pt2Pattern;
+      pt2CfgStorage.emissive = opt.pt2Emissive;
+      if (opt.pt2Emissive && opt.pt2EmissiveNee) {
+        emissiveLights = detail::pt2BuildEmissiveLights(m);
+        if (!emissiveLights.empty()) {
+          pt2CfgStorage.emissiveLights = &emissiveLights;
+          std::fprintf(stderr,
+                       "pt2: emissive NEE over %zu triangle(s)\n",
+                       emissiveLights.tris.size());
+        }
+      }
+      pt2Cfg = &pt2CfgStorage;
+      sparams.rounds = opt.pt2Rounds;
+      sparams.radius = opt.pt2Radius;
+      sparams.unbiased = opt.pt2Unbiased;
+      sparams.mCap = opt.pt2MCap;
+      sparams.wClamp = opt.pt2WClamp;
+      sparams.seedMix = detail::hashU32(opt.pt1Seed);
+      sparams.scene = built.scene;
+    }
+    const char* giTag = (opt.giIntegrator == 2) ? "pt2" : "pt1";
+    // Adaptive-spp refinement, shared by the reduced-grid and full-res paths.
+    // The base gather has already filled E/occ (means over spp) and halfE
+    // (sums over the first spp/2). Mask, dilate twice (5x5 reach), re-gather
+    // the masked pixels CONTINUING their sample sequences, merge as a
+    // weighted mean. Pure functions of completed buffers at every step, so
+    // the 2-pass determinism argument holds.
+    std::vector<float> adaptHalfE;
+    auto adaptiveRefine = [&](int gw, int gh, const float* pos,
+                              const float* nrm, const float* gnrm,
+                              const uint8_t* elig, const float* dep,
+                              std::vector<float>& E, std::vector<float>& occ) {
+      pt2CfgStorage.halfE = nullptr;
+      std::vector<uint8_t> amask, tmp;
+      detail::pt2AdaptiveMask(gw, gh, E, adaptHalfE, elig, spp,
+                              opt.pt2AdaptiveThresh, amask);
+      detail::pt2DilateMask(gw, gh, amask, elig, tmp);
+      detail::pt2DilateMask(gw, gh, tmp, elig, amask);
+      std::size_t nref = 0;
+      for (uint8_t v : amask) nref += v;
+      if (nref == 0) return;
+      pt2CfgStorage.sampleIndexOffset = spp;
+      std::vector<float> Er, occr;
+      detail::gatherPt1Grid(gp, gw, gh, pos, nrm, gnrm, amask.data(), dep,
+                            pt2AdaptExtra, opt.pt1Seed, diag, Er, occr,
+                            opt.pt1Ld, opt.pt1Clamp, &rayStats,
+                            &budget.gather, pt2Cfg);
+      pt2CfgStorage.sampleIndexOffset = 0;
+      detail::pt2MergeRefined(gw, gh, amask, spp, pt2AdaptExtra, Er, occr, E,
+                              occ);
+      std::fprintf(stderr,
+                   "pt2: adaptive refined %zu px (%.1f%% of grid) with +%d "
+                   "spp\n",
+                   nref,
+                   100.0 * static_cast<double>(nref) /
+                       (static_cast<double>(gw) * gh),
+                   pt2AdaptExtra);
+    };
     // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
     // REAL CSG primitives (atom balls / bonds); outline decoration and the
     // background stay 0. Unlike the cache's geomID/kind gate this is primID-
@@ -555,13 +654,40 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       const auto tg0 = std::chrono::high_resolution_clock::now();
       detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats, &budget.gbuffer);
       budget.gbuffer.finish();
+      if (pt2Restir) {
+        reservoirs.assign(static_cast<std::size_t>(hw) * hh,
+                          detail::Pt2Reservoir{});
+        pt2CfgStorage.reservoirs = reservoirs.data();
+      }
+      if (pt2Adapt) {
+        adaptHalfE.assign(static_cast<std::size_t>(hw) * hh * 3, 0.0f);
+        pt2CfgStorage.halfE = adaptHalfE.data();
+        pt2CfgStorage.sppLayoutTotal =
+            static_cast<uint32_t>(spp + pt2AdaptExtra);
+      }
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), g.depth.data(),
                             spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
-                            opt.pt1Clamp, &rayStats, &budget.gather);
+                            opt.pt1Clamp, &rayStats, &budget.gather, pt2Cfg);
+      if (pt2Adapt) {
+        adaptiveRefine(hw, hh, g.position.data(), g.normal.data(),
+                       g.geomNormal.data(), g.hit.data(), g.depth.data(), Eh,
+                       occh);
+        pt2CfgStorage.sppLayoutTotal = 0;  // edge patch lays out its own spp
+      }
       budget.gather.finish();
+      if (pt2Restir) {
+        // ReSTIR spatial rounds + resolve overwrite Eh with the resampled
+        // estimate BEFORE the denoise (the whole point: cleaner OIDN input).
+        detail::pt2SpatialResampleAndResolve(
+            hw, hh, g.position.data(), g.normal.data(), g.depth.data(),
+            g.hit.data(), reservoirs, sparams, Eh, &budget.spatial);
+        // The edge patch below re-gathers rim pixels WITHOUT reservoirs.
+        pt2CfgStorage.reservoirs = nullptr;
+      }
+      budget.spatial.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -592,10 +718,10 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
       if (holes > 0 && !opt.pt1EdgePatch)
         std::fprintf(stderr,
-                     "pt1: %llu eligible pixel(s) found no valid gather "
+                     "%s: %llu eligible pixel(s) found no valid gather "
                      "sample in the upsample window (thin features at 1/%d "
                      "gather res lose their indirect)\n",
-                     static_cast<unsigned long long>(holes), gatherDiv);
+                     giTag, static_cast<unsigned long long>(holes), gatherDiv);
       const auto tu1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
 
@@ -621,7 +747,8 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                                 res.normal.data(), /*geomNormal=*/nullptr,
                                 needsPatch.data(), res.depth.data(), patchSpp,
                                 opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
-                                opt.pt1Clamp, &rayStats, &budget.edgePatch);
+                                opt.pt1Clamp, &rayStats, &budget.edgePatch,
+                                pt2Cfg);
           for (std::size_t i = 0; i < needsPatch.size(); ++i) {
             if (!needsPatch[i]) continue;
             Ebuf[i * 3 + 0] = Ep[i * 3 + 0];
@@ -640,9 +767,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
           res.pt1Timing.gather +=
               std::chrono::duration<double>(tp1 - tp0).count();
           std::fprintf(stderr,
-                       "pt1: edge patch re-gathered %zu rim pixel(s) "
+                       "%s: edge patch re-gathered %zu rim pixel(s) "
                        "(%.1f%% of grid) at full res\n",
-                       patchCount,
+                       giTag, patchCount,
                        100.0 * static_cast<double>(patchCount) /
                            static_cast<double>(needsPatch.size()));
         }
@@ -653,12 +780,36 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       budget.edgePatch.finish();
     } else {
       const auto tg0 = std::chrono::high_resolution_clock::now();
+      if (pt2Restir) {
+        reservoirs.assign(static_cast<std::size_t>(W) * H,
+                          detail::Pt2Reservoir{});
+        pt2CfgStorage.reservoirs = reservoirs.data();
+      }
+      if (pt2Adapt) {
+        adaptHalfE.assign(static_cast<std::size_t>(W) * H * 3, 0.0f);
+        pt2CfgStorage.halfE = adaptHalfE.data();
+        pt2CfgStorage.sppLayoutTotal =
+            static_cast<uint32_t>(spp + pt2AdaptExtra);
+      }
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(),
                             res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
                             occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats,
-                            &budget.gather);
+                            &budget.gather, pt2Cfg);
+      if (pt2Adapt) {
+        adaptiveRefine(W, H, res.position.data(), res.normal.data(),
+                       /*geomNormal=*/nullptr, eligible.data(),
+                       res.depth.data(), Ebuf, occBuf);
+        pt2CfgStorage.sppLayoutTotal = 0;
+      }
       budget.gather.finish();
+      if (pt2Restir) {
+        detail::pt2SpatialResampleAndResolve(
+            W, H, res.position.data(), res.normal.data(), res.depth.data(),
+            eligible.data(), reservoirs, sparams, Ebuf, &budget.spatial);
+        pt2CfgStorage.reservoirs = nullptr;
+      }
+      budget.spatial.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -704,6 +855,19 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     });
     budget.composite.finish();
 
+    // pt2 traced mirror reflection (full-PT stage 1): after the diffuse
+    // composite, add reflection * L(mirror ray) on the first-hit pixels that
+    // carry Material::reflection. Runs at the RENDER grid off res.position /
+    // res.normal (always filled under gi); shadeLocal skipped its fake term
+    // for exactly these pixels (HitShade::reflectivity gate).
+    if (!reflAmt.empty()) {
+      detail::pt2ReflectPass(gp, W, H, reflAmt, res.position.data(),
+                             res.normal.data(), res.depth.data(),
+                             scene.camera.orthographic, scene.camera.position,
+                             cb.dir, opt.pt2Emissive, res, &budget.reflect);
+    }
+    budget.reflect.finish();
+
     res.pt1Rays.gatherRays =
         rayStats.gatherRays.load(std::memory_order_relaxed);
     res.pt1Rays.gatherHits =
@@ -723,13 +887,13 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
             ? totalRays / res.pt1Timing.gather / 1.0e6
             : 0.0;
     std::fprintf(stderr,
-                 "pt1: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
+                 "%s: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
                  "%.3fs upsample %.3fs\n"
-                 "pt1: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
+                 "%s: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
                  "nee_frac %.2f  %.1f Mrays/s\n",
-                 gatherDiv, W, H, spp,
+                 giTag, gatherDiv, W, H, spp,
                  res.pt1Timing.gather, res.pt1Timing.denoise,
-                 res.pt1Timing.upsample,
+                 res.pt1Timing.upsample, giTag,
                  res.pt1Rays.gatherRays / 1.0e6,
                  res.pt1Rays.gatherRays
                      ? 100.0 * res.pt1Rays.gatherHits / res.pt1Rays.gatherRays
@@ -934,12 +1098,16 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   std::vector<uint32_t> giGeom;
   std::vector<float> giRefl;  // per-pixel mat.diffuse * pigment (GI composite)
   std::vector<uint8_t> giElig;  // per-pixel pt1 gather-eligible flag (shader-set)
+  // pt2 traced reflection: per-pixel Material::reflection of the first hit
+  // (empty = the pass is off, and storeShadingChannels skips the write).
+  std::vector<float> reflAmt;
   if (opt.gi) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     giGroup.assign(npix, -1);
     giGeom.assign(npix, 0xFFFFFFFFu);
     giRefl.assign(npix * 3, 0.0f);
     giElig.assign(npix, 0);
+    if (opt.giIntegrator == 2 && opt.pt2Reflect) reflAmt.assign(npix, 0.0f);
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -990,7 +1158,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                          static_cast<uint32_t>(py), dir, cappedRays);
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
-      storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, pix, pr);
+      storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt,
+                       pix, pr);
     }
   }
   if (progress) progress->advance(
@@ -1199,7 +1368,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                 const std::size_t pix = static_cast<std::size_t>(py) * W + px;
                 if (edgesGbuf) {
                   storeShadingChannels(res, opt, giGroup, giGeom, giRefl,
-                                       giElig, pix, rep);
+                                       giElig, reflAmt, pix, rep);
                   // Center subpixel: exact G-buffer from its own first hit
                   // (centers[XY] traced this subpixel). Others: probe.
                   if (i == cSub && j == cSub)
@@ -1208,6 +1377,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                     storeProbeGBuf(px, py, pix);
                 } else {
                   storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
+                                   reflAmt,
                                    pix, rep);
                 }
               }
@@ -1225,7 +1395,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
               // Flagged cells are shaded (kFine==1) or box-averaged (kFine>1);
               // either way pr carries the first-hit G-buffer, so a full store
               // reproduces the grid render's G-buffer bitwise.
-              storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, pix,
+              storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
+                               reflAmt, pix,
                                pr);
             }
           }
@@ -1269,9 +1440,9 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   if (progress) progress->beginPhase(RenderPhase::GlobalIllum, giBudget.total);
   const bool giCancelled = progress && progress->cancelRequested();
   if (!giCancelled && opt.gi &&
-      (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator == 1) {
+      (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator >= 1) {
     runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
-                 giRefl, giElig, res, giBudget);
+                 giRefl, giElig, reflAmt, res, giBudget);
   } else if (!giCancelled && opt.gi && meshPresent(built)) {
     runIrradianceCacheGiPass(scene, opt, built, m, lights, ambLight, aoUpAxis,
                              W, H, giGroup, giGeom, giRefl, res);

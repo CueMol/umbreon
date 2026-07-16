@@ -47,16 +47,32 @@ T1=$(date +%s)
 T_PT1=$((T1 - T0))
 [ -f outputs/timing.json ] && mv outputs/timing.json "$OUT/timing_pt1.json"
 
+echo "== pt2 integrator: $SCENE"
+T0=$(date +%s)
+# shellcheck disable=SC2086
+"$CLI" "$SCENE" -o "$OUT/pt2.ppm" --integrator pt2 $COMMON "$@" \
+  | tee "$OUT/log_pt2.txt"
+T1=$(date +%s)
+T_PT2=$((T1 - T0))
+[ -f outputs/timing.json ] && mv outputs/timing.json "$OUT/timing_pt2.json"
+
 # PNGs for viewing (the PPMs stay for the linear-space metric).
 "$CLI" --convert "$OUT/cache.ppm" "$OUT/cache.png"
 "$CLI" --convert "$OUT/pt1.ppm" "$OUT/pt1.png"
+"$CLI" --convert "$OUT/pt2.ppm" "$OUT/pt2.png"
 
 echo "== metrics"
-"$CLI" --compare "$OUT/cache.ppm" "$OUT/pt1.ppm" | tee "$OUT/metrics.txt"
-echo "cache: ${T_CACHE}s   pt1: ${T_PT1}s" | tee -a "$OUT/metrics.txt"
-awk -v c="$T_CACHE" -v p="$T_PT1" 'BEGIN {
+{
+  printf "cache vs pt1: "
+  "$CLI" --compare "$OUT/cache.ppm" "$OUT/pt1.ppm"
+  printf "pt1 vs pt2:   "
+  "$CLI" --compare "$OUT/pt1.ppm" "$OUT/pt2.ppm"
+} | tee "$OUT/metrics.txt"
+echo "cache: ${T_CACHE}s   pt1: ${T_PT1}s   pt2: ${T_PT2}s" | tee -a "$OUT/metrics.txt"
+awk -v c="$T_CACHE" -v p="$T_PT1" -v q="$T_PT2" 'BEGIN {
   if (p > 0) printf "time ratio (cache/pt1): %.2f\n", c / p;
   else print "time ratio (cache/pt1): n/a (pt1 < 1s)";
+  if (p > 0 && q > 0) printf "time ratio (pt2/pt1): %.2f\n", q / p;
 }' | tee -a "$OUT/metrics.txt"
 
 echo "results in $OUT/"
