@@ -13,18 +13,39 @@
 
 namespace umbreon {
 
-// Coarse render pipeline phase, in execution order. fraction() weights these so
-// the value climbs 0 -> 1 across a render. A phase the render skips (e.g.
-// GlobalIllum when GI is off) is simply never entered.
+// Coarse render pipeline phase, in execution order. fraction() weights these
+// with a RenderPhasePlan so the value climbs 0 -> 1 across a render. A phase
+// the render skips (e.g. GlobalIllum when GI is off) is simply never entered.
 enum class RenderPhase : int {
   Idle = 0,
   Setup,        // Embree device + BVH build
   CoarseAo,     // optional coarse-AO pre-pass
-  Primary,      // per-pixel primary rays + direct shading (the dominant cost)
-  GlobalIllum,  // GI / pt1 indirect post-pass
+  Primary,      // per-pixel primary rays + direct shading
+  GlobalIllum,  // GI / pt1 indirect post-pass (dominant whenever GI is on)
   Edges,        // NPR stroke / object-space edges
   Postprocess,  // fog, downsample, denoise, gamma
   Done,
+};
+
+// Relative cost shares of the phases within one render pass. The renderer
+// declares these per pass (RenderProgress::setPhasePlan) from the resolved
+// RenderOptions, so the bar tracks where the time actually goes: GI dominates
+// whenever it is on, while a GI-off render spends its time in Primary. A fixed
+// table cannot express both.
+//
+// Shares are RELATIVE and may use any unit -- fraction() normalizes by their
+// sum -- so the renderer simply passes estimated seconds. A ZERO share means
+// the phase does not run in this pass: it collapses to an empty span, so a
+// skipped phase leaves no gap instead of jumping the bar.
+//
+// The defaults reproduce the historical fixed table.
+struct RenderPhasePlan {
+  float setup = 0.05f;
+  float coarseAo = 0.05f;
+  float primary = 0.65f;
+  float globalIllum = 0.15f;
+  float edges = 0.05f;
+  float postprocess = 0.05f;
 };
 
 // Thread-safe (lock-free) progress + cancel channel. Non-copyable; pass by
@@ -36,11 +57,15 @@ class RenderProgress {
   RenderProgress& operator=(const RenderProgress&) = delete;
 
   // --- reader side (any thread; all noexcept, lock-free) ---
-  // Overall completion in [0, 1], weighted across phases and (for group-alpha
-  // multipass) passes. Monotonic non-decreasing over a render. The per-phase
-  // weights are NOMINAL (Primary dominates); this is a "roughly how far" figure
-  // for a progress bar, not a time estimate.
+  // Overall completion in [0, 1], weighted by the phase plan (see setPhasePlan)
+  // and, for group-alpha multipass, across passes. Monotonic non-decreasing over
+  // a render. The plan is an ESTIMATE, so this is a "roughly how far" figure for
+  // a progress bar rather than an exact time prediction -- but a phase that
+  // costs most of the render is given most of the bar.
   float fraction() const noexcept;
+  // The plan currently in effect, renormalized to sum to 1 (a segmented UI can
+  // size its phase ticks from this). Never returns an all-zero plan.
+  RenderPhasePlan phasePlan() const noexcept;
   RenderPhase phase() const noexcept {
     return static_cast<RenderPhase>(phase_.load(std::memory_order_relaxed));
   }
@@ -65,6 +90,12 @@ class RenderProgress {
   }
 
   // --- writer side (called by the renderer internals; not for consumers) ---
+  // Declare the relative phase costs for this pass (see RenderPhasePlan). Call
+  // before the pass's first beginPhase(): while the phase is Idle, fraction() is
+  // passIndex/passCount under ANY plan, so a reader cannot observe a
+  // plan-induced drop. Shares that are negative or non-finite count as 0; an
+  // all-zero plan falls back to the defaults.
+  void setPhasePlan(const RenderPhasePlan& plan) noexcept;
   // Enter multipass slot `passIndex` of `passCount` (group-alpha section blend).
   // The default is a single pass [0, 1). Resets the per-phase counters.
   void beginPass(std::uint64_t passIndex, std::uint64_t passCount) noexcept {
@@ -86,6 +117,19 @@ class RenderProgress {
   void advance(std::uint64_t n) noexcept {
     unitsDone_.fetch_add(n, std::memory_order_relaxed);
   }
+  // Monotonic seek: raise the completed-unit count to `unitsDone`, never lower
+  // it. Needed wherever progress arrives as an ABSOLUTE position instead of an
+  // increment -- OIDN's filter monitor reports a [0, 1] fraction, and may do so
+  // from worker threads out of order -- and to land a sub-stage exactly on the
+  // end of its slice after per-chunk rounding has undershot it.
+  void advanceTo(std::uint64_t unitsDone) noexcept {
+    std::uint64_t cur = unitsDone_.load(std::memory_order_relaxed);
+    while (cur < unitsDone &&
+           !unitsDone_.compare_exchange_weak(cur, unitsDone,
+                                             std::memory_order_relaxed,
+                                             std::memory_order_relaxed)) {
+    }
+  }
   // Mark the whole render finished: fraction() -> 1, phase() -> Done.
   void markDone() noexcept {
     passIndex_.store(0, std::memory_order_relaxed);
@@ -96,11 +140,31 @@ class RenderProgress {
   }
 
  private:
+  // The plan lives in ONE atomic word rather than six: fraction() prefix-sums
+  // the shares, so a torn read (half old plan, half new) would be precisely a
+  // non-monotonic blip in the bar. Six 10-bit permille slots -- Setup, CoarseAo,
+  // Primary, GlobalIllum, Edges, Postprocess; Idle and Done always weigh 0 --
+  // fit in 60 bits, and one 64-bit load keeps the reader path cheap. 10 bits
+  // resolves 0.1%, enough for the default table to sum to exactly 1000 and so
+  // reproduce the historical fractions with no rounding drift.
+  static constexpr int kPlanSlots = 6;
+  static constexpr int kPlanBits = 10;
+  static constexpr std::uint64_t kPlanMask = (1ull << kPlanBits) - 1;
+  static constexpr std::uint64_t kPlanPermille = 1000;
+  // Default shares in permille, in slot order: Setup 50, CoarseAo 50,
+  // Primary 650, GlobalIllum 150, Edges 50, Postprocess 50. Sums to exactly
+  // 1000, which is what makes the historical fractions exact.
+  static constexpr std::uint64_t kDefaultPlanPacked =
+      50ull | (50ull << kPlanBits) | (650ull << (2 * kPlanBits)) |
+      (150ull << (3 * kPlanBits)) | (50ull << (4 * kPlanBits)) |
+      (50ull << (5 * kPlanBits));
+
   std::atomic<int> phase_{static_cast<int>(RenderPhase::Idle)};
   std::atomic<std::uint64_t> unitsDone_{0};
   std::atomic<std::uint64_t> unitsTotal_{1};
   std::atomic<std::uint64_t> passIndex_{0};
   std::atomic<std::uint64_t> passCount_{1};
+  std::atomic<std::uint64_t> plan_{kDefaultPlanPacked};
   std::atomic<bool> cancel_{false};
 };
 

@@ -1,6 +1,11 @@
 // Shadow (hard/soft/acne-guard) and diffuse-GI irradiance-cache
 // integration tests, incl. the rejectDarkOutliers and denoiseAtrous units.
 // Split out of the monolithic test_render.cpp (same assertions, relocated).
+//
+// The GI cases here exercise the IRRADIANCE CACHE integrator and its knobs
+// (giSamples / giRecordSpacing / giAccuracy / giGradients / giSeedPerVertex),
+// so they set giIntegrator = 0 explicitly: the default is pt1, which ignores
+// those knobs entirely and would silently turn these into no-op assertions.
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -188,6 +193,7 @@ int main() {
     umbreon::RenderOptions o;
     o.width = 5; o.height = 5;
     o.gi = true;
+    o.giIntegrator = 0;
     o.giSamples = 48;
     umbreon::FrameResult a = umbreon::render(sc, o);
     umbreon::FrameResult b = umbreon::render(sc, o);
@@ -250,6 +256,7 @@ int main() {
     umbreon::RenderOptions o;
     o.width = 5; o.height = 5;
     o.gi = true;
+    o.giIntegrator = 0;
     o.giSamples = 128;
     o.giMaxDistance = 10.0f;
     o.giRecordSpacing = 0.5f;
@@ -304,6 +311,7 @@ int main() {
     umbreon::RenderOptions o;
     o.width = 5; o.height = 5;
     o.gi = true;
+    o.giIntegrator = 0;
     o.giSamples = 256;
     o.giMaxDistance = 6.0f;
     o.giRecordSpacing = 0.4f;
@@ -355,7 +363,7 @@ int main() {
       sc.ambientColor = {1, 1, 1}; sc.background = {0, 0, 0};
       umbreon::RenderOptions o;
       o.width = 5; o.height = 5;
-      o.gi = gi; o.giSamples = 256; o.giMaxDistance = 10.0f;
+      o.gi = gi; o.giIntegrator = 0; o.giSamples = 256; o.giMaxDistance = 10.0f;
       o.giRecordSpacing = 0.3f; o.giAccuracy = 0.3f;
       return umbreon::render(sc, o).color[kCenterRgba + 0];
     };
@@ -417,7 +425,7 @@ int main() {
       sc.ambientColor = {1, 1, 1}; sc.background = {0, 0, 0};
       umbreon::RenderOptions o;
       o.width = 5; o.height = 5;
-      o.gi = true; o.giSamples = 256; o.giMaxDistance = 10.0f;
+      o.gi = true; o.giIntegrator = 0; o.giSamples = 256; o.giMaxDistance = 10.0f;
       o.giRecordSpacing = 0.3f; o.giAccuracy = 0.3f;
       o.giBounces = bounces;
       o.giSeedPerVertex = true;  // records on all walls (view-independent)
@@ -475,7 +483,7 @@ int main() {
       sc.ambientColor = {1, 1, 1}; sc.background = {0, 0, 0};
       umbreon::RenderOptions o;
       o.width = 7; o.height = 7;
-      o.gi = true; o.giSamples = 256; o.giMaxDistance = 10.0f;
+      o.gi = true; o.giIntegrator = 0; o.giSamples = 256; o.giMaxDistance = 10.0f;
       o.giRecordSpacing = 0.3f; o.giAccuracy = 3.0f;  // overlap for gradients
       o.giSeedPerVertex = true;
       o.giGradients = gradients;

@@ -12,6 +12,7 @@
 #include "postprocess/image_ops.hpp"
 #include "experimental/irradiance_cache/denoise.hpp"
 #include "render/embree_renderer.hpp"
+#include "render/progress_cost_model.hpp"
 
 namespace umbreon {
 
@@ -75,6 +76,17 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
                  "falling back to full-resolution AO\n");
     hi.aoResDiv = 0;
   }
+
+  // Declare where this render's time will actually go, so fraction() weights the
+  // bar by the real cost profile instead of a fixed table: with GI on the GI
+  // phase is ~75-90% of the render, with GI off the time is Primary's. A phase
+  // that does not run this pass gets a zero share and so leaves no gap (the
+  // CoarseAo pre-pass is entered unconditionally but is a no-op by default).
+  // Declared here, before the first beginPhase(), and only when a caller asked
+  // for progress -- the 2-arg render() path stays free of all of this.
+  if (progress)
+    progress->setPhasePlan(
+        detail::toPhasePlan(detail::renderCostEstimate(scene, hi, ss)));
 
   EmbreeRenderer renderer;
   FrameResult frame = renderer.render(scene, hi, progress);

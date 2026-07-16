@@ -18,7 +18,7 @@ namespace detail {
 
 int denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
                 const float* normal, const float* position,
-                const RenderOptions& opt) {
+                const RenderOptions& opt, const ProgressSlice* prog) {
   const std::size_t npix = static_cast<std::size_t>(w) * h;
   if (w <= 0 || h <= 0 || E.size() < npix * 3) return 0;  // no-op
 
@@ -52,8 +52,13 @@ int denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
 
   int used;
 #ifdef UMBREON_HAVE_OIDN
-  if (denoiseOidn(tmp, dopt)) {
+  if (denoiseOidn(tmp, dopt, prog)) {
     used = static_cast<int>(DenoiserBackend::OIDN);
+  } else if (prog && prog->cancelled()) {
+    // The filter was cancelled, not broken: keep the raw (noisy) gather E and
+    // skip the fallback, which would spend exactly the time the cancel asked to
+    // save. E is left untouched -- the caller returns a partial frame anyway.
+    return 0;
   } else {
     denoiseAtrous(tmp, dopt);  // rare runtime-error fallback
     used = static_cast<int>(DenoiserBackend::AtrousBilateral);

@@ -112,14 +112,16 @@ struct RenderOptions {
   bool giComponentReject = true;// reject records of a different component (leak)
   bool giSeedPerVertex = false; // true => seed from mesh vertices (view-independent)
 
-  // --- pt1: experimental path-traced indirect integrator (per-pixel brute-
-  // force one-bounce gather; see experimental/pt1/pt1_integrator.hpp). An
-  // ALTERNATIVE to the irradiance cache selected by giIntegrator; only active
-  // when gi is on, and giIntegrator == 0 keeps the cache path byte-identical.
-  int giIntegrator = 0;         // 0 = irradiance cache (default), 1 = pt1
+  // --- pt1: path-traced indirect integrator (per-pixel one-bounce gather; see
+  // experimental/pt1/pt1_integrator.hpp). This is the DEFAULT indirect
+  // integrator. giIntegrator == 0 selects the older irradiance cache instead,
+  // which is experimental and kept for comparison only. Either way the
+  // integrator runs only when gi is on.
+  int giIntegrator = 1;         // 1 = pt1 (default), 0 = irradiance cache
   int pt1Spp = 8;               // gather rays per pixel
-  bool pt1HalfRes = true;       // gather at half the render grid + joint
-                                // bilateral upsample (false = full-res gather)
+  bool pt1HalfRes = true;       // LEGACY gather-grid selector, consulted only
+                                // when pt1GatherDiv == 0: half the render grid
+                                // + joint bilateral upsample (false=full res)
   bool pt1Denoise = true;       // OIDN denoise of the indirect irradiance
                                 // buffer (pre-composite, at gather resolution)
   unsigned pt1Seed = 0;         // deterministic per-pixel RNG seed
@@ -132,18 +134,22 @@ struct RenderOptions {
   float pt1UpsampleDepthScale = 0.02f;
   // Stratified first-bounce sampling (Hammersley + per-pixel Cranley-Patterson
   // shift, the AO sampler's scheme) and per-sample luminance firefly clamp
-  // (0 = off). Both default off so the flag-less pt1 render is unchanged.
-  bool pt1Ld = false;
+  // (0 = off). Stratification is on by default -- it is what the --quality
+  // presets use: same ray count, less variance. The clamp stays off because it
+  // biases the result.
+  bool pt1Ld = true;
   float pt1Clamp = 0.0f;
   // Gather-grid divisor relative to the RENDER grid (which is the supersampled
   // hi-res grid): the indirect irradiance is gathered on a ceil(W/k) x
   // ceil(H/k) grid and joint-bilateral-upsampled back (the E field is
   // low-frequency; the denoise and the ss box-downsample smooth it anyway).
-  //   0  = legacy: derive 1 or 2 from pt1HalfRes (default; byte-identical)
+  //   0  = legacy: derive 1 or 2 from pt1HalfRes
   //   k>=1 = explicit divisor (1 = gather on the render grid)
-  //   -1 = "output resolution": resolved to the supersample factor by
-  //        renderFrame, so the gather grid matches the FINAL image size.
-  int pt1GatherDiv = 0;
+  //   -1 = "output resolution" (DEFAULT): resolved to the supersample factor by
+  //        renderFrame, so the gather grid matches the FINAL image size. This
+  //        is what the --quality draft/high presets use: visually equivalent to
+  //        the full hi-res grid at a fraction of the cost.
+  int pt1GatherDiv = -1;
   // Re-gather silhouette-rim pixels at FULL resolution when the reduced
   // gather grid has no compatible sample for them (the joint-bilateral guide
   // weights die at depth/normal discontinuities whose surface the low grid

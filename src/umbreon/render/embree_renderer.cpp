@@ -18,6 +18,7 @@
 
 #include "ao/env_dome.hpp"
 #include "render/adaptive_aa.hpp"
+#include "render/progress_cost_model.hpp"
 #include "shading/hit_shader.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_integrator.hpp"
@@ -468,12 +469,15 @@ std::unique_ptr<CoarseAoGrid> runCoarseAoPrepass(
 // pt1 diffuse-GI post-pass (opt.giIntegrator == 1): per-pixel path-traced
 // gather on a reduced grid, denoise, joint-bilateral upsample, silhouette-rim
 // patch, then the [E] composite L += giIntensity * giReflectance * E.
+// `budget` slices the GlobalIllum phase's progress units across those
+// sub-stages; every slice is inert when the caller passed no RenderProgress.
 void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                   const BuiltScene& built, const Mesh& m,
                   const std::vector<Light>& lights, const Vec3& ambLight,
                   const Vec3& aoUpAxis, const CameraBasis& cb, int W, int H,
                   const std::vector<float>& giRefl,
-                  const std::vector<uint8_t>& giElig, FrameResult& res) {
+                  const std::vector<uint8_t>& giElig, FrameResult& res,
+                  const detail::GiProgressBudget& budget) {
     // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
     // the sky through its miss term, so the combination counts the sky twice.
     if (opt.envLights > 0)
@@ -549,13 +553,15 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       detail::Pt1GBuffer g;
       std::vector<float> Eh, occh;
       const auto tg0 = std::chrono::high_resolution_clock::now();
-      detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats);
+      detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats, &budget.gbuffer);
+      budget.gbuffer.finish();
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), g.depth.data(),
                             spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
-                            opt.pt1Clamp, &rayStats);
+                            opt.pt1Clamp, &rayStats, &budget.gather);
+      budget.gather.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -563,11 +569,12 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
         const auto td0 = std::chrono::high_resolution_clock::now();
         res.pt1DenoiserUsed =
             detail::denoisePt1E(hw, hh, Eh, g.albedo.data(), g.normal.data(),
-                                g.position.data(), opt);
+                                g.position.data(), opt, &budget.denoise);
         const auto td1 = std::chrono::high_resolution_clock::now();
         res.pt1Timing.denoise =
             std::chrono::duration<double>(td1 - td0).count();
       }
+      budget.denoise.finish();
 
       const auto tu0 = std::chrono::high_resolution_clock::now();
       // At k <= 2 keep the historical 2x2-quad-only fallback (byte-identical
@@ -580,7 +587,8 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
           occh, opt.pt1UpsampleNormalPow, opt.pt1UpsampleDepthScale, Ebuf,
           occBuf, gatherDiv <= 2 ? 0 : gatherDiv, &upsampleHoles,
           opt.pt1EdgePatch ? &needsPatch : nullptr,
-          opt.pt1EdgePatchThresh);
+          opt.pt1EdgePatchThresh, &budget.upsample);
+      budget.upsample.finish();
       const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
       if (holes > 0 && !opt.pt1EdgePatch)
         std::fprintf(stderr,
@@ -613,7 +621,7 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                                 res.normal.data(), /*geomNormal=*/nullptr,
                                 needsPatch.data(), res.depth.data(), patchSpp,
                                 opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
-                                opt.pt1Clamp, &rayStats);
+                                opt.pt1Clamp, &rayStats, &budget.edgePatch);
           for (std::size_t i = 0; i < needsPatch.size(); ++i) {
             if (!needsPatch[i]) continue;
             Ebuf[i * 3 + 0] = Ep[i * 3 + 0];
@@ -639,12 +647,18 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                            static_cast<double>(needsPatch.size()));
         }
       }
+      // The rim set is only known after the upsample, so the patch slice can
+      // never be budgeted exactly -- and it is skipped entirely when no rim
+      // needed one. Consume the slice either way so the phase still lands on 1.
+      budget.edgePatch.finish();
     } else {
       const auto tg0 = std::chrono::high_resolution_clock::now();
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(),
                             res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
-                            occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats);
+                            occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats,
+                            &budget.gather);
+      budget.gather.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -654,11 +668,12 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
         const auto td0 = std::chrono::high_resolution_clock::now();
         res.pt1DenoiserUsed =
             detail::denoisePt1E(W, H, Ebuf, giRefl.data(), res.normal.data(),
-                                res.position.data(), opt);
+                                res.position.data(), opt, &budget.denoise);
         const auto td1 = std::chrono::high_resolution_clock::now();
         res.pt1Timing.denoise =
             std::chrono::duration<double>(td1 - td0).count();
       }
+      budget.denoise.finish();
     }
 
     // [E] composite -- same form as the cache path: L += giIntensity *
@@ -683,7 +698,11 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
           res.giOcclusion[pix] = occBuf[pix];
         }
       }
+      budget.composite.addWork(
+          static_cast<std::uint64_t>(rows.end() - rows.begin()),
+          static_cast<std::uint64_t>(H));
     });
+    budget.composite.finish();
 
     res.pt1Rays.gatherRays =
         rayStats.gatherRays.load(std::memory_order_relaxed);
@@ -1237,21 +1256,30 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   // (opt.giIntegrator == 1; experimental/pt1/). Both add giIntensity *
   // giReflectance * E to res.color and fill the same `indirect` AOV, on top of
   // the unchanged direct shading from the pixel loop above.
-  // Progress-tracked at a coarse grain: one GlobalIllum phase slot (the pt1 /
-  // cache internals are not row-instrumented). If cancellation was requested
-  // during the primary loop, skip the GI pass -- the partial frame is returned
-  // below with cancelled == true.
-  if (progress) progress->beginPhase(RenderPhase::GlobalIllum);
+  // Progress: GI is the DOMINANT phase whenever it is on (measured 71-90% of
+  // the render), so the phase carries a unit budget sliced across the pt1
+  // sub-stages (see GiProgressBudget) instead of a single boundary tick -- a
+  // lone tick is what used to freeze the bar here for most of the render. The
+  // cache integrator is experimental and stays uninstrumented: its lump is
+  // estimated so the phase SHARE is honest, but the bar does not move within
+  // it. If cancellation was requested during the primary loop, skip the GI pass
+  // -- the partial frame is returned below with cancelled == true.
+  const detail::GiProgressBudget giBudget =
+      detail::makeGiBudget(progress, detail::giCostEstimate(opt, W, H));
+  if (progress) progress->beginPhase(RenderPhase::GlobalIllum, giBudget.total);
   const bool giCancelled = progress && progress->cancelRequested();
   if (!giCancelled && opt.gi &&
       (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator == 1) {
     runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
-                 giRefl, giElig, res);
+                 giRefl, giElig, res, giBudget);
   } else if (!giCancelled && opt.gi && meshPresent(built)) {
     runIrradianceCacheGiPass(scene, opt, built, m, lights, ambLight, aoUpAxis,
                              W, H, giGroup, giGeom, giRefl, res);
   }
-  if (progress) progress->advance(1);
+  // Land the phase on exactly 1.0 -- whether GI ran fully, stopped early, or
+  // never ran (GI off / no mesh / the uninstrumented cache path). A monotone
+  // seek, so this reconciles the sub-stage rounding without ever rewinding.
+  if (progress) progress->advanceTo(giBudget.total);
 
 
   // Record the mesh geometry identity so occluded() can map an excluded

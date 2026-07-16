@@ -18,6 +18,7 @@
 #include <tbb/blocked_range2d.h>
 
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
+#include "render/progress_slice.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
 #include "scene.hpp"
@@ -84,7 +85,8 @@ struct Pt1GBuffer {
 // full grid's 2x2 pixel blocks.
 inline void tracePt1GBuffer(const IrradianceCacheParams& p,
                             const Pt1CameraBasis& cam, int w, int h,
-                            Pt1GBuffer& g, Pt1RayStats* stats = nullptr) {
+                            Pt1GBuffer& g, Pt1RayStats* stats = nullptr,
+                            const ProgressSlice* prog = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(w) * h;
   g.w = w;
   g.h = h;
@@ -100,6 +102,7 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
 
   tbb::parallel_for(tbb::blocked_range<int>(0, h),
                     [&](const tbb::blocked_range<int>& rows) {
+    if (prog && prog->cancelled()) return;
     for (int py = rows.begin(); py != rows.end(); ++py) {
       const float v =
           1.0f - 2.0f * (static_cast<float>(py) + 0.5f) / static_cast<float>(h);
@@ -190,6 +193,8 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
         g.hit[pix] = 1;
       }
     }
+    if (prog) prog->addWork(static_cast<std::uint64_t>(rows.end() - rows.begin()),
+                            static_cast<std::uint64_t>(h));
   });
 }
 }  // namespace detail

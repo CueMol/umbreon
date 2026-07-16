@@ -22,6 +22,7 @@
 #include "ao/ambient_occlusion.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_gbuffer.hpp"
+#include "render/progress_slice.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
@@ -298,7 +299,8 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                           float epsT, std::vector<float>& E,
                           std::vector<float>& occ, bool ld = false,
                           float clampLum = 0.0f,
-                          Pt1RayStats* stats = nullptr) {
+                          Pt1RayStats* stats = nullptr,
+                          const ProgressSlice* prog = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   E.assign(npix * 3, 0.0f);
   occ.assign(npix, 0.0f);
@@ -306,6 +308,10 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
   tbb::parallel_for(
       tbb::blocked_range2d<int>(0, H, 16, 0, W, 16),
       [&](const tbb::blocked_range2d<int>& r) {
+        // Cooperative cancel: bail before this tile (any in-flight tile stops at
+        // its next one). A plain atomic load, so the no-progress path is
+        // untouched and the pixel values stay thread-count invariant.
+        if (prog && prog->cancelled()) return;
         for (int py = r.rows().begin(); py != r.rows().end(); ++py) {
           for (int px = r.cols().begin(); px != r.cols().end(); ++px) {
             const std::size_t pix = static_cast<std::size_t>(py) * W + px;
@@ -335,6 +341,13 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
             occ[pix] = o;
           }
         }
+        // Report the tile's AREA: the range is 2D, so counting rows alone would
+        // under-report by the column split.
+        if (prog)
+          prog->addWork(
+              static_cast<std::uint64_t>(r.rows().end() - r.rows().begin()) *
+                  static_cast<std::uint64_t>(r.cols().end() - r.cols().begin()),
+              static_cast<std::uint64_t>(W) * static_cast<std::uint64_t>(H));
       });
 }
 }  // namespace detail
