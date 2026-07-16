@@ -11,7 +11,7 @@ namespace umbreon {
 // `primary`); `total` is the wall time of render().
 void reportPt1Timing(const RenderOptions& ropt, const FrameResult& frame,
                      double totalSeconds) {
-  if (!(ropt.gi && ropt.giIntegrator == 1)) return;
+  if (!(ropt.gi && ropt.giIntegrator >= 1)) return;  // pt1 and pt2 both report
   umbreon::Pt1Timing t = frame.pt1Timing;
   t.total = totalSeconds;
   std::printf(

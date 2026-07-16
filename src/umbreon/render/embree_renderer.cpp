@@ -526,6 +526,18 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
 
     const int spp = std::max(1, opt.pt1Spp);
     detail::Pt1RayStats rayStats;
+    // pt2 (giIntegrator == 2) layers its extensions onto this same pass: the
+    // Owen-scrambled Sobol / blue-noise sampler and emissive-at-bounce are
+    // grid-level opt-ins resolved per pixel inside gatherPt1Grid. pt1 passes
+    // null and stays bit-identical.
+    detail::Pt2GatherCfg pt2CfgStorage;
+    const detail::Pt2GatherCfg* pt2Cfg = nullptr;
+    if (opt.giIntegrator == 2) {
+      pt2CfgStorage.pattern = opt.pt2Pattern;
+      pt2CfgStorage.emissive = opt.pt2Emissive;
+      pt2Cfg = &pt2CfgStorage;
+    }
+    const char* giTag = (opt.giIntegrator == 2) ? "pt2" : "pt1";
     // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
     // REAL CSG primitives (atom balls / bonds); outline decoration and the
     // background stay 0. Unlike the cache's geomID/kind gate this is primID-
@@ -560,7 +572,7 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), g.depth.data(),
                             spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
-                            opt.pt1Clamp, &rayStats, &budget.gather);
+                            opt.pt1Clamp, &rayStats, &budget.gather, pt2Cfg);
       budget.gather.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
@@ -592,10 +604,10 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
       if (holes > 0 && !opt.pt1EdgePatch)
         std::fprintf(stderr,
-                     "pt1: %llu eligible pixel(s) found no valid gather "
+                     "%s: %llu eligible pixel(s) found no valid gather "
                      "sample in the upsample window (thin features at 1/%d "
                      "gather res lose their indirect)\n",
-                     static_cast<unsigned long long>(holes), gatherDiv);
+                     giTag, static_cast<unsigned long long>(holes), gatherDiv);
       const auto tu1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
 
@@ -621,7 +633,8 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                                 res.normal.data(), /*geomNormal=*/nullptr,
                                 needsPatch.data(), res.depth.data(), patchSpp,
                                 opt.pt1Seed, diag, Ep, occp, opt.pt1Ld,
-                                opt.pt1Clamp, &rayStats, &budget.edgePatch);
+                                opt.pt1Clamp, &rayStats, &budget.edgePatch,
+                                pt2Cfg);
           for (std::size_t i = 0; i < needsPatch.size(); ++i) {
             if (!needsPatch[i]) continue;
             Ebuf[i * 3 + 0] = Ep[i * 3 + 0];
@@ -640,9 +653,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
           res.pt1Timing.gather +=
               std::chrono::duration<double>(tp1 - tp0).count();
           std::fprintf(stderr,
-                       "pt1: edge patch re-gathered %zu rim pixel(s) "
+                       "%s: edge patch re-gathered %zu rim pixel(s) "
                        "(%.1f%% of grid) at full res\n",
-                       patchCount,
+                       giTag, patchCount,
                        100.0 * static_cast<double>(patchCount) /
                            static_cast<double>(needsPatch.size()));
         }
@@ -657,7 +670,7 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                             /*geomNormal=*/nullptr, eligible.data(),
                             res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
                             occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats,
-                            &budget.gather);
+                            &budget.gather, pt2Cfg);
       budget.gather.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
@@ -723,13 +736,13 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
             ? totalRays / res.pt1Timing.gather / 1.0e6
             : 0.0;
     std::fprintf(stderr,
-                 "pt1: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
+                 "%s: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
                  "%.3fs upsample %.3fs\n"
-                 "pt1: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
+                 "%s: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
                  "nee_frac %.2f  %.1f Mrays/s\n",
-                 gatherDiv, W, H, spp,
+                 giTag, gatherDiv, W, H, spp,
                  res.pt1Timing.gather, res.pt1Timing.denoise,
-                 res.pt1Timing.upsample,
+                 res.pt1Timing.upsample, giTag,
                  res.pt1Rays.gatherRays / 1.0e6,
                  res.pt1Rays.gatherRays
                      ? 100.0 * res.pt1Rays.gatherHits / res.pt1Rays.gatherRays
@@ -1269,7 +1282,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   if (progress) progress->beginPhase(RenderPhase::GlobalIllum, giBudget.total);
   const bool giCancelled = progress && progress->cancelRequested();
   if (!giCancelled && opt.gi &&
-      (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator == 1) {
+      (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator >= 1) {
     runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
                  giRefl, giElig, res, giBudget);
   } else if (!giCancelled && opt.gi && meshPresent(built)) {

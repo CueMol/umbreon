@@ -282,12 +282,13 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       aoFactor = ao.aoFactor;
       ambLight = ao.ambLight;
       diffuseAo = ao.diffuseAo;
-      // pt1 only (giIntegrator == 1): a REAL CSG primitive receives gathered
-      // indirect exactly like the mesh -- drop its constant ambient and record
-      // the reflectance for the post-pass composite. Gated on the integrator so
-      // the cache path stays byte-identical (its GI remains mesh-only). The
-      // normal/albedo AOVs feed the full-res gather and the OIDN guides.
-      if (c.opt.gi && c.opt.giIntegrator == 1) {
+      // pt1/pt2 only (giIntegrator >= 1): a REAL CSG primitive receives
+      // gathered indirect exactly like the mesh -- drop its constant ambient
+      // and record the reflectance for the post-pass composite. Gated on the
+      // integrator so the cache path stays byte-identical (its GI remains
+      // mesh-only). The normal/albedo AOVs feed the full-res gather and the
+      // OIDN guides.
+      if (c.opt.gi && c.opt.giIntegrator >= 1) {
         hs.giReflectance =
             Vec3{pm.diffuse * C.x, pm.diffuse * C.y, pm.diffuse * C.z};
         hs.giEligible = 1;

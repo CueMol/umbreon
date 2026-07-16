@@ -346,18 +346,34 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--integrator");
       if (v == "cache")
         o.giIntegrator = 0;
-      else if (v == "pt1") {
-        // Asking for pt1 EXPLICITLY implies the GI pipeline: the gi gate drives
-        // the ambient zeroing, the _amb_frac energy rebalance and the GI AOV
-        // plumbing, which pt1 shares with the cache -- without it a bare
-        // "--integrator pt1" would silently render with no GI at all. The
-        // implication lives here, on the explicit flag, and NOT on
-        // giIntegrator == 1: that is the default now, so keying off it would
-        // turn GI on for every render. A later --gi off still wins.
-        o.giIntegrator = 1;
+      else if (v == "pt1" || v == "pt2") {
+        // Asking for pt1/pt2 EXPLICITLY implies the GI pipeline: the gi gate
+        // drives the ambient zeroing, the _amb_frac energy rebalance and the
+        // GI AOV plumbing, which they share with the cache -- without it a
+        // bare "--integrator pt1" would silently render with no GI at all.
+        // The implication lives here, on the explicit flag, and NOT on the
+        // giIntegrator value: pt1 is the default, so keying off it would turn
+        // GI on for every render. A later --gi off still wins.
+        o.giIntegrator = (v == "pt2") ? 2 : 1;
         o.gi = true;
       } else
-        fail("--integrator expects cache/pt1");
+        fail("--integrator expects cache/pt1/pt2");
+      continue;
+    }
+    if (a == "--pt2-pattern") {
+      std::string v = value("--pt2-pattern");
+      if (v == "sobol")
+        o.pt2Pattern = 0;
+      else if (v == "bluenoise")
+        o.pt2Pattern = 1;
+      else
+        fail("--pt2-pattern expects sobol/bluenoise");
+      continue;
+    }
+    if (a == "--pt2-emissive") {
+      std::string v = value("--pt2-emissive");
+      if (o.ok && !parseBool(v, o.pt2Emissive))
+        fail("--pt2-emissive expects on/off");
       continue;
     }
     if (a == "--quality") {
@@ -1052,8 +1068,14 @@ void printUsage(const char* prog) {
       "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
-      "  --integrator <cache|pt1> indirect GI integrator; cache is\n"
-      "                           experimental (pt1 implies --gi on)    [pt1]\n"
+      "  --integrator <cache|pt1|pt2> indirect GI integrator; pt2 = pt1 +\n"
+      "                           Sobol/blue-noise sampler + emissive GI;\n"
+      "                           cache is experimental (pt1/pt2 imply\n"
+      "                           --gi on)                              [pt1]\n"
+      "  --pt2-pattern <sobol|bluenoise> pt2 first-bounce sample\n"
+      "                           arrangement                     [bluenoise]\n"
+      "  --pt2-emissive <on|off>  pt2: emissive geometry lights its\n"
+      "                           surroundings (GI transport)           [on]\n"
       "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"
       "                           3-bounce (put it FIRST; later flags\n"

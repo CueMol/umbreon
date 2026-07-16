@@ -22,6 +22,7 @@
 #include "ao/ambient_occlusion.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_gbuffer.hpp"
+#include "experimental/pt2/pt2_sampler.hpp"
 #include "render/progress_slice.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
@@ -30,6 +31,23 @@
 
 namespace umbreon {
 namespace detail {
+
+// pt2 extensions layered onto the pt1 gather core, resolved per gather pixel.
+// A null/default ext keeps every pt1 code path bit-identical (pt1 is the
+// frozen regression anchor); pt2 (giIntegrator == 2) turns these on.
+struct Pt1GatherExt {
+  bool emissive = false;       // add Material::emission at bounce vertices
+  bool sobol = false;          // first-bounce 2D via Owen-scrambled Sobol
+  Pt2PixelSampler sampler{};   // resolved per-pixel Sobol state
+};
+
+// Grid-level pt2 configuration handed to gatherPt1Grid, which resolves the
+// per-pixel Pt1GatherExt from it (blue-noise Morton indexing needs the pixel
+// coordinates, which only the grid loop knows).
+struct Pt2GatherCfg {
+  int pattern = kPt2PatternBlueNoise;  // RenderOptions::pt2Pattern
+  bool emissive = true;                // RenderOptions::pt2Emissive
+};
 
 // One path vertex of the pt1 gather walk: the NEE radiance it reflects toward
 // the previous vertex, plus what the walk needs to continue the path there.
@@ -52,10 +70,12 @@ struct Pt1Vertex {
 // behavior (and byte-identical output) is untouched.
 inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
                           const Vec3& O, const Vec3& wi, Pt1Vertex& v,
-                          Pt1RayStatsLocal* stats = nullptr) {
+                          Pt1RayStatsLocal* stats = nullptr,
+                          bool addEmission = false) {
   const GeomRecord& rec = p.built->records[rh.hit.geomID];
   Vec3 Ny, Cy, NgShadow;
   float kd;
+  float em = 0.0f;
   if (rec.kind == GeomKind::Mesh) {
     float nbuf[3] = {0, 0, 0};
     float cbuf[4] = {0, 0, 0, 1};
@@ -65,7 +85,9 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
                     RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
     Ny = normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
     Cy = Vec3{cbuf[0], cbuf[1], cbuf[2]};
-    kd = p.mesh->materialForTri(rh.hit.primID).diffuse;
+    const Material& mm = p.mesh->materialForTri(rh.hit.primID);
+    kd = mm.diffuse;
+    if (addEmission) em = mm.emission;
     NgShadow = Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
   } else {
     const BuiltScene& b = *p.built;
@@ -87,6 +109,7 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
     Ny = safeNormalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z});
     Cy = Vec3{fc.x, fc.y, fc.z};
     kd = pm.diffuse;
+    if (addEmission) em = pm.emission;
     NgShadow = Ny;
   }
   // Face the normal toward the gather origin (same rule as oneBounceRadiance).
@@ -114,6 +137,16 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
     E.z += ndl * l.color.z * sh;
   }
   v.radiance = Vec3{kd * Cy.x * E.x, kd * Cy.y * E.y, kd * Cy.z * E.z};
+  // pt2 emissive transport: light EMITTED by this vertex toward the gather
+  // ray. The direct pass only adds emission as self-illumination on camera-
+  // visible pixels (shading.hpp) and never transports it to other surfaces,
+  // so adding it here is the missing emitter-to-receiver path, not a double
+  // count. pt1 keeps addEmission == false and is bit-identical.
+  if (addEmission && em > 0.0f) {
+    v.radiance.x += em * Cy.x;
+    v.radiance.y += em * Cy.y;
+    v.radiance.z += em * Cy.z;
+  }
   v.albedo = Vec3{kd * Cy.x, kd * Cy.y, kd * Cy.z};
   v.P = Py;
   v.N = Ny;
@@ -168,7 +201,8 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
                            const Vec3& N, const Vec3& Ng, int spp,
                            uint32_t seed, float epsT, float* outOcclusion,
                            bool ld = false, float clampLum = 0.0f,
-                           Pt1RayStatsLocal* stats = nullptr) {
+                           Pt1RayStatsLocal* stats = nullptr,
+                           const Pt1GatherExt* ext = nullptr) {
   const Frame f = frameFromNormal(N);
   const float eps = selfIntersectEps(P, N, epsT);
   const Vec3 O = P + N * eps;
@@ -187,7 +221,14 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     uint32_t s1 = static_cast<uint32_t>(s);
     tea2(s0, s1);
     float u1, u2;
-    if (ld) {
+    if (ext && ext->sobol) {
+      // pt2: shuffled Owen-scrambled Sobol replaces the ld/tea2 first-bounce
+      // draw (true Owen scrambling instead of a toroidal shift; with the
+      // blue-noise arrangement the pixel's section of the global sequence is
+      // ext->sampler.indexBase + s).
+      pt2SobolBurley2D(ext->sampler.indexBase + static_cast<uint32_t>(s),
+                       ext->sampler.seed, &u1, &u2);
+    } else if (ld) {
       u1 = static_cast<float>(s) / static_cast<float>(spp) + cpx;
       u2 = radicalInverse2(static_cast<uint32_t>(s)) + cpy;
       if (u1 >= 1.0f) u1 -= 1.0f;
@@ -219,7 +260,9 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
       if (b == 1) ++nOccluded;
       if (stats) ++stats->gatherHits;
       Pt1Vertex v;
-      if (!pt1EvalVertex(p, rh, org, wi, v, stats)) break;  // outline: absorbed
+      if (!pt1EvalVertex(p, rh, org, wi, v, stats,
+                         ext && ext->emissive))
+        break;  // outline: absorbed
       L.x += throughput.x * v.radiance.x;
       L.y += throughput.y * v.radiance.y;
       L.z += throughput.z * v.radiance.z;
@@ -300,11 +343,15 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                           std::vector<float>& occ, bool ld = false,
                           float clampLum = 0.0f,
                           Pt1RayStats* stats = nullptr,
-                          const ProgressSlice* prog = nullptr) {
+                          const ProgressSlice* prog = nullptr,
+                          const Pt2GatherCfg* pt2 = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   E.assign(npix * 3, 0.0f);
   occ.assign(npix, 0.0f);
   const uint32_t seedMix = hashU32(frameSeed);
+  // pt2 blue-noise: pixel sections of the ONE global sequence are spp long
+  // (rounded up to a power of two so sections never overlap).
+  const uint32_t sppPow2 = pt2NextPow2(static_cast<uint32_t>(spp > 0 ? spp : 1));
   tbb::parallel_for(
       tbb::blocked_range2d<int>(0, H, 16, 0, W, 16),
       [&](const tbb::blocked_range2d<int>& r) {
@@ -331,9 +378,19 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                 (depth != nullptr && depth[pix] > 0.0f) ? depth[pix] : epsT;
             Pt1RayStatsLocal local;
             float o = 0.0f;
+            Pt1GatherExt ext;
+            const Pt1GatherExt* extP = nullptr;
+            if (pt2) {
+              ext.emissive = pt2->emissive;
+              ext.sobol = true;
+              ext.sampler = pt2MakePixelSampler(
+                  pt2->pattern, static_cast<uint32_t>(px),
+                  static_cast<uint32_t>(py), seedMix, seed, sppPow2);
+              extP = &ext;
+            }
             const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, tEps, &o,
                                           ld, clampLum,
-                                          stats ? &local : nullptr);
+                                          stats ? &local : nullptr, extP);
             if (stats) stats->flush(local);
             E[pix * 3 + 0] = e.x;
             E[pix * 3 + 1] = e.y;

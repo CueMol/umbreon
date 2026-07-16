@@ -73,6 +73,11 @@ struct Options {
   float pt1Clamp = 0.0f;                // --pt1-clamp (luminance; 0 = off)
   bool pt1Stats = false;                // --pt1-stats (OIDN stage split print)
 
+  // --- pt2 (--integrator pt2): extensions on the pt1 gather core. Mirrors
+  // RenderOptions; scene_setup copies these over unconditionally.
+  int pt2Pattern = 1;    // --pt2-pattern sobol|bluenoise (blue noise default)
+  bool pt2Emissive = true;  // --pt2-emissive on|off (emission at bounces)
+
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI
   // renders stay byte-identical and GI renders denoise by default). An explicit

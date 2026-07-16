@@ -114,10 +114,13 @@ struct RenderOptions {
 
   // --- pt1: path-traced indirect integrator (per-pixel one-bounce gather; see
   // experimental/pt1/pt1_integrator.hpp). This is the DEFAULT indirect
-  // integrator. giIntegrator == 0 selects the older irradiance cache instead,
-  // which is experimental and kept for comparison only. Either way the
-  // integrator runs only when gi is on.
-  int giIntegrator = 1;         // 1 = pt1 (default), 0 = irradiance cache
+  // integrator. giIntegrator == 2 selects pt2, which layers an Owen-scrambled
+  // Sobol / blue-noise sampler, emissive-at-bounce and (in progress) ReSTIR-GI
+  // spatial resampling onto the same gather core (experimental/pt2/).
+  // giIntegrator == 0 selects the older irradiance cache, experimental and
+  // kept for comparison only. Either way the integrator runs only when gi is
+  // on.
+  int giIntegrator = 1;  // 1 = pt1 (default), 2 = pt2, 0 = irradiance cache
   int pt1Spp = 8;               // gather rays per pixel
   bool pt1HalfRes = true;       // LEGACY gather-grid selector, consulted only
                                 // when pt1GatherDiv == 0: half the render grid
@@ -170,6 +173,20 @@ struct RenderOptions {
   // execute) inside the denoiser. Ray counts are always collected (negligible
   // cost, reported via FrameResult::pt1Rays); this flag only adds the prints.
   bool pt1Stats = false;
+
+  // --- pt2 (giIntegrator == 2): extensions layered onto the pt1 gather core.
+  // The pt1* knobs above (spp, gather grid, denoise, sky, edge patch, seed)
+  // all apply to pt2 as well; these fields only control what pt2 adds.
+  // First-bounce sample arrangement: 0 = an independent Owen-scrambled Sobol
+  // sequence per pixel; 1 = blue noise (ONE global sequence walked along a
+  // hierarchically shuffled Morton curve, so the residual error distributes
+  // as blue noise in screen space -- kinder to OIDN and the eye).
+  int pt2Pattern = 1;
+  // Add Material::emission at gather bounce vertices, so emissive geometry
+  // lights its surroundings. Not a double count: the direct pass applies
+  // emission only as self-illumination on camera-visible pixels and never
+  // transports it to other surfaces.
+  bool pt2Emissive = true;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised

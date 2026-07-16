@@ -97,9 +97,10 @@ inline GiCostEstimate giCostEstimate(const RenderOptions& opt, int W,
   if (!opt.gi || W <= 0 || H <= 0) return e;
   const double nHi = static_cast<double>(W) * static_cast<double>(H);
 
-  if (opt.giIntegrator != 1) {
+  if (opt.giIntegrator == 0) {
     // Irradiance cache: experimental and off the default path, so its internals
-    // are not instrumented and the whole pass is one lump.
+    // are not instrumented and the whole pass is one lump. pt2 (== 2) shares
+    // the pt1 pass and falls through to the per-substage estimate below.
     e.gather = kCacheGiPerSamplePixel * nHi * std::max(1, opt.giSamples);
     return e;
   }
@@ -202,7 +203,7 @@ inline RenderCostEstimate renderCostEstimate(const Scene& scene,
   // freezes, and under-counting is impossible here.
   const bool giRuns =
       hi.gi && (scene.mesh.triangleCount() > 0 ||
-                (hi.giIntegrator == 1 &&
+                (hi.giIntegrator >= 1 &&
                  (!scene.spheres.empty() || !scene.cylinders.empty())));
   if (giRuns) e.globalIllum = giCostEstimate(hi, hi.width, hi.height).total();
 
