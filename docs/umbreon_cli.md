@@ -217,7 +217,7 @@ stratified サンプリング on / 1 バウンス）。irradiance cache は expe
 
 | フラグ | 既定 | 効果 / 注意 |
 |---|---|---|
-| `--integrator <cache\|pt1>` | pt1 | 間接光インテグレータの選択。`pt1` の明示指定は `--gi on` を含意 |
+| `--integrator <cache\|pt1\|pt2>` | pt1 | 間接光インテグレータの選択。`pt1`/`pt2` の明示指定は `--gi on` を含意。pt2 = pt1 の gather コア + 下記拡張(Sobol/blue-noise サンプラー、emissive GI、area light、traced reflection、適応 spp) |
 | `--spp <int>` | 8 | pt1: ピクセルあたりの gather レイ数 |
 | `--indirect-res <full\|half\|quarter\|out>` | out | pt1: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
 | `--pt1-edge-patch <on\|off>` | on | 縮小 gather グリッドが解決できないシルエット縁ピクセルを full-res で再 gather |
@@ -230,6 +230,29 @@ stratified サンプリング on / 1 バウンス）。irradiance cache は expe
 | `--gi-max-dist <world>` | 0 | gather レイの最大距離。cache: auto=0.1×対角 / pt1: auto=∞(意図的な差) |
 | `--pt1-upsample-normal-pow <f>` | 32 | upsample の法線 edge-stop 指数 |
 | `--pt1-upsample-depth-scale <f>` | 0.02 | upsample の深度 edge-stop スケール |
+
+### pt2 拡張フラグ(--integrator pt2 のときのみ有効)
+
+pt1 の全フラグ(`--spp` / `--indirect-res` / `--denoise` / `--gi-bounces` 等)は
+pt2 にもそのまま適用される。以下は pt2 が追加するもの:
+
+| フラグ | 既定 | 効果 / 注意 |
+|---|---|---|
+| `--pt2-pattern <sobol\|bluenoise>` | bluenoise | first-bounce の 2D サンプル配置。bluenoise は 1 本のグローバル Sobol 列を Morton 曲線でピクセルに配分し、残差ノイズを screen-space blue noise 化(OIDN が消しやすい) |
+| `--pt2-emissive <on\|off>` | on | emissive geometry(`finish emission`)が周囲を照らす GI 輸送。direct pass の自己発光と二重計上しない |
+| `--pt2-emissive-nee <on\|off>` | on | emissive mesh 三角形への NEE + balance-heuristic MIS。小さく明るい emitter のノイズを大幅減(実測 +32dB @spp8)。CSG emitter(球/円柱)は BSDF サンプリングのみ |
+| `--pt2-reflect <on\|off>` | on | `finish reflection` の面をミラーレイ 1 本で実ジオメトリに反射(フェイクの reflection*background を置換)。反射材のないシーンでは bit-exact スキップ |
+| `--pt2-adaptive <on\|off>` | off | 分散適応 spp: 未収束ピクセルだけ追加サンプル(Cycles 型 split-buffer)。凹部の多いシーンで等時間 +1dB 程度 |
+| `--pt2-adaptive-thresh <f>` | 0.15 | 適応 spp のノイズ閾値(小さいほど広く追いサンプル) |
+| `--pt2-adaptive-mul <int>` | 4 | 適応 spp の総予算 = mul × spp |
+| `--pt2-rounds <int>` | 0 | ReSTIR-GI 空間リサンプリング(実験的・静止画では非推奨: 実測で素の平均に 7-9dB 劣る。動画/temporal の土台として残置) |
+| `--pt2-radius / --pt2-unbiased / --pt2-mcap / --pt2-wclamp` | 16 / off / 100 / 0 | ReSTIR の調整ノブ(同上) |
+
+**area light**: シーンの `DistantLight::angularRadius`(API)または POV の
+`_light_spread > 1`(SpecLighting、bench 用)を pt2 は solid-angle 光源として解釈し、
+直接光のソフトシャドウと gather NEE(間接光の陰影)の両方を同一モデルでサンプリング
+する。`--shadows on` が必要。shadow サンプル数は未指定なら 4 に自動昇格
+(`--shadow-samples` 明示が優先)。pt1/cache は angularRadius を読まない(凍結)。
 
 注意:
 - pt1 と `--env-light` の併用は sky の二重計上(警告が出る)。GI の sky は
