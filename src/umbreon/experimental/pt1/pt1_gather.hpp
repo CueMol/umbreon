@@ -22,6 +22,7 @@
 #include "ao/ambient_occlusion.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_gbuffer.hpp"
+#include "experimental/pt2/pt2_reservoir.hpp"
 #include "experimental/pt2/pt2_sampler.hpp"
 #include "render/progress_slice.hpp"
 #include "render/render_types.hpp"
@@ -39,6 +40,11 @@ struct Pt1GatherExt {
   bool emissive = false;       // add Material::emission at bounce vertices
   bool sobol = false;          // first-bounce 2D via Owen-scrambled Sobol
   Pt2PixelSampler sampler{};   // resolved per-pixel Sobol state
+  // ReSTIR candidate sink (pt2 with pt2Rounds > 0): every gather sample is
+  // streamed into this pixel's reservoir -- first-bounce hit point + the
+  // FULL path radiance from it; misses anchor at kPt2EnvDistance so the
+  // reconnection Jacobian needs no env special case. Null = no capture.
+  Pt2Reservoir* reservoir = nullptr;
 };
 
 // Grid-level pt2 configuration handed to gatherPt1Grid, which resolves the
@@ -47,6 +53,9 @@ struct Pt1GatherExt {
 struct Pt2GatherCfg {
   int pattern = kPt2PatternBlueNoise;  // RenderOptions::pt2Pattern
   bool emissive = true;                // RenderOptions::pt2Emissive
+  // ReSTIR candidate reservoirs, one per grid pixel (indexed pix = y*W + x);
+  // null when pt2 runs without spatial resampling (pt2Rounds == 0).
+  Pt2Reservoir* reservoirs = nullptr;
 };
 
 // One path vertex of the pt1 gather walk: the NEE radiance it reflects toward
@@ -216,6 +225,17 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
   }
   Vec3 Esum{0.0f, 0.0f, 0.0f};
   int nOccluded = 0;
+  // ReSTIR candidate streaming state (pt2). An independent tea2 chain drives
+  // the reservoir selection so the existing per-sample streams stay intact.
+  Pt2Reservoir* rsv = ext ? ext->reservoir : nullptr;
+  uint32_t rs0 = 0, rs1 = 0;
+  double rWSum = 0.0;
+  Vec3 rSelPos{}, rSelN{}, rSelRad{};
+  float rSelPHat = 0.0f;
+  if (rsv) {
+    rs0 = seed ^ 0x52455354u;
+    rs1 = 0x47490001u;
+  }
   for (int s = 0; s < spp; ++s) {
     uint32_t s0 = seed;
     uint32_t s1 = static_cast<uint32_t>(s);
@@ -240,8 +260,20 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     Vec3 wi = cosineSampleHemisphere(u1, u2, f);
     if (dot(wi, Ng) <= 0.0f) {
       ++nOccluded;
+      // A below-horizon draw is still one of the spp candidates: it carries
+      // zero RIS weight but must count in M, or W would be over-normalized.
+      if (rsv) {
+        tea2(rs0, rs1);
+        float dummyM = 0.0f;
+        pt2ReservoirUpdate(rWSum, dummyM, 0.0f, 0.0f, u32ToUnorm(rs0));
+      }
       continue;
     }
+    // Candidate capture: the first segment's direction cosine (the source
+    // pdf is cos/pi) and, once bounce 1 resolves, the sample point.
+    const float cand0Cos = dot(wi, N);
+    Vec3 candPos{0.0f, 0.0f, 0.0f}, candN{0.0f, 0.0f, 0.0f};
+    bool candValid = false;
     Vec3 org = O;
     float tnear = eps;
     Vec3 throughput{1.0f, 1.0f, 1.0f};
@@ -255,14 +287,40 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
         L.x += throughput.x * env.x;
         L.y += throughput.y * env.y;
         L.z += throughput.z * env.z;
+        if (rsv && b == 1) {
+          // Escaped first bounce: anchor the candidate at a huge distance so
+          // reconnection Jacobians degenerate to ~1 (no env special case).
+          candPos = Vec3{O.x + wi.x * kPt2EnvDistance,
+                         O.y + wi.y * kPt2EnvDistance,
+                         O.z + wi.z * kPt2EnvDistance};
+          candN = Vec3{-wi.x, -wi.y, -wi.z};
+          candValid = true;
+        }
         break;
       }
       if (b == 1) ++nOccluded;
       if (stats) ++stats->gatherHits;
       Pt1Vertex v;
       if (!pt1EvalVertex(p, rh, org, wi, v, stats,
-                         ext && ext->emissive))
-        break;  // outline: absorbed
+                         ext && ext->emissive)) {
+        // Outline decoration absorbs the path; keep the (zero-radiance)
+        // candidate anchored at the hit so it stays a counted M.
+        if (rsv && b == 1) {
+          candPos = Vec3{org.x + wi.x * rh.ray.tfar,
+                         org.y + wi.y * rh.ray.tfar,
+                         org.z + wi.z * rh.ray.tfar};
+          candN = Vec3{-wi.x, -wi.y, -wi.z};
+          candValid = true;
+        }
+        break;
+      }
+      if (rsv && b == 1) {
+        // Snapshot the first-bounce sample point BEFORE the continuation
+        // loop overwrites v with later vertices.
+        candPos = v.P;
+        candN = v.N;
+        candValid = true;
+      }
       L.x += throughput.x * v.radiance.x;
       L.y += throughput.y * v.radiance.y;
       L.z += throughput.z * v.radiance.z;
@@ -302,9 +360,45 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
         L.z *= k;
       }
     }
+    // Stream this sample into the pixel reservoir. RIS weight = p_hat / pdf
+    // with p_hat = lum(L) * cos and pdf = cos / pi -- the cosines CANCEL
+    // ANALYTICALLY to w = pi * lum(L), so grazing candidates get no spurious
+    // amplification (computing the quotient numerically with a floored p_hat
+    // was measured as dark speckle: near-zero-cosine self-hits won reservoirs
+    // they contribute nothing to).
+    if (rsv) {
+      float w = 0.0f;
+      float pHat = 0.0f;
+      if (candValid && cand0Cos > 0.0f) {
+        pHat = pt2Luminance(L) * cand0Cos;
+        w = pt2Luminance(L) * 3.14159265358979323846f;
+      }
+      tea2(rs0, rs1);
+      float dummyM = 0.0f;
+      if (pt2ReservoirUpdate(rWSum, dummyM, w, 0.0f, u32ToUnorm(rs0))) {
+        rSelPos = candPos;
+        rSelN = candN;
+        rSelRad = L;
+        rSelPHat = pHat;
+      }
+    }
     Esum.x += L.x;
     Esum.y += L.y;
     Esum.z += L.z;
+  }
+  if (rsv) {
+    // Finalize: W = wSum / (M * p_hat_selected), M = the full spp candidate
+    // count (skipped and absorbed draws included -- they were streamed with
+    // zero weight above).
+    rsv->samplePos = rSelPos;
+    rsv->sampleNormal = rSelN;
+    rsv->radiance = rSelRad;
+    rsv->M = static_cast<float>(spp > 0 ? spp : 1);
+    rsv->W = (rSelPHat > 0.0f && rWSum > 0.0)
+                 ? static_cast<float>(rWSum /
+                                      (static_cast<double>(rsv->M) *
+                                       static_cast<double>(rSelPHat)))
+                 : 0.0f;
   }
   const float invN = 1.0f / static_cast<float>(spp > 0 ? spp : 1);
   if (outOcclusion) *outOcclusion = static_cast<float>(nOccluded) * invN;
@@ -386,6 +480,7 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
               ext.sampler = pt2MakePixelSampler(
                   pt2->pattern, static_cast<uint32_t>(px),
                   static_cast<uint32_t>(py), seedMix, seed, sppPow2);
+              if (pt2->reservoirs) ext.reservoir = &pt2->reservoirs[pix];
               extP = &ext;
             }
             const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, tEps, &o,

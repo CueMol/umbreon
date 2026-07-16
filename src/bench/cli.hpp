@@ -77,6 +77,12 @@ struct Options {
   // RenderOptions; scene_setup copies these over unconditionally.
   int pt2Pattern = 1;    // --pt2-pattern sobol|bluenoise (blue noise default)
   bool pt2Emissive = true;  // --pt2-emissive on|off (emission at bounces)
+  int pt2Rounds = 0;        // --pt2-rounds (ReSTIR spatial; 0 = off, see
+                            // RenderOptions -- measured not to pay off)
+  float pt2Radius = 16.0f;  // --pt2-radius (round-0 kernel, gather px)
+  bool pt2Unbiased = false; // --pt2-unbiased on|off (Z-norm visibility rays)
+  float pt2MCap = 100.0f;   // --pt2-mcap (reservoir history clamp)
+  float pt2WClamp = 0.0f;   // --pt2-wclamp (W clamp; 0 = off)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI

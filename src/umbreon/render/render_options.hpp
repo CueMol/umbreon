@@ -187,6 +187,30 @@ struct RenderOptions {
   // emission only as self-illumination on camera-visible pixels and never
   // transports it to other surfaces.
   bool pt2Emissive = true;
+  // ReSTIR-GI spatial resampling rounds (0 = OFF, the default). Implemented
+  // and deterministic, but MEASURED NOT TO PAY OFF in umbreon's regime
+  // (stills, LD-stratified gather at >= 4 spp, sky-dominant diffuse, OIDN):
+  // on 1ab0_scene1 at spp=8 the reservoir estimator lands ~7-8 dB BELOW the
+  // plain gather mean, and only wins at spp=1 (+1.3 dB). Spatial-only ReSTIR
+  // compresses a pixel's spp samples into ONE survivor; without the temporal
+  // accumulation the reference implementations lean on (M up to ~30 across
+  // frames), that discard outweighs the neighborhood reuse. Kept as an
+  // opt-in experiment and as the reservoir substrate for a future temporal
+  // mode (pt3 / RenderSession).
+  int pt2Rounds = 0;
+  // Round-0 kernel radius in GATHER-grid pixels (halves each round, floor 3).
+  float pt2Radius = 16.0f;
+  // Z-normalization with one visibility ray per contributor (Ouyang eq. 16):
+  // removes the reuse visibility bias (slightly lightened contact shadows)
+  // at ~K+1 occlusion rays per pixel per round.
+  bool pt2Unbiased = false;
+  // Clamp on a streamed reservoir's M (bounds how much history a single
+  // reservoir can claim), and an optional clamp on the finalized contribution
+  // weight W (0 = off). W-clamping breaks the exact luminance cancellation of
+  // the creation-stage reservoir (grazing winners legitimately carry a large
+  // W), so it is OFF by default; the MIS normalization already bounds reuse.
+  float pt2MCap = 100.0f;
+  float pt2WClamp = 0.0f;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised

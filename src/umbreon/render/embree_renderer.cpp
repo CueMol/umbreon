@@ -23,6 +23,7 @@
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_integrator.hpp"
 #include "experimental/pt1/pt1_upsample.hpp"
+#include "experimental/pt2/pt2_spatial.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -532,10 +533,21 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     // null and stays bit-identical.
     detail::Pt2GatherCfg pt2CfgStorage;
     const detail::Pt2GatherCfg* pt2Cfg = nullptr;
+    const bool pt2Restir = (opt.giIntegrator == 2) && opt.pt2Rounds > 0;
+    // ReSTIR reservoirs live on the gather grid, sized in each branch below.
+    std::vector<detail::Pt2Reservoir> reservoirs;
+    detail::Pt2SpatialParams sparams;
     if (opt.giIntegrator == 2) {
       pt2CfgStorage.pattern = opt.pt2Pattern;
       pt2CfgStorage.emissive = opt.pt2Emissive;
       pt2Cfg = &pt2CfgStorage;
+      sparams.rounds = opt.pt2Rounds;
+      sparams.radius = opt.pt2Radius;
+      sparams.unbiased = opt.pt2Unbiased;
+      sparams.mCap = opt.pt2MCap;
+      sparams.wClamp = opt.pt2WClamp;
+      sparams.seedMix = detail::hashU32(opt.pt1Seed);
+      sparams.scene = built.scene;
     }
     const char* giTag = (opt.giIntegrator == 2) ? "pt2" : "pt1";
     // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
@@ -567,6 +579,11 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       const auto tg0 = std::chrono::high_resolution_clock::now();
       detail::tracePt1GBuffer(gp, camb, hw, hh, g, &rayStats, &budget.gbuffer);
       budget.gbuffer.finish();
+      if (pt2Restir) {
+        reservoirs.assign(static_cast<std::size_t>(hw) * hh,
+                          detail::Pt2Reservoir{});
+        pt2CfgStorage.reservoirs = reservoirs.data();
+      }
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
@@ -574,6 +591,16 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                             spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
                             opt.pt1Clamp, &rayStats, &budget.gather, pt2Cfg);
       budget.gather.finish();
+      if (pt2Restir) {
+        // ReSTIR spatial rounds + resolve overwrite Eh with the resampled
+        // estimate BEFORE the denoise (the whole point: cleaner OIDN input).
+        detail::pt2SpatialResampleAndResolve(
+            hw, hh, g.position.data(), g.normal.data(), g.depth.data(),
+            g.hit.data(), reservoirs, sparams, Eh, &budget.spatial);
+        // The edge patch below re-gathers rim pixels WITHOUT reservoirs.
+        pt2CfgStorage.reservoirs = nullptr;
+      }
+      budget.spatial.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 
@@ -666,12 +693,24 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       budget.edgePatch.finish();
     } else {
       const auto tg0 = std::chrono::high_resolution_clock::now();
+      if (pt2Restir) {
+        reservoirs.assign(static_cast<std::size_t>(W) * H,
+                          detail::Pt2Reservoir{});
+        pt2CfgStorage.reservoirs = reservoirs.data();
+      }
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(),
                             res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
                             occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats,
                             &budget.gather, pt2Cfg);
       budget.gather.finish();
+      if (pt2Restir) {
+        detail::pt2SpatialResampleAndResolve(
+            W, H, res.position.data(), res.normal.data(), res.depth.data(),
+            eligible.data(), reservoirs, sparams, Ebuf, &budget.spatial);
+        pt2CfgStorage.reservoirs = nullptr;
+      }
+      budget.spatial.finish();
       const auto tg1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.gather = std::chrono::duration<double>(tg1 - tg0).count();
 

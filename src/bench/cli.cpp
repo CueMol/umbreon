@@ -376,6 +376,32 @@ Options parseCli(int argc, char** argv) {
         fail("--pt2-emissive expects on/off");
       continue;
     }
+    if (a == "--pt2-rounds") {
+      o.pt2Rounds = std::atoi(value("--pt2-rounds").c_str());
+      if (o.ok && o.pt2Rounds < 0) fail("--pt2-rounds expects >= 0");
+      continue;
+    }
+    if (a == "--pt2-radius") {
+      o.pt2Radius = static_cast<float>(std::atof(value("--pt2-radius").c_str()));
+      if (o.ok && o.pt2Radius <= 0.0f) fail("--pt2-radius expects > 0");
+      continue;
+    }
+    if (a == "--pt2-unbiased") {
+      std::string v = value("--pt2-unbiased");
+      if (o.ok && !parseBool(v, o.pt2Unbiased))
+        fail("--pt2-unbiased expects on/off");
+      continue;
+    }
+    if (a == "--pt2-mcap") {
+      o.pt2MCap = static_cast<float>(std::atof(value("--pt2-mcap").c_str()));
+      if (o.ok && o.pt2MCap < 1.0f) fail("--pt2-mcap expects >= 1");
+      continue;
+    }
+    if (a == "--pt2-wclamp") {
+      o.pt2WClamp = static_cast<float>(std::atof(value("--pt2-wclamp").c_str()));
+      if (o.ok && o.pt2WClamp < 0.0f) fail("--pt2-wclamp expects >= 0 (0 = off)");
+      continue;
+    }
     if (a == "--quality") {
       // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
       // bounces at the point of appearance, so later explicit flags override
@@ -1076,6 +1102,14 @@ void printUsage(const char* prog) {
       "                           arrangement                     [bluenoise]\n"
       "  --pt2-emissive <on|off>  pt2: emissive geometry lights its\n"
       "                           surroundings (GI transport)           [on]\n"
+      "  --pt2-rounds <int>       pt2 ReSTIR spatial resampling rounds\n"
+      "                           (experimental; wins only at spp=1)     [0]\n"
+      "  --pt2-radius <px>        pt2 round-0 reuse kernel radius on the\n"
+      "                           gather grid (halves per round)        [16]\n"
+      "  --pt2-unbiased <on|off>  pt2 Z-normalization with visibility\n"
+      "                           re-check rays                        [off]\n"
+      "  --pt2-mcap <f>           pt2 reservoir history clamp M        [100]\n"
+      "  --pt2-wclamp <f>         pt2 contribution weight clamp (0=off)  [0]\n"
       "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"
       "                           3-bounce (put it FIRST; later flags\n"

@@ -427,6 +427,11 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   // pt2 knobs (giIntegrator == 2; layered onto the same gather pass).
   ropt.pt2Pattern = opt.pt2Pattern;
   ropt.pt2Emissive = opt.pt2Emissive;
+  ropt.pt2Rounds = opt.pt2Rounds;
+  ropt.pt2Radius = opt.pt2Radius;
+  ropt.pt2Unbiased = opt.pt2Unbiased;
+  ropt.pt2MCap = opt.pt2MCap;
+  ropt.pt2WClamp = opt.pt2WClamp;
   // GI-conditional denoise default: unset (-1) becomes atrous when the CACHE
   // integrator runs GI, None otherwise. An explicit --denoiser (0/1/2) is
   // honored as-is. On the pt1/pt2 paths the default is None: they denoise
@@ -459,9 +464,11 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
     if (ropt.giIntegrator == 2)
       std::printf(
           "  diffuse GI: pt2 path-traced gather, %d spp, %d bounce%s, %s res, "
-          "%s sampling, emissive %s, denoise %s, intensity %.2f, env %.2f\n",
+          "%s sampling, restir %dx%s, emissive %s, denoise %s, "
+          "intensity %.2f, env %.2f\n",
           ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
           gridDesc, ropt.pt2Pattern == 1 ? "blue-noise" : "sobol",
+          ropt.pt2Rounds, ropt.pt2Unbiased ? " unbiased" : "",
           ropt.pt2Emissive ? "on" : "off",
           ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
           ropt.giEnvIntensity);
