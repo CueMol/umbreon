@@ -310,6 +310,12 @@ struct DistantLight {
   // diffuse only -- it produces no specular/phong highlight (trace.cpp gates
   // highlights on Light_Type != FILL_LIGHT_SOURCE). false reproduces that.
   bool castsHighlight = true;
+  // Angular half-radius (radians) of the source's solid angle: > 0 models a
+  // distant AREA light (a POV area_light far away -- CueMol's SpecLighting
+  // square subtends atan(spread/40), independent of its distance). 0 = exact
+  // directional light. Consumed by the pt2 integrator for per-light soft
+  // shadows; pt1/cache keep the global RenderOptions::lightRadius behavior.
+  float angularRadius = 0.0f;
 };
 
 // OpenGL linear fog (applied as a depth-based post-process), matching CueMol's

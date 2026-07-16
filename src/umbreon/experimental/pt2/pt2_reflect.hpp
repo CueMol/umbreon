@@ -84,8 +84,14 @@ inline void pt2ReflectPass(const IrradianceCacheParams& p, int W, int H,
             if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID) {
               L = environmentRadiance(p, rdir);
             } else {
+              // Per-pixel deterministic stream for the area-light NEE jitter
+              // at the reflected hit (mirrors the gather's per-path scheme).
+              uint32_t rs0 = static_cast<uint32_t>(pix) ^ 0x52464c54u;
+              uint32_t rs1 = 0x4e454531u;
+              tea2(rs0, rs1);
               Pt1Vertex v;
-              if (pt1EvalVertex(p, rh, O, rdir, v, nullptr, emissive)) {
+              if (pt1EvalVertex(p, rh, O, rdir, v, nullptr, emissive, &rs0,
+                                &rs1)) {
                 // Direct (NEE, shadow-tested) + the surface's share of the
                 // sky (albedo * E_sky ~ one-bounce ambient approximation).
                 const Vec3 sky = environmentRadiance(p, rdir);

@@ -595,6 +595,7 @@ Options parseCli(int argc, char** argv) {
     }
     if (a == "--shadow-samples") {
       o.shadowSamples = std::atoi(value("--shadow-samples").c_str());
+      o.shadowSamplesSet = true;
       continue;
     }
     if (a == "--light-radius") {

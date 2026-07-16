@@ -379,7 +379,13 @@ std::vector<Light> buildSceneLights(const Scene& scene,
     l.color = Vec3{dl.color.x * dl.intensity, dl.color.y * dl.intensity,
                    dl.color.z * dl.intensity};
     l.highlight = dl.castsHighlight;
-    l.radius = radians(opt.lightRadius);  // soft-shadow angular radius (0 = hard)
+    // Soft-shadow angular radius (0 = hard). pt2 honors a per-light AREA
+    // radius when the scene carries one (POV area_light via SpecLighting);
+    // pt1/cache keep the global CLI radius so their sample streams -- and
+    // therefore their byte-exact outputs -- are untouched by area scenes.
+    l.radius = (opt.giIntegrator == 2 && dl.angularRadius > 0.0f)
+                   ? dl.angularRadius
+                   : radians(opt.lightRadius);
     lights.push_back(l);
   }
   buildEnvDomeLights(lights, opt, cb.dir, cb.right, cb.trueUp);

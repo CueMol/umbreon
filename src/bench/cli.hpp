@@ -30,6 +30,7 @@ struct Options {
   bool aoWriteAov = false;      // emit AO/G-buffer AOVs (albedo/normal/contact/...)
   bool shadows = false;         // cast shadows from lights
   int shadowSamples = 1;        // shadow rays per light (>1 = soft area light)
+  bool shadowSamplesSet = false;  // true when --shadow-samples was explicit
   float lightRadius = 0.0f;     // light angular radius (deg); >0 = soft shadows
 
   // --- environment dome lighting (synthetic; replaces flashlight look) ---

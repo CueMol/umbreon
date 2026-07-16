@@ -386,6 +386,26 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.shadows = opt.shadows;
   ropt.shadowSamples = opt.shadowSamples;
   ropt.lightRadius = opt.lightRadius;
+  // pt2 + POV area light (SpecLighting _light_spread > 1): soften the DIRECT
+  // shadows by default. One sample per hi-res pixel is too noisy for a
+  // penumbra; 4 with the supersample box-average lands near POV's 10x10 grid
+  // smoothness. An explicit --shadow-samples always wins, and the other
+  // integrators are unaffected (their per-light radius stays 0, see
+  // buildSceneLights).
+  if (opt.giIntegrator == 2 && !opt.shadowSamplesSet) {
+    bool hasArea = false;
+    for (const umbreon::DistantLight& dl : scene.lights)
+      hasArea = hasArea || dl.angularRadius > 0.0f;
+    if (hasArea) {
+      ropt.shadowSamples = 4;
+      if (!ropt.shadows)
+        std::fprintf(stderr,
+                     "warning: the scene carries an area light "
+                     "(_light_spread > 1) but shadows are off; pass "
+                     "--shadows on (or --declare _shadow=1) to see the soft "
+                     "shadows\n");
+    }
+  }
   ropt.envLights = opt.envLights;
   ropt.envIntensity = opt.envIntensity;
   ropt.envKeyScale = opt.envKeyScale;
@@ -465,17 +485,27 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
       std::snprintf(gridDesc, sizeof(gridDesc), "full");
     else
       std::snprintf(gridDesc, sizeof(gridDesc), "1/%d", ropt.pt1GatherDiv);
-    if (ropt.giIntegrator == 2)
+    if (ropt.giIntegrator == 2) {
+      float areaDeg = 0.0f;
+      for (const umbreon::DistantLight& dl : scene.lights)
+        areaDeg = std::max(areaDeg, dl.angularRadius * 57.29578f);
+      char areaDesc[32];
+      if (areaDeg > 0.0f)
+        std::snprintf(areaDesc, sizeof(areaDesc), ", area %.1fdeg x%d",
+                      areaDeg, ropt.shadowSamples);
+      else
+        areaDesc[0] = '\0';
       std::printf(
           "  diffuse GI: pt2 path-traced gather, %d spp, %d bounce%s, %s res, "
           "%s sampling, restir %dx%s, emissive %s, denoise %s, "
-          "intensity %.2f, env %.2f\n",
+          "intensity %.2f, env %.2f%s\n",
           ropt.pt1Spp, ropt.giBounces, ropt.giBounces > 1 ? "s" : "",
           gridDesc, ropt.pt2Pattern == 1 ? "blue-noise" : "sobol",
           ropt.pt2Rounds, ropt.pt2Unbiased ? " unbiased" : "",
           ropt.pt2Emissive ? "on" : "off",
           ropt.pt1Denoise ? "on" : "off", ropt.giIntensity,
-          ropt.giEnvIntensity);
+          ropt.giEnvIntensity, areaDesc);
+    }
     else
       std::printf(
           "  diffuse GI: pt1 path-traced gather, %d spp, %d bounce%s, %s res, "

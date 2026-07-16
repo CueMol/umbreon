@@ -94,10 +94,18 @@ struct Pt1Vertex {
 // (a black occluder that ends the path; never a light interaction, like AO).
 // The cache keeps calling oneBounceRadiance directly, so its mesh-only
 // behavior (and byte-identical output) is untouched.
+// softRng0/softRng1: when non-null (pt2), the NEE shadow ray of an AREA light
+// (l.radius > 0) is drawn from the light's cone with this RNG stream -- one
+// jittered sample per path vertex, averaged over the gather's spp paths, so
+// indirect shadows soften at no extra ray cost. Null (pt1/cache) keeps the
+// exact hard center ray and consumes no draws, preserving those integrators'
+// sample streams bit-for-bit.
 inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
                           const Vec3& O, const Vec3& wi, Pt1Vertex& v,
                           Pt1RayStatsLocal* stats = nullptr,
-                          bool addEmission = false) {
+                          bool addEmission = false,
+                          uint32_t* softRng0 = nullptr,
+                          uint32_t* softRng1 = nullptr) {
   const GeomRecord& rec = p.built->records[rh.hit.geomID];
   Vec3 Ny, Cy, NgShadow;
   float kd;
@@ -153,7 +161,26 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
   for (const Light& l : *p.lights) {
     const float ndl = dot(Ny, l.L);
     if (ndl <= 0.0f) continue;
-    const float sh = computeShadow(p.scene, Py, NgShadow, Ny, eps, l, 1, s0, s1);
+    float sh;
+    if (softRng0 && softRng1 && l.radius > 0.0f) {
+      // pt2 area-light NEE: one cone-jittered shadow ray per path (the spp
+      // average softens it). computeShadow's multi-sample branch needs
+      // shadowSamples > 1, so draw the direction here and trace directly.
+      tea2(*softRng0, *softRng1);
+      const Vec3 dir =
+          sampleLightDir(l, u32ToUnorm(*softRng0), u32ToUnorm(*softRng1));
+      Vec3 ng = (dot(NgShadow, Ny) < 0.0f)
+                    ? Vec3{-NgShadow.x, -NgShadow.y, -NgShadow.z}
+                    : NgShadow;
+      ng = safeNormalize(ng, Ny);
+      const Vec3 So{Py.x + ng.x * eps, Py.y + ng.y * eps, Py.z + ng.z * eps};
+      sh = occluded(p.scene, So, dir, eps,
+                    std::numeric_limits<float>::infinity())
+               ? 0.0f
+               : 1.0f;
+    } else {
+      sh = computeShadow(p.scene, Py, NgShadow, Ny, eps, l, 1, s0, s1);
+    }
     if (stats) {
       ++stats->neeRays;
       if (sh == 0.0f) ++stats->neeOccluded;
@@ -320,8 +347,13 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
       if (b == 1) ++nOccluded;
       if (stats) ++stats->gatherHits;
       Pt1Vertex v;
+      // pt2 (ext non-null): hand the path's tea2 stream to the NEE so an
+      // area light gets one jittered shadow sample per path. pt1 passes null
+      // -- handing the stream over would change pt1's continuation RNG
+      // whenever --light-radius is set.
       if (!pt1EvalVertex(p, rh, org, wi, v, stats,
-                         ext && ext->emissive)) {
+                         ext && ext->emissive,
+                         ext ? &s0 : nullptr, ext ? &s1 : nullptr)) {
         // Outline decoration absorbs the path; keep the (zero-radiance)
         // candidate anchored at the hit so it stays a counted M.
         if (rsv && b == 1) {
