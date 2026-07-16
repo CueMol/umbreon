@@ -226,6 +226,15 @@ if(UMBREON_WITH_OIDN AND Boost_FOUND AND OpenImageDenoise_FOUND)
   if(UNIX AND NOT APPLE)
     target_link_libraries(umbreon_oidn_worker PRIVATE rt)
   endif()
+  # Build the worker whenever the library is built: the worker ships WITH
+  # libumbreon (it is in the install/export set below), so a build that
+  # produces the library and then installs -- e.g. `cmake --build --target
+  # umbreon && cmake --install` as used by the deplibs install_umbreon step --
+  # must have the worker binary in place, or install fails to find it. This
+  # dependency is build-order only (no link relationship, nothing leaks into
+  # the export). Only present in OIDN builds, so a bare `--target umbreon`
+  # stays worker-free.
+  add_dependencies(umbreon umbreon_oidn_worker)
   # Part of the exported target set: find_package(umbreon) consumers see it as
   # the IMPORTED executable umbreon::umbreon_oidn_worker so they can stage it
   # into their own app bundle (e.g. install(PROGRAMS $<TARGET_FILE:...>)). It is
