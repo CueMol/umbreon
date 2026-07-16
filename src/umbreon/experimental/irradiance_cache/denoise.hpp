@@ -8,6 +8,7 @@
 // low-frequency irradiance-cache blotch the box-average leaves behind.
 #pragma once
 
+#include "render/progress_slice.hpp"
 #include "render/render_types.hpp"
 
 namespace umbreon {
@@ -36,6 +37,15 @@ void denoiseAtrous(FrameResult& frame, const RenderOptions& opt);
 // frame; false on any failure (device init / execute error), in which case the
 // frame is left untouched and the caller should fall back to denoiseAtrous and
 // report DenoiserBackend::AtrousBilateral.
-bool denoiseOidn(FrameResult& frame, const RenderOptions& opt);
+//
+// `prog`, when non-null, animates the progress bar through what is otherwise
+// one long blocking filter execute: OIDN's monitor reports an ABSOLUTE [0, 1]
+// fraction, which the slice maps into its span. It doubles as the cancel hook
+// -- when RenderProgress::cancelRequested() the filter is cancelled and this
+// returns false with the frame untouched. A caller that falls back to
+// denoiseAtrous on false MUST first check prog->cancelled(): running the
+// fallback after a cancel spends exactly the time the cancel asked to save.
+bool denoiseOidn(FrameResult& frame, const RenderOptions& opt,
+                 const detail::ProgressSlice* prog = nullptr);
 
 }  // namespace umbreon

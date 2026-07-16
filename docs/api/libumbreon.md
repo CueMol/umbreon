@@ -236,7 +236,13 @@ RenderTask renderAsync(Scene scene, RenderOptions opt);  // 即 return（scene/o
 
 - `float fraction()` — 0.0〜1.0 の全体進捗（フェーズ重み付け・単調非減少。時間見積りではなく
   「おおよその進み具合」）。`RenderPhase phase()` — `Setup`/`CoarseAo`/`Primary`/`GlobalIllum`/
-  `Edges`/`Postprocess`/`Done`。`unitsDone()` / `unitsTotal()` — 現フェーズ内の行数など。
+  `Edges`/`Postprocess`/`Done`。`unitsDone()` / `unitsTotal()` — 現フェーズ内の進捗単位
+  （行数など。GI フェーズでは推定コスト単位）。
+- 重みは固定表ではなく、描画開始時にレンダラが宣言する `RenderPhasePlan`（`setPhasePlan()` /
+  `phasePlan()`）で決まる。GI を有効にすると GI が描画時間の 7〜9 割を占めるため、その配分が
+  実測コストに追従する。シェア 0 のフェーズは「この描画では走らない」を意味し、区間が潰れて
+  バーが飛ばない。`phasePlan()` は合計 1 に正規化した値を返すので、フェーズ区切りを表示する
+  UI はここから目盛りを作れる。
 - `requestCancel()` / `cancelRequested()` — 協調的キャンセル。描画は行・パス境界でこれを見て
   早期終了し、**部分的な** `FrameResult` を `cancelled == true` で返す（`FrameResult::cancelled`）。
 

@@ -14,6 +14,22 @@
 #include <OpenImageDenoise/oidn.hpp>
 
 namespace umbreon {
+namespace {
+
+// OIDN's progress monitor is a plain C callback, so the slice travels through
+// userPtr rather than a capture. Returning false cancels filter.execute().
+bool oidnProgressCb(void* userPtr, double n) {
+  const detail::ProgressSlice* s =
+      static_cast<const detail::ProgressSlice*>(userPtr);
+  if (!s || !s->progress) return true;
+  if (s->progress->cancelRequested()) return false;
+  // n is an ABSOLUTE fraction and may arrive out of order from OIDN's worker
+  // threads; reportAbs() seeks monotonically, so a stale value is ignored.
+  s->reportAbs(n);
+  return true;
+}
+
+}  // namespace
 
 // Denoise frame.color (final-resolution linear HDR RGBA) with the OIDN "RT"
 // filter. color is deinterleaved to a contiguous RGB scratch buffer (OIDN wants
@@ -23,7 +39,8 @@ namespace umbreon {
 // false on a device/execute error (frame left untouched). The a-trous fallback
 // on failure is the caller's responsibility (pipeline.cpp / pt1_denoise.cpp),
 // which also records FrameResult::denoiserUsed from this return value.
-bool denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
+bool denoiseOidn(FrameResult& frame, const RenderOptions& opt,
+                 const detail::ProgressSlice* prog) {
   const int W = frame.width;
   const int H = frame.height;
   const std::size_t N = static_cast<std::size_t>(W) * H;
@@ -67,6 +84,11 @@ bool denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   // allocator rejects huge single allocations (Electron PartitionAlloc,
   // ~2 GiB). OIDN implements the cap as internal overlapping tiling.
   if (opt.oidnMaxMemoryMB >= 0) filter.set("maxMemoryMB", opt.oidnMaxMemoryMB);
+  // Installed BEFORE commit. Without it the bar sits frozen through the whole
+  // execute() below, which is the single largest slice of a low-spp GI render.
+  if (prog && prog->progress)
+    filter.setProgressMonitorFunction(
+        oidnProgressCb, const_cast<detail::ProgressSlice*>(prog));
   filter.commit();
   const auto tFil1 = clock::now();
   filter.execute();
@@ -79,9 +101,15 @@ bool denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
                  std::chrono::duration<double>(tExe1 - tFil1).count(), W, H);
 
   const char* msg = nullptr;
-  if (device.getError(msg) != oidn::Error::None) {
-    std::fprintf(stderr, "warning: OIDN execute failed (%s); skipping denoise\n",
-                 msg ? msg : "unknown");
+  const oidn::Error err = device.getError(msg);
+  if (err != oidn::Error::None) {
+    // A cancelled filter is not a failure -- the monitor returned false because
+    // the UI asked the render to stop. Report it silently; the frame is left
+    // untouched either way, and the caller must not run a fallback denoise.
+    if (err != oidn::Error::Cancelled)
+      std::fprintf(stderr,
+                   "warning: OIDN execute failed (%s); skipping denoise\n",
+                   msg ? msg : "unknown");
     return false;
   }
 

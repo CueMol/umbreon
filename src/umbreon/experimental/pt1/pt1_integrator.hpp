@@ -37,6 +37,7 @@
 
 #include "ao/ambient_occlusion.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
+#include "render/progress_slice.hpp"
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
@@ -60,10 +61,13 @@ namespace detail {
 // edge-stop. Any guide may be null. Defined in pt1_denoise.cpp (NOT inline:
 // UMBREON_HAVE_OIDN is a target-private macro, see there). Returns the
 // DenoiserBackend that actually ran (2=OIDN, 1=a-trous fallback, 0=degenerate
-// no-op) for FrameResult::pt1DenoiserUsed.
+// no-op or a cancelled filter) for FrameResult::pt1DenoiserUsed.
+// `prog` animates the bar through the OIDN filter and cancels it on request;
+// see denoiseOidn.
 int denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
                 const float* normal, const float* position,
-                const RenderOptions& opt);
+                const RenderOptions& opt,
+                const ProgressSlice* prog = nullptr);
 
 }  // namespace detail
 }  // namespace umbreon

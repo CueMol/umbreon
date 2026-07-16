@@ -214,9 +214,10 @@ endif()
 # Public-surface SSOT: keep the install(FILES) list below in sync with the
 # table in docs/api/libumbreon.md and the per-header visibility markers
 # ("libumbreon PUBLIC API header" vs "... INTERNAL header"). All three must
-# list the same 7 public headers (umbreon.hpp, scene.hpp,
-# render/render_types.hpp and its three sub-headers edge_types.hpp /
-# render_options.hpp / frame_result.hpp, postprocess/image_ops.hpp).
+# list the same 8 public headers (umbreon.hpp, scene.hpp,
+# render/render_types.hpp and its four sub-headers edge_types.hpp /
+# render_options.hpp / frame_result.hpp / render_progress.hpp,
+# postprocess/image_ops.hpp).
 # --------------------------------------------------------------------------
 if(TARGET umbreon)
   install(TARGETS umbreon EXPORT umbreonTargets

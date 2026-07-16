@@ -19,6 +19,7 @@
 #include <tbb/parallel_for.h>
 
 #include "experimental/pt1/pt1_integrator.hpp"
+#include "render/progress_slice.hpp"
 
 namespace umbreon {
 namespace detail {
@@ -49,7 +50,8 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
                                    std::atomic<uint64_t>* outHoles = nullptr,
                                    std::vector<uint8_t>* outNeedsPatch =
                                        nullptr,
-                                   float patchWeightThresh = 0.0f) {
+                                   float patchWeightThresh = 0.0f,
+                                   const ProgressSlice* prog = nullptr) {
   const std::size_t npix = static_cast<std::size_t>(W) * H;
   outE.assign(npix * 3, 0.0f);
   outOcc.assign(npix, 0.0f);
@@ -62,6 +64,7 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
 
   tbb::parallel_for(tbb::blocked_range<int>(0, H),
                     [&](const tbb::blocked_range<int>& rows) {
+    if (prog && prog->cancelled()) return;
     for (int py = rows.begin(); py != rows.end(); ++py) {
       // Continuous half-grid coordinate of this full pixel's center (the two
       // grids share the same normalized [0,1] image plane).
@@ -172,6 +175,8 @@ inline void upsampleJointBilateral(int W, int H, const float* fullNormal,
         }
       }
     }
+    if (prog) prog->addWork(static_cast<std::uint64_t>(rows.end() - rows.begin()),
+                            static_cast<std::uint64_t>(H));
   });
 }
 
