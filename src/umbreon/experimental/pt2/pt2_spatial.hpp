@@ -1,6 +1,18 @@
 // libumbreon INTERNAL header -- not installed, not part of the public API.
 // Implementation detail; may change without notice. Do not include downstream.
 //
+// CARRY-OVER NOTE (2026-07-16, user decision): spatial-only ReSTIR was
+// MEASURED NOT TO PAY OFF for still images and is OFF by default
+// (pt2Rounds = 0) with no test coverage on purpose. Raw-E PSNR at spp=8 runs
+// 7-9 dB below the plain gather mean (worst on concave scenes); it wins only
+// at spp=1. Root cause: a reservoir compresses a pixel's spp samples into one
+// survivor, and the temporal M-accumulation the reference implementations
+// rely on does not exist for stills. The ONLY anticipated future value is as
+// the reservoir substrate for a temporal mode (pt3 / video rendering, where
+// accumulated M is exactly what makes ReSTIR pay). If pt3 stops being about
+// video, DELETE this file and pt2_reservoir.hpp (restore from commit 1f15601
+// if ever needed). Full measurements: docs/pt2_survey.md section 4.1.
+//
 // pt2 ReSTIR-GI spatial resampling: each round, every gather pixel restarts
 // its reservoir from its own previous-round state and streams in K neighbor
 // reservoirs, re-weighted to its own geometry (target pdf at the receiver
