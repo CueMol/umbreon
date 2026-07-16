@@ -22,6 +22,7 @@
 #include "ao/ambient_occlusion.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_gbuffer.hpp"
+#include "experimental/pt2/pt2_emissive.hpp"
 #include "experimental/pt2/pt2_reservoir.hpp"
 #include "experimental/pt2/pt2_sampler.hpp"
 #include "render/progress_slice.hpp"
@@ -53,6 +54,12 @@ struct Pt1GatherExt {
   // pixel's sample sequence instead of replaying it.
   Vec3* halfSum = nullptr;
   int sampleIndexOffset = 0;
+  // Emissive-triangle NEE + MIS (pt2, stage 3): when non-null and non-empty,
+  // each sample adds one NEE draw toward a power-sampled emissive triangle at
+  // the gather ORIGIN, and a first-bounce hit on such a triangle gets the
+  // matching balance-heuristic weight on its emitted term (deeper hits keep
+  // full weight -- per-vertex partition, unbiased).
+  const Pt2EmissiveLights* emissiveLights = nullptr;
 };
 
 // Grid-level pt2 configuration handed to gatherPt1Grid, which resolves the
@@ -73,12 +80,19 @@ struct Pt2GatherCfg {
   float* halfE = nullptr;
   int sampleIndexOffset = 0;
   uint32_t sppLayoutTotal = 0;
+  // Emissive NEE light list (null/empty = off); see Pt1GatherExt.
+  const Pt2EmissiveLights* emissiveLights = nullptr;
 };
 
 // One path vertex of the pt1 gather walk: the NEE radiance it reflects toward
 // the previous vertex, plus what the walk needs to continue the path there.
 struct Pt1Vertex {
   Vec3 radiance{0.0f, 0.0f, 0.0f};  // kd*C * shadow-tested direct irradiance
+  // Emitted radiance (emission * pigment), SEPARATE from radiance so the
+  // caller can MIS-weight it against an emissive-NEE strategy (pt2). Always
+  // zero unless pt1EvalVertex ran with addEmission (pt2), so pt1 callers
+  // adding radiance + emitted stay bit-identical (x + 0.0f == x).
+  Vec3 emitted{0.0f, 0.0f, 0.0f};
   Vec3 albedo{0.0f, 0.0f, 0.0f};    // kd*C (continuation throughput factor)
   Vec3 P{0.0f, 0.0f, 0.0f};         // world position
   Vec3 N{0.0f, 0.0f, 0.0f};         // shading normal, faced toward the ray origin
@@ -194,11 +208,12 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
   // ray. The direct pass only adds emission as self-illumination on camera-
   // visible pixels (shading.hpp) and never transports it to other surfaces,
   // so adding it here is the missing emitter-to-receiver path, not a double
-  // count. pt1 keeps addEmission == false and is bit-identical.
+  // count. Kept SEPARATE from v.radiance so the b==1 caller can MIS-weight
+  // it against the emissive-NEE strategy. pt1 keeps addEmission == false.
   if (addEmission && em > 0.0f) {
-    v.radiance.x += em * Cy.x;
-    v.radiance.y += em * Cy.y;
-    v.radiance.z += em * Cy.z;
+    v.emitted.x = em * Cy.x;
+    v.emitted.y = em * Cy.y;
+    v.emitted.z = em * Cy.z;
   }
   v.albedo = Vec3{kd * Cy.x, kd * Cy.y, kd * Cy.z};
   v.P = Py;
@@ -304,17 +319,13 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
       u2 = u32ToUnorm(s1);
     }
     Vec3 wi = cosineSampleHemisphere(u1, u2, f);
-    if (dot(wi, Ng) <= 0.0f) {
-      ++nOccluded;
-      // A below-horizon draw is still one of the spp candidates: it carries
-      // zero RIS weight but must count in M, or W would be over-normalized.
-      if (rsv) {
-        tea2(rs0, rs1);
-        float dummyM = 0.0f;
-        pt2ReservoirUpdate(rWSum, dummyM, 0.0f, 0.0f, u32ToUnorm(rs0));
-      }
-      continue;
-    }
+    // A below-horizon draw (shading normal diverging from Ng) contributes no
+    // path but is still one of the spp candidates: it must flow through the
+    // shared per-sample tail below -- the reservoir M count, and the
+    // vertex-0 emissive NEE, whose estimator divides by spp and would be
+    // biased low if skipped samples also skipped their NEE draw.
+    const bool horizonOk = dot(wi, Ng) > 0.0f;
+    if (!horizonOk) ++nOccluded;
     // Candidate capture: the first segment's direction cosine (the source
     // pdf is cos/pi) and, once bounce 1 resolves, the sample point.
     const float cand0Cos = dot(wi, N);
@@ -324,7 +335,7 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     float tnear = eps;
     Vec3 throughput{1.0f, 1.0f, 1.0f};
     Vec3 L{0.0f, 0.0f, 0.0f};
-    for (int b = 1; b <= maxB; ++b) {
+    for (int b = 1; horizonOk && b <= maxB; ++b) {
       const RTCRayHit rh = intersectFull(p.scene, org, wi, tnear,
                                          p.maxDistance);
       if (stats) ++stats->gatherRays;
@@ -372,9 +383,19 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
         candN = v.N;
         candValid = true;
       }
-      L.x += throughput.x * v.radiance.x;
-      L.y += throughput.y * v.radiance.y;
-      L.z += throughput.z * v.radiance.z;
+      // Emitted term: at b == 1 with emissive NEE active, this hit competes
+      // with the NEE strategy at the gather origin -- weigh it by the balance
+      // heuristic (pt2EmissiveHitWeight is 1 for non-emitter hits and for
+      // CSG emitters, which NEE does not cover). Deeper vertices have no NEE
+      // partner, so their emission keeps full weight.
+      float emW = 1.0f;
+      if (ext && ext->emissiveLights && b == 1 &&
+          p.built->records[rh.hit.geomID].kind == GeomKind::Mesh)
+        emW = pt2EmissiveHitWeight(*ext->emissiveLights, rh.hit.primID,
+                                   rh.ray.tfar, cand0Cos, wi);
+      L.x += throughput.x * (v.radiance.x + emW * v.emitted.x);
+      L.y += throughput.y * (v.radiance.y + emW * v.emitted.y);
+      L.z += throughput.z * (v.radiance.z + emW * v.emitted.z);
       if (b == maxB) break;
       throughput.x *= v.albedo.x;
       throughput.y *= v.albedo.y;
@@ -401,6 +422,18 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
       org = Vec3{v.P.x + v.N.x * epsV, v.P.y + v.N.y * epsV,
                  v.P.z + v.N.z * epsV};
       tnear = epsV;
+    }
+    // Emissive NEE at the gather ORIGIN (vertex 0): one power-sampled draw
+    // per sample, MIS-weighted against the cosine strategy above. Rides the
+    // same per-sample slot so the spp mean and the luminance clamp treat it
+    // like any other path contribution.
+    if (ext && ext->emissiveLights) {
+      const Vec3 nee = pt2EmissiveNee(*ext->emissiveLights, p.scene, P, N,
+                                      Ng, epsT, s0, s1);
+      if (stats) ++stats->neeRays;
+      L.x += nee.x;
+      L.y += nee.y;
+      L.z += nee.z;
     }
     if (clampLum > 0.0f) {
       const float lum = 0.2126f * L.x + 0.7152f * L.y + 0.0722f * L.z;
@@ -545,6 +578,8 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
               if (pt2->reservoirs) ext.reservoir = &pt2->reservoirs[pix];
               if (pt2->halfE) ext.halfSum = &half;
               ext.sampleIndexOffset = pt2->sampleIndexOffset;
+              if (pt2->emissiveLights && !pt2->emissiveLights->empty())
+                ext.emissiveLights = pt2->emissiveLights;
               extP = &ext;
             }
             const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, tEps, &o,

@@ -562,9 +562,22 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     // ReSTIR reservoirs live on the gather grid, sized in each branch below.
     std::vector<detail::Pt2Reservoir> reservoirs;
     detail::Pt2SpatialParams sparams;
+    // Emissive-triangle NEE (pt2 stage 3): built once per GI pass; empty
+    // when the scene has no emissive mesh material, which disables both the
+    // NEE draws and the MIS weighting (bit-exact with the pre-NEE pt2).
+    detail::Pt2EmissiveLights emissiveLights;
     if (opt.giIntegrator == 2) {
       pt2CfgStorage.pattern = opt.pt2Pattern;
       pt2CfgStorage.emissive = opt.pt2Emissive;
+      if (opt.pt2Emissive && opt.pt2EmissiveNee) {
+        emissiveLights = detail::pt2BuildEmissiveLights(m);
+        if (!emissiveLights.empty()) {
+          pt2CfgStorage.emissiveLights = &emissiveLights;
+          std::fprintf(stderr,
+                       "pt2: emissive NEE over %zu triangle(s)\n",
+                       emissiveLights.tris.size());
+        }
+      }
       pt2Cfg = &pt2CfgStorage;
       sparams.rounds = opt.pt2Rounds;
       sparams.radius = opt.pt2Radius;

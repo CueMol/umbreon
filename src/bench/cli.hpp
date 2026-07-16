@@ -88,6 +88,7 @@ struct Options {
   float pt2AdaptiveThresh = 0.15f;  // --pt2-adaptive-thresh
   int pt2AdaptiveMul = 4;   // --pt2-adaptive-mul (total = mul * spp)
   bool pt2Reflect = true;   // --pt2-reflect on|off (traced mirror reflection)
+  bool pt2EmissiveNee = true;  // --pt2-emissive-nee on|off (NEE+MIS vs BSDF-only)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI

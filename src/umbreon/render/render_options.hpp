@@ -221,6 +221,11 @@ struct RenderOptions {
   bool pt2Adaptive = false;
   float pt2AdaptiveThresh = 0.15f;
   int pt2AdaptiveMul = 4;
+  // Emissive-triangle NEE + MIS (full-PT stage 3): sample emissive mesh
+  // triangles as light sources at gather origins, balance-weighted against
+  // the cosine gather. Off = BSDF-only emissive transport (the m1 behavior);
+  // exists mainly for A/B comparisons.
+  bool pt2EmissiveNee = true;
   // Traced mirror reflection (full-PT track, stage 1): surfaces with
   // Material::reflection > 0 trace one mirror ray per pixel in a GI post-pass
   // and composite reflection * L(hit: NEE direct + ambient approx; miss: the

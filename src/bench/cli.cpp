@@ -426,6 +426,12 @@ Options parseCli(int argc, char** argv) {
         fail("--pt2-reflect expects on/off");
       continue;
     }
+    if (a == "--pt2-emissive-nee") {
+      std::string v = value("--pt2-emissive-nee");
+      if (o.ok && !parseBool(v, o.pt2EmissiveNee))
+        fail("--pt2-emissive-nee expects on/off");
+      continue;
+    }
     if (a == "--quality") {
       // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
       // bounces at the point of appearance, so later explicit flags override
@@ -1140,6 +1146,8 @@ void printUsage(const char* prog) {
       "  --pt2-adaptive-mul <int> pt2 adaptive total budget = mul*spp    [4]\n"
       "  --pt2-reflect <on|off>   pt2 traced mirror reflection (replaces\n"
       "                           the fake reflection*background)        [on]\n"
+      "  --pt2-emissive-nee <on|off> pt2 emissive-triangle NEE + MIS\n"
+      "                           (off = BSDF-only, for A/B)             [on]\n"
       "  --pt2-wclamp <f>         pt2 contribution weight clamp (0=off)  [0]\n"
       "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"
