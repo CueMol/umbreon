@@ -355,7 +355,12 @@ RenderTask renderAsync(Scene scene, RenderOptions opt);  // 即 return（scene/o
 
 **`DistantLight`**: `direction`（**光が進む向き**。例: 真上から照らすなら `{0,-1,0}`）,
 `color`, `intensity`, `castsHighlight`（false = POV の `shadowless`/fill light = 拡散のみ、
-ハイライト無し）。
+ハイライト無し）, `angularRadius`（**ラジアン**。> 0 で遠方 area light: 光源が
+この角半径の立体角を持ち、pt2（`giIntegrator == 2`）では直接光のソフトシャドウと
+gather NEE(間接光の陰影)の両方が同一の光源モデルでサンプリングされる。0 = 厳密な
+平行光。pt1/cache はこのフィールドを読まず、従来どおり `RenderOptions::lightRadius`
+の全光源一律値を使う。ソフトシャドウの表示には `RenderOptions::shadows = true` と
+`shadowSamples > 1` が必要）。
 
 **`Fog`**: **OpenGL 線形 fog**（CueMol のインタラクティブ表示に一致）。`enabled`, `color`（= 背景色）,
 `start` / `end`（平面 eye-z）。係数 `f = clamp((end - z)/(end - start), 0, 1)`（`f=1` で `start` 以近＝素色、
