@@ -57,6 +57,11 @@ struct HitShade {
   // Coarse-AO debug: 1 = this hit's bilateral lookup was rejected and the AO
   // gathered inline (only ever set when ShadeContext::coarseAo is active).
   uint8_t aoPatched = 0;
+  // Material::reflection of this hit, recorded ONLY when pt2's traced
+  // reflection owns the term (giIntegrator == 2 && pt2Reflect): the local
+  // shade then skips its fake reflection*background and the GI post-pass
+  // composites reflection * L(mirror ray) instead. 0 otherwise.
+  float reflectivity = 0.0f;
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -203,10 +208,14 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       hs.giEligible = 1;
       ambLight = Vec3{0.0f, 0.0f, 0.0f};
     }
+    const bool traceRefl = c.opt.giIntegrator == 2 && c.opt.pt2Reflect &&
+                           c.opt.gi && triMat.reflection > 0.0f;
+    if (traceRefl) hs.reflectivity = triMat.reflection;
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, shadowsActive,
-                          c.opt.shadowSamples * c.shadowSampleMul, px, py);
+                          c.opt.shadowSamples * c.shadowSampleMul, px, py,
+                          traceRefl);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
     // Edge G-buffer (only when the stroke edge pass is on; otherwise the
@@ -300,10 +309,14 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // Real primitives receive light shadows (a buried atom is occluded from the
     // lights); outline decoration is never shadowed (silhouette must not darken).
     const bool primShadows = !fromEdge && shadowsActive;
+    const bool traceReflP = c.opt.giIntegrator == 2 && c.opt.pt2Reflect &&
+                            c.opt.gi && !fromEdge && pm.reflection > 0.0f;
+    if (traceReflP) hs.reflectivity = pm.reflection;
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, primShadows,
-                          c.opt.shadowSamples * c.shadowSampleMul, px, py);
+                          c.opt.shadowSamples * c.shadowSampleMul, px, py,
+                          traceReflP);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]

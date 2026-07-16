@@ -63,6 +63,9 @@ struct PixelResult {
   // Coarse-AO debug: 1 = the FIRST hit's bilateral lookup was rejected and
   // gathered inline. Only meaningful with RenderOptions::aoResDebug.
   uint8_t aoPatched = 0;
+  // First-hit Material::reflection under pt2 traced reflection (see
+  // HitShade::reflectivity); 0 otherwise / on escape.
+  float reflectivity = 0.0f;
 };
 
 // First-hit edge G-buffer of one primary ray, WITHOUT shading: what the
@@ -213,6 +216,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   uint8_t firstGiEligible = 0;
   float firstOpacity = 1.0f;
   uint8_t firstAoPatched = 0;
+  float firstReflectivity = 0.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -274,6 +278,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       firstGiEligible = hs.giEligible;
       firstOpacity = hs.opacity;
       firstAoPatched = hs.aoPatched;
+      firstReflectivity = hs.reflectivity;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -343,7 +348,8 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                      firstGiReflectance,
                      firstGiEligible,
                      firstOpacity,
-                     firstAoPatched};
+                     firstAoPatched,
+                     firstReflectivity};
 }
 
 }  // namespace detail

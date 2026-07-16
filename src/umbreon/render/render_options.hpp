@@ -221,6 +221,12 @@ struct RenderOptions {
   bool pt2Adaptive = false;
   float pt2AdaptiveThresh = 0.15f;
   int pt2AdaptiveMul = 4;
+  // Traced mirror reflection (full-PT track, stage 1): surfaces with
+  // Material::reflection > 0 trace one mirror ray per pixel in a GI post-pass
+  // and composite reflection * L(hit: NEE direct + ambient approx; miss: the
+  // gather sky), replacing shadeLocal's fake reflection*background term. POV's
+  // reflection is a sharp mirror, so one deterministic ray suffices (no spp).
+  bool pt2Reflect = true;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised
