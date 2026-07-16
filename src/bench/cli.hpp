@@ -82,6 +82,7 @@ struct Options {
   float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
   bool denoiseDemodulateAlbedo = true;  // denoise color/albedo then re-multiply
   bool oidnCleanAux = true;     // OIDN: treat primary-hit aux as noise-free
+  int oidnMaxMemoryMB = 1024;   // OIDN scratch cap MB (<0 = OIDN default/no cap)
 
   // POV scene mode (input is a .pov): constants predefined like the POV-Ray
   // "Declare=name=value" command-line options. Seeded with the CueMol defaults

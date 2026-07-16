@@ -504,6 +504,10 @@ Options parseCli(int argc, char** argv) {
         fail("--oidn-clean-aux expects on/off");
       continue;
     }
+    if (a == "--oidn-max-memory") {
+      o.oidnMaxMemoryMB = std::atoi(value("--oidn-max-memory").c_str());
+      continue;
+    }
     if (a == "--shadows") {
       std::string v = value("--shadows");
       if (o.ok && !parseBool(v, o.shadows)) fail("--shadows expects on/off");
@@ -1025,6 +1029,7 @@ void printUsage(const char* prog) {
       "  --denoise-sigma-l <f>    luminance edge-stop sigma             [4]\n"
       "  --denoise-demodulate <on|off> denoise color/albedo            [on]\n"
       "  --oidn-clean-aux <on|off> OIDN treats aux as noise-free        [on]\n"
+      "  --oidn-max-memory <MB>   OIDN scratch cap (-1 = OIDN default)  [1024]\n"
       "  --gi-max-dist <world>    gather ray max distance (0 = auto)    [0]\n"
       "  --gi-intensity <float>   indirect gain (1.0 = physical)      [1.0]\n"
       "  --gi-env-intensity <f>   ambient fill mult (auto-calibrated; <1 deeper) [1.0]\n"

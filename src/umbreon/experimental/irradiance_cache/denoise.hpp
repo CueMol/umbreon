@@ -31,7 +31,11 @@ void denoiseAtrous(FrameResult& frame, const RenderOptions& opt);
 // located OpenImageDenoise package); callers must guard the call with the same
 // macro. Denoises frame.color (linear HDR) with the "RT" filter, using
 // frame.albedo / frame.normal as clean auxiliary guides. Background pixels (no
-// geometry) keep their original color.
-void denoiseOidn(FrameResult& frame, const RenderOptions& opt);
+// geometry) keep their original color. The scratch memory is capped by
+// opt.oidnMaxMemoryMB (built-in tiling). Returns true when OIDN processed the
+// frame; false on any failure (device init / execute error), in which case the
+// frame is left untouched and the caller should fall back to denoiseAtrous and
+// report DenoiserBackend::AtrousBilateral.
+bool denoiseOidn(FrameResult& frame, const RenderOptions& opt);
 
 }  // namespace umbreon

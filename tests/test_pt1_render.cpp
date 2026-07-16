@@ -327,5 +327,26 @@ int main() {
     s.check("gatherDiv=4: finite color", finite);
   }
 
+  // --- pt1DenoiserUsed reporting. pt1Denoise off => the E-buffer denoise stage
+  // never runs (0). On => OIDN (2) when the backend is built, a-trous fallback
+  // (1) otherwise. Deterministic regardless of resolution/worker state.
+  {
+    umbreon::RenderOptions o = makeGiOptions(1, 1.0f);
+    o.pt1Denoise = false;
+    s.check("pt1DenoiserUsed == 0 when pt1Denoise off",
+            umbreon::render(sc, o).pt1DenoiserUsed == 0);
+  }
+  {
+    umbreon::RenderOptions o = makeGiOptions(1, 1.0f);
+    o.pt1Denoise = true;
+#ifdef UMBREON_TEST_HAVE_OIDN
+    s.check("pt1DenoiserUsed == 2 (OIDN built)",
+            umbreon::render(sc, o).pt1DenoiserUsed == 2);
+#else
+    s.check("pt1DenoiserUsed == 1 (a-trous fallback, OIDN not built)",
+            umbreon::render(sc, o).pt1DenoiserUsed == 1);
+#endif
+  }
+
   return s.report();
 }

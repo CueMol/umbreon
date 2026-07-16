@@ -19,12 +19,15 @@ namespace umbreon {
 // filter. color is deinterleaved to a contiguous RGB scratch buffer (OIDN wants
 // Float3), denoised with albedo/normal as auxiliary guides, and written back to
 // the geometry pixels only -- the background (no normal) keeps its flat color so
-// the surface/background boundary is not blurred.
-void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
+// the surface/background boundary is not blurred. Returns true when OIDN ran;
+// false on a device/execute error (frame left untouched). The a-trous fallback
+// on failure is the caller's responsibility (pipeline.cpp / pt1_denoise.cpp),
+// which also records FrameResult::denoiserUsed from this return value.
+bool denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   const int W = frame.width;
   const int H = frame.height;
   const std::size_t N = static_cast<std::size_t>(W) * H;
-  if (W <= 0 || H <= 0 || frame.color.size() < N * 4) return;
+  if (W <= 0 || H <= 0 || frame.color.size() < N * 4) return false;
 
   const bool haveNormal = frame.normal.size() == N * 3;
   const bool haveAlbedo = frame.albedo.size() == N * 3;
@@ -45,7 +48,7 @@ void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   const auto tDev1 = clock::now();
   if (device.getError() != oidn::Error::None) {
     std::fprintf(stderr, "warning: OIDN device init failed; skipping denoise\n");
-    return;
+    return false;
   }
 
   oidn::FilterRef filter = device.newFilter("RT");
@@ -59,6 +62,11 @@ void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   // primary-hit albedo/normal are essentially noise-free, so OIDN can use them
   // directly (no aux prefilter). Disable only if the guides are known noisy.
   if (haveAlbedo || haveNormal) filter.set("cleanAux", opt.oidnCleanAux);
+  // Cap the scratch arena; uncapped, OIDN allocates a single multi-GiB block
+  // at high resolutions (measured 2.5 GiB at 13 MP), which aborts hosts whose
+  // allocator rejects huge single allocations (Electron PartitionAlloc,
+  // ~2 GiB). OIDN implements the cap as internal overlapping tiling.
+  if (opt.oidnMaxMemoryMB >= 0) filter.set("maxMemoryMB", opt.oidnMaxMemoryMB);
   filter.commit();
   const auto tFil1 = clock::now();
   filter.execute();
@@ -74,7 +82,7 @@ void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
   if (device.getError(msg) != oidn::Error::None) {
     std::fprintf(stderr, "warning: OIDN execute failed (%s); skipping denoise\n",
                  msg ? msg : "unknown");
-    return;
+    return false;
   }
 
   // Write back geometry pixels only; leave the background color untouched.
@@ -88,6 +96,7 @@ void denoiseOidn(FrameResult& frame, const RenderOptions& opt) {
     frame.color[p * 4 + 1] = out[p * 3 + 1];
     frame.color[p * 4 + 2] = out[p * 3 + 2];
   }
+  return true;
 }
 
 }  // namespace umbreon
