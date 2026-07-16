@@ -45,6 +45,14 @@ struct Pt1GatherExt {
   // FULL path radiance from it; misses anchor at kPt2EnvDistance so the
   // reconnection Jacobian needs no env special case. Null = no capture.
   Pt2Reservoir* reservoir = nullptr;
+  // Adaptive-spp support (pt2). halfSum, when non-null, receives the SUM of
+  // the first floor(spp/2) samples' path radiance -- the adaptive pass
+  // compares mean(all) against mean(first half) as its convergence estimate
+  // (Cycles' split-buffer scheme). sampleIndexOffset shifts the per-sample
+  // index (tea2 counter AND Sobol index) so a refinement pass continues the
+  // pixel's sample sequence instead of replaying it.
+  Vec3* halfSum = nullptr;
+  int sampleIndexOffset = 0;
 };
 
 // Grid-level pt2 configuration handed to gatherPt1Grid, which resolves the
@@ -56,6 +64,15 @@ struct Pt2GatherCfg {
   // ReSTIR candidate reservoirs, one per grid pixel (indexed pix = y*W + x);
   // null when pt2 runs without spatial resampling (pt2Rounds == 0).
   Pt2Reservoir* reservoirs = nullptr;
+  // Adaptive spp: halfE (W*H*3, zero-initialized by the caller) receives the
+  // per-pixel SUM of the first floor(spp/2) samples. sampleIndexOffset makes
+  // a refinement pass continue each pixel's sequence at that index. The
+  // blue-noise pixel sections must be sized for the WHOLE budget (base +
+  // refinement), not this call's spp -- sppLayoutTotal carries that budget
+  // (0 = just this call's spp).
+  float* halfE = nullptr;
+  int sampleIndexOffset = 0;
+  uint32_t sppLayoutTotal = 0;
 };
 
 // One path vertex of the pt1 gather walk: the NEE radiance it reflects toward
@@ -236,17 +253,19 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     rs0 = seed ^ 0x52455354u;
     rs1 = 0x47490001u;
   }
+  const int sOff = ext ? ext->sampleIndexOffset : 0;
   for (int s = 0; s < spp; ++s) {
     uint32_t s0 = seed;
-    uint32_t s1 = static_cast<uint32_t>(s);
+    uint32_t s1 = static_cast<uint32_t>(s + sOff);
     tea2(s0, s1);
     float u1, u2;
     if (ext && ext->sobol) {
       // pt2: shuffled Owen-scrambled Sobol replaces the ld/tea2 first-bounce
       // draw (true Owen scrambling instead of a toroidal shift; with the
       // blue-noise arrangement the pixel's section of the global sequence is
-      // ext->sampler.indexBase + s).
-      pt2SobolBurley2D(ext->sampler.indexBase + static_cast<uint32_t>(s),
+      // ext->sampler.indexBase + s, offset by any refinement continuation).
+      pt2SobolBurley2D(ext->sampler.indexBase +
+                           static_cast<uint32_t>(s + sOff),
                        ext->sampler.seed, &u1, &u2);
     } else if (ld) {
       u1 = static_cast<float>(s) / static_cast<float>(spp) + cpx;
@@ -385,6 +404,11 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
     Esum.x += L.x;
     Esum.y += L.y;
     Esum.z += L.z;
+    if (ext && ext->halfSum && s < spp / 2) {
+      ext->halfSum->x += L.x;
+      ext->halfSum->y += L.y;
+      ext->halfSum->z += L.z;
+    }
   }
   if (rsv) {
     // Finalize: W = wSum / (M * p_hat_selected), M = the full spp candidate
@@ -443,9 +467,14 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
   E.assign(npix * 3, 0.0f);
   occ.assign(npix, 0.0f);
   const uint32_t seedMix = hashU32(frameSeed);
-  // pt2 blue-noise: pixel sections of the ONE global sequence are spp long
-  // (rounded up to a power of two so sections never overlap).
-  const uint32_t sppPow2 = pt2NextPow2(static_cast<uint32_t>(spp > 0 ? spp : 1));
+  // pt2 blue-noise: pixel sections of the ONE global sequence sized for the
+  // whole sample budget (base + adaptive refinement), rounded up to a power
+  // of two so sections never overlap.
+  const uint32_t sppBudget =
+      (pt2 && pt2->sppLayoutTotal > 0)
+          ? pt2->sppLayoutTotal
+          : static_cast<uint32_t>(spp > 0 ? spp : 1);
+  const uint32_t sppPow2 = pt2NextPow2(sppBudget);
   tbb::parallel_for(
       tbb::blocked_range2d<int>(0, H, 16, 0, W, 16),
       [&](const tbb::blocked_range2d<int>& r) {
@@ -474,6 +503,7 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
             float o = 0.0f;
             Pt1GatherExt ext;
             const Pt1GatherExt* extP = nullptr;
+            Vec3 half{0.0f, 0.0f, 0.0f};
             if (pt2) {
               ext.emissive = pt2->emissive;
               ext.sobol = true;
@@ -481,11 +511,18 @@ inline void gatherPt1Grid(const IrradianceCacheParams& p, int W, int H,
                   pt2->pattern, static_cast<uint32_t>(px),
                   static_cast<uint32_t>(py), seedMix, seed, sppPow2);
               if (pt2->reservoirs) ext.reservoir = &pt2->reservoirs[pix];
+              if (pt2->halfE) ext.halfSum = &half;
+              ext.sampleIndexOffset = pt2->sampleIndexOffset;
               extP = &ext;
             }
             const Vec3 e = pt1GatherPoint(p, P, N, Ng, spp, seed, tEps, &o,
                                           ld, clampLum,
                                           stats ? &local : nullptr, extP);
+            if (pt2 && pt2->halfE) {
+              pt2->halfE[pix * 3 + 0] = half.x;
+              pt2->halfE[pix * 3 + 1] = half.y;
+              pt2->halfE[pix * 3 + 2] = half.z;
+            }
             if (stats) stats->flush(local);
             E[pix * 3 + 0] = e.x;
             E[pix * 3 + 1] = e.y;

@@ -83,6 +83,9 @@ struct Options {
   bool pt2Unbiased = false; // --pt2-unbiased on|off (Z-norm visibility rays)
   float pt2MCap = 100.0f;   // --pt2-mcap (reservoir history clamp)
   float pt2WClamp = 0.0f;   // --pt2-wclamp (W clamp; 0 = off)
+  bool pt2Adaptive = false; // --pt2-adaptive on|off (variance-guided spp)
+  float pt2AdaptiveThresh = 0.15f;  // --pt2-adaptive-thresh
+  int pt2AdaptiveMul = 4;   // --pt2-adaptive-mul (total = mul * spp)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI

@@ -211,6 +211,16 @@ struct RenderOptions {
   // W), so it is OFF by default; the MIS normalization already bounds reuse.
   float pt2MCap = 100.0f;
   float pt2WClamp = 0.0f;
+  // Variance-adaptive spp (Cycles' split-buffer scheme): after the base
+  // gather, pixels whose mean-vs-half-mean luminance difference exceeds
+  // pt2AdaptiveThresh * normalization get ONE refinement pass that continues
+  // their sample sequence, up to a total of pt2AdaptiveMul * pt1Spp samples.
+  // Concentrates rays in the noisy minority (pockets, contact shadows) at a
+  // hard cost bound. Mutually exclusive with pt2Rounds > 0 (the reservoir
+  // bookkeeping does not compose with a two-pass merge).
+  bool pt2Adaptive = false;
+  float pt2AdaptiveThresh = 0.15f;
+  int pt2AdaptiveMul = 4;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised

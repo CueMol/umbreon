@@ -402,6 +402,24 @@ Options parseCli(int argc, char** argv) {
       if (o.ok && o.pt2WClamp < 0.0f) fail("--pt2-wclamp expects >= 0 (0 = off)");
       continue;
     }
+    if (a == "--pt2-adaptive") {
+      std::string v = value("--pt2-adaptive");
+      if (o.ok && !parseBool(v, o.pt2Adaptive))
+        fail("--pt2-adaptive expects on/off");
+      continue;
+    }
+    if (a == "--pt2-adaptive-thresh") {
+      o.pt2AdaptiveThresh =
+          static_cast<float>(std::atof(value("--pt2-adaptive-thresh").c_str()));
+      if (o.ok && o.pt2AdaptiveThresh <= 0.0f)
+        fail("--pt2-adaptive-thresh expects > 0");
+      continue;
+    }
+    if (a == "--pt2-adaptive-mul") {
+      o.pt2AdaptiveMul = std::atoi(value("--pt2-adaptive-mul").c_str());
+      if (o.ok && o.pt2AdaptiveMul < 2) fail("--pt2-adaptive-mul expects >= 2");
+      continue;
+    }
     if (a == "--quality") {
       // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
       // bounces at the point of appearance, so later explicit flags override
@@ -1109,6 +1127,10 @@ void printUsage(const char* prog) {
       "  --pt2-unbiased <on|off>  pt2 Z-normalization with visibility\n"
       "                           re-check rays                        [off]\n"
       "  --pt2-mcap <f>           pt2 reservoir history clamp M        [100]\n"
+      "  --pt2-adaptive <on|off>  pt2 variance-adaptive spp: refine only\n"
+      "                           unconverged pixels                   [off]\n"
+      "  --pt2-adaptive-thresh <f> pt2 adaptive noise threshold        [0.15]\n"
+      "  --pt2-adaptive-mul <int> pt2 adaptive total budget = mul*spp    [4]\n"
       "  --pt2-wclamp <f>         pt2 contribution weight clamp (0=off)  [0]\n"
       "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"

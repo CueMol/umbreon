@@ -23,6 +23,7 @@
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
 #include "experimental/pt1/pt1_integrator.hpp"
 #include "experimental/pt1/pt1_upsample.hpp"
+#include "experimental/pt2/pt2_adaptive.hpp"
 #include "experimental/pt2/pt2_spatial.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
@@ -534,6 +535,16 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     detail::Pt2GatherCfg pt2CfgStorage;
     const detail::Pt2GatherCfg* pt2Cfg = nullptr;
     const bool pt2Restir = (opt.giIntegrator == 2) && opt.pt2Rounds > 0;
+    // Adaptive spp needs a meaningful half-split estimate (spp >= 2) and does
+    // not compose with the reservoir bookkeeping (mutually exclusive).
+    const bool pt2Adapt = (opt.giIntegrator == 2) && opt.pt2Adaptive &&
+                          !pt2Restir && spp >= 2;
+    const int pt2AdaptExtra =
+        pt2Adapt ? spp * (std::max(2, opt.pt2AdaptiveMul) - 1) : 0;
+    if ((opt.giIntegrator == 2) && opt.pt2Adaptive && pt2Restir)
+      std::fprintf(stderr,
+                   "warning: --pt2-adaptive is ignored with --pt2-rounds > 0 "
+                   "(reservoirs do not compose with the two-pass merge)\n");
     // ReSTIR reservoirs live on the gather grid, sized in each branch below.
     std::vector<detail::Pt2Reservoir> reservoirs;
     detail::Pt2SpatialParams sparams;
@@ -550,6 +561,43 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       sparams.scene = built.scene;
     }
     const char* giTag = (opt.giIntegrator == 2) ? "pt2" : "pt1";
+    // Adaptive-spp refinement, shared by the reduced-grid and full-res paths.
+    // The base gather has already filled E/occ (means over spp) and halfE
+    // (sums over the first spp/2). Mask, dilate twice (5x5 reach), re-gather
+    // the masked pixels CONTINUING their sample sequences, merge as a
+    // weighted mean. Pure functions of completed buffers at every step, so
+    // the 2-pass determinism argument holds.
+    std::vector<float> adaptHalfE;
+    auto adaptiveRefine = [&](int gw, int gh, const float* pos,
+                              const float* nrm, const float* gnrm,
+                              const uint8_t* elig, const float* dep,
+                              std::vector<float>& E, std::vector<float>& occ) {
+      pt2CfgStorage.halfE = nullptr;
+      std::vector<uint8_t> amask, tmp;
+      detail::pt2AdaptiveMask(gw, gh, E, adaptHalfE, elig, spp,
+                              opt.pt2AdaptiveThresh, amask);
+      detail::pt2DilateMask(gw, gh, amask, elig, tmp);
+      detail::pt2DilateMask(gw, gh, tmp, elig, amask);
+      std::size_t nref = 0;
+      for (uint8_t v : amask) nref += v;
+      if (nref == 0) return;
+      pt2CfgStorage.sampleIndexOffset = spp;
+      std::vector<float> Er, occr;
+      detail::gatherPt1Grid(gp, gw, gh, pos, nrm, gnrm, amask.data(), dep,
+                            pt2AdaptExtra, opt.pt1Seed, diag, Er, occr,
+                            opt.pt1Ld, opt.pt1Clamp, &rayStats,
+                            &budget.gather, pt2Cfg);
+      pt2CfgStorage.sampleIndexOffset = 0;
+      detail::pt2MergeRefined(gw, gh, amask, spp, pt2AdaptExtra, Er, occr, E,
+                              occ);
+      std::fprintf(stderr,
+                   "pt2: adaptive refined %zu px (%.1f%% of grid) with +%d "
+                   "spp\n",
+                   nref,
+                   100.0 * static_cast<double>(nref) /
+                       (static_cast<double>(gw) * gh),
+                   pt2AdaptExtra);
+    };
     // Gather-eligible mask, set per pixel by the hit shader: mesh hits and
     // REAL CSG primitives (atom balls / bonds); outline decoration and the
     // background stay 0. Unlike the cache's geomID/kind gate this is primID-
@@ -584,12 +632,24 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                           detail::Pt2Reservoir{});
         pt2CfgStorage.reservoirs = reservoirs.data();
       }
+      if (pt2Adapt) {
+        adaptHalfE.assign(static_cast<std::size_t>(hw) * hh * 3, 0.0f);
+        pt2CfgStorage.halfE = adaptHalfE.data();
+        pt2CfgStorage.sppLayoutTotal =
+            static_cast<uint32_t>(spp + pt2AdaptExtra);
+      }
       // The private G-buffer carries the geometric normal, so the gather's
       // below-horizon guard is exact here (full-res mode approximates Ng = N).
       detail::gatherPt1Grid(gp, hw, hh, g.position.data(), g.normal.data(),
                             g.geomNormal.data(), g.hit.data(), g.depth.data(),
                             spp, opt.pt1Seed, diag, Eh, occh, opt.pt1Ld,
                             opt.pt1Clamp, &rayStats, &budget.gather, pt2Cfg);
+      if (pt2Adapt) {
+        adaptiveRefine(hw, hh, g.position.data(), g.normal.data(),
+                       g.geomNormal.data(), g.hit.data(), g.depth.data(), Eh,
+                       occh);
+        pt2CfgStorage.sppLayoutTotal = 0;  // edge patch lays out its own spp
+      }
       budget.gather.finish();
       if (pt2Restir) {
         // ReSTIR spatial rounds + resolve overwrite Eh with the resampled
@@ -698,11 +758,23 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                           detail::Pt2Reservoir{});
         pt2CfgStorage.reservoirs = reservoirs.data();
       }
+      if (pt2Adapt) {
+        adaptHalfE.assign(static_cast<std::size_t>(W) * H * 3, 0.0f);
+        pt2CfgStorage.halfE = adaptHalfE.data();
+        pt2CfgStorage.sppLayoutTotal =
+            static_cast<uint32_t>(spp + pt2AdaptExtra);
+      }
       detail::gatherPt1Grid(gp, W, H, res.position.data(), res.normal.data(),
                             /*geomNormal=*/nullptr, eligible.data(),
                             res.depth.data(), spp, opt.pt1Seed, diag, Ebuf,
                             occBuf, opt.pt1Ld, opt.pt1Clamp, &rayStats,
                             &budget.gather, pt2Cfg);
+      if (pt2Adapt) {
+        adaptiveRefine(W, H, res.position.data(), res.normal.data(),
+                       /*geomNormal=*/nullptr, eligible.data(),
+                       res.depth.data(), Ebuf, occBuf);
+        pt2CfgStorage.sppLayoutTotal = 0;
+      }
       budget.gather.finish();
       if (pt2Restir) {
         detail::pt2SpatialResampleAndResolve(
