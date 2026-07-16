@@ -181,18 +181,29 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // gamma encode (OIDN/SVGF operate in linear HDR; the supersample box-average is
   // the primary denoise, this is the finishing pass). No-op when denoiser == None,
   // keeping the default render byte-identical. OIDN falls back to the built-in
-  // a-trous when the library was not compiled in.
+  // a-trous when the library was not compiled in or fails at runtime; the
+  // backend that actually ran is recorded in frame.denoiserUsed.
   if (opt.denoiser == static_cast<int>(DenoiserBackend::OIDN)) {
 #ifdef UMBREON_HAVE_OIDN
-    denoiseOidn(frame, opt);
+    if (denoiseOidn(frame, opt)) {
+      frame.denoiserUsed = static_cast<int>(DenoiserBackend::OIDN);
+    } else {
+      // OIDN failed at runtime (device/filter error): fall back instead of
+      // silently skipping the denoise (behavior change from the old code,
+      // which left the frame un-denoised on this rare path).
+      denoiseAtrous(frame, opt);
+      frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
+    }
 #else
     std::fprintf(stderr,
                  "warning: OIDN denoiser backend not built (UMBREON_WITH_OIDN "
                  "off); falling back to the built-in a-trous denoiser\n");
     denoiseAtrous(frame, opt);
+    frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
 #endif
   } else if (opt.denoiser != static_cast<int>(DenoiserBackend::None)) {
     denoiseAtrous(frame, opt);
+    frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
   }
 
   applyAssumedGamma(frame, scene.assumedGamma);

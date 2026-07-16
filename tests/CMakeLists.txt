@@ -125,4 +125,16 @@ if(TARGET umbreon)
   # (data/edges/edge_tube1.inc), which is LFS.
   set_tests_properties(screen_vector_integration PROPERTIES LABELS needs_lfs)
 
+  # OIDN in-process denoiser tests, only when the backend is built. The
+  # UMBREON_TEST_HAVE_OIDN define lets tests shared with bare builds
+  # (test_pt1_render) assert the OIDN vs a-trous-fallback expected value.
+  # (The root CMakeLists' OIDN block runs before add_subdirectory(tests), so
+  # UMBREON_WITH_OIDN / OpenImageDenoise_FOUND are visible here.)
+  if(UMBREON_WITH_OIDN AND OpenImageDenoise_FOUND)
+    target_compile_definitions(test_pt1_render PRIVATE UMBREON_TEST_HAVE_OIDN)
+    add_executable(test_oidn_denoise test_oidn_denoise.cpp)
+    target_link_libraries(test_oidn_denoise PRIVATE umbreon)
+    add_test(NAME oidn_denoise COMMAND test_oidn_denoise)
+  endif()
+
 endif()

@@ -16,11 +16,11 @@
 namespace umbreon {
 namespace detail {
 
-void denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
-                 const float* normal, const float* position,
-                 const RenderOptions& opt) {
+int denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
+                const float* normal, const float* position,
+                const RenderOptions& opt) {
   const std::size_t npix = static_cast<std::size_t>(w) * h;
-  if (w <= 0 || h <= 0 || E.size() < npix * 3) return;
+  if (w <= 0 || h <= 0 || E.size() < npix * 3) return 0;  // no-op
 
   // NaN/Inf scrub before handing the buffer to OIDN: a single NaN propagates
   // through the network and corrupts the whole output image.
@@ -50,13 +50,20 @@ void denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
   RenderOptions dopt = opt;
   dopt.denoiseDemodulateAlbedo = false;
 
+  int used;
 #ifdef UMBREON_HAVE_OIDN
-  denoiseOidn(tmp, dopt);
+  if (denoiseOidn(tmp, dopt)) {
+    used = static_cast<int>(DenoiserBackend::OIDN);
+  } else {
+    denoiseAtrous(tmp, dopt);  // rare runtime-error fallback
+    used = static_cast<int>(DenoiserBackend::AtrousBilateral);
+  }
 #else
   std::fprintf(stderr,
                "warning: pt1 denoise requested but OIDN is unavailable "
                "(UMBREON_WITH_OIDN=OFF); using the a-trous fallback\n");
   denoiseAtrous(tmp, dopt);
+  used = static_cast<int>(DenoiserBackend::AtrousBilateral);
 #endif
 
   for (std::size_t p = 0; p < npix; ++p) {
@@ -64,6 +71,7 @@ void denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
     E[p * 3 + 1] = tmp.color[p * 4 + 1];
     E[p * 3 + 2] = tmp.color[p * 4 + 2];
   }
+  return used;
 }
 
 }  // namespace detail

@@ -195,6 +195,16 @@ int main() {
     for (std::size_t i = 0; identical && i < a.color.size(); ++i)
       if (a.color[i] != b.color[i]) identical = false;
     s.check("GI determinism: two gi-on renders bit-identical color", identical);
+    // FrameResult::denoiserUsed reporting on the render() facade. RenderOptions
+    // defaults denoiser to None (the GI-conditional a-trous default lives in the
+    // bench CLI, not the library), so an unmodified GI render reports 0; an
+    // explicit a-trous request reports 1.
+    s.check("denoiserUsed == 0 when denoiser None (default)",
+            a.denoiserUsed == 0);
+    umbreon::RenderOptions atr = o;
+    atr.denoiser = 1;  // DenoiserBackend::AtrousBilateral
+    s.check("denoiserUsed == 1 for an explicit a-trous render",
+            umbreon::render(sc, atr).denoiserUsed == 1);
   }
 
   // Single counting (the A-route番人 test): a diffuse-lit white floor with a

@@ -179,6 +179,16 @@ struct RenderOptions {
   float denoiseSigmaL = 4.0f;   // luminance edge-stop sigma
   bool denoiseDemodulateAlbedo = true;  // denoise color/albedo, then re-multiply
   bool oidnCleanAux = true;     // OIDN: primary-hit albedo/normal are noise-free
+  // OIDN scratch memory cap in MB (< 0 = OIDN default, no cap). OIDN denoises
+  // in internal overlapping tiles to stay under the cap, which bounds every
+  // SINGLE allocation regardless of resolution. Required inside Electron:
+  // PartitionAlloc aborts (SIGTRAP) on single allocations > ~2 GiB, and the
+  // uncapped default allocates one ~2.5 GiB arena at 13 MP. Measured with
+  // 1024: max single allocation ~0.9-1.0 GiB up to 8K, ~+23% denoise time at
+  // 13 MP. NOTE: the value changes the tile layout and thus the output bits
+  // at resolutions large enough to trigger tiling -- keep it fixed for
+  // reproducibility (small frames are tiling-free and bit-identical).
+  int oidnMaxMemoryMB = 1024;
 
   // --- shadows (per-light visibility; never applied to outline primitives) ---
   bool shadows = false;        // cast shadows from the lights; false = off
