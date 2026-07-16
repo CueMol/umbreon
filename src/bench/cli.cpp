@@ -346,9 +346,17 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--integrator");
       if (v == "cache")
         o.giIntegrator = 0;
-      else if (v == "pt1")
+      else if (v == "pt1") {
+        // Asking for pt1 EXPLICITLY implies the GI pipeline: the gi gate drives
+        // the ambient zeroing, the _amb_frac energy rebalance and the GI AOV
+        // plumbing, which pt1 shares with the cache -- without it a bare
+        // "--integrator pt1" would silently render with no GI at all. The
+        // implication lives here, on the explicit flag, and NOT on
+        // giIntegrator == 1: that is the default now, so keying off it would
+        // turn GI on for every render. A later --gi off still wins.
         o.giIntegrator = 1;
-      else
+        o.gi = true;
+      } else
         fail("--integrator expects cache/pt1");
       continue;
     }
@@ -361,21 +369,27 @@ Options parseCli(int argc, char** argv) {
       // the silhouette-rim patch (user-approved 2026-07: visually matches
       // the old full-hi-res-grid presets at ~12x less cost). ultra stays on
       // the full supersampled grid as the reference preset.
+      // Every preset asks for pt1 explicitly, so -- like --integrator pt1 --
+      // it turns the GI gate on (a preset with no GI would be meaningless).
       if (v == "draft") {
         o.giIntegrator = 1;
+        o.gi = true;
         o.pt1GatherDiv = -1;  // output resolution
         o.pt1Spp = 8;
         o.giBounces = 1;
         o.pt1Ld = true;
       } else if (v == "high") {
         o.giIntegrator = 1;
+        o.gi = true;
         o.pt1GatherDiv = -1;  // output resolution
         o.pt1Spp = 32;
         o.giBounces = 2;
         o.pt1Ld = true;
       } else if (v == "ultra") {
         o.giIntegrator = 1;
+        o.gi = true;
         o.pt1HalfRes = false;
+        o.pt1GatherDiv = 0;  // legacy derivation -> pt1HalfRes = full-res grid
         o.pt1Spp = 256;
         o.giBounces = 3;
       } else {
@@ -1038,19 +1052,20 @@ void printUsage(const char* prog) {
       "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
-      "  --integrator <cache|pt1> indirect GI integrator (pt1 implies --gi on)\n"
+      "  --integrator <cache|pt1> indirect GI integrator; cache is\n"
+      "                           experimental (pt1 implies --gi on)    [pt1]\n"
       "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"
       "                           3-bounce (put it FIRST; later flags\n"
-      "                           override)  [cache]\n"
+      "                           override)  [draft-equivalent]\n"
       "  --spp <int>              pt1 gather rays per pixel             [8]\n"
       "  --indirect-res <full|half|quarter|out> pt1 gather grid = render\n"
-      "                           grid / {1,2,4,ss} (out = final size)  [half]\n"
+      "                           grid / {1,2,4,ss} (out = final size)   [out]\n"
       "  --denoise <on|off>       pt1 indirect-only OIDN denoise        [on]\n"
       "  --sky <uniform|gradient> pt1 gather sky model            [uniform]\n"
       "  --sky-radiance r,g,b     pt1 sky tint (x ambient energy)   [1,1,1]\n"
       "  --seed <int>             pt1 per-pixel RNG seed                [0]\n"
-      "  --pt1-ld <on|off>        pt1 stratified 1st-bounce sampling   [off]\n"
+      "  --pt1-ld <on|off>        pt1 stratified 1st-bounce sampling    [on]\n"
       "  --pt1-clamp <f>          pt1 per-sample luminance clamp      [0=off]\n"
       "  --pt1-edge-patch <on|off> full-res re-gather of silhouette rims\n"
       "                           the reduced gather grid cannot resolve  [on]\n"

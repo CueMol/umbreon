@@ -200,18 +200,26 @@ diffuse GI は 2 つのインテグレータを選べる(設計と規約は
 [pt1_design.md](pt1_design.md)、比較は `scripts/compare_integrators.sh`)。
 
 ```sh
-# irradiance cache(既定)
+# pt1: パストレース per-pixel gather(既定)。設定は --quality draft と同一
 umbreon_cli <scene>.pov --gi on
 
-# pt1: パストレース per-pixel gather(実験的、cache の ground-truth 参照)
-umbreon_cli <scene>.pov --integrator pt1 --spp 8
+# irradiance cache(実験的。比較用に残している)
+umbreon_cli <scene>.pov --gi on --integrator cache
 ```
+
+`--gi on` の既定は **pt1** で、`--quality draft` 相当（8 spp / gather=出力解像度 /
+stratified サンプリング on / 1 バウンス）。irradiance cache は experimental なので、
+明示的に `--integrator cache` を指定したときだけ使われる。
+
+なお GI 自体の既定は off。`--gi on` を付けたときにどちらのインテグレータが走るか、という
+話であることに注意（`--integrator pt1` と `--quality <preset>` は明示指定なので `--gi on`
+を含意する）。
 
 | フラグ | 既定 | 効果 / 注意 |
 |---|---|---|
-| `--integrator <cache\|pt1>` | cache | 間接光インテグレータの選択。`pt1` は `--gi on` を含意 |
+| `--integrator <cache\|pt1>` | pt1 | 間接光インテグレータの選択。`pt1` の明示指定は `--gi on` を含意 |
 | `--spp <int>` | 8 | pt1: ピクセルあたりの gather レイ数 |
-| `--indirect-res <full\|half\|quarter\|out>` | half | pt1: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
+| `--indirect-res <full\|half\|quarter\|out>` | out | pt1: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
 | `--pt1-edge-patch <on\|off>` | on | 縮小 gather グリッドが解決できないシルエット縁ピクセルを full-res で再 gather |
 | `--pt1-patch-thresh <w>` | 0.3 | パッチ対象の upsample 重み閾値（大きいほど広く・高品質・低速） |
 | `--pt1-stats <on\|off>` | off | OIDN 段階分解（device/filter/execute）を stderr に出力 |

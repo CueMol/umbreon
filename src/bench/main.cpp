@@ -75,12 +75,6 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  // --integrator pt1 implies the GI pipeline: the gi gate drives the ambient
-  // zeroing, the _amb_frac energy rebalance and the GI AOV plumbing, all of
-  // which pt1 shares with the cache. Without this a bare "--integrator pt1"
-  // would silently render with no GI at all.
-  if (opt.giIntegrator == 1) opt.gi = true;
-
   if (opt.convertMode) return umbreon::runConvertMode(opt);
   if (opt.compareMode) return umbreon::runCompareMode(opt);
 

@@ -406,8 +406,9 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.giSeedPerVertex = opt.giSeedPerVertex;
   ropt.giGradients = opt.giGradients;
   ropt.giOutlierReject = opt.giOutlierReject;
-  // pt1 integrator selection + knobs (giIntegrator == 0 leaves the cache
-  // path untouched; the pt1 fields are then never read).
+  // pt1 integrator selection + knobs. pt1 is the default; giIntegrator == 0
+  // selects the experimental irradiance cache instead, and the pt1 fields are
+  // then never read.
   ropt.giIntegrator = opt.giIntegrator;
   ropt.pt1Spp = opt.pt1Spp;
   ropt.pt1HalfRes = opt.pt1HalfRes;

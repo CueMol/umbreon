@@ -1,6 +1,9 @@
 # pt1 Path-Traced GI: Tuning Guide
 
-`--integrator pt1` enables the per-pixel one-bounce path-traced indirect integrator.
+pt1 is the per-pixel path-traced indirect integrator and the DEFAULT for `--gi on`
+(`--integrator pt1` selects it explicitly and implies `--gi on`; `--integrator cache`
+selects the experimental irradiance cache instead). Its defaults match `--quality
+draft`: 8 spp, gather at output resolution, stratified sampling on, 1 bounce.
 This document explains the energy model, depth cue levers, and recommended recipes.
 For the algorithmic design and conventions, see [pt1_design.md](pt1_design.md).
 
@@ -136,14 +139,14 @@ dominates in tight cavities; the gradient adds shape cue on open surfaces.
 | `--sky uniform\|gradient` | uniform | Sky model for gather misses. `gradient` makes upper hemisphere brighter. |
 | `--sky-radiance r,g,b` | 1,1,1 | Zenith radiance for the gather sky term. |
 | `--ao-ground #RRGGBB` | #ffffff | Ground hemisphere color for `--sky gradient`. |
-| `--spp N` | 8 | Gather samples per pixel (half-res grid). Higher → less noise before denoise, more time. |
-| `--indirect-res full\|half` | half | half-res gathers at W/2×H/2 + joint bilateral upsample. `full` is ~4x slower. |
+| `--spp N` | 8 | Gather samples per pixel (on the gather grid). Higher → less noise before denoise, more time. |
+| `--indirect-res full\|half\|quarter\|out` | out | Gather grid = render grid / {1,2,4,ss}. `out` matches the final image size; `full` is the reference (and much slower). Reduced grids joint-bilateral-upsample back. |
 | `--denoise on\|off` | on | OIDN denoiser on the indirect E buffer (before compositing). |
 | `--gi-intensity <f>` | 1.0 | Global gain on the indirect contribution. Raising this brightens shadowed areas but can saturate exposed patches. |
 | `--gi-max-dist <f>` | inf | Gather ray tfar. Default is physical (infinite); lower values (e.g. `--gi-max-dist 5`) give cache-like local contrast. |
 | `--gi-env-intensity <f>` | 1.0 | Scale on the sky/ground radiance seen by gather misses. |
 | `--seed N` | 0 | Deterministic RNG seed. Different seeds give independent noise patterns. |
-| `--pt1-ld on\|off` | off | Stratified first-bounce sampling (Hammersley + per-pixel Cranley-Patterson shift). Lower variance at the same spp; recommended on. |
+| `--pt1-ld on\|off` | on | Stratified first-bounce sampling (Hammersley + per-pixel Cranley-Patterson shift). Lower variance at the same spp. |
 | `--pt1-clamp <L>` | 0 (off) | Per-sample luminance clamp; suppresses rare bright fireflies on multi-bounce paths at a small bias cost. |
 
 

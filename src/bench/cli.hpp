@@ -53,12 +53,14 @@ struct Options {
   bool giGradients = false;     // Ward-Heckbert gradient interpolation
   bool giOutlierReject = true;  // lift isolated fully-occluded dark records
 
-  // --- pt1: experimental path-traced indirect integrator (--integrator pt1;
-  // implies --gi on so the GI plumbing/energy rebalance applies identically) ---
-  int giIntegrator = 0;         // 0 = irradiance cache (default), 1 = pt1
+  // --- pt1: path-traced indirect integrator, the DEFAULT (--integrator pt1;
+  // implies --gi on so the GI plumbing/energy rebalance applies identically).
+  // These mirror the RenderOptions defaults -- scene_setup copies them over
+  // unconditionally, so they must not drift apart. ---
+  int giIntegrator = 1;         // 1 = pt1 (default), 0 = irradiance cache
   int pt1Spp = 8;               // --spp: gather rays per pixel
-  bool pt1HalfRes = true;       // legacy default (presets override)
-  int pt1GatherDiv = 0;         // --indirect-res full|half|quarter|out
+  bool pt1HalfRes = true;       // legacy; consulted only if pt1GatherDiv == 0
+  int pt1GatherDiv = -1;        // --indirect-res full|half|quarter|out (out)
   bool pt1EdgePatch = true;     // --pt1-edge-patch on|off
   float pt1EdgePatchThresh = 0.3f;  // --pt1-patch-thresh <w>
   bool pt1Denoise = true;       // --denoise on|off (indirect-only OIDN)
@@ -67,7 +69,7 @@ struct Options {
   float pt1SkyRadiance[3] = {1.0f, 1.0f, 1.0f};  // --sky-radiance r,g,b
   float pt1UpsampleNormalPow = 32.0f;   // --pt1-upsample-normal-pow
   float pt1UpsampleDepthScale = 0.02f;  // --pt1-upsample-depth-scale
-  bool pt1Ld = false;                   // --pt1-ld on|off (stratified sampling)
+  bool pt1Ld = true;                    // --pt1-ld on|off (stratified sampling)
   float pt1Clamp = 0.0f;                // --pt1-clamp (luminance; 0 = off)
   bool pt1Stats = false;                // --pt1-stats (OIDN stage split print)
 
