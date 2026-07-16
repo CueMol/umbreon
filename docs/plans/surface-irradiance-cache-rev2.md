@@ -1,5 +1,11 @@
 # umbreon Adaptive Surface Irradiance Cache + OIDN 実装プラン
 
+> **SUPERSEDED (2026-07-16)**: 本プランは [../pt2_survey.md](../pt2_survey.md) により
+> 置き換えられた。irradiance cache 系は追わない(pt1 が `--gi on` の既定になり、
+> cache integrator は比較用に凍結)。§「設計の大前提」のエネルギー・遮蔽の決定
+> (Route A、合成式、二重計上ガード)は pt1/pt2 に引き継がれており、そこだけが
+> 本書の生きている部分である。
+
 ## Context
 
 umbreon に **diffuse GI**(既定 one-bounce、拡張で multi-bounce)を入れる。全ピクセルで GI ray を飛ばすのではなく、表面上の少数代表点(cache record)でのみ irradiance を計算して cache し、shading 時に近傍 record を補間再利用する **irradiance caching**(Ward–Heckbert 1988/1992, Křivánek 2006)。これは **POV-Ray radiosity と同一の手法系**(Greg Ward 型 irradiance cache)であり、本プランの狙いは「POV-Ray radiosity に立体感・速度で勝る」こと。残留ノイズは **denoiser**(自前 edge-aware à-trous を既定、OIDN を optional backend)で処理する。
