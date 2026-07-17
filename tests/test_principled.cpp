@@ -535,6 +535,48 @@ int main() {
             bitEqual(t1.color, f1.color));
   }
 
+  // 15b) Toon/unlit GI exemption (Material::toonLike): a toon material's
+  //      look is self-contained -- GI neither replaces its ambient nor
+  //      composites indirect onto it, so an all-toon scene renders bitwise
+  //      identically with GI on and off, and an unlit ("nolighting")
+  //      surface keeps its exact flat pigment under pt2.
+  {
+    umbreon::Material toon;  // scene4-style 3-tone finish
+    toon.ambient = 0.3f;
+    toon.diffuse = 0.5f;
+    toon.brilliance = 0.0f;
+    toon.phong = 10000.0f;
+    toon.phongSize = 50.0f;
+    umbreon::Scene sc = makeScene2(toon, toon);
+    // White ambient: under GI toon evaluates at UNIT ambient (the scene
+    // ambientColor carries the gather's energy split), so the gi-off render
+    // matches bitwise exactly when the gi-off ambient is white too -- the
+    // bench's non-GI convention.
+    sc.ambientColor = {1.0f, 1.0f, 1.0f};
+    umbreon::RenderOptions off = makeOpts();
+    umbreon::RenderOptions on = makePt2Opts();
+    s.check("all-toon scene: pt2 == gi-off (bitwise; ambient kept, no GI)",
+            bitEqual(umbreon::render(sc, off).color,
+                     umbreon::render(sc, on).color));
+
+    umbreon::Material unlit;  // nolighting: flat pigment is the final color
+    unlit.ambient = 1.0f;
+    unlit.diffuse = 0.0f;
+    unlit.specular = 0.0f;
+    // NOTE: ambientColor deliberately left at the scene builder's non-white
+    // (0.5): toon ambient evaluates at UNIT ambient regardless (the scene
+    // ambient carries the GI energy split, not the toon look's base color).
+    umbreon::Scene flat = makeScene2(unlit, unlit);
+    const umbreon::FrameResult f = umbreon::render(flat, makePt2Opts());
+    // The image-center pixel lies on the unlit sphere (pigment 0.8/0.3/0.3):
+    // the material must reproduce the pigment exactly (ambient 1 * C * 1).
+    const int W = 48, H = 36;
+    const std::size_t pix = static_cast<std::size_t>(H / 2) * W + W / 2;
+    s.check("unlit (nolighting) renders the exact flat pigment under pt2",
+            f.color[pix * 4 + 0] == 0.8f && f.color[pix * 4 + 1] == 0.3f &&
+                f.color[pix * 4 + 2] == 0.3f);
+  }
+
   // 16) Supersampled E_spec denoise round trip (box-downsample -> OIDN at
   //     the output grid -> joint-bilateral upsample): deterministic
   //     run-to-run and across thread counts, and finite.

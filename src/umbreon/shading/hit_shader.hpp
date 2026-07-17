@@ -216,8 +216,18 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // gathered, occlusion-aware indirect in a post-pass. Folding the receiver's
     // diffuse reflectance (mat.diffuse * pigment) here lets the post-pass do a
     // plain L += giIntensity * giReflectance * E_cached. The outline/primitive
-    // path keeps its ambient (flat color) and gets no indirect.
-    if (c.opt.gi) {
+    // path keeps its ambient (flat color) and gets no indirect. Toon/NPR
+    // finishes (Material::toonLike -- incl. the unlit "nolighting" flat
+    // color, whose only light IS the ambient term) are exempt: GI neither
+    // replaces their ambient nor composites indirect onto them, and their
+    // ambient evaluates at UNIT ambient -- under GI the scene ambientColor
+    // carries the gather's energy split (the bench dims it to
+    // _light_inten * _amb_frac), not the toon look's base color, so unit
+    // ambient makes the GI render match the non-GI look. Outside GI
+    // (basic/AO modes) toon follows the scene ambient/AO exactly as before.
+    if (c.opt.gi && triMat.toonLike()) {
+      ambLight = Vec3{1.0f, 1.0f, 1.0f};
+    } else if (c.opt.gi) {
       hs.giReflectance =
           Vec3{triMat.diffuseWeight() * C.x, triMat.diffuseWeight() * C.y,
                triMat.diffuseWeight() * C.z};
@@ -336,8 +346,11 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       // and record the reflectance for the post-pass composite. Gated on the
       // integrator so the cache path stays byte-identical (its GI remains
       // mesh-only). The normal/albedo AOVs feed the full-res gather and the
-      // OIDN guides.
-      if (c.opt.gi && c.opt.giIntegrator >= 1) {
+      // OIDN guides. Toon/unlit finishes are exempt and evaluate their
+      // ambient at UNIT ambient under GI (see the mesh branch).
+      if (c.opt.gi && c.opt.giIntegrator >= 1 && pm.toonLike()) {
+        ambLight = Vec3{1.0f, 1.0f, 1.0f};
+      } else if (c.opt.gi && c.opt.giIntegrator >= 1) {
         hs.giReflectance =
             Vec3{pm.diffuseWeight() * C.x, pm.diffuseWeight() * C.y,
                  pm.diffuseWeight() * C.z};

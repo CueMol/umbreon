@@ -92,6 +92,15 @@ int main() {
     s.check("specular > 1 stays POV",
             toPrincipledMaterial(overdriven).model == ShadingModel::Pov);
 
+    Material unlit;  // "nolighting": ambient-only flat color
+    unlit.ambient = 1.0f;
+    unlit.diffuse = 0.0f;
+    unlit.specular = 0.0f;
+    s.check("unlit (nolighting) finish detected as non-physical",
+            umbreon::isNonPhysicalFinish(unlit));
+    s.check("unlit finish stays POV",
+            toPrincipledMaterial(unlit).model == ShadingModel::Pov);
+
     Material metal;  // F_MetalA-shaped: brilliance 2 is fine to convert
     metal.metallic = true;
     metal.brilliance = 2.0f;

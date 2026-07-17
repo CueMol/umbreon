@@ -33,7 +33,9 @@ float clamp01(float x) { return std::min(1.0f, std::max(0.0f, x)); }
 }  // namespace
 
 bool isNonPhysicalFinish(const Material& in) {
-  return in.specular > 1.0f || in.phong > 1.0f || in.brilliance == 0.0f;
+  // Single source of truth: Material::toonLike (scene.hpp) -- the same
+  // predicate also exempts these finishes from the GI ambient-replacement.
+  return in.toonLike();
 }
 
 Material toPrincipledMaterial(const Material& in) {

@@ -152,6 +152,24 @@ struct Material {
                                              : diffuse;
   }
 
+  // Toon/NPR finishes: POV-model looks that DEPEND on the model being
+  // non-physical -- an overdriven highlight amount (specular/phong > 1
+  // saturates the channel into a hard-edged flat pip; a physical lobe is
+  // bounded by Fresnel <= 1), a flat N.L-independent diffuse
+  // (brilliance == 0; Lambert cannot be flat), or an unlit ambient-only
+  // flat color (diffuse 0, no highlight, no mirror: the "nolighting"
+  // finish, whose flat pigment IS the intended final color). These are
+  // (a) excluded from the bench POV->principled conversion and (b) exempt
+  // from the GI ambient-replacement (Route A): the look is self-contained,
+  // so the gather neither re-lights it nor replaces its ambient -- a toon
+  // material renders the same under every integrator/mode.
+  bool toonLike() const {
+    if (model != ShadingModel::Pov) return false;
+    if (specular > 1.0f || phong > 1.0f || brilliance == 0.0f) return true;
+    return diffuse <= 0.0f && specular <= 0.0f && phong <= 0.0f &&
+           reflection <= 0.0f;  // unlit flat color (nolighting)
+  }
+
   // FLAT outline preset: ambient 1, diffuse 0, specular 0. With ambientColor
   // (1,1,1) this yields out = pigment color exactly (raw flat color).
   static Material flatOutline() {
