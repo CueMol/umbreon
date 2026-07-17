@@ -123,10 +123,23 @@ bent-normal 勾配は ambient-only 材で検証されている慣行を壊さな
 `--declare _light_inten=1.3 --declare _amb_frac=0 ...` で非 GI エネルギーに
 ピン留めできる(物理材の GI エネルギーも変わる点に注意)。
 
-CueMol の「トゥーン」プリセットは将来も Pov モデル(極端値)へ写像すれば
-よく、より明示的な API が欲しくなったら Blender Toon BSDF 型の
-`ShadingModel::Toon`(bands/size/smooth)を第 3 のモデルとして足す選択肢を
-残す(未着手)。
+**`ShadingModel::Toon`(2026-07-17 実装)**: API 呼び出し側が NPR 意図を
+**明示的に宣言**するためのタグ。Pov と同じ非物理ローブで shading され
+(全ディスパッチが `model == Principled ? principled : pov` の二分岐なので
+Toon は自動的に POV 側へ落ちる)、**ピクセルは 1 つも動かない**
+(refactor_check 10/10 bit-exact)。効くのは `toonLike()` が値ヒューリスティックを
+介さず常に true を返す点 — フィールド値が物理的に見える材でも GI 免除
+(Route A)と principled 変換除外が確実に効く。`.pov` シーンは NPR 意図を
+綴る手段がないため、Pov 側の値ヒューリスティックはそのまま残す
+(bench の POV 再現性のため)。よって `toPrincipledMaterial` は toon を
+**`ShadingModel::Pov` のまま**返す(retag しない): `--material principled` の
+契約は「toon は不変で返す」であり、bench は再現性経路だから。
+
+CueMol の「トゥーン」プリセット(toon1/toon2/nolighting/shadow)は
+`ShadingModel::Toon` + Pov 相当の極端値フィールドへ写像する。より作り込んだ
+NPR が欲しくなったら Blender Toon BSDF 型のパラメータ(bands/size/smooth)を
+`Toon` に足す拡張余地を残す(未着手 — 現状の `Toon` はラベルであって
+シェーダではない)。
 
 写像表(`src/bench/material_convert.cpp`、S4 実装済み):
 

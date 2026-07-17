@@ -102,11 +102,28 @@ struct Aabb {
 // Geometry / material
 // --------------------------------------------------------------------------
 
-// Shading model selector for a Material: Pov = the POV finish model (the
-// default; bit-exact legacy path), Principled = the GGX principled subset in
-// Material::Pbr. The selector switches which fields the shaders read; the two
-// field sets coexist so a scene can mix models per material.
-enum class ShadingModel : uint8_t { Pov = 0, Principled = 1 };
+// Shading model selector for a Material.
+//
+//   Pov         The POV finish model (unnormalized Blinn + additive Phong +
+//               brilliance, no Fresnel). DEPRECATED as an API choice: it
+//               exists so umbreon_cli can reproduce a POV-Ray reference
+//               render from a .pov scene, which is a test concern, not a
+//               look an API caller should ask for. Still the struct default
+//               for source compatibility. New API scenes author Principled
+//               for physical materials and Toon for NPR.
+//   Principled  The GGX principled subset in Material::Pbr.
+//   Toon        NPR escape hatch. Shades through the SAME non-physical lobes
+//               as Pov -- a toon look is BUILT on them (see toonLike()), so
+//               there is nothing to port -- but says so EXPLICITLY instead of
+//               being sniffed out of the field values. Tagging is what an API
+//               caller does; the Pov field heuristic stays for .pov scenes,
+//               which have no way to spell the intent.
+//
+// The selector switches which fields the shaders read; the field sets coexist
+// so a scene can mix models per material. Every shader dispatch is
+// `model == Principled ? principled : pov`, so Toon and Pov shade identically
+// -- the split is about intent (and the policies keyed off it), not pixels.
+enum class ShadingModel : uint8_t { Pov = 0, Principled = 1, Toon = 2 };
 
 // Material derived from a POV-Ray "finish" block. A single material per mesh.
 struct Material {
@@ -148,25 +165,29 @@ struct Material {
 
   // Model-aware diffuse-lobe weight: the kd every diffuse consumer reads
   // (GI composite reflectance, pt1 gather albedo, OIDN reflectance guide,
-  // cache one-bounce). Pov returns `diffuse` unchanged (bitwise-neutral);
+  // cache one-bounce). Pov/Toon return `diffuse` unchanged (bitwise-neutral);
   // Principled folds in the metal cut, diffuse * (1 - pbr.metallic).
   float diffuseWeight() const {
     return model == ShadingModel::Principled ? diffuse * (1.0f - pbr.metallic)
                                              : diffuse;
   }
 
-  // Toon/NPR finishes: POV-model looks that DEPEND on the model being
-  // non-physical -- an overdriven highlight amount (specular/phong > 1
-  // saturates the channel into a hard-edged flat pip; a physical lobe is
-  // bounded by Fresnel <= 1), a flat N.L-independent diffuse
-  // (brilliance == 0; Lambert cannot be flat), or an unlit ambient-only
-  // flat color (diffuse 0, no highlight, no mirror: the "nolighting"
-  // finish, whose flat pigment IS the intended final color). These are
-  // (a) excluded from the bench POV->principled conversion and (b) exempt
-  // from the GI ambient-replacement (Route A): the look is self-contained,
-  // so the gather neither re-lights it nor replaces its ambient -- a toon
-  // material renders the same under every integrator/mode.
+  // Toon/NPR finishes: looks that DEPEND on the model being non-physical --
+  // an overdriven highlight amount (specular/phong > 1 saturates the channel
+  // into a hard-edged flat pip; a physical lobe is bounded by Fresnel <= 1),
+  // a flat N.L-independent diffuse (brilliance == 0; Lambert cannot be flat),
+  // or an unlit ambient-only flat color (diffuse 0, no highlight, no mirror:
+  // the "nolighting" finish, whose flat pigment IS the intended final color).
+  // These are (a) excluded from the bench POV->principled conversion and
+  // (b) exempt from the GI ambient-replacement (Route A): the look is
+  // self-contained, so the gather neither re-lights it nor replaces its
+  // ambient -- a toon material renders the same under every integrator/mode.
+  //
+  // ShadingModel::Toon states that intent outright and always qualifies. The
+  // field heuristic below runs only for Pov, where the intent has to be
+  // inferred because a .pov finish has no way to declare "this is NPR".
   bool toonLike() const {
+    if (model == ShadingModel::Toon) return true;
     if (model != ShadingModel::Pov) return false;
     if (specular > 1.0f || phong > 1.0f || brilliance == 0.0f) return true;
     return diffuse <= 0.0f && specular <= 0.0f && phong <= 0.0f &&
