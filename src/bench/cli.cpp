@@ -432,6 +432,23 @@ Options parseCli(int argc, char** argv) {
         fail("--pt2-emissive-nee expects on/off");
       continue;
     }
+    if (a == "--pt2-glossy") {
+      std::string v = value("--pt2-glossy");
+      if (o.ok && !parseBool(v, o.pt2Glossy))
+        fail("--pt2-glossy expects on/off");
+      continue;
+    }
+    if (a == "--pt2-glossy-spp") {
+      o.pt2GlossySpp = std::atoi(value("--pt2-glossy-spp").c_str());
+      if (o.ok && o.pt2GlossySpp < 1) fail("--pt2-glossy-spp expects >= 1");
+      continue;
+    }
+    if (a == "--pt2-glossy-denoise") {
+      std::string v = value("--pt2-glossy-denoise");
+      if (o.ok && !parseBool(v, o.pt2GlossyDenoise))
+        fail("--pt2-glossy-denoise expects on/off");
+      continue;
+    }
     if (a == "--quality") {
       // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
       // bounces at the point of appearance, so later explicit flags override
@@ -1148,6 +1165,13 @@ void printUsage(const char* prog) {
       "                           the fake reflection*background)        [on]\n"
       "  --pt2-emissive-nee <on|off> pt2 emissive-triangle NEE + MIS\n"
       "                           (off = BSDF-only, for A/B)             [on]\n"
+      "  --pt2-glossy <on|off>    pt2 glossy GGX reflection: reflective\n"
+      "                           finishes with specular > 0 blur their\n"
+      "                           traced reflection to the highlight width\n"
+      "                           (specular == 0 stays a mirror)          [on]\n"
+      "  --pt2-glossy-spp <int>   pt2 glossy reflection rays per pixel    [8]\n"
+      "  --pt2-glossy-denoise <on|off> OIDN on the glossy reflection\n"
+      "                           buffer (also needs --denoise on)        [on]\n"
       "  --pt2-wclamp <f>         pt2 contribution weight clamp (0=off)  [0]\n"
       "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"

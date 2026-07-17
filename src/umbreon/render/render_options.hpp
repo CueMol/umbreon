@@ -232,6 +232,17 @@ struct RenderOptions {
   // gather sky), replacing shadeLocal's fake reflection*background term. POV's
   // reflection is a sharp mirror, so one deterministic ray suffices (no spp).
   bool pt2Reflect = true;
+  // Glossy GGX indirect reflection (pt2.3-E): a reflective material whose
+  // finish ALSO carries specular > 0 samples a GGX lobe (VNDF importance
+  // sampling, alpha from the direct pass's Blinn-exponent map so highlight and
+  // reflection sharpness agree) instead of the single mirror ray. The per-pixel
+  // mean lands in a separate E_spec radiance buffer, optionally OIDN-denoised,
+  // and composites as color += reflection * E_spec (no giReflectance, no
+  // Fresnel -- POV scalar-reflection semantics, same as the mirror pass).
+  // Scenes without such a material skip the pass entirely (bit-exact).
+  bool pt2Glossy = true;
+  int pt2GlossySpp = 8;
+  bool pt2GlossyDenoise = true;
 
   // --- denoise (post-pass on the linear HDR color, after downsample / before
   // gamma) --- denoiser == 0 (None) => no-op, byte-identical to the un-denoised

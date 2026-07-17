@@ -17,6 +17,11 @@
 //     changing the total energy.
 //  5. Feature gates: on scenes without the relevant material/light, each
 //     pt2 extension is a bit-exact no-op (reflection, emissive NEE).
+//  6. Glossy GGX reflection (pt2.3-E): pixel partition against the mirror
+//     pass (specular == 0 keeps the exact single-ray mirror; alpha below
+//     kPt2GlossyAlphaMin degenerates to it bitwise), determinism (run-to-run
+//     and thread-count), near-mirror consistency and spp convergence of the
+//     VNDF estimator.
 //
 // Deliberately NOT tested: ReSTIR spatial resampling (--pt2-rounds). It is
 // measured-dead for stills and kept only as a video/pt3 substrate; see the
@@ -25,6 +30,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+
+#include <tbb/global_control.h>
 
 #include "test_util.hpp"
 #include "umbreon.hpp"
@@ -96,6 +103,17 @@ umbreon::Scene makeScene(bool emissivePanel, float lightAngularRadius) {
   sc.spheres.push_back(sp);
   sc.background = {0.1f, 0.1f, 0.15f};
   sc.ambientColor = {0.5f, 0.5f, 0.5f};
+  return sc;
+}
+
+// Reflective-floor variant for the glossy tests: the floor carries POV
+// `reflection` plus the given specular/roughness finish, the red CSG sphere
+// above provides content for the reflection to pick up.
+umbreon::Scene makeReflScene(float specular, float roughness) {
+  umbreon::Scene sc = makeScene(false, 0.0f);
+  sc.mesh.material.reflection = 0.3f;
+  sc.mesh.material.specular = specular;
+  sc.mesh.material.roughness = roughness;
   return sc;
 }
 
@@ -269,6 +287,93 @@ int main() {
     const umbreon::FrameResult a2 = umbreon::render(sc, on);
     s.check("adaptive spp is run-to-run bit-exact",
             bitEqual(a1.color, a2.color));
+  }
+
+  // 7) Glossy gates: without a reflective material the flag is a bit-exact
+  //    no-op; a reflective but specular-free material stays with the exact
+  //    mirror pass (glossy on/off bitwise equal); gi off is a no-op too.
+  {
+    const umbreon::Scene plain = makeScene(false, 0.0f);
+    umbreon::RenderOptions a = makeOpts(2);
+    umbreon::RenderOptions b = makeOpts(2);
+    b.pt2Glossy = false;
+    const umbreon::FrameResult fa = umbreon::render(plain, a);
+    const umbreon::FrameResult fb = umbreon::render(plain, b);
+    s.check("no reflective material: --pt2-glossy is a bit-exact no-op",
+            bitEqual(fa.color, fb.color));
+
+    const umbreon::Scene mirror = makeReflScene(0.0f, 0.02f);
+    const umbreon::FrameResult ma = umbreon::render(mirror, a);
+    const umbreon::FrameResult mb = umbreon::render(mirror, b);
+    s.check("specular==0 keeps the exact mirror pass (glossy on/off bitwise)",
+            bitEqual(ma.color, mb.color));
+
+    umbreon::RenderOptions ga = makeOpts(2);
+    umbreon::RenderOptions gb = makeOpts(2);
+    ga.gi = false;
+    gb.gi = false;
+    gb.pt2Glossy = false;
+    const umbreon::Scene glossy = makeReflScene(0.4f, 0.05f);
+    const umbreon::FrameResult g1 = umbreon::render(glossy, ga);
+    const umbreon::FrameResult g2 = umbreon::render(glossy, gb);
+    s.check("glossy flag is a no-op with gi off",
+            bitEqual(g1.color, g2.color));
+  }
+
+  // 8) Glossy determinism: run-to-run and thread-count bit-exactness (pure
+  //    per-pixel Sobol/tea2 streams, disjoint tile writes).
+  {
+    const umbreon::Scene sc = makeReflScene(0.4f, 0.05f);
+    umbreon::RenderOptions o = makeOpts(2);
+    const umbreon::FrameResult f1 = umbreon::render(sc, o);
+    const umbreon::FrameResult f2 = umbreon::render(sc, o);
+    s.check("glossy render is run-to-run bit-exact",
+            bitEqual(f1.color, f2.color));
+
+    umbreon::FrameResult t1;
+    {
+      tbb::global_control one(tbb::global_control::max_allowed_parallelism, 1);
+      t1 = umbreon::render(sc, o);
+    }
+    s.check("glossy render: 1 thread == N threads (bitwise)",
+            bitEqual(t1.color, f1.color));
+  }
+
+  // 9) Alpha degeneracy and near-mirror consistency: a roughness below the
+  //    kPt2GlossyAlphaMin cut snaps to the mirror pass bitwise; a barely
+  //    glossy lobe (alpha ~0.045) must land close to the mirror mean.
+  {
+    umbreon::RenderOptions on = makeOpts(2);
+    umbreon::RenderOptions off = makeOpts(2);
+    off.pt2Glossy = false;
+    // roughness 1e-4 -> blinn exp 1e4 -> alpha ~0.0141 < kPt2GlossyAlphaMin.
+    const umbreon::Scene snap = makeReflScene(0.4f, 1.0e-4f);
+    const umbreon::FrameResult s1 = umbreon::render(snap, on);
+    const umbreon::FrameResult s2 = umbreon::render(snap, off);
+    s.check("alpha below the mirror cut degenerates bitwise",
+            bitEqual(s1.color, s2.color));
+
+    const umbreon::Scene near = makeReflScene(0.4f, 0.001f);
+    const umbreon::FrameResult n1 = umbreon::render(near, on);
+    const umbreon::FrameResult n2 = umbreon::render(near, off);
+    const float m1 = meanLum(n1), m2 = meanLum(n2);
+    s.check("near-mirror glossy mean within 3% of the mirror render",
+            std::fabs(m1 - m2) <= 0.03f * std::fmax(m1, m2));
+  }
+
+  // 10) VNDF estimator consistency: the sample mean must be stable across
+  //     spp (8 vs 64 within 2% on the image mean).
+  {
+    const umbreon::Scene sc = makeReflScene(0.4f, 0.1f);
+    umbreon::RenderOptions a = makeOpts(2);
+    umbreon::RenderOptions b = makeOpts(2);
+    a.pt2GlossySpp = 8;
+    b.pt2GlossySpp = 64;
+    const umbreon::FrameResult fa = umbreon::render(sc, a);
+    const umbreon::FrameResult fb = umbreon::render(sc, b);
+    const float ma = meanLum(fa), mb = meanLum(fb);
+    s.check("glossy estimator: spp 8 vs 64 image mean within 2%",
+            std::fabs(ma - mb) <= 0.02f * std::fmax(ma, mb));
   }
 
   return s.report();

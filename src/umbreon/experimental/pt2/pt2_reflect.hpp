@@ -42,6 +42,7 @@ namespace detail {
 // exactly as the primary loop generated it.
 inline void pt2ReflectPass(const IrradianceCacheParams& p, int W, int H,
                            const std::vector<float>& reflAmt,
+                           const std::vector<float>& reflAlpha,
                            const float* position, const float* normal,
                            const float* depth, bool orthographic,
                            const Vec3& camPos, const Vec3& camDir,
@@ -56,6 +57,9 @@ inline void pt2ReflectPass(const IrradianceCacheParams& p, int W, int H,
             const std::size_t pix = static_cast<std::size_t>(py) * W + px;
             const float k = reflAmt[pix];
             if (k <= 0.0f) continue;
+            // A glossy lobe (alpha > 0) is owned by the GGX pass
+            // (pt2_glossy.hpp); this pass keeps the exact mirror pixels.
+            if (!reflAlpha.empty() && reflAlpha[pix] > 0.0f) continue;
             const Vec3 P{position[pix * 3 + 0], position[pix * 3 + 1],
                          position[pix * 3 + 2]};
             const Vec3 N{normal[pix * 3 + 0], normal[pix * 3 + 1],

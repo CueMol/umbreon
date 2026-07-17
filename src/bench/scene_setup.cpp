@@ -457,6 +457,9 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.pt2AdaptiveMul = opt.pt2AdaptiveMul;
   ropt.pt2Reflect = opt.pt2Reflect;
   ropt.pt2EmissiveNee = opt.pt2EmissiveNee;
+  ropt.pt2Glossy = opt.pt2Glossy;
+  ropt.pt2GlossySpp = opt.pt2GlossySpp;
+  ropt.pt2GlossyDenoise = opt.pt2GlossyDenoise;
   // GI-conditional denoise default: unset (-1) becomes atrous when the CACHE
   // integrator runs GI, None otherwise. An explicit --denoiser (0/1/2) is
   // honored as-is. On the pt1/pt2 paths the default is None: they denoise

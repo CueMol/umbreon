@@ -39,6 +39,24 @@ inline float blinnExp(float roughness) {
   return e;
 }
 
+// Below this GGX alpha the glossy lobe is visually indistinguishable from a
+// mirror: degenerate to the exact single-ray mirror pass (pt2_reflect) rather
+// than spending spp on a near-delta lobe.
+constexpr float kPt2GlossyAlphaMin = 0.015f;
+
+// Map POV "roughness" to a GGX roughness alpha for the pt2 glossy reflection
+// gather, matched to the direct pass's Blinn highlight width so the traced
+// reflection blur agrees with the highlight sharpness: e = blinnExp(roughness),
+// alpha = sqrt(2/(e+2)) (the classic Blinn-exponent <-> microfacet-roughness
+// equivalence). roughness 0.02 (POV default) -> alpha ~0.196; 0.001 -> ~0.045;
+// <= ~1.1e-4 -> 0 (mirror degenerate).
+inline float pt2GgxAlphaFromRoughness(float roughness) {
+  const float e = blinnExp(roughness);
+  const float a = std::sqrt(2.0f / (e + 2.0f));
+  if (a < kPt2GlossyAlphaMin) return 0.0f;
+  return (a < 1.0f) ? a : 1.0f;
+}
+
 // Shared POV local-illumination shader (no 1/pi factor). C is the pigment rgb,
 // N the face-forwarded shading normal, V the unit direction toward the viewer.
 // out = emission*C + aoFactor*ambient*C*ambLight
