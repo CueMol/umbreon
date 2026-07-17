@@ -72,6 +72,11 @@ struct HitShade {
   // NEUTRAL default (1,1,1) makes Schlick identically 1, so POV pixels in a
   // mixed scene reproduce the plain k*L composite bitwise.
   Vec3 reflF0{1.0f, 1.0f, 1.0f};
+  // Anisotropy frame of the traced glossy lobe (principled sphere/cylinder):
+  // rotation-baked world tangent (zero vector = isotropic pixel) and the
+  // Disney aspect (1 = isotropic). Shared definition with the direct pass.
+  Vec3 reflTangent{0.0f, 0.0f, 0.0f};
+  float reflAspect = 1.0f;
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -345,6 +350,54 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // Real primitives receive light shadows (a buried atom is occluded from the
     // lights); outline decoration is never shadowed (silhouette must not darken).
     const bool primShadows = !fromEdge && shadowsActive;
+    // Anisotropy tangent frame (principled sphere/cylinder only): sphere =
+    // world-z pole (t1 = meridian direction), cylinder = axis projected to
+    // the tangent plane. Poles, caps and degenerate projections fall back to
+    // isotropic (tanValid stays false). The anisotropyRotation is baked into
+    // the tangent HERE so the direct highlight and the E_spec glossy pass
+    // share one frame definition.
+    Vec3 anisoT{0.0f, 0.0f, 0.0f};
+    float anisoAspect = 1.0f;
+    bool tanValid = false;
+    if (pm.model == ShadingModel::Principled && pm.pbr.anisotropy != 0.0f &&
+        !fromEdge) {
+      Vec3 t1{0.0f, 0.0f, 0.0f};
+      if (isSphere) {
+        if (std::fabs(N.z) < 0.999f) {
+          const Vec3 tPhi =
+              safeNormalize(cross(Vec3{0.0f, 0.0f, 1.0f}, N));
+          t1 = cross(N, tPhi);  // meridian (theta) direction
+          tanValid = true;
+        }
+      } else {
+        const std::vector<Vec3>& axes =
+            isCapped ? c.built.cylCapAxis : c.built.cylAxis;
+        if (!axes.empty()) {
+          const Vec3 A = axes[rh.hit.primID];
+          const Vec3 ngu = safeNormalize(Ng, N);
+          if (std::fabs(dot(ngu, A)) < 0.99f) {  // cap hit -> isotropic
+            const float andn = dot(A, N);
+            const Vec3 proj{A.x - N.x * andn, A.y - N.y * andn,
+                            A.z - N.z * andn};
+            if (dot(proj, proj) >= 1.0e-12f) {
+              t1 = safeNormalize(proj);
+              tanValid = true;
+            }
+          }
+        }
+      }
+      if (tanValid) {
+        if (pm.pbr.anisotropyRotation != 0.0f) {
+          const float ang = pm.pbr.anisotropyRotation * 6.2831853072f;
+          const Vec3 t2 = cross(N, t1);
+          const float ca = std::cos(ang), sa = std::sin(ang);
+          t1 = Vec3{ca * t1.x + sa * t2.x, ca * t1.y + sa * t2.y,
+                    ca * t1.z + sa * t2.z};
+        }
+        anisoT = t1;
+        anisoAspect = principledAspect(pm.pbr.anisotropy);
+      }
+    }
     // Traced-reflection ownership, primitive path (see the mesh branch).
     const bool principledP = pm.model == ShadingModel::Principled;
     const bool pbrSpecP =
@@ -359,6 +412,10 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
         if (c.opt.pt2Glossy) {
           const float a = pm.pbr.roughness * pm.pbr.roughness;
           hs.reflAlpha = (a >= kPt2GlossyAlphaMin) ? a : 0.0f;
+          if (tanValid) {
+            hs.reflTangent = anisoT;
+            hs.reflAspect = anisoAspect;
+          }
         }
       } else {
         hs.reflectivity = pm.reflection;
@@ -370,7 +427,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, primShadows,
                           c.opt.shadowSamples * c.shadowSampleMul, px, py,
-                          traceReflP);
+                          traceReflP, tanValid ? &anisoT : nullptr);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]

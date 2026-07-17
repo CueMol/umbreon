@@ -169,7 +169,9 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
                           std::vector<uint8_t>& giElig,
                           std::vector<float>& reflAmt,
                           std::vector<float>& reflAlpha,
-                          std::vector<float>& reflF0, std::size_t pix,
+                          std::vector<float>& reflF0,
+                          std::vector<float>& reflTan,
+                          std::vector<float>& reflAniso, std::size_t pix,
                           const PixelResult& pr) {
   res.color[pix * 4 + 0] = pr.r;
   res.color[pix * 4 + 1] = pr.g;
@@ -201,6 +203,15 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
       reflF0[pix * 3 + 0] = pr.reflF0.x;
       reflF0[pix * 3 + 1] = pr.reflF0.y;
       reflF0[pix * 3 + 2] = pr.reflF0.z;
+    }
+    // Anisotropy frame of the glossy lobe (principled sphere/cylinder;
+    // zero tangent / aspect 1 = isotropic pixel). Allocated only when an
+    // anisotropic principled primitive exists.
+    if (!reflTan.empty()) {
+      reflTan[pix * 3 + 0] = pr.reflTangent.x;
+      reflTan[pix * 3 + 1] = pr.reflTangent.y;
+      reflTan[pix * 3 + 2] = pr.reflTangent.z;
+      reflAniso[pix] = pr.reflAspect;
     }
   }
   // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
@@ -248,10 +259,12 @@ void storePixelResult(FrameResult& res, const RenderOptions& opt,
                       std::vector<float>& giRefl, std::vector<uint8_t>& giElig,
                       std::vector<float>& reflAmt,
                       std::vector<float>& reflAlpha,
-                      std::vector<float>& reflF0, std::size_t pix,
+                      std::vector<float>& reflF0,
+                      std::vector<float>& reflTan,
+                      std::vector<float>& reflAniso, std::size_t pix,
                       const PixelResult& pr) {
   storeShadingChannels(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt,
-                       reflAlpha, reflF0, pix, pr);
+                       reflAlpha, reflF0, reflTan, reflAniso, pix, pr);
   storeGBufChannels(res, opt, pix, pr);
 }
 
@@ -394,6 +407,20 @@ bool sceneHasPrincipled(const Scene& scene) {
   return false;
 }
 
+// Anisotropic principled primitives (spheres/cylinders): drives the E_spec
+// tangent-frame buffer allocation. Mesh materials are excluded -- mesh
+// anisotropy is inert until a per-vertex tangent attribute exists.
+bool sceneHasPrincipledAniso(const Scene& scene) {
+  auto aniso = [](const Material& m) {
+    return m.model == ShadingModel::Principled && m.pbr.anisotropy != 0.0f;
+  };
+  for (const Sphere& s : scene.spheres)
+    if (aniso(s.material)) return true;
+  for (const Cylinder& c : scene.cylinders)
+    if (aniso(c.material)) return true;
+  return false;
+}
+
 // POV-native lights (direction the light travels -> direction to light), plus
 // the optional environment dome fill (opt.envLights > 0): a hemisphere of
 // distant diffuse-only lights around the camera-forward axis, meant to be
@@ -524,7 +551,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                   const std::vector<uint8_t>& giElig,
                   const std::vector<float>& reflAmt,
                   const std::vector<float>& reflAlpha,
-                  const std::vector<float>& reflF0, FrameResult& res,
+                  const std::vector<float>& reflF0,
+                  const std::vector<float>& reflTan,
+                  const std::vector<float>& reflAniso, FrameResult& res,
                   const detail::GiProgressBudget& budget) {
     // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
     // the sky through its miss term, so the combination counts the sky twice.
@@ -920,7 +949,8 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
         std::fprintf(stderr, "pt2: glossy reflection over %zu px (spp=%d)\n",
                      nGlossy, std::max(1, opt.pt2GlossySpp));
         std::vector<float> Espec;
-        detail::pt2GlossyPass(gp, W, H, reflAmt, reflAlpha, reflF0,
+        detail::pt2GlossyPass(gp, W, H, reflAmt, reflAlpha, reflF0, reflTan,
+                              reflAniso,
                               res.position.data(), res.normal.data(),
                               res.depth.data(), scene.camera.orthographic,
                               scene.camera.position, cb.dir, opt.pt2Emissive,
@@ -1212,6 +1242,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   std::vector<float> reflAmt;
   std::vector<float> reflAlpha;
   std::vector<float> reflF0;
+  std::vector<float> reflTan;
+  std::vector<float> reflAniso;
   if (opt.gi) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     giGroup.assign(npix, -1);
@@ -1222,6 +1254,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
       reflAmt.assign(npix, 0.0f);
       if (opt.pt2Glossy) reflAlpha.assign(npix, 0.0f);
       if (hasPrincipled) reflF0.assign(npix * 3, 1.0f);
+      if (opt.pt2Glossy && sceneHasPrincipledAniso(scene)) {
+        reflTan.assign(npix * 3, 0.0f);
+        reflAniso.assign(npix, 1.0f);
+      }
     }
   }
 
@@ -1274,7 +1310,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
       storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt,
-                       reflAlpha, reflF0, pix, pr);
+                       reflAlpha, reflF0, reflTan, reflAniso, pix, pr);
     }
   }
   if (progress) progress->advance(
@@ -1484,7 +1520,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                 if (edgesGbuf) {
                   storeShadingChannels(res, opt, giGroup, giGeom, giRefl,
                                        giElig, reflAmt, reflAlpha, reflF0,
-                                       pix, rep);
+                                       reflTan, reflAniso, pix, rep);
                   // Center subpixel: exact G-buffer from its own first hit
                   // (centers[XY] traced this subpixel). Others: probe.
                   if (i == cSub && j == cSub)
@@ -1493,8 +1529,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                     storeProbeGBuf(px, py, pix);
                 } else {
                   storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
-                                   reflAmt, reflAlpha, reflF0,
-                                   pix, rep);
+                                   reflAmt, reflAlpha, reflF0, reflTan,
+                                   reflAniso, pix, rep);
                 }
               }
             }
@@ -1512,8 +1548,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
               // either way pr carries the first-hit G-buffer, so a full store
               // reproduces the grid render's G-buffer bitwise.
               storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
-                               reflAmt, reflAlpha, reflF0, pix,
-                               pr);
+                               reflAmt, reflAlpha, reflF0, reflTan, reflAniso,
+                               pix, pr);
             }
           }
         }
@@ -1558,7 +1594,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   if (!giCancelled && opt.gi &&
       (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator >= 1) {
     runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
-                 giRefl, giElig, reflAmt, reflAlpha, reflF0, res, giBudget);
+                 giRefl, giElig, reflAmt, reflAlpha, reflF0, reflTan,
+                 reflAniso, res, giBudget);
   } else if (!giCancelled && opt.gi && meshPresent(built)) {
     runIrradianceCacheGiPass(scene, opt, built, m, lights, ambLight, aoUpAxis,
                              W, H, giGroup, giGeom, giRefl, res);

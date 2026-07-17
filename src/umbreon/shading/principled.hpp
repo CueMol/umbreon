@@ -73,6 +73,56 @@ inline float ggxLambda(float a2, float cosT) {
   return 0.5f * (std::sqrt(1.0f + a2 * t2) - 1.0f);
 }
 
+// Disney anisotropy remap: lobe stretch factor. anisotropy 0 -> aspect 1.
+inline float principledAspect(float anisotropy) {
+  float a = std::fabs(anisotropy);
+  if (a > 1.0f) a = 1.0f;
+  return std::sqrt(1.0f - 0.9f * a);
+}
+
+// Anisotropic GGX NDF; (hx, hy, hz) are the half vector's components in the
+// (t1, t2, N) tangent frame.
+inline float ggxDAniso(float ax, float ay, float hx, float hy, float hz) {
+  if (hz <= 0.0f) return 0.0f;
+  const float sx = hx / ax, sy = hy / ay;
+  const float t = sx * sx + sy * sy + hz * hz;
+  return 1.0f / (3.14159265358979323846f * ax * ay * t * t);
+}
+
+// Anisotropic Smith Lambda; (vx, vy, vz) in the same tangent frame.
+inline float ggxLambdaAniso(float ax, float ay, float vx, float vy, float vz) {
+  const float z2 = std::fmax(vz * vz, 1.0e-12f);
+  const float t2 = (ax * ax * vx * vx + ay * ay * vy * vy) / z2;
+  return 0.5f * (std::sqrt(1.0f + t2) - 1.0f);
+}
+
+// Per-hit anisotropic shading context: the rotation-baked tangent frame and
+// the stretched alphas. Valid only when `active` (a tangent frame exists AND
+// the material is anisotropic); otherwise the caller keeps the isotropic
+// code path verbatim.
+struct PrincipledAniso {
+  bool active = false;
+  Vec3 t1, t2;      // world-space tangent frame (t1 rotated, t2 = N x t1)
+  float ax = 0.0f;  // alpha along t1
+  float ay = 0.0f;  // alpha along t2
+};
+
+inline PrincipledAniso principledAnisoCtx(const Material& mat, const Vec3& N,
+                                          const Vec3* tangent, float alpha) {
+  PrincipledAniso c;
+  if (tangent == nullptr || mat.pbr.anisotropy == 0.0f) return c;
+  c.active = true;
+  c.t1 = *tangent;
+  c.t2 = cross(N, c.t1);
+  const float aspect = principledAspect(mat.pbr.anisotropy);
+  c.ax = alpha / aspect;
+  if (c.ax > 1.0f) c.ax = 1.0f;
+  c.ay = alpha * aspect;
+  if (c.ax < kGgxDirectAlphaMin) c.ax = kGgxDirectAlphaMin;
+  if (c.ay < kGgxDirectAlphaMin) c.ay = kGgxDirectAlphaMin;
+  return c;
+}
+
 // Principled direct shading for one hit. Mirrors shadeLocal's contract
 // (same ambient/emission init, same fill-light and horizon gates, aoFactor
 // on ambient / diffuseAo on diffuse only -- highlights are never occluded,
@@ -83,6 +133,9 @@ inline float ggxLambda(float a2, float cosT) {
 // radius as the penumbra), unlike POV's mean-visibility x center-BRDF.
 // `traceReflection` mirrors shadeLocal's flag: when the pt2 traced pass owns
 // this pixel's specular indirect, the fake environment term is skipped.
+// `tangent` is the rotation-baked anisotropy tangent (world space, unit) for
+// sphere/cylinder primitives, or nullptr for the isotropic path (mesh hits,
+// pole/cap fallbacks, anisotropy == 0).
 inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
                             const Vec3& V, const std::vector<Light>& lights,
                             const Vec3& ambLight, const Vec3& bg,
@@ -90,7 +143,8 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
                             const Vec3& P, const Vec3& Ng, float eps,
                             RTCScene rscene, bool shadowsOn, int shadowSamples,
                             uint32_t px, uint32_t py,
-                            bool traceReflection = false) {
+                            bool traceReflection = false,
+                            const Vec3* tangent = nullptr) {
   // Identical init expression to shadeLocal (shared ambient/emission
   // semantics; Route A zeroes ambLight for GI-eligible hits).
   Vec3 out{mat.emission * C.x + aoFactor.x * mat.ambient * C.x * ambLight.x,
@@ -106,6 +160,13 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
   const float ndv = std::fmax(dot(N, V), 1.0e-4f);
   const float lamV = ggxLambda(a2, ndv);
   constexpr float kPi = 3.14159265358979323846f;
+  // Anisotropic context (inactive keeps every isotropic expression below
+  // verbatim -- anisotropy 0 is bitwise the isotropic path).
+  const PrincipledAniso an = principledAnisoCtx(mat, N, tangent, alpha);
+  const float lamVA =
+      an.active ? ggxLambdaAniso(an.ax, an.ay, dot(V, an.t1), dot(V, an.t2),
+                                 ndv)
+                : 0.0f;
 
   // Two per-pixel RNG streams: the single-direction path reuses the POV
   // seeding (px, py) through computeShadow so the hard-shadow diffuse render
@@ -139,9 +200,20 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
             normalize(Vec3{l.L.x + V.x, l.L.y + V.y, l.L.z + V.z});
         const float ndh = dot(N, H);
         if (ndh > 0.0f) {
-          const float G2 = 1.0f / (1.0f + lamV + ggxLambda(a2, ndl));
-          // pi * f * (N.L) = pi * D*G2*F / (4 ndv): the N.L cancels.
-          const float sW = kPi * ggxD(a2, ndh) * G2 / (4.0f * ndv);
+          float sW;
+          if (!an.active) {
+            const float G2 = 1.0f / (1.0f + lamV + ggxLambda(a2, ndl));
+            // pi * f * (N.L) = pi * D*G2*F / (4 ndv): the N.L cancels.
+            sW = kPi * ggxD(a2, ndh) * G2 / (4.0f * ndv);
+          } else {
+            const float G2 =
+                1.0f / (1.0f + lamVA +
+                        ggxLambdaAniso(an.ax, an.ay, dot(l.L, an.t1),
+                                       dot(l.L, an.t2), ndl));
+            sW = kPi *
+                 ggxDAniso(an.ax, an.ay, dot(H, an.t1), dot(H, an.t2), ndh) *
+                 G2 / (4.0f * ndv);
+          }
           const Vec3 F = schlickF(F0, dot(V, H));
           out.x += sW * F.x * Lc.x;
           out.y += sW * F.y * Lc.y;
@@ -169,8 +241,20 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
           const Vec3 H = normalize(Vec3{w.x + V.x, w.y + V.y, w.z + V.z});
           const float ndh = dot(N, H);
           if (ndh > 0.0f) {
-            const float G2 = 1.0f / (1.0f + lamV + ggxLambda(a2, ndlS));
-            const float sW = kPi * ggxD(a2, ndh) * G2 / (4.0f * ndv);
+            float sW;
+            if (!an.active) {
+              const float G2 = 1.0f / (1.0f + lamV + ggxLambda(a2, ndlS));
+              sW = kPi * ggxD(a2, ndh) * G2 / (4.0f * ndv);
+            } else {
+              const float G2 =
+                  1.0f / (1.0f + lamVA +
+                          ggxLambdaAniso(an.ax, an.ay, dot(w, an.t1),
+                                         dot(w, an.t2), ndlS));
+              sW = kPi *
+                   ggxDAniso(an.ax, an.ay, dot(H, an.t1), dot(H, an.t2),
+                             ndh) *
+                   G2 / (4.0f * ndv);
+            }
             const Vec3 F = schlickF(F0, dot(V, H));
             accS.x += sW * F.x;
             accS.y += sW * F.y;

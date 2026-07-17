@@ -93,6 +93,31 @@ umbreon::Material principled(float metallic, float roughness,
   return m;
 }
 
+umbreon::Material principledAniso(float anisotropy, float rotation) {
+  umbreon::Material m = principled(1.0f, 0.35f, 0.5f);
+  m.pbr.anisotropy = anisotropy;
+  m.pbr.anisotropyRotation = rotation;
+  return m;
+}
+
+// Adds a capped principled cylinder lying above the floor (axis along x).
+void addBond(umbreon::Scene& sc, const umbreon::Material& mat) {
+  umbreon::Cylinder cy;
+  cy.p0 = {-2.0f, 1.4f, 1.0f};
+  cy.p1 = {2.0f, 1.4f, 1.0f};
+  cy.radius = 0.5f;
+  cy.color = {0.85f, 0.7f, 0.3f, 1.0f};
+  cy.material = mat;
+  cy.open = false;
+  sc.cylinders.push_back(cy);
+}
+
+bool allFinite(const std::vector<float>& v) {
+  for (float x : v)
+    if (!std::isfinite(x)) return false;
+  return true;
+}
+
 umbreon::RenderOptions makeOpts() {
   umbreon::RenderOptions o;
   o.width = 48;
@@ -443,6 +468,70 @@ int main() {
       t1 = umbreon::render(sc, o);
     }
     s.check("traced principled specular: 1 thread == N threads (bitwise)",
+            bitEqual(t1.color, f1.color));
+  }
+
+  // ---- S3: anisotropy (sphere / cylinder frames) ----
+
+  // 13) Mesh anisotropy is inert (no per-vertex tangents in v1): setting
+  //     anisotropy on a MESH material must leave the render bitwise
+  //     unchanged, end to end (no tangent in the direct pass, no aniso
+  //     buffers allocated -- the scan covers primitives only).
+  {
+    umbreon::Material meshAniso = principled(1.0f, 0.35f, 0.5f);
+    meshAniso.pbr.anisotropy = 0.8f;
+    const umbreon::Scene a =
+        makeScene2(meshAniso, principled(0.0f, 0.5f, 0.0f));
+    const umbreon::Scene b = makeScene2(principled(1.0f, 0.35f, 0.5f),
+                                        principled(0.0f, 0.5f, 0.0f));
+    umbreon::RenderOptions o = makePt2Opts();
+    s.check("mesh anisotropy is bitwise inert (v1)",
+            bitEqual(umbreon::render(a, o).color,
+                     umbreon::render(b, o).color));
+  }
+
+  // 14) Primitive anisotropy is live: an anisotropic metal sphere and a
+  //     capped bond change both the direct highlight (gi off) and the
+  //     traced glossy lobe (pt2), and rotation reorients the lobe.
+  {
+    umbreon::Scene an = makeScene2(povDiffuseOnly(), principledAniso(0.8f, 0.0f));
+    addBond(an, principledAniso(0.8f, 0.0f));
+    umbreon::Scene iso = makeScene2(povDiffuseOnly(), principled(1.0f, 0.35f, 0.5f));
+    addBond(iso, principled(1.0f, 0.35f, 0.5f));
+    umbreon::RenderOptions direct = makeOpts();
+    const umbreon::FrameResult fa = umbreon::render(an, direct);
+    s.check("anisotropy changes the direct highlight (primitives)",
+            !bitEqual(fa.color, umbreon::render(iso, direct).color));
+    s.check("anisotropic direct render is finite", allFinite(fa.color));
+
+    umbreon::Scene rot = makeScene2(povDiffuseOnly(), principledAniso(0.8f, 0.25f));
+    addBond(rot, principledAniso(0.8f, 0.25f));
+    s.check("anisotropyRotation reorients the lobe (differs)",
+            !bitEqual(fa.color, umbreon::render(rot, direct).color));
+
+    umbreon::RenderOptions pt2 = makePt2Opts();
+    const umbreon::FrameResult ga = umbreon::render(an, pt2);
+    s.check("anisotropy changes the traced glossy lobe (pt2)",
+            !bitEqual(ga.color, umbreon::render(iso, pt2).color));
+    s.check("anisotropic pt2 render is finite", allFinite(ga.color));
+  }
+
+  // 15) Determinism of the anisotropic paths (tangent frames and the
+  //     stretched VNDF are pure per-pixel functions).
+  {
+    umbreon::Scene sc = makeScene2(povDiffuseOnly(), principledAniso(0.6f, 0.1f));
+    addBond(sc, principledAniso(0.6f, 0.35f));
+    umbreon::RenderOptions o = makePt2Opts();
+    const umbreon::FrameResult f1 = umbreon::render(sc, o);
+    const umbreon::FrameResult f2 = umbreon::render(sc, o);
+    s.check("anisotropic render is run-to-run bit-exact",
+            bitEqual(f1.color, f2.color));
+    umbreon::FrameResult t1;
+    {
+      tbb::global_control one(tbb::global_control::max_allowed_parallelism, 1);
+      t1 = umbreon::render(sc, o);
+    }
+    s.check("anisotropic render: 1 thread == N threads (bitwise)",
             bitEqual(t1.color, f1.color));
   }
 
