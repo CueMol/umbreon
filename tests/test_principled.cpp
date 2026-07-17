@@ -535,5 +535,27 @@ int main() {
             bitEqual(t1.color, f1.color));
   }
 
+  // 16) Supersampled E_spec denoise round trip (box-downsample -> OIDN at
+  //     the output grid -> joint-bilateral upsample): deterministic
+  //     run-to-run and across thread counts, and finite.
+  {
+    const umbreon::Scene sc = makeScene2(principled(1.0f, 0.35f, 0.5f),
+                                         principled(0.0f, 0.2f, 0.8f));
+    umbreon::RenderOptions o = makePt2Opts();
+    o.supersample = 3;
+    o.pt1Denoise = true;  // enables the E_spec round trip
+    const umbreon::FrameResult f1 = umbreon::render(sc, o);
+    const umbreon::FrameResult f2 = umbreon::render(sc, o);
+    s.check("ss=3 E_spec denoise round trip is run-to-run bit-exact",
+            bitEqual(f1.color, f2.color) && allFinite(f1.color));
+    umbreon::FrameResult t1;
+    {
+      tbb::global_control one(tbb::global_control::max_allowed_parallelism, 1);
+      t1 = umbreon::render(sc, o);
+    }
+    s.check("ss=3 E_spec round trip: 1 thread == N threads (bitwise)",
+            bitEqual(t1.color, f1.color));
+  }
+
   return s.report();
 }

@@ -959,17 +959,103 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                               &budget.glossy);
         budget.glossy.finish();
         if (opt.pt1Denoise && opt.pt2GlossyDenoise) {
-          // Constant-white albedo guide: OIDN rejects a normal guide without
-          // an albedo image, and the reflected content is uncorrelated with
-          // the surface pigment (a real albedo guide would edge-stop the
-          // reflection at pigment boundaries). Flat white = no edge stops.
-          const std::vector<float> albedoOne(
-              static_cast<std::size_t>(W) * H * 3, 1.0f);
-          const int used =
-              detail::denoisePt1E(W, H, Espec, albedoOne.data(),
-                                  res.normal.data(), res.position.data(), opt,
-                                  &budget.glossyDenoise);
-          (void)used;
+          const int ss = std::max(1, opt.supersample);
+          if (ss <= 1 || W % ss != 0 || H % ss != 0) {
+            // Render grid == output grid: denoise E_spec in place.
+            // Constant-white albedo guide: OIDN rejects a normal guide
+            // without an albedo image, and the reflected content is
+            // uncorrelated with the surface pigment (a real albedo guide
+            // would edge-stop the reflection at pigment boundaries).
+            const std::vector<float> albedoOne(
+                static_cast<std::size_t>(W) * H * 3, 1.0f);
+            const int used =
+                detail::denoisePt1E(W, H, Espec, albedoOne.data(),
+                                    res.normal.data(), res.position.data(),
+                                    opt, &budget.glossyDenoise);
+            (void)used;
+          } else {
+            // Supersampled render grid: OIDN at the full grid costs ss^2 x
+            // the output-res filter (measured +3.7 s of a 6.1 s render at
+            // ss=3, 700^2 out) for detail the ss^2 box-average largely
+            // discards. Instead: glossy-masked box-downsample of E_spec and
+            // its guides to the OUTPUT grid, denoise there, joint-bilateral
+            // upsample back (same guide weights as the diffuse E upsample).
+            const int Wo = W / ss, Ho = H / ss;
+            const std::size_t nout = static_cast<std::size_t>(Wo) * Ho;
+            detail::Pt1GBuffer g;  // synthetic low-res guide grid
+            g.w = Wo;
+            g.h = Ho;
+            g.normal.assign(nout * 3, 0.0f);
+            g.depth.assign(nout, 0.0f);
+            g.hit.assign(nout, 0);
+            std::vector<float> Eo(nout * 3, 0.0f);
+            std::vector<float> posLow(nout * 3, 0.0f);
+            tbb::parallel_for(tbb::blocked_range<int>(0, Ho),
+                              [&](const tbb::blocked_range<int>& rows) {
+              for (int oy = rows.begin(); oy != rows.end(); ++oy) {
+                for (int ox = 0; ox < Wo; ++ox) {
+                  const std::size_t opix =
+                      static_cast<std::size_t>(oy) * Wo + ox;
+                  Vec3 eS{0, 0, 0}, nS{0, 0, 0}, pS{0, 0, 0};
+                  float zS = 0.0f;
+                  int cnt = 0;
+                  for (int sy = 0; sy < ss; ++sy) {
+                    for (int sx = 0; sx < ss; ++sx) {
+                      const std::size_t pix =
+                          static_cast<std::size_t>(oy * ss + sy) * W +
+                          (ox * ss + sx);
+                      if (reflAmt[pix] <= 0.0f || reflAlpha[pix] <= 0.0f)
+                        continue;
+                      ++cnt;
+                      eS.x += Espec[pix * 3 + 0];
+                      eS.y += Espec[pix * 3 + 1];
+                      eS.z += Espec[pix * 3 + 2];
+                      nS.x += res.normal[pix * 3 + 0];
+                      nS.y += res.normal[pix * 3 + 1];
+                      nS.z += res.normal[pix * 3 + 2];
+                      pS.x += res.position[pix * 3 + 0];
+                      pS.y += res.position[pix * 3 + 1];
+                      pS.z += res.position[pix * 3 + 2];
+                      zS += res.depth[pix];
+                    }
+                  }
+                  if (cnt == 0) continue;  // no glossy sample in this cell
+                  const float inv = 1.0f / static_cast<float>(cnt);
+                  Eo[opix * 3 + 0] = eS.x * inv;
+                  Eo[opix * 3 + 1] = eS.y * inv;
+                  Eo[opix * 3 + 2] = eS.z * inv;
+                  const Vec3 nAvg = safeNormalize(
+                      Vec3{nS.x * inv, nS.y * inv, nS.z * inv});
+                  g.normal[opix * 3 + 0] = nAvg.x;
+                  g.normal[opix * 3 + 1] = nAvg.y;
+                  g.normal[opix * 3 + 2] = nAvg.z;
+                  g.depth[opix] = zS * inv;
+                  posLow[opix * 3 + 0] = pS.x * inv;
+                  posLow[opix * 3 + 1] = pS.y * inv;
+                  posLow[opix * 3 + 2] = pS.z * inv;
+                  g.hit[opix] = 1;
+                }
+              }
+            });
+            const std::vector<float> albedoOne(nout * 3, 1.0f);
+            const int used =
+                detail::denoisePt1E(Wo, Ho, Eo, albedoOne.data(),
+                                    g.normal.data(), posLow.data(), opt,
+                                    &budget.glossyDenoise);
+            (void)used;
+            // Joint-bilateral upsample back to the render grid on exactly
+            // the glossy pixels (full-res normal/depth as edge stops).
+            std::vector<uint8_t> elig(static_cast<std::size_t>(W) * H, 0);
+            for (std::size_t i = 0; i < elig.size(); ++i)
+              elig[i] = (reflAmt[i] > 0.0f && reflAlpha[i] > 0.0f) ? 1 : 0;
+            const std::vector<float> occLow(nout, 1.0f);
+            std::vector<float> Eup, occUp;
+            detail::upsampleJointBilateral(
+                W, H, res.normal.data(), res.depth.data(), elig.data(), g,
+                Eo, occLow, opt.pt1UpsampleNormalPow,
+                opt.pt1UpsampleDepthScale, Eup, occUp);
+            Espec.swap(Eup);
+          }
         }
         budget.glossyDenoise.finish();
         tbb::parallel_for(tbb::blocked_range<int>(0, H),

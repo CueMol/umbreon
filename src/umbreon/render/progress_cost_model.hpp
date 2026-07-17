@@ -153,8 +153,12 @@ inline GiCostEstimate giCostEstimate(const RenderOptions& opt, int W,
   if (opt.giIntegrator == 2 && opt.pt2Reflect && opt.pt2Glossy) {
     e.glossy =
         kGlossyPerSamplePixel * nHi * std::max(1, opt.pt2GlossySpp);
-    if (opt.pt1Denoise && opt.pt2GlossyDenoise)
-      e.glossyDenoise = kDenoisePerPixel * nHi;
+    if (opt.pt1Denoise && opt.pt2GlossyDenoise) {
+      // Under supersampling the E_spec OIDN runs at the OUTPUT grid (the
+      // box-downsample round trip in runPt1GiPass), not the render grid.
+      const double ssd = static_cast<double>(std::max(1, opt.supersample));
+      e.glossyDenoise = kDenoisePerPixel * nHi / (ssd * ssd);
+    }
   }
   if (opt.pt1Denoise) e.denoise = kDenoisePerPixel * nLow;
   e.composite = kCompositePerPixel * nHi;
