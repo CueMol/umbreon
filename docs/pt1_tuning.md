@@ -1,9 +1,13 @@
-# pt1 Path-Traced GI: Tuning Guide
+# pt1 / pt2 Path-Traced GI: Tuning Guide
 
-pt1 is the per-pixel path-traced indirect integrator and the DEFAULT for `--gi on`
-(`--integrator pt1` selects it explicitly and implies `--gi on`; `--integrator cache`
-selects the experimental irradiance cache instead). Its defaults match `--quality
-draft`: 8 spp, gather at output resolution, stratified sampling on, 1 bounce.
+pt1 is the per-pixel path-traced indirect integrator. **pt2 -- the same gather
+core plus its extensions -- is the DEFAULT for `--gi on` since 2026-07, and pt1
+is kept as the FROZEN regression anchor** (`--integrator pt1` selects it
+explicitly and implies `--gi on`; `--integrator cache` selects the experimental
+irradiance cache instead). Every knob in this guide applies to both integrators;
+what pt2 adds on top is documented in [umbreon_cli.md](umbreon_cli.md) and
+[pt2_survey.md](pt2_survey.md). The defaults match `--quality draft`: 8 spp,
+gather at output resolution, stratified sampling on, 1 bounce.
 This document explains the energy model, depth cue levers, and recommended recipes.
 For the algorithmic design and conventions, see [pt1_design.md](pt1_design.md).
 

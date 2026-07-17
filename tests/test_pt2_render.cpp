@@ -197,6 +197,24 @@ float meanLum(const umbreon::FrameResult& f) {
 int main() {
   umbreon::test::Suite s("pt2_render");
 
+  // 0) Policy: pt2 is the DEFAULT indirect integrator (2026-07). A bare
+  //    gi = true render must go through pt2, bitwise -- pinning the public
+  //    API default so it cannot drift back silently. pt1 stays reachable as
+  //    the frozen regression anchor (giIntegrator = 1).
+  {
+    const umbreon::RenderOptions def;
+    s.check("RenderOptions default giIntegrator == 2 (pt2)",
+            def.giIntegrator == 2);
+
+    const umbreon::Scene sc = makeScene(false, 0.0f);
+    umbreon::RenderOptions bare = makeOpts(2);
+    bare.giIntegrator = umbreon::RenderOptions{}.giIntegrator;  // the default
+    umbreon::RenderOptions pt2 = makeOpts(2);
+    s.check("gi on with the default integrator renders pt2 (bitwise)",
+            bitEqual(umbreon::render(sc, bare).color,
+                     umbreon::render(sc, pt2).color));
+  }
+
   // 1) Determinism through every pt2 extension at once: emissive panel +
   //    area light + adaptive spp + traced reflection candidates, rendered
   //    twice and with different thread caps elsewhere (the harness runs the

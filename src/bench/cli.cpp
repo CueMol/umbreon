@@ -350,9 +350,9 @@ Options parseCli(int argc, char** argv) {
         // Asking for pt1/pt2 EXPLICITLY implies the GI pipeline: the gi gate
         // drives the ambient zeroing, the _amb_frac energy rebalance and the
         // GI AOV plumbing, which they share with the cache -- without it a
-        // bare "--integrator pt1" would silently render with no GI at all.
+        // bare "--integrator pt2" would silently render with no GI at all.
         // The implication lives here, on the explicit flag, and NOT on the
-        // giIntegrator value: pt1 is the default, so keying off it would turn
+        // giIntegrator value: pt2 is the default, so keying off it would turn
         // GI on for every render. A later --gi off still wins.
         o.giIntegrator = (v == "pt2") ? 2 : 1;
         o.gi = true;
@@ -472,32 +472,31 @@ Options parseCli(int argc, char** argv) {
       continue;
     }
     if (a == "--quality") {
-      // pt1 quality preset: expands to --integrator pt1 plus spp/resolution/
-      // bounces at the point of appearance, so later explicit flags override
-      // individual values (put --quality first).
+      // GI quality preset: expands to spp/resolution/bounces at the point of
+      // appearance, so later explicit flags override individual values (put
+      // --quality first).
       std::string v = value("--quality");
       // draft/high gather at OUTPUT resolution with stratified sampling and
       // the silhouette-rim patch (user-approved 2026-07: visually matches
       // the old full-hi-res-grid presets at ~12x less cost). ultra stays on
       // the full supersampled grid as the reference preset.
-      // Every preset asks for pt1 explicitly, so -- like --integrator pt1 --
-      // it turns the GI gate on (a preset with no GI would be meaningless).
+      // A preset turns the GI gate on (one with no GI would be meaningless)
+      // but does NOT pin the integrator: a bare --quality uses the default
+      // (pt2), and `--integrator pt1 --quality draft` still renders pt1 --
+      // the knobs below apply to both integrators alike.
       if (v == "draft") {
-        o.giIntegrator = 1;
         o.gi = true;
         o.pt1GatherDiv = -1;  // output resolution
         o.pt1Spp = 8;
         o.giBounces = 1;
         o.pt1Ld = true;
       } else if (v == "high") {
-        o.giIntegrator = 1;
         o.gi = true;
         o.pt1GatherDiv = -1;  // output resolution
         o.pt1Spp = 32;
         o.giBounces = 2;
         o.pt1Ld = true;
       } else if (v == "ultra") {
-        o.giIntegrator = 1;
         o.gi = true;
         o.pt1HalfRes = false;
         o.pt1GatherDiv = 0;  // legacy derivation -> pt1HalfRes = full-res grid
@@ -1164,10 +1163,12 @@ void printUsage(const char* prog) {
       "  --gi-normal-reject <cos> min dot(n_x,n_rec) to blend a record[0.85]\n"
       "  --gi-component-reject <on|off> reject cross-section records   [on]\n"
       "  --gi-seed-per-vertex <on|off> seed records from mesh verts   [off]\n"
-      "  --integrator <cache|pt1|pt2> indirect GI integrator; pt2 = pt1 +\n"
-      "                           Sobol/blue-noise sampler + emissive GI;\n"
-      "                           cache is experimental (pt1/pt2 imply\n"
-      "                           --gi on)                              [pt1]\n"
+      "  --integrator <cache|pt1|pt2> indirect GI integrator. pt2 (default)\n"
+      "                           = the gather core + Sobol/blue-noise\n"
+      "                           sampler, emissive GI, area lights, traced\n"
+      "                           reflection; pt1 = the frozen regression\n"
+      "                           anchor; cache is experimental (pt1/pt2\n"
+      "                           imply --gi on)                        [pt2]\n"
       "  --material <pov|principled> convert every POV finish to the\n"
       "                           principled GGX subset (lossy: only\n"
       "                           diffuse-only finishes stay bitwise)   [pov]\n"
@@ -1203,17 +1204,18 @@ void printUsage(const char* prog) {
       "  --pt2-glossy-denoise <on|off> OIDN on the glossy reflection\n"
       "                           buffer (also needs --denoise on)        [on]\n"
       "  --pt2-wclamp <f>         pt2 contribution weight clamp (0=off)  [0]\n"
-      "  --quality <draft|high|ultra> pt1 preset: 8spp out-res ld 1-bounce /\n"
+      "  --quality <draft|high|ultra> GI preset: 8spp out-res ld 1-bounce /\n"
       "                           32spp out-res ld 2-bounce / 256spp full\n"
-      "                           3-bounce (put it FIRST; later flags\n"
+      "                           3-bounce; keeps the chosen integrator\n"
+      "                           (put it FIRST; later flags\n"
       "                           override)  [draft-equivalent]\n"
-      "  --spp <int>              pt1 gather rays per pixel             [8]\n"
-      "  --indirect-res <full|half|quarter|out> pt1 gather grid = render\n"
+      "  --spp <int>              GI gather rays per pixel              [8]\n"
+      "  --indirect-res <full|half|quarter|out> GI gather grid = render\n"
       "                           grid / {1,2,4,ss} (out = final size)   [out]\n"
-      "  --denoise <on|off>       pt1 indirect-only OIDN denoise        [on]\n"
-      "  --sky <uniform|gradient> pt1 gather sky model            [uniform]\n"
-      "  --sky-radiance r,g,b     pt1 sky tint (x ambient energy)   [1,1,1]\n"
-      "  --seed <int>             pt1 per-pixel RNG seed                [0]\n"
+      "  --denoise <on|off>       GI indirect-only OIDN denoise         [on]\n"
+      "  --sky <uniform|gradient> GI gather sky model             [uniform]\n"
+      "  --sky-radiance r,g,b     GI sky tint (x ambient energy)    [1,1,1]\n"
+      "  --seed <int>             GI per-pixel RNG seed                 [0]\n"
       "  --pt1-ld <on|off>        pt1 stratified 1st-bounce sampling    [on]\n"
       "  --pt1-clamp <f>          pt1 per-sample luminance clamp      [0=off]\n"
       "  --pt1-edge-patch <on|off> full-res re-gather of silhouette rims\n"
