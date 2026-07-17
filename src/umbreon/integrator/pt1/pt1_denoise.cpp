@@ -5,7 +5,7 @@
 // umbreon target (NOT header-inline) so UMBREON_HAVE_OIDN is evaluated exactly
 // once: an inline definition would give library and test translation units
 // different bodies (ODR violation) since the macro is target-private.
-#include "experimental/pt1/pt1_integrator.hpp"
+#include "integrator/pt1/pt1_integrator.hpp"
 
 #include <cmath>
 #include <cstdio>

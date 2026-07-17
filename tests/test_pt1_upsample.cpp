@@ -10,7 +10,7 @@
 #include "test_util.hpp"
 #include "umbreon.hpp"
 
-#include "experimental/pt1/pt1_upsample.hpp"
+#include "integrator/pt1/pt1_upsample.hpp"
 
 namespace {
 

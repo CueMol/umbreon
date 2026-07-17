@@ -196,48 +196,58 @@ umbreon_cli <scene>.pov -W 700 -H 700 \
 
 ## diffuse GI インテグレータ（--gi / --integrator）
 
-diffuse GI は 2 つのインテグレータを選べる(設計と規約は
+diffuse GI は 3 つのインテグレータを選べる(設計と規約は
 [pt1_design.md](pt1_design.md)、比較は `scripts/compare_integrators.sh`)。
 
 ```sh
-# pt1: パストレース per-pixel gather(既定)。設定は --quality draft と同一
+# pt2: パストレース per-pixel gather(既定)。設定は --quality draft と同一
 umbreon_cli <scene>.pov --gi on
+
+# pt1: 凍結された回帰アンカー(A/B・リグレッション検証用)
+umbreon_cli <scene>.pov --gi on --integrator pt1
 
 # irradiance cache(実験的。比較用に残している)
 umbreon_cli <scene>.pov --gi on --integrator cache
 ```
 
-`--gi on` の既定は **pt1** で、`--quality draft` 相当（8 spp / gather=出力解像度 /
-stratified サンプリング on / 1 バウンス）。irradiance cache は experimental なので、
+`--gi on` の既定は **pt2** で、`--quality draft` 相当（8 spp / gather=出力解像度 /
+stratified サンプリング on / 1 バウンス）。pt2 は pt1 の gather コアに拡張を重ねた
+**上位互換**で、コストはほぼ同じ(拡張はどれもシーンが実際に持つマテリアル/光源で
+ゲートされ、持たないシーンではサンプラー以外 pt1 と同じ経路を走る)。
+
+**pt1 は凍結された回帰アンカー**として残している: 2026-07 時点の挙動を永続的に
+bit 単位で保つ約束なので、pt2 専用のシーン機能(`DistantLight::angularRadius` の
+area light、emissive GI、traced reflection、principled の traced specular)は
+設計上すべて無視する。A/B と refactor ゲート用。irradiance cache は experimental で、
 明示的に `--integrator cache` を指定したときだけ使われる。
 
-なお GI 自体の既定は off。`--gi on` を付けたときにどちらのインテグレータが走るか、という
-話であることに注意（`--integrator pt1` と `--quality <preset>` は明示指定なので `--gi on`
-を含意する）。
+なお GI 自体の既定は off。`--gi on` を付けたときにどのインテグレータが走るか、という
+話であることに注意（`--integrator pt1|pt2` と `--quality <preset>` は明示指定なので
+`--gi on` を含意する)。
 
 | フラグ | 既定 | 効果 / 注意 |
 |---|---|---|
-| `--integrator <cache\|pt1\|pt2>` | pt1 | 間接光インテグレータの選択。`pt1`/`pt2` の明示指定は `--gi on` を含意。pt2 = pt1 の gather コア + 下記拡張(Sobol/blue-noise サンプラー、emissive GI、area light、traced reflection、適応 spp) |
+| `--integrator <cache\|pt1\|pt2>` | **pt2** | 間接光インテグレータの選択。`pt1`/`pt2` の明示指定は `--gi on` を含意。pt2(既定) = gather コア + 下記拡張(Sobol/blue-noise サンプラー、emissive GI、area light、traced reflection、適応 spp)。pt1 = 凍結アンカー(拡張なし、bit 固定)。cache = 実験的 |
 | `--material <pov\|principled>` | pov | POV finish を principled GGX subset へ post-parse 変換(fromEdge 装飾は除外)。**ハイブリッド**: トゥーン/非物理 finish(specular>1 ‖ phong>1 ‖ brilliance==0 ‖ unlit)は POV のまま残す(飽和ハイライト・平坦 diffuse はエネルギー保存 BSDF で表現不能)。物理系は lossy 変換: diffuse-only finish のみ bitwise 不変。写像表は [principled_design.md](principled_design.md) §6 |
 | `--pbr-aniso <0..1>` | off | **検証用**(POV に anisotropy の綴りがないため): 実 CSG 球/円柱の材を anisotropic brushed metal(principled metallic 1, roughness 0.35, F0=pigment)に強制。0 指定 = 等方対照。fromEdge 装飾は不変 |
 | `--pbr-aniso-rot <turns>` | 0 | `--pbr-aniso` の接線フレーム回転(0.25 = 90° = 周方向ブラシ) |
-| `--spp <int>` | 8 | pt1: ピクセルあたりの gather レイ数 |
-| `--indirect-res <full\|half\|quarter\|out>` | out | pt1: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
+| `--spp <int>` | 8 | GI: ピクセルあたりの gather レイ数(pt1/pt2 共通) |
+| `--indirect-res <full\|half\|quarter\|out>` | out | GI: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
 | `--pt1-edge-patch <on\|off>` | on | 縮小 gather グリッドが解決できないシルエット縁ピクセルを full-res で再 gather |
 | `--pt1-patch-thresh <w>` | 0.3 | パッチ対象の upsample 重み閾値（大きいほど広く・高品質・低速） |
 | `--pt1-stats <on\|off>` | off | OIDN 段階分解（device/filter/execute）を stderr に出力 |
-| `--denoise <on\|off>` | on | pt1: 間接照度バッファのみを OIDN デノイズ(direct/albedo は触らない) |
-| `--sky <uniform\|gradient>` | uniform | pt1: gather の sky モデル。gradient は天頂=`--sky-radiance`、地面=`--ao-ground` |
-| `--sky-radiance r,g,b` | 1,1,1 | pt1: sky のティント(ambient エネルギーに乗算) |
-| `--seed <int>` | 0 | pt1: 決定論的 per-pixel RNG シード |
-| `--gi-max-dist <world>` | 0 | gather レイの最大距離。cache: auto=0.1×対角 / pt1: auto=∞(意図的な差) |
+| `--denoise <on\|off>` | on | GI: 間接照度バッファのみを OIDN デノイズ(direct/albedo は触らない) |
+| `--sky <uniform\|gradient>` | uniform | GI: gather の sky モデル。gradient は天頂=`--sky-radiance`、地面=`--ao-ground` |
+| `--sky-radiance r,g,b` | 1,1,1 | GI: sky のティント(ambient エネルギーに乗算) |
+| `--seed <int>` | 0 | GI: 決定論的 per-pixel RNG シード |
+| `--gi-max-dist <world>` | 0 | gather レイの最大距離。cache: auto=0.1×対角 / pt1・pt2: auto=∞(意図的な差) |
 | `--pt1-upsample-normal-pow <f>` | 32 | upsample の法線 edge-stop 指数 |
 | `--pt1-upsample-depth-scale <f>` | 0.02 | upsample の深度 edge-stop スケール |
 
-### pt2 拡張フラグ(--integrator pt2 のときのみ有効)
+### pt2 拡張フラグ(既定インテグレータの追加機能。`--integrator pt1` では無効)
 
-pt1 の全フラグ(`--spp` / `--indirect-res` / `--denoise` / `--gi-bounces` 等)は
-pt2 にもそのまま適用される。以下は pt2 が追加するもの:
+上記の共通フラグ(`--spp` / `--indirect-res` / `--denoise` / `--gi-bounces` 等)は
+pt1/pt2 どちらにも適用される。以下は pt2 が追加するもの:
 
 | フラグ | 既定 | 効果 / 注意 |
 |---|---|---|

@@ -112,15 +112,22 @@ struct RenderOptions {
   bool giComponentReject = true;// reject records of a different component (leak)
   bool giSeedPerVertex = false; // true => seed from mesh vertices (view-independent)
 
-  // --- pt1: path-traced indirect integrator (per-pixel one-bounce gather; see
-  // experimental/pt1/pt1_integrator.hpp). This is the DEFAULT indirect
-  // integrator. giIntegrator == 2 selects pt2, which layers an Owen-scrambled
-  // Sobol / blue-noise sampler, emissive-at-bounce and (in progress) ReSTIR-GI
-  // spatial resampling onto the same gather core (experimental/pt2/).
-  // giIntegrator == 0 selects the older irradiance cache, experimental and
-  // kept for comparison only. Either way the integrator runs only when gi is
-  // on.
-  int giIntegrator = 1;  // 1 = pt1 (default), 2 = pt2, 0 = irradiance cache
+  // --- the path-traced indirect integrator (per-pixel gather; see
+  // integrator/pt1/pt1_integrator.hpp for the shared core). pt2 is the
+  // DEFAULT: the same gather core plus an Owen-scrambled Sobol / blue-noise
+  // sampler, emissive geometry as a GI source (+ NEE/MIS), per-light area
+  // lights, traced mirror/glossy reflection and variance-adaptive spp
+  // (integrator/pt2/). It is a superset of pt1 at the same cost -- every
+  // extension is gated on a material/light the scene must actually carry, so
+  // scenes without them render like pt1 modulo the sampler.
+  //   2 = pt2 (default)
+  //   1 = pt1, FROZEN as the regression anchor: bit-identical to its
+  //       2026-07 behavior forever. Kept for A/B and refactor gating; it
+  //       ignores the pt2-only scene features (e.g. DistantLight::
+  //       angularRadius) by design.
+  //   0 = the older irradiance cache: experimental, frozen, comparison only.
+  // Either way the integrator runs only when gi is on.
+  int giIntegrator = 2;  // 2 = pt2 (default), 1 = pt1 (anchor), 0 = cache
   int pt1Spp = 8;               // gather rays per pixel
   bool pt1HalfRes = true;       // LEGACY gather-grid selector, consulted only
                                 // when pt1GatherDiv == 0: half the render grid

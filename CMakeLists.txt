@@ -122,7 +122,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/render/pipeline.cpp
     src/umbreon/render/render_progress.cpp
     src/umbreon/experimental/irradiance_cache/denoise_atrous.cpp
-    src/umbreon/experimental/pt1/pt1_denoise.cpp
+    src/umbreon/integrator/pt1/pt1_denoise.cpp
     src/umbreon/postprocess/fog.cpp
     src/umbreon/postprocess/image_ops.cpp
     src/umbreon/edges/stroke_edges.cpp

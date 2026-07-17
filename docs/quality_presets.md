@@ -137,7 +137,7 @@ pt1 は per-pixel の 1〜多バウンス path-traced gather。フラットな a
 | フィールド | low（下書き） | medium（標準） | high | reference（参照・非対話） |
 |---|---|---|---|---|
 | `gi` | true | true | true | true |
-| `giIntegrator` | 1 (pt1) | 1 | 1 | 1 |
+| `giIntegrator` | 2 (pt2, 既定) | 2 | 2 | 2 |
 | `pt1Spp` | 8 | 32 | 64 | 256 |
 | `pt1GatherDiv` | -1 (out) | -1 (out) | -1 (out) | 0 + `pt1HalfRes=false`（full） |
 | `pt1Ld` | true | true | true | false（256spp では不要） |
@@ -185,7 +185,7 @@ pt1 は per-pixel の 1〜多バウンス path-traced gather。フラットな a
    ローカル寄りコントラストを真似たいときのみ明示（`0.1×対角` 程度）。
 3. **`envLights`（環境ドームライト）と pt1 は併用しない**（sky を二重計上する。警告あり）。
    GI の sky は `pt1SkyMode` / `pt1SkyRadiance` / `giEnvIntensity` で制御する。
-4. `giSamples` や `giAccuracy` 等は **cache 経路（`giIntegrator=0`）専用**。pt1 では読まれない。
+4. `giSamples` や `giAccuracy` 等は **cache 経路（`giIntegrator=0`）専用**。pt1/pt2 では読まれない。
 
 CLI（品質段を明示フラグで・バウンスは固定）:
 `--integrator pt1 --indirect-res out --gi-bounces 1 --pt1-ld on --spp {8|32|64}`。
@@ -252,10 +252,12 @@ CLI: `--shadows on --shadow-samples N --light-radius <deg>`。
 | `pt1SkyMode` / `pt1SkyRadiance` | 0(uniform)/白 | GI の sky モデル。上方向を明るくして形状感を足す（`gradient` + `aoGroundColor`）。**ライティングのスタイル** |
 | `pt1Seed` | 0 | 決定論シード。固定 |
 
-> **cache-GI（`giIntegrator=0`）について**: `gi=true` の既定インテグレータは irradiance cache だが、
-> pt1 の方が速くクリーンなので **client 向けプリセットは pt1（`giIntegrator=1`）に統一**することを推奨。
+> **cache-GI（`giIntegrator=0`）について**: `gi=true` の既定インテグレータは **pt2**（2026-07 に
+> pt1 から昇格）。irradiance cache は experimental・凍結で、明示指定したときだけ走る。
+> **client 向けプリセットは既定の pt2（`giIntegrator=2`）に統一**することを推奨（pt1=1 は
+> 凍結された回帰アンカーで、area light / emissive GI / traced reflection を読まない）。
 > cache 固有ノブ（`giSamples` / `giAccuracy` / `giGradients` / `giOutlierReject` / `denoiser` 等）は
-> pt1 プリセットでは無視され、UI に出す必要はない。
+> pt1/pt2 プリセットでは無視され、UI に出す必要はない。
 
 ---
 

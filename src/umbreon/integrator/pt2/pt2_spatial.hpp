@@ -38,8 +38,8 @@
 #include <tbb/blocked_range2d.h>
 #include <tbb/parallel_for.h>
 
-#include "experimental/pt2/pt2_reservoir.hpp"
-#include "experimental/pt2/pt2_sampler.hpp"
+#include "integrator/pt2/pt2_reservoir.hpp"
+#include "integrator/pt2/pt2_sampler.hpp"
 #include "render/progress_slice.hpp"
 #include "shading/secondary_rays.hpp"
 #include "scene.hpp"

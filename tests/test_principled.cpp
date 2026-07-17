@@ -577,6 +577,49 @@ int main() {
                 f.color[pix * 4 + 2] == 0.3f);
   }
 
+  // 15c) ShadingModel::Toon -- the explicit NPR tag. Toon is a LABEL, not a
+  //      look: it shades through the same lobes as Pov, so tagging a finish
+  //      must not move a pixel. What the tag buys is INTENT -- toonLike()
+  //      honours it even when the field values look perfectly physical, which
+  //      the Pov heuristic (fields only) can never infer. An API caller tags;
+  //      a .pov scene, having no way to spell NPR, is still sniffed.
+  {
+    umbreon::Material pov;  // deliberately physical-looking fields: the Pov
+    pov.ambient = 0.3f;     // field heuristic does NOT call this toon
+    pov.diffuse = 0.5f;
+    pov.specular = 0.4f;
+    pov.roughness = 0.01f;
+    s.check("physical fields on Pov: not toonLike", !pov.toonLike());
+
+    umbreon::Material tagged = pov;
+    tagged.model = umbreon::ShadingModel::Toon;
+    s.check("same fields tagged Toon: toonLike (the tag, not the fields)",
+            tagged.toonLike());
+
+    // Same fields -> same lobes: the tag is pixel-neutral outside GI.
+    s.check("Toon renders bitwise == Pov (tag is a label, not a look)",
+            bitEqual(umbreon::render(makeScene2(pov, pov), makeOpts()).color,
+                     umbreon::render(makeScene2(tagged, tagged), makeOpts())
+                         .color));
+
+    // Under GI the tag is what earns the exemption: the Toon scene keeps its
+    // (unit) ambient and takes no indirect, so pt2 == gi-off bitwise.
+    umbreon::Scene toonScene = makeScene2(tagged, tagged);
+    toonScene.ambientColor = {1.0f, 1.0f, 1.0f};
+    s.check("Toon-tagged scene: pt2 == gi-off (bitwise; GI-exempt via tag)",
+            bitEqual(umbreon::render(toonScene, makeOpts()).color,
+                     umbreon::render(toonScene, makePt2Opts()).color));
+
+    // Negative control: the SAME fields left on Pov are physical, so GI does
+    // re-light them. Without this the check above would pass even if the tag
+    // did nothing and GI were simply inert on this scene.
+    umbreon::Scene povScene = makeScene2(pov, pov);
+    povScene.ambientColor = {1.0f, 1.0f, 1.0f};
+    s.check("untagged Pov twin IS re-lit by GI (proves the tag does the work)",
+            !bitEqual(umbreon::render(povScene, makeOpts()).color,
+                      umbreon::render(povScene, makePt2Opts()).color));
+  }
+
   // 16) Supersampled E_spec denoise round trip (box-downsample -> OIDN at
   //     the output grid -> joint-bilateral upsample): deterministic
   //     run-to-run and across thread counts, and finite.

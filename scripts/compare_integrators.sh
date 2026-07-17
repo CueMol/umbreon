@@ -1,6 +1,8 @@
 #!/bin/sh
-# A/B comparison of the two diffuse-GI integrators (irradiance cache vs pt1
-# path-traced gather): render the same scene with the same camera and settings,
+# A/B/C comparison of the three diffuse-GI integrators (experimental irradiance
+# cache vs the frozen pt1 anchor vs the default pt2 path-traced gather; each is
+# selected explicitly, so this script is independent of the default):
+# render the same scene with the same camera and settings,
 # save both images + timing into outputs/compare_<scene>_<date>/, and print
 # the PSNR/SSIM between them and the wall-time ratio.
 #

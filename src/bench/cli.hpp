@@ -54,11 +54,12 @@ struct Options {
   bool giGradients = false;     // Ward-Heckbert gradient interpolation
   bool giOutlierReject = true;  // lift isolated fully-occluded dark records
 
-  // --- pt1: path-traced indirect integrator, the DEFAULT (--integrator pt1;
-  // implies --gi on so the GI plumbing/energy rebalance applies identically).
-  // These mirror the RenderOptions defaults -- scene_setup copies them over
-  // unconditionally, so they must not drift apart. ---
-  int giIntegrator = 1;         // 1 = pt1 (default), 0 = irradiance cache
+  // --- the path-traced indirect integrator. pt2 is the DEFAULT; pt1 is the
+  // frozen regression anchor and the cache is experimental (--integrator
+  // pt1|pt2 implies --gi on so the GI plumbing/energy rebalance applies
+  // identically). These mirror the RenderOptions defaults -- scene_setup
+  // copies them over unconditionally, so they must not drift apart. ---
+  int giIntegrator = 2;         // 2 = pt2 (default), 1 = pt1, 0 = cache
   int materialModel = 0;        // --material pov(0)|principled(1): convert
                                 // every parsed POV finish to the principled
                                 // subset (lossy; see material_convert.hpp)

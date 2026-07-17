@@ -21,12 +21,12 @@
 #include "render/progress_cost_model.hpp"
 #include "shading/hit_shader.hpp"
 #include "experimental/irradiance_cache/irradiance_cache.hpp"
-#include "experimental/pt1/pt1_integrator.hpp"
-#include "experimental/pt1/pt1_upsample.hpp"
-#include "experimental/pt2/pt2_adaptive.hpp"
-#include "experimental/pt2/pt2_glossy.hpp"
-#include "experimental/pt2/pt2_reflect.hpp"
-#include "experimental/pt2/pt2_spatial.hpp"
+#include "integrator/pt1/pt1_integrator.hpp"
+#include "integrator/pt1/pt1_upsample.hpp"
+#include "integrator/pt2/pt2_adaptive.hpp"
+#include "integrator/pt2/pt2_glossy.hpp"
+#include "integrator/pt2/pt2_reflect.hpp"
+#include "integrator/pt2/pt2_spatial.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
 #include "shading/transparency.hpp"
@@ -1662,7 +1662,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   // --- diffuse GI post-pass on the live BVH, at the (supersampled) hi-res
   // W*H. Two alternative indirect integrators share the seam: the surface
   // irradiance cache (default) and the pt1 per-pixel path-traced gather
-  // (opt.giIntegrator == 1; experimental/pt1/). Both add giIntensity *
+  // (opt.giIntegrator == 1; integrator/pt1/). Both add giIntensity *
   // giReflectance * E to res.color and fill the same `indirect` AOV, on top of
   // the unchanged direct shading from the pixel loop above.
   // Progress: GI is the DOMINANT phase whenever it is on (measured 71-90% of

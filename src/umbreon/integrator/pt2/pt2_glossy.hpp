@@ -38,7 +38,7 @@
 #include <tbb/blocked_range2d.h>
 #include <tbb/parallel_for.h>
 
-#include "experimental/pt1/pt1_gather.hpp"
+#include "integrator/pt1/pt1_gather.hpp"
 #include "render/progress_slice.hpp"
 #include "shading/principled.hpp"
 #include "shading/secondary_rays.hpp"

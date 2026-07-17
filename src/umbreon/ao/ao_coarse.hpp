@@ -66,7 +66,7 @@ struct CoarseAoGrid {
 
 // Gather AO at every eligible cell of a low-res first-hit G-buffer (the
 // position/normal/geomNormal/depth/hit planes of a Pt1GBuffer, passed as raw
-// pointers so ao/ stays free of experimental/ includes). Runs the SAME
+// pointers so ao/ stays free of integrator/ includes). Runs the SAME
 // estimator selection as the inline path (aoGather: legacy vs quality, incl.
 // the aoWriteAov extra pass), with nSamples = opt.aoSamples as-is and the RNG
 // seeded from the COARSE lattice (px=cx, py=cy, wSeed=w) -- a pure function of

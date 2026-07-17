@@ -12,7 +12,7 @@
 // compensates the light units, keeping principled and POV materials
 // comparable side by side in one scene.
 //
-// Layering: shading/ must not include experimental/pt2/, so the Smith Lambda
+// Layering: shading/ must not include integrator/pt2/, so the Smith Lambda
 // here intentionally duplicates pt2GgxLambda (pt2_glossy.hpp) -- keep the two
 // in sync if the formula ever changes.
 #pragma once

@@ -11,7 +11,7 @@
 #include "test_util.hpp"
 #include "umbreon.hpp"
 
-#include "experimental/pt1/pt1_integrator.hpp"
+#include "integrator/pt1/pt1_integrator.hpp"
 #include "render/scene_build.hpp"
 
 namespace {
