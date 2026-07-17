@@ -370,6 +370,20 @@ detail::Pt1CameraBasis toPt1Basis(const Camera& cam, const CameraBasis& cb) {
   return camb;
 }
 
+// Does any material in the scene select the principled shading model?
+// Drives the pt2 specular-channel allocation and the non-pt2 advisory below;
+// a plain scan, so POV-only scenes pay one pass over the material lists.
+bool sceneHasPrincipled(const Scene& scene) {
+  if (scene.mesh.material.model == ShadingModel::Principled) return true;
+  for (const Material& m : scene.mesh.materials)
+    if (m.model == ShadingModel::Principled) return true;
+  for (const Sphere& s : scene.spheres)
+    if (s.material.model == ShadingModel::Principled) return true;
+  for (const Cylinder& c : scene.cylinders)
+    if (c.material.model == ShadingModel::Principled) return true;
+  return false;
+}
+
 // POV-native lights (direction the light travels -> direction to light), plus
 // the optional environment dome fill (opt.envLights > 0): a hemisphere of
 // distant diffuse-only lights around the camera-forward axis, meant to be
@@ -1137,6 +1151,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   const float persHalfW = cb.persHalfW, persHalfH = cb.persHalfH;
 
   const std::vector<Light> lights = buildSceneLights(scene, opt, cb);
+  // Principled materials: direct GGX shading works under every mode; only
+  // the traced specular indirect is pt2-gated (elsewhere the fake Fresnel
+  // environment term stands in). Advisory only -- bytes unaffected.
+  const bool hasPrincipled = sceneHasPrincipled(scene);
+  if (hasPrincipled && opt.gi && opt.giIntegrator != 2)
+    std::fprintf(stderr,
+                 "principled: traced specular reflection requires --integrator "
+                 "pt2; using the Fresnel*background approximation (cache "
+                 "approximates the diffuse weight)\n");
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
   // term is material.ambient * pigment, applied below via ambK.
   const Vec3 ambLight = scene.ambientColor;  // expected <1,1,1> on the embree path

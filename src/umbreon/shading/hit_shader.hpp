@@ -209,7 +209,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // path keeps its ambient (flat color) and gets no indirect.
     if (c.opt.gi) {
       hs.giReflectance =
-          Vec3{triMat.diffuse * C.x, triMat.diffuse * C.y, triMat.diffuse * C.z};
+          Vec3{triMat.diffuseWeight() * C.x, triMat.diffuseWeight() * C.y,
+               triMat.diffuseWeight() * C.z};
       hs.giEligible = 1;
       ambLight = Vec3{0.0f, 0.0f, 0.0f};
     }
@@ -308,7 +309,8 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       // OIDN guides.
       if (c.opt.gi && c.opt.giIntegrator >= 1) {
         hs.giReflectance =
-            Vec3{pm.diffuse * C.x, pm.diffuse * C.y, pm.diffuse * C.z};
+            Vec3{pm.diffuseWeight() * C.x, pm.diffuseWeight() * C.y,
+                 pm.diffuseWeight() * C.z};
         hs.giEligible = 1;
         hs.albedo = C;
         hs.normal = N;

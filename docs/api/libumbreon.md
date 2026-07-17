@@ -346,6 +346,36 @@ RenderTask renderAsync(Scene scene, RenderOptions opt);  // 即 return（scene/o
 `Material::flatOutline()` は ambient 1 / diffuse 0 / specular 0 を返し、`ambientColor = {1,1,1}` の
 下で「pigment 色そのまま」のフラット表示になる（シルエット線用）。
 
+#### 4.4.1 Principled subset（`Material::model` / `Material::pbr`）
+
+`Material::model = ShadingModel::Principled` を設定すると、shading は POV finish モデルの代わりに
+GGX principled subset を評価する（既定は `ShadingModel::Pov` = 従来通り bit-exact）。UI 側は
+「金属的 / プラスチック的 / 陶器的」等のプリセットを本フィールドへ写像する想定。
+
+| フィールド | 既定 | 意味 |
+|---|---|---|
+| `model` | `Pov` | シェーディングモデル選択（材ごとに混在可） |
+| `pbr.metallic` | 0.0 | dielectric(0) ↔ metal(1)。metal は diffuse 0、F0 = pigment 色（色付き反射） |
+| `pbr.roughness` | 0.5 | 知覚粗さ。GGX α = roughness²（Disney/glTF 規約）。ハイライトと traced 反射の両方を同じ幅で駆動 |
+| `pbr.specular` | 0.5 | dielectric F0 スケール: F0 = 0.08 × specular（0.5 → 0.04） |
+| `pbr.anisotropy` | 0.0 | 異方性（Disney aspect 写像）。**sphere/cylinder プリミティブのみ有効**（sphere は world-z pole、cylinder は軸フレーム。mesh は per-vertex tangent 未対応のため等方） |
+| `pbr.anisotropyRotation` | 0.0 | 接線フレーム回転（turn 単位、0.25 = 90°） |
+
+共用・注意点:
+- **baseColor = pigment**（頂点色 / プリミティブ色）、**emission = `Material::emission` 共用**
+  （emissive NEE は model に依らず機能する）
+- **`Material::diffuse` は principled の base weight を兼ねる**: diffuse ローブの albedo =
+  `diffuse × (1 − metallic) × pigment`。物理的な albedo にしたい場合は `diffuse = 1.0` を設定
+- Principled では POV の `specular/roughness/brilliance/phong/phongSize/metallic/reflection` と
+  `RenderOptions::specularScale` は**読まれない**
+- specular 間接の品質は integrator により段階的: pt2 = traced mirror/glossy 反射(実ジオメトリ)、
+  それ以外(basic/AO/cache/pt1) = フェイク環境項 `F(N·V) × background`(POV の
+  `reflection × background` と同型の劣化経路)。direct の GGX ハイライト(area light 対応・
+  Fresnel)と diffuse 間接は全モード共通
+- subset に**含まれない** principled パラメータ: transmission / subsurface / sheen / coat /
+  specular tint / thin film / 独立 IOR / 独立 emission color（設計文書
+  [principled_design.md](../principled_design.md) に理由を記録）
+
 ### 4.5 カメラ・ライト・フォグ
 
 **`Camera`**: `position`, `direction`（視線・正規化）, `up`, `orthographic`(bool),

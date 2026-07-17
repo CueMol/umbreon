@@ -1,0 +1,93 @@
+# Principled BSDF subset — 設計文書
+
+umbreon の第 2 シェーディングモデル。`Material::model = ShadingModel::Principled` で
+材ごとに opt-in し、既定(`Pov`)は従来の POV finish モデルを bit-exact に維持する。
+UI(CueMol)は「金属的/プラスチック的/陶器的」等のプリセットを本 subset へ写像する
+想定で、エンドユーザーに principled パラメータを直接触らせない方針
+(2026-07 ユーザー確認)。対になる文書: [pt2_survey.md](pt2_survey.md)(輸送側)、
+[api/libumbreon.md](api/libumbreon.md) §4.4.1(API リファレンス)。
+
+## 1. パラメータと意味論
+
+| パラメータ | 意味 |
+|---|---|
+| baseColor | 既存 pigment(頂点色 / プリミティブ色)を流用。新フィールドなし |
+| `pbr.metallic` | dielectric(0) ↔ metal(1) の連続補間。metal は diffuse ローブ 0、F0 = baseColor |
+| `pbr.roughness` | 知覚粗さ。**GGX α = roughness²**(Disney/glTF)。direct ハイライトと traced 反射を同じ幅で駆動(POV モデルで別々だった 2 つを 1 本化) |
+| `pbr.specular` | dielectric F0 スケール: **F0 = 0.08 × specular**(0.5 → 0.04 = IOR 1.5 相当)。transmission を持たないため IOR は独立パラメータにしない |
+| `pbr.anisotropy` / `anisotropyRotation` | Disney aspect 写像 aspect = √(1−0.9·anisotropy)、αx = α/aspect、αy = α·aspect。rotation は turn 単位。**sphere/cylinder 限定**(§4) |
+| emission | `Material::emission` を共用。emissive NEE(mesh 三角形 + CSG 球/capped 円柱)は model 非依存で機能 |
+| `Material::diffuse` | principled の **base weight** を兼ねる: diffuse albedo = diffuse×(1−metallic)×baseColor。POV からの変換で GI エネルギーが連続になる(giReflectance = kd×C の形が不変)。物理 albedo にしたければ 1.0 を設定 |
+
+F0 の合成: `F0 = mix(Vec3(0.08 × pbr.specular), baseColor, pbr.metallic)`、Fresnel は
+Schlick `F = F0 + (1−F0)(1−u)⁵`。
+
+**Principled が無視する POV フィールド**: specular / roughness / brilliance / phong /
+phongSize / metallic(bool)/ reflection、および `RenderOptions::specularScale`。
+
+## 2. subset から落としたパラメータ(理由付き)
+
+| パラメータ | 理由 |
+|---|---|
+| transmission(+屈折 IOR) | pt2_survey §1 の制約で対象外(ガラス/caustic ニーズなし)。既存 transparency(直進減衰 + group alpha)が分子用途の正解 |
+| subsurface 系 | random-walk SSS はボリューム機構ごと新設の最重量級。分子表面に需要なし、「柔らかさ」は GI が担う |
+| sheen | 布・粉塵用。縁の強調は subset の Fresnel と NPR エッジで足りる |
+| coat / clearcoat | 存在意義は 2 ローブ(車塗装)。陶器・wet-look は滑らか dielectric 1 ローブで表現可。必要になったときの再追加第一候補 |
+| specular tint | dielectric の色付きハイライトは物理的に疑わしく、金属色は metallic 経由で出る |
+| thin film | 用途なし |
+| 独立 IOR | transmission なしでは F0 の決定のみ = `pbr.specular` と冗長 |
+| 独立 emission color | `emission × pigment` の既存規約(NEE の Le 定義含む)で足りる。後方互換で追加可能 |
+
+## 3. エネルギー規約(direct pass)
+
+POV 光単位(diffuse に 1/π なし: `diffuse 項 = kd·C·(N·L)·Lc`)を維持する。物理等価では
+`E_irr = π·Lc` に相当するため、principled の specular direct 項は
+**`π · f_ggx · (N·L) · Lc = π·D·G2·F/(4·cosθv) · Lc`**(π が単位系の補正)。
+
+- diffuse = `diffuse×(1−metallic) · C · (N·L) · Lc`(Lambert、brilliance なし)。
+  metallic=0 のとき POV の brilliance=1 diffuse と**式・結合順が一致 = bitwise parity**
+- area light(`DistantLight::angularRadius`): 可視率×BRDF を**サンプルごとに同時評価**
+  (POV の「平均可視率 × 中心方向 BRDF」と異なる非分離推定量)。ハイライトが影と同じ
+  ソフトネスで広がる = pt2 phase 1 の「direct/間接の光源モデル一貫」のハイライト版
+- fill light(highlight=false)は diffuse のみ(POV と同規則)。AO はハイライトを遮蔽しない
+  (POV と同規則)
+- **(1−F) の diffuse 補償は v1 ではしない**: dielectric F0 ≤ 0.08 で過大計上は ≲4%
+  (grazing 除く)、metal は diffuse 0。目視で問題が出たら albedo スケール補償を再訪
+
+## 4. anisotropy のフレーム規約
+
+すべて hit の純関数(決定論・temporal 安定)。
+
+| 形状 | フレーム | フォールバック |
+|---|---|---|
+| Sphere | pole = **world z**。t_φ = normalize(z×N)、t_θ = N×t_φ | \|N·z\| ≥ 0.999 → 等方(hairy-ball の極特異点は位相的に不可避、world-z 固定で位置安定) |
+| Cylinder 側面 | 軸 A の接平面射影 t = normalize(A − N·(A·N)) | cap 判定 \|dot(n̂g, A)\| ≥ 0.99 → 等方; 射影長² < 1e-12 → 等方 |
+| Mesh | (v1 では常に等方) | per-vertex tangent API の導入後に解禁(NURBS/リボン刷新と同タイミング想定) |
+
+軸は BuiltScene の per-segment side table(`cylAxis` / `cylCapAxis`)。sphere は N と
+world z のみで出るため保存不要。rotation は (t1,t2) を回転(0.25 turn = 軸交換)。
+
+## 5. integrator 方針(モード共通性)
+
+- **direct shading は全モード共通**(basic raytracing / AO / cache / pt1 / pt2 — 唯一の
+  local-shading 入口 shadeLocal の分岐)
+- **diffuse 間接も共通**: kd の seam(giReflectance / pt1 gather / OIDN guide / cache
+  oneBounceRadiance)が model 対応
+- **specular 間接だけ段階劣化**: pt2 = traced mirror/glossy(E_spec、Fresnel per-sample)。
+  それ以外 = フェイク環境項 `schlickF(F0, N·V) × background`(POV の reflection×bg と
+  同型・同ゲート。f0max == 0 で完全 skip)。pt2 では traced が所有するピクセルで skip
+  され二重計上しない
+- POV↔principled の混在シーンは材ごとに正しく共存する(reflF0 の中立既定 (1,1,1) で
+  POV ピクセルの合成は bit 不変)
+
+## 6. POV → principled 変換(bench、S4)
+
+`--material <pov|principled>`(既定 pov)。scene_setup の post-parse 一括変換
+(fromEdgeMacro 装飾は POV のまま)。写像は「同等の見た目クラス」への lossy 写像:
+**bitwise 一致が保証されるのは diffuse-only 材(specular=0, phong=0, reflection=0,
+brilliance=1)のみ**。POV↔principled は数学的に別ローブ(非正規化 Blinn + 2 ローブ加算
++ Fresnel なし ↔ 正規化 GGX 単ローブ + Schlick)なので、ハイライト・反射材の完全一致は
+原理的に不可能(見た目が変わることが導入目的)。既定の principled 反転(S4b)は
+目視承認後の専用コミットで行い、refactor_check baseline を意図的に再生成する。
+
+(写像表・実測値は実装ステージで追記)

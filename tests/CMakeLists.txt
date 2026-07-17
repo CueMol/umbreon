@@ -48,6 +48,12 @@ if(TARGET umbreon)
   target_link_libraries(test_pt2_render PRIVATE umbreon)
   add_test(NAME pt2_render COMMAND test_pt2_render)
 
+  # Principled BSDF subset: bitwise diffuse parity with the POV model,
+  # determinism of the GGX direct paths, fill-light / mode-commonality rules.
+  add_executable(test_principled test_principled.cpp)
+  target_link_libraries(test_principled PRIVATE umbreon)
+  add_test(NAME principled COMMAND test_principled)
+
   # pt1 numeric gather tests: estimator vs analytic irradiance values.
   add_executable(test_pt1_gather test_pt1_gather.cpp)
   target_link_libraries(test_pt1_gather PRIVATE umbreon)
