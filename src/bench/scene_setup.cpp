@@ -101,22 +101,24 @@ bool buildSceneFromPov(Options& opt, Scene& scene, RenderOptions& ropt,
   // object-space edge cylinders are generated later with flatOutline and
   // are equally untouched.
   if (opt.materialModel == 1) {
-    scene.mesh.material = umbreon::toPrincipledMaterial(scene.mesh.material);
-    for (umbreon::Material& mm : scene.mesh.materials)
+    std::size_t converted = 0, keptToon = 0;
+    auto convert = [&](umbreon::Material& mm) {
       mm = umbreon::toPrincipledMaterial(mm);
-    std::size_t converted = 1 + scene.mesh.materials.size();
+      if (mm.model == umbreon::ShadingModel::Principled)
+        ++converted;
+      else
+        ++keptToon;  // non-physical (toon) finish: stays POV by design
+    };
+    convert(scene.mesh.material);
+    for (umbreon::Material& mm : scene.mesh.materials) convert(mm);
     for (umbreon::Sphere& sp : scene.spheres)
-      if (!sp.fromEdgeMacro) {
-        sp.material = umbreon::toPrincipledMaterial(sp.material);
-        ++converted;
-      }
+      if (!sp.fromEdgeMacro) convert(sp.material);
     for (umbreon::Cylinder& cy : scene.cylinders)
-      if (!cy.fromEdgeMacro) {
-        cy.material = umbreon::toPrincipledMaterial(cy.material);
-        ++converted;
-      }
-    std::printf("  material model: principled (%zu finish(es) converted)\n",
-                converted);
+      if (!cy.fromEdgeMacro) convert(cy.material);
+    std::printf(
+        "  material model: principled (%zu finish(es) converted, %zu kept "
+        "pov: toon/non-physical)\n",
+        converted, keptToon);
   }
   if (opt.outlineScale != 1.0f) {
     for (umbreon::Sphere& s : scene.spheres) s.radius *= opt.outlineScale;

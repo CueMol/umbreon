@@ -54,16 +54,51 @@ int main() {
     s.check("blinn: stays dielectric", near(out.pbr.metallic, 0.0f));
   }
 
-  // Phong highlight (no Blinn): phong_size is the exponent directly;
-  // amounts > 1 clamp.
+  // Phong highlight (no Blinn): phong_size is the exponent directly.
   {
     Material in;
-    in.phong = 10000.0f;
+    in.phong = 0.8f;
     in.phongSize = 50.0f;
     const Material out = toPrincipledMaterial(in);
-    s.check("phong: amount clamps to 1", near(out.pbr.specular, 1.0f));
+    s.check("phong: amount carried", near(out.pbr.specular, 0.8f));
     s.check("phong: phongSize is the exponent",
             near(out.pbr.roughness, expToRough(50.0f), 1e-4f));
+  }
+
+  // Toon/NPR finishes are NON-PHYSICAL and stay POV: an overdriven
+  // highlight amount (saturating hard pip) or brilliance 0 (flat diffuse)
+  // cannot be represented by an energy-conserving BSDF.
+  {
+    Material toon;  // scene4's 3-tone finish
+    toon.ambient = 0.3f;
+    toon.diffuse = 0.5f;
+    toon.brilliance = 0.0f;
+    toon.phong = 10000.0f;
+    toon.phongSize = 50.0f;
+    s.check("toon finish detected as non-physical",
+            umbreon::isNonPhysicalFinish(toon));
+    const Material out = toPrincipledMaterial(toon);
+    s.check("toon finish stays POV (model unchanged)",
+            out.model == ShadingModel::Pov && near(out.phong, 10000.0f) &&
+                near(out.brilliance, 0.0f));
+
+    Material flat;  // 1-tone flat diffuse
+    flat.brilliance = 0.0f;
+    s.check("brilliance 0 alone stays POV",
+            toPrincipledMaterial(flat).model == ShadingModel::Pov);
+
+    Material overdriven;
+    overdriven.specular = 4.0f;
+    s.check("specular > 1 stays POV",
+            toPrincipledMaterial(overdriven).model == ShadingModel::Pov);
+
+    Material metal;  // F_MetalA-shaped: brilliance 2 is fine to convert
+    metal.metallic = true;
+    metal.brilliance = 2.0f;
+    metal.specular = 0.8f;
+    metal.roughness = 0.05f;
+    s.check("F_Metal-style brilliance 2 still converts",
+            toPrincipledMaterial(metal).model == ShadingModel::Principled);
   }
 
   // POV metallic bool (F_Metal presets set it): promoted to metallic 1.

@@ -32,8 +32,15 @@ float clamp01(float x) { return std::min(1.0f, std::max(0.0f, x)); }
 
 }  // namespace
 
+bool isNonPhysicalFinish(const Material& in) {
+  return in.specular > 1.0f || in.phong > 1.0f || in.brilliance == 0.0f;
+}
+
 Material toPrincipledMaterial(const Material& in) {
   if (in.model == ShadingModel::Principled) return in;
+  // Toon/NPR finishes stay POV: their look is BUILT on the non-physical
+  // terms (saturating highlight, flat diffuse) -- see isNonPhysicalFinish.
+  if (isNonPhysicalFinish(in)) return in;
   Material out = in;
   out.model = ShadingModel::Principled;
   // ambient / diffuse / emission carry over unchanged (shared semantics;
