@@ -168,7 +168,8 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
                           std::vector<float>& giRefl,
                           std::vector<uint8_t>& giElig,
                           std::vector<float>& reflAmt,
-                          std::vector<float>& reflAlpha, std::size_t pix,
+                          std::vector<float>& reflAlpha,
+                          std::vector<float>& reflF0, std::size_t pix,
                           const PixelResult& pr) {
   res.color[pix * 4 + 0] = pr.r;
   res.color[pix * 4 + 1] = pr.g;
@@ -193,6 +194,14 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
     // GGX lobe alpha of the traced reflection (glossy pass pixel ownership;
     // 0 = mirror). Allocated only under pt2Glossy.
     if (!reflAlpha.empty()) reflAlpha[pix] = pr.reflAlpha;
+    // Fresnel F0 of the traced reflection (principled; (1,1,1) = the
+    // bitwise-neutral POV value). Allocated only when the scene carries a
+    // principled material.
+    if (!reflF0.empty()) {
+      reflF0[pix * 3 + 0] = pr.reflF0.x;
+      reflF0[pix * 3 + 1] = pr.reflF0.y;
+      reflF0[pix * 3 + 2] = pr.reflF0.z;
+    }
   }
   // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
   // buffer was allocated above (wantAlbedoGuide).
@@ -238,10 +247,11 @@ void storePixelResult(FrameResult& res, const RenderOptions& opt,
                       std::vector<int>& giGroup, std::vector<uint32_t>& giGeom,
                       std::vector<float>& giRefl, std::vector<uint8_t>& giElig,
                       std::vector<float>& reflAmt,
-                      std::vector<float>& reflAlpha, std::size_t pix,
+                      std::vector<float>& reflAlpha,
+                      std::vector<float>& reflF0, std::size_t pix,
                       const PixelResult& pr) {
   storeShadingChannels(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt,
-                       reflAlpha, pix, pr);
+                       reflAlpha, reflF0, pix, pr);
   storeGBufChannels(res, opt, pix, pr);
 }
 
@@ -513,7 +523,8 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                   const std::vector<float>& giRefl,
                   const std::vector<uint8_t>& giElig,
                   const std::vector<float>& reflAmt,
-                  const std::vector<float>& reflAlpha, FrameResult& res,
+                  const std::vector<float>& reflAlpha,
+                  const std::vector<float>& reflF0, FrameResult& res,
                   const detail::GiProgressBudget& budget) {
     // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
     // the sky through its miss term, so the combination counts the sky twice.
@@ -886,10 +897,11 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     // for exactly these pixels (HitShade::reflectivity gate). Pixels whose
     // lobe is glossy (reflAlpha > 0) are excluded here and handled below.
     if (!reflAmt.empty()) {
-      detail::pt2ReflectPass(gp, W, H, reflAmt, reflAlpha, res.position.data(),
-                             res.normal.data(), res.depth.data(),
-                             scene.camera.orthographic, scene.camera.position,
-                             cb.dir, opt.pt2Emissive, res, &budget.reflect);
+      detail::pt2ReflectPass(gp, W, H, reflAmt, reflAlpha, reflF0,
+                             res.position.data(), res.normal.data(),
+                             res.depth.data(), scene.camera.orthographic,
+                             scene.camera.position, cb.dir, opt.pt2Emissive,
+                             res, &budget.reflect);
     }
     budget.reflect.finish();
 
@@ -908,7 +920,7 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
         std::fprintf(stderr, "pt2: glossy reflection over %zu px (spp=%d)\n",
                      nGlossy, std::max(1, opt.pt2GlossySpp));
         std::vector<float> Espec;
-        detail::pt2GlossyPass(gp, W, H, reflAmt, reflAlpha,
+        detail::pt2GlossyPass(gp, W, H, reflAmt, reflAlpha, reflF0,
                               res.position.data(), res.normal.data(),
                               res.depth.data(), scene.camera.orthographic,
                               scene.camera.position, cb.dir, opt.pt2Emissive,
@@ -1194,8 +1206,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   // (empty = the pass is off, and storeShadingChannels skips the write).
   // reflAlpha is the GGX lobe width of the same hit (glossy pass ownership;
   // 0 = the single-ray mirror pass), allocated only under pt2Glossy.
+  // reflF0 is the per-pixel Fresnel F0 (principled), allocated only when a
+  // principled material exists -- empty keeps the passes on the verbatim
+  // scalar k*L path (byte-identity for POV scenes).
   std::vector<float> reflAmt;
   std::vector<float> reflAlpha;
+  std::vector<float> reflF0;
   if (opt.gi) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     giGroup.assign(npix, -1);
@@ -1205,6 +1221,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
     if (opt.giIntegrator == 2 && opt.pt2Reflect) {
       reflAmt.assign(npix, 0.0f);
       if (opt.pt2Glossy) reflAlpha.assign(npix, 0.0f);
+      if (hasPrincipled) reflF0.assign(npix * 3, 1.0f);
     }
   }
 
@@ -1257,7 +1274,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
       storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt,
-                       reflAlpha, pix, pr);
+                       reflAlpha, reflF0, pix, pr);
     }
   }
   if (progress) progress->advance(
@@ -1466,7 +1483,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                 const std::size_t pix = static_cast<std::size_t>(py) * W + px;
                 if (edgesGbuf) {
                   storeShadingChannels(res, opt, giGroup, giGeom, giRefl,
-                                       giElig, reflAmt, reflAlpha, pix, rep);
+                                       giElig, reflAmt, reflAlpha, reflF0,
+                                       pix, rep);
                   // Center subpixel: exact G-buffer from its own first hit
                   // (centers[XY] traced this subpixel). Others: probe.
                   if (i == cSub && j == cSub)
@@ -1475,7 +1493,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                     storeProbeGBuf(px, py, pix);
                 } else {
                   storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
-                                   reflAmt, reflAlpha,
+                                   reflAmt, reflAlpha, reflF0,
                                    pix, rep);
                 }
               }
@@ -1494,7 +1512,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
               // either way pr carries the first-hit G-buffer, so a full store
               // reproduces the grid render's G-buffer bitwise.
               storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
-                               reflAmt, reflAlpha, pix,
+                               reflAmt, reflAlpha, reflF0, pix,
                                pr);
             }
           }
@@ -1540,7 +1558,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   if (!giCancelled && opt.gi &&
       (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator >= 1) {
     runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
-                 giRefl, giElig, reflAmt, reflAlpha, res, giBudget);
+                 giRefl, giElig, reflAmt, reflAlpha, reflF0, res, giBudget);
   } else if (!giCancelled && opt.gi && meshPresent(built)) {
     runIrradianceCacheGiPass(scene, opt, built, m, lights, ambLight, aoUpAxis,
                              W, H, giGroup, giGeom, giRefl, res);

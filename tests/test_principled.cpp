@@ -116,6 +116,25 @@ float meanLum(const umbreon::FrameResult& f) {
   return static_cast<float>(s / static_cast<double>(n));
 }
 
+// Two-material variant: floor and sphere carry different materials.
+umbreon::Scene makeScene2(const umbreon::Material& floorMat,
+                          const umbreon::Material& sphereMat) {
+  umbreon::Scene sc = makeScene(floorMat);
+  sc.spheres[0].material = sphereMat;
+  return sc;
+}
+
+umbreon::RenderOptions makePt2Opts() {
+  umbreon::RenderOptions o = makeOpts();
+  o.gi = true;
+  o.giIntegrator = 2;
+  o.pt1Spp = 4;
+  o.pt1GatherDiv = 1;
+  o.pt1Denoise = false;
+  o.pt1EdgePatch = false;
+  return o;
+}
+
 }  // namespace
 
 int main() {
@@ -270,9 +289,12 @@ int main() {
     s.check("metal visible in pt1 mode", meanLum(umbreon::render(sc, p1)) > 0.05f);
   }
 
-  // 6) giIntensity = 0: pt1 and pt2 direct passes agree bitwise for a
-  //    principled scene too (they share the pixel loop; the S1 fake env
-  //    term is integrator-independent).
+  // 6) giIntensity = 0 with the traced passes disabled: pt1 and pt2 share
+  //    the pixel loop, so the principled direct render (incl. the fake env
+  //    term) must agree bitwise across integrators. (With pt2Reflect ON the
+  //    two legitimately differ: pt2 replaces the fake env with traced
+  //    reflections regardless of giIntensity -- that swap is test 11's
+  //    subject.)
   {
     const umbreon::Scene sc = makeScene(principled(0.5f, 0.3f, 0.5f));
     umbreon::RenderOptions o1 = makeOpts();
@@ -281,6 +303,7 @@ int main() {
     o1.giIntegrator = 1;
     o2.gi = true;
     o2.giIntegrator = 2;
+    o2.pt2Reflect = false;  // keep the fake env term on both sides
     o1.giIntensity = 0.0f;
     o2.giIntensity = 0.0f;
     for (umbreon::RenderOptions* o : {&o1, &o2}) {
@@ -289,9 +312,138 @@ int main() {
       o->pt1Denoise = false;
       o->pt1EdgePatch = false;
     }
-    s.check("giIntensity=0: pt1 and pt2 principled direct bitwise equal",
+    s.check("giIntensity=0, pt2Reflect off: pt1 == pt2 direct (bitwise)",
             bitEqual(umbreon::render(sc, o1).color,
                      umbreon::render(sc, o2).color));
+  }
+
+  // ---- S2: traced specular (pt2 mirror + glossy with per-pixel F0) ----
+
+  // 7) Mirror degeneracy: roughness 0.03 (alpha 9e-4) and roughness 0 both
+  //    snap to the mirror pass (alpha < kPt2GlossyAlphaMin) AND clamp to the
+  //    same direct-lobe alpha (kGgxDirectAlphaMin = 1e-3), so the renders
+  //    must be bitwise equal end to end (same F0, both pixels mirror-owned,
+  //    same direct highlight).
+  {
+    const umbreon::Scene a = makeScene(principled(1.0f, 0.03f, 0.5f));
+    const umbreon::Scene b = makeScene(principled(1.0f, 0.0f, 0.5f));
+    umbreon::RenderOptions o = makePt2Opts();
+    s.check("alpha below the mirror cut == roughness 0 (bitwise)",
+            bitEqual(umbreon::render(a, o).color,
+                     umbreon::render(b, o).color));
+  }
+
+  // 8) Metallic color fidelity (furnace-ish): a lightless metal sphere
+  //    under a uniform white sky reflects ~F0 at normal incidence -- the
+  //    center pixel's channel ratios must match F0 = baseColor within 20%
+  //    (colored metal reflection, the point of the metallic axis).
+  {
+    umbreon::Scene sc;
+    sc.camera.position = {0, 0, 8};
+    sc.camera.direction = {0, 0, -1};
+    sc.camera.up = {0, 1, 0};
+    sc.camera.orthographic = false;
+    sc.camera.fovy = 30.0f;
+    umbreon::Sphere sp;
+    sp.center = {0, 0, 0};
+    sp.radius = 1.5f;
+    sp.color = {0.9f, 0.5f, 0.2f, 1.0f};
+    sp.material = principled(1.0f, 0.4f, 0.5f);
+    sc.spheres.push_back(sp);
+    sc.background = {1, 1, 1};
+    sc.ambientColor = {1, 1, 1};
+    umbreon::RenderOptions o = makePt2Opts();
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    const std::size_t cx = o.width / 2, cy = o.height / 2;
+    const std::size_t pix = cy * o.width + cx;
+    const float r = f.color[pix * 4 + 0], g = f.color[pix * 4 + 1],
+                b = f.color[pix * 4 + 2];
+    const bool ratios =
+        std::fabs(r / g - 0.9f / 0.5f) <= 0.2f * (0.9f / 0.5f) &&
+        std::fabs(g / b - 0.5f / 0.2f) <= 0.2f * (0.5f / 0.2f);
+    // Magnitude: near-normal incidence reflects ~F0 (single-scatter loss
+    // and the slight Fresnel rise keep it within a broad band).
+    const bool magnitude = r > 0.5f * 0.9f && r < 1.2f * 0.9f;
+    s.check("metal center pixel ~ F0 = baseColor (ratios within 20%)",
+            ratios && magnitude);
+  }
+
+  // 9) Gates: a matte principled material (no specular lobe) never enters
+  //    the traced passes -- toggling them is a bit-exact no-op.
+  {
+    const umbreon::Scene sc = makeScene(principled(0.0f, 0.5f, 0.0f));
+    umbreon::RenderOptions a = makePt2Opts();
+    umbreon::RenderOptions b = makePt2Opts();
+    b.pt2Reflect = false;
+    s.check("matte principled: --pt2-reflect is a bit-exact no-op",
+            bitEqual(umbreon::render(sc, a).color,
+                     umbreon::render(sc, b).color));
+    umbreon::RenderOptions c = makePt2Opts();
+    c.pt2Glossy = false;
+    s.check("matte principled: --pt2-glossy is a bit-exact no-op",
+            bitEqual(umbreon::render(sc, a).color,
+                     umbreon::render(sc, c).color));
+  }
+
+  // 10) reflF0 neutrality end-to-end: swapping a matte POV sphere for the
+  //     bitwise-equivalent matte principled sphere must leave a scene with
+  //     POV reflective/glossy pixels byte-identical -- the neutral (1,1,1)
+  //     F0 reproduces every k*L composite exactly even though the buffer
+  //     switches the passes onto their Fresnel code path.
+  {
+    umbreon::Material povFloor = povDiffuseOnly();
+    povFloor.reflection = 0.3f;
+    povFloor.specular = 0.4f;
+    povFloor.roughness = 0.05f;
+    const umbreon::Scene a = makeScene2(povFloor, povDiffuseOnly());
+    const umbreon::Scene b = makeScene2(povFloor, principled(0.0f, 0.5f, 0.0f));
+    umbreon::RenderOptions o = makePt2Opts();
+    s.check("neutral F0: POV reflective pixels bitwise with principled nearby",
+            bitEqual(umbreon::render(a, o).color,
+                     umbreon::render(b, o).color));
+  }
+
+  // 11) gi off: the traced passes never run, so the integrator id cannot
+  //     matter for a principled metal (fake env term is shared). Under pt2
+  //     GI, toggling pt2Reflect swaps fake env <-> traced reflection and
+  //     the images must actually differ (the swap happens).
+  {
+    const umbreon::Scene sc = makeScene(principled(1.0f, 0.3f, 0.5f));
+    umbreon::RenderOptions o1 = makeOpts();
+    umbreon::RenderOptions o2 = makeOpts();
+    o1.gi = false;
+    o2.gi = false;
+    o1.giIntegrator = 1;
+    o2.giIntegrator = 2;
+    s.check("gi off: principled metal identical across integrators",
+            bitEqual(umbreon::render(sc, o1).color,
+                     umbreon::render(sc, o2).color));
+
+    umbreon::RenderOptions p2on = makePt2Opts();
+    umbreon::RenderOptions p2off = makePt2Opts();
+    p2off.pt2Reflect = false;
+    s.check("pt2Reflect swaps fake env for traced reflection (differs)",
+            !bitEqual(umbreon::render(sc, p2on).color,
+                      umbreon::render(sc, p2off).color));
+  }
+
+  // 12) Determinism of the traced principled paths (glossy metal floor +
+  //     dielectric sphere exercises mirror-free glossy pixels + F0 fold).
+  {
+    const umbreon::Scene sc = makeScene2(principled(1.0f, 0.35f, 0.5f),
+                                         principled(0.0f, 0.2f, 0.8f));
+    umbreon::RenderOptions o = makePt2Opts();
+    const umbreon::FrameResult f1 = umbreon::render(sc, o);
+    const umbreon::FrameResult f2 = umbreon::render(sc, o);
+    s.check("traced principled specular is run-to-run bit-exact",
+            bitEqual(f1.color, f2.color));
+    umbreon::FrameResult t1;
+    {
+      tbb::global_control one(tbb::global_control::max_allowed_parallelism, 1);
+      t1 = umbreon::render(sc, o);
+    }
+    s.check("traced principled specular: 1 thread == N threads (bitwise)",
+            bitEqual(t1.color, f1.color));
   }
 
   return s.report();

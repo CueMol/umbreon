@@ -40,6 +40,7 @@
 
 #include "experimental/pt1/pt1_gather.hpp"
 #include "render/progress_slice.hpp"
+#include "shading/principled.hpp"
 #include "shading/secondary_rays.hpp"
 #include "scene.hpp"
 
@@ -93,6 +94,7 @@ inline Vec3 pt2SampleGgxVndf(const Vec3& wo, float alpha, float u1, float u2) {
 inline void pt2GlossyPass(const IrradianceCacheParams& p, int W, int H,
                           const std::vector<float>& reflAmt,
                           const std::vector<float>& reflAlpha,
+                          const std::vector<float>& reflF0,
                           const float* position, const float* normal,
                           const float* depth, bool orthographic,
                           const Vec3& camPos, const Vec3& camDir, bool emissive,
@@ -140,6 +142,13 @@ inline void pt2GlossyPass(const IrradianceCacheParams& p, int W, int H,
             const float t0 = (depth && depth[pix] > 0.0f) ? depth[pix] : 1.0f;
             const uint32_t seedPix =
                 hashU32(static_cast<uint32_t>(pix)) ^ seedMix;
+            // Per-pixel Fresnel F0 (principled). POV pixels in a mixed scene
+            // carry the neutral (1,1,1), for which Schlick is exactly 1.
+            const bool haveF0 = !reflF0.empty();
+            const Vec3 F0pix =
+                haveF0 ? Vec3{reflF0[pix * 3 + 0], reflF0[pix * 3 + 1],
+                              reflF0[pix * 3 + 2]}
+                       : Vec3{1.0f, 1.0f, 1.0f};
 
             Vec3 sum{0.0f, 0.0f, 0.0f};
             for (int s = 0; s < spp; ++s) {
@@ -189,9 +198,18 @@ inline void pt2GlossyPass(const IrradianceCacheParams& p, int W, int H,
                            v.radiance.z + v.albedo.z * sky.z};
                 }
               }
-              sum.x += weight * L.x;
-              sum.y += weight * L.y;
-              sum.z += weight * L.z;
+              if (haveF0) {
+                // Fold the per-sample Fresnel into the VNDF weight (the
+                // half-vector cosine is dot(wo, wm)).
+                const Vec3 F = schlickF(F0pix, owm);
+                sum.x += weight * F.x * L.x;
+                sum.y += weight * F.y * L.y;
+                sum.z += weight * F.z * L.z;
+              } else {
+                sum.x += weight * L.x;
+                sum.y += weight * L.y;
+                sum.z += weight * L.z;
+              }
             }
             Espec[pix * 3 + 0] = sum.x * invSpp;
             Espec[pix * 3 + 1] = sum.y * invSpp;
