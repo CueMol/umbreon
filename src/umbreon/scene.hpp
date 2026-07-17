@@ -137,8 +137,11 @@ struct Material {
     float specular = 0.5f;   // dielectric F0 scale: F0 = 0.08 * specular
     // Anisotropic highlight/reflection stretch (Disney aspect mapping).
     // Effective on sphere/cylinder primitives only (v1): spheres use a
-    // world-z pole frame, cylinders their axis; mesh surfaces shade
-    // isotropically until a per-vertex tangent attribute exists.
+    // world +Y (vertical) pole frame -- CueMol scenes are in camera
+    // coordinates, so the up axis keeps the pole singularities at the
+    // sphere's top/bottom rim instead of facing the camera -- cylinders
+    // their axis; mesh surfaces shade isotropically until a per-vertex
+    // tangent attribute exists.
     float anisotropy = 0.0f;
     float anisotropyRotation = 0.0f;  // in turns: 0.25 = 90 degrees
   } pbr;

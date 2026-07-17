@@ -376,9 +376,14 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
         !fromEdge) {
       Vec3 t1{0.0f, 0.0f, 0.0f};
       if (isSphere) {
-        if (std::fabs(N.z) < 0.999f) {
+        // Pole = world +Y (the vertical/up axis). CueMol exports scenes in
+        // CAMERA coordinates (view axis = z), so a z pole would face the
+        // camera on every sphere -- putting the tangent-field singularity
+        // and its isotropic fallback disk dead center in the highlight. The
+        // up axis keeps the poles at the top/bottom rim, seen at grazing.
+        if (std::fabs(N.y) < 0.999f) {
           const Vec3 tPhi =
-              safeNormalize(cross(Vec3{0.0f, 0.0f, 1.0f}, N));
+              safeNormalize(cross(Vec3{0.0f, 1.0f, 0.0f}, N));
           t1 = cross(N, tPhi);  // meridian (theta) direction
           tanValid = true;
         }
