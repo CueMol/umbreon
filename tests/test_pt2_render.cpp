@@ -25,7 +25,7 @@
 //
 // Deliberately NOT tested: ReSTIR spatial resampling (--pt2-rounds). It is
 // measured-dead for stills and kept only as a video/pt3 substrate; see the
-// carry-over note in experimental/pt2/pt2_spatial.hpp.
+// carry-over note in integrator/pt2/pt2_spatial.hpp.
 #include <cmath>
 #include <cstddef>
 #include <cstdint>

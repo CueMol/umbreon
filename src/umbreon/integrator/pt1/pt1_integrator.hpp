@@ -1,13 +1,20 @@
 // libumbreon INTERNAL header -- not installed, not part of the public API.
 // Implementation detail; may change without notice. Do not include downstream.
 //
-// pt1: experimental path-traced indirect diffuse integrator (one bounce,
-// per-pixel brute-force cosine-hemisphere gather). An ALTERNATIVE to the
-// irradiance cache post-pass: the main render loop keeps computing direct
-// lighting unchanged, and pt1 replaces only the cache's placement/fill/
-// interpolation stages with a per-pixel gather using the SAME radiance
-// evaluators (oneBounceRadiance / environmentRadiance), so the two integrators
-// are unit-compatible for A/B comparison by construction.
+// pt1: path-traced indirect diffuse integrator (one bounce, per-pixel
+// brute-force cosine-hemisphere gather). FROZEN as the regression anchor:
+// pt1's own behavior is bit-identical to its 2026-07 form forever, while pt2
+// (integrator/pt2/, the DEFAULT since 2026-07) layers its extensions onto the
+// same gather core through the Pt1GatherExt seam below. Historically an
+// ALTERNATIVE to the irradiance cache post-pass: the main render loop keeps
+// computing direct lighting unchanged, and pt1 replaces only the cache's
+// placement/fill/interpolation stages with a per-pixel gather using the SAME
+// radiance evaluators (oneBounceRadiance / environmentRadiance), so the
+// integrators are unit-compatible for A/B comparison by construction. That
+// shared core is why this header still includes
+// experimental/irradiance_cache/ (IrradianceCacheParams, environmentRadiance
+// and the ray helpers live there); extracting the shared types into a neutral
+// header is a follow-up, not part of the directory move.
 //
 // Energy convention (matches the cache, see irradiance_cache.hpp): the E
 // buffer stores E_stored = mean(L_i) over cosine-weighted samples = E_true/pi,
@@ -47,8 +54,8 @@
 // tracePt1GBuffer) and the gather half (pt1EvalVertex / pt1GatherPoint /
 // gatherPt1Grid); both stay header-inline. This header keeps providing the
 // full historical surface plus the sole out-of-line function below.
-#include "experimental/pt1/pt1_gather.hpp"
-#include "experimental/pt1/pt1_gbuffer.hpp"
+#include "integrator/pt1/pt1_gather.hpp"
+#include "integrator/pt1/pt1_gbuffer.hpp"
 
 namespace umbreon {
 namespace detail {

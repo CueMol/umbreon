@@ -18,7 +18,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
-#include "experimental/pt1/pt1_integrator.hpp"
+#include "integrator/pt1/pt1_integrator.hpp"
 #include "render/progress_slice.hpp"
 
 namespace umbreon {
