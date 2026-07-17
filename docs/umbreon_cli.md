@@ -218,7 +218,9 @@ stratified サンプリング on / 1 バウンス）。irradiance cache は expe
 | フラグ | 既定 | 効果 / 注意 |
 |---|---|---|
 | `--integrator <cache\|pt1\|pt2>` | pt1 | 間接光インテグレータの選択。`pt1`/`pt2` の明示指定は `--gi on` を含意。pt2 = pt1 の gather コア + 下記拡張(Sobol/blue-noise サンプラー、emissive GI、area light、traced reflection、適応 spp) |
-| `--material <pov\|principled>` | pov | POV finish を principled GGX subset へ post-parse 変換(fromEdge 装飾は除外)。**ハイブリッド**: トゥーン/非物理 finish(specular>1 ‖ phong>1 ‖ brilliance==0)は POV のまま残す(飽和ハイライト・平坦 diffuse はエネルギー保存 BSDF で表現不能)。物理系は lossy 変換: diffuse-only finish のみ bitwise 不変。写像表は [principled_design.md](principled_design.md) §6 |
+| `--material <pov\|principled>` | pov | POV finish を principled GGX subset へ post-parse 変換(fromEdge 装飾は除外)。**ハイブリッド**: トゥーン/非物理 finish(specular>1 ‖ phong>1 ‖ brilliance==0 ‖ unlit)は POV のまま残す(飽和ハイライト・平坦 diffuse はエネルギー保存 BSDF で表現不能)。物理系は lossy 変換: diffuse-only finish のみ bitwise 不変。写像表は [principled_design.md](principled_design.md) §6 |
+| `--pbr-aniso <0..1>` | off | **検証用**(POV に anisotropy の綴りがないため): 実 CSG 球/円柱の材を anisotropic brushed metal(principled metallic 1, roughness 0.35, F0=pigment)に強制。0 指定 = 等方対照。fromEdge 装飾は不変 |
+| `--pbr-aniso-rot <turns>` | 0 | `--pbr-aniso` の接線フレーム回転(0.25 = 90° = 周方向ブラシ) |
 | `--spp <int>` | 8 | pt1: ピクセルあたりの gather レイ数 |
 | `--indirect-res <full\|half\|quarter\|out>` | out | pt1: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
 | `--pt1-edge-patch <on\|off>` | on | 縮小 gather グリッドが解決できないシルエット縁ピクセルを full-res で再 gather |

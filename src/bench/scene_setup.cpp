@@ -120,6 +120,39 @@ bool buildSceneFromPov(Options& opt, Scene& scene, RenderOptions& ropt,
         "pov: toon/non-physical)\n",
         converted, keptToon);
   }
+
+  // --pbr-aniso: validation override (POV has no spelling for anisotropy).
+  // Every REAL sphere/cylinder primitive becomes an anisotropic brushed
+  // metal (principled metallic 1, roughness 0.35, F0 = pigment) with the
+  // given anisotropy/rotation; fromEdge outline decoration stays untouched.
+  // aniso 0 (flag still set) gives the isotropic control for A/B renders.
+  if (opt.pbrAnisoSet) {
+    auto brushed = [&](umbreon::Material& mm) {
+      mm.model = umbreon::ShadingModel::Principled;
+      mm.pbr.metallic = 1.0f;
+      mm.pbr.roughness = 0.35f;
+      mm.pbr.specular = 0.5f;
+      mm.pbr.anisotropy = opt.pbrAniso;
+      mm.pbr.anisotropyRotation = opt.pbrAnisoRot;
+      mm.reflection = 0.0f;  // fake env from F0 (colored), not a POV scalar
+    };
+    std::size_t n = 0;
+    for (umbreon::Sphere& sp : scene.spheres)
+      if (!sp.fromEdgeMacro) {
+        brushed(sp.material);
+        ++n;
+      }
+    for (umbreon::Cylinder& cy : scene.cylinders)
+      if (!cy.fromEdgeMacro) {
+        brushed(cy.material);
+        ++n;
+      }
+    std::printf(
+        "  --pbr-aniso %.2f (rot %.2f): %zu primitive material(s) -> "
+        "anisotropic brushed metal\n",
+        static_cast<double>(opt.pbrAniso),
+        static_cast<double>(opt.pbrAnisoRot), n);
+  }
   if (opt.outlineScale != 1.0f) {
     for (umbreon::Sphere& s : scene.spheres) s.radius *= opt.outlineScale;
     for (umbreon::Cylinder& c : scene.cylinders) c.radius *= opt.outlineScale;

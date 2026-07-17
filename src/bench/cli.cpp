@@ -370,6 +370,18 @@ Options parseCli(int argc, char** argv) {
         fail("--material expects pov/principled");
       continue;
     }
+    if (a == "--pbr-aniso") {
+      o.pbrAniso = static_cast<float>(std::atof(value("--pbr-aniso").c_str()));
+      o.pbrAnisoSet = true;
+      if (o.ok && (o.pbrAniso < 0.0f || o.pbrAniso > 1.0f))
+        fail("--pbr-aniso expects 0..1");
+      continue;
+    }
+    if (a == "--pbr-aniso-rot") {
+      o.pbrAnisoRot =
+          static_cast<float>(std::atof(value("--pbr-aniso-rot").c_str()));
+      continue;
+    }
     if (a == "--pt2-pattern") {
       std::string v = value("--pt2-pattern");
       if (v == "sobol")
@@ -1159,6 +1171,11 @@ void printUsage(const char* prog) {
       "  --material <pov|principled> convert every POV finish to the\n"
       "                           principled GGX subset (lossy: only\n"
       "                           diffuse-only finishes stay bitwise)   [pov]\n"
+      "  --pbr-aniso <0..1>       VALIDATION: real sphere/cylinder\n"
+      "                           primitives -> anisotropic brushed metal\n"
+      "                           (POV cannot spell anisotropy)        [off]\n"
+      "  --pbr-aniso-rot <turns>  tangent-frame rotation for --pbr-aniso\n"
+      "                           (0.25 = 90 deg)                        [0]\n"
       "  --pt2-pattern <sobol|bluenoise> pt2 first-bounce sample\n"
       "                           arrangement                     [bluenoise]\n"
       "  --pt2-emissive <on|off>  pt2: emissive geometry lights its\n"
