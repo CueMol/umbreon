@@ -265,7 +265,7 @@ inline Vec3 oneBounceRadiance(const IrradianceCacheParams& p, const RTCRayHit& r
                               nullptr))
       E = E + Eind;
   }
-  const float kd = mat.diffuse;
+  const float kd = mat.diffuseWeight();
   return Vec3{kd * Cy.x * E.x, kd * Cy.y * E.y, kd * Cy.z * E.z};
 }
 

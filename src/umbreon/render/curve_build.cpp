@@ -43,6 +43,17 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
                            bool buildEdgeTables) {
   if (scene.cylinders.empty()) return;
 
+  // Per-segment axis side tables are only needed when an anisotropic
+  // principled cylinder exists (the principled tangent frame); POV scenes
+  // and isotropic principled scenes allocate nothing.
+  bool buildAxisTables = false;
+  for (const Cylinder& c : scene.cylinders)
+    if (c.material.model == ShadingModel::Principled &&
+        c.material.pbr.anisotropy != 0.0f) {
+      buildAxisTables = true;
+      break;
+    }
+
   // Partition source cylinders by cap semantics BEFORE chaining so the chain
   // builder only ever sees `open` edges (capped bonds must not be chained).
   std::vector<int> openIdx, capIdx;
@@ -149,6 +160,11 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
           out.cylGroup.push_back(c.group);
           out.cylOpacity1.push_back(c.opacity1);
           out.cylFromEdge.push_back(c.fromEdgeMacro ? 1 : 0);
+          if (buildAxisTables)
+            out.cylAxis.push_back(safeNormalize(
+                Vec3{a1[chain[j]].x - a0[chain[j]].x,
+                     a1[chain[j]].y - a0[chain[j]].y,
+                     a1[chain[j]].z - a0[chain[j]].z}));
         }
       };
       // Open chains first (start = no predecessor), then any leftover cycles.
@@ -224,6 +240,9 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
         out.cylCapGroup.push_back(c.group);
         out.cylCapOpacity1.push_back(c.opacity1);
         out.cylCapFromEdge.push_back(c.fromEdgeMacro ? 1 : 0);
+        if (buildAxisTables)
+          out.cylCapAxis.push_back(safeNormalize(
+              Vec3{c.p1.x - c.p0.x, c.p1.y - c.p0.y, c.p1.z - c.p0.z}));
       }
     }
 

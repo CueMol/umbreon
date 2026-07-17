@@ -90,6 +90,14 @@ struct BuiltScene {
   std::vector<uint8_t> cylFromEdge;
   std::vector<uint8_t> cylCapFromEdge;
 
+  // Unit p0->p1 axis per cylinder segment (primID order, same push sites as
+  // the tables above): the anisotropy tangent frame of the principled model.
+  // Built ONLY when an anisotropic principled cylinder exists in the scene
+  // (empty otherwise -- POV scenes allocate nothing). Spheres need no table
+  // (their world-z pole frame derives from the hit normal alone).
+  std::vector<Vec3> cylAxis;
+  std::vector<Vec3> cylCapAxis;
+
   // --- screen-space edges: per-primitive global material index side-tables ---
   // Phase-1 (doc 3.3 option b): a RAW per-primitive index per kind (no Material
   // dedup). The global materialId is offset by the running per-kind count so

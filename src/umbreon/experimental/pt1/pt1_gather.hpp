@@ -134,7 +134,7 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
     Ny = normalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
     Cy = Vec3{cbuf[0], cbuf[1], cbuf[2]};
     const Material& mm = p.mesh->materialForTri(rh.hit.primID);
-    kd = mm.diffuse;
+    kd = mm.diffuseWeight();
     if (addEmission) em = mm.emission;
     NgShadow = Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z};
   } else {
@@ -156,7 +156,7 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
                                     : b.cylMat[rh.hit.primID];
     Ny = safeNormalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z});
     Cy = Vec3{fc.x, fc.y, fc.z};
-    kd = pm.diffuse;
+    kd = pm.diffuseWeight();
     if (addEmission) em = pm.emission;
     NgShadow = Ny;
   }

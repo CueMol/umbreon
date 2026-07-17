@@ -102,6 +102,12 @@ struct Aabb {
 // Geometry / material
 // --------------------------------------------------------------------------
 
+// Shading model selector for a Material: Pov = the POV finish model (the
+// default; bit-exact legacy path), Principled = the GGX principled subset in
+// Material::Pbr. The selector switches which fields the shaders read; the two
+// field sets coexist so a scene can mix models per material.
+enum class ShadingModel : uint8_t { Pov = 0, Principled = 1 };
+
 // Material derived from a POV-Ray "finish" block. A single material per mesh.
 struct Material {
   float ambient = 0.2f;     // POV finish ambient
@@ -114,6 +120,58 @@ struct Material {
   bool metallic = false;    // POV finish metallic (tint highlight by pigment)
   float reflection = 0.0f;  // POV finish reflection amount
   float emission = 0.0f;    // POV finish emission
+                            // (shared by BOTH shading models; the emissive-NEE
+                            // light lists read it regardless of `model`)
+
+  ShadingModel model = ShadingModel::Pov;
+  // Principled subset (read only when model == Principled). baseColor is the
+  // pigment (vertex colors / primitive color); emission is Material::emission
+  // above; `diffuse` doubles as the principled base weight: the diffuse lobe
+  // albedo is diffuse * (1 - metallic) * pigment (keeps the GI composite's
+  // energy continuous with the POV model). The POV highlight fields
+  // (specular/roughness/brilliance/phong/phongSize/metallic/reflection) and
+  // RenderOptions::specularScale are IGNORED under Principled.
+  struct Pbr {
+    float metallic = 0.0f;   // dielectric (0) <-> metal (1); metal F0 = pigment
+    float roughness = 0.5f;  // perceptual; GGX alpha = roughness^2 (Disney/glTF)
+    float specular = 0.5f;   // dielectric F0 scale: F0 = 0.08 * specular
+    // Anisotropic highlight/reflection stretch (Disney aspect mapping).
+    // Effective on sphere/cylinder primitives only (v1): spheres use a
+    // world +Y (vertical) pole frame -- CueMol scenes are in camera
+    // coordinates, so the up axis keeps the pole singularities at the
+    // sphere's top/bottom rim instead of facing the camera -- cylinders
+    // their axis; mesh surfaces shade isotropically until a per-vertex
+    // tangent attribute exists.
+    float anisotropy = 0.0f;
+    float anisotropyRotation = 0.0f;  // in turns: 0.25 = 90 degrees
+  } pbr;
+
+  // Model-aware diffuse-lobe weight: the kd every diffuse consumer reads
+  // (GI composite reflectance, pt1 gather albedo, OIDN reflectance guide,
+  // cache one-bounce). Pov returns `diffuse` unchanged (bitwise-neutral);
+  // Principled folds in the metal cut, diffuse * (1 - pbr.metallic).
+  float diffuseWeight() const {
+    return model == ShadingModel::Principled ? diffuse * (1.0f - pbr.metallic)
+                                             : diffuse;
+  }
+
+  // Toon/NPR finishes: POV-model looks that DEPEND on the model being
+  // non-physical -- an overdriven highlight amount (specular/phong > 1
+  // saturates the channel into a hard-edged flat pip; a physical lobe is
+  // bounded by Fresnel <= 1), a flat N.L-independent diffuse
+  // (brilliance == 0; Lambert cannot be flat), or an unlit ambient-only
+  // flat color (diffuse 0, no highlight, no mirror: the "nolighting"
+  // finish, whose flat pigment IS the intended final color). These are
+  // (a) excluded from the bench POV->principled conversion and (b) exempt
+  // from the GI ambient-replacement (Route A): the look is self-contained,
+  // so the gather neither re-lights it nor replaces its ambient -- a toon
+  // material renders the same under every integrator/mode.
+  bool toonLike() const {
+    if (model != ShadingModel::Pov) return false;
+    if (specular > 1.0f || phong > 1.0f || brilliance == 0.0f) return true;
+    return diffuse <= 0.0f && specular <= 0.0f && phong <= 0.0f &&
+           reflection <= 0.0f;  // unlit flat color (nolighting)
+  }
 
   // FLAT outline preset: ambient 1, diffuse 0, specular 0. With ambientColor
   // (1,1,1) this yields out = pigment color exactly (raw flat color).

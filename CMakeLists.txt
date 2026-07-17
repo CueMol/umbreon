@@ -45,6 +45,7 @@ add_library(bench_core STATIC
   src/bench/geom/mesh2_block_parser.cpp
   src/bench/geom/mesh2_build.cpp
   src/bench/image/image_io.cpp
+  src/bench/material_convert.cpp
   src/bench/cli.cpp
 )
 target_include_directories(bench_core PUBLIC src/bench src/umbreon)

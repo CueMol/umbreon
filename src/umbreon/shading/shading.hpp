@@ -17,6 +17,7 @@
 
 #include <embree4/rtcore.h>
 
+#include "shading/principled.hpp"
 #include "shading/secondary_rays.hpp"
 #include "scene.hpp"
 
@@ -78,7 +79,16 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
                        const Vec3& aoFactor, float diffuseAo, const Vec3& P,
                        const Vec3& Ng, float eps, RTCScene rscene, bool shadowsOn,
                        int shadowSamples, uint32_t px, uint32_t py,
-                       bool traceReflection = false) {
+                       bool traceReflection = false,
+                       const Vec3* tangent = nullptr) {
+  // Principled materials take their own evaluator; the POV body below stays
+  // untouched (structural byte-identity for every existing scene). The
+  // optional tangent (anisotropy frame, sphere/cylinder hits) only ever
+  // reaches the principled path.
+  if (mat.model == ShadingModel::Principled)
+    return shadePrincipled(mat, C, N, V, lights, ambLight, bg, aoFactor,
+                           diffuseAo, P, Ng, eps, rscene, shadowsOn,
+                           shadowSamples, px, py, traceReflection, tangent);
   Vec3 out{mat.emission * C.x + aoFactor.x * mat.ambient * C.x * ambLight.x,
            mat.emission * C.y + aoFactor.y * mat.ambient * C.y * ambLight.y,
            mat.emission * C.z + aoFactor.z * mat.ambient * C.z * ambLight.z};

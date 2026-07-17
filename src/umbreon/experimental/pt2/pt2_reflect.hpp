@@ -29,6 +29,7 @@
 
 #include "experimental/pt1/pt1_gather.hpp"
 #include "render/progress_slice.hpp"
+#include "shading/principled.hpp"
 #include "shading/secondary_rays.hpp"
 #include "scene.hpp"
 
@@ -43,6 +44,7 @@ namespace detail {
 inline void pt2ReflectPass(const IrradianceCacheParams& p, int W, int H,
                            const std::vector<float>& reflAmt,
                            const std::vector<float>& reflAlpha,
+                           const std::vector<float>& reflF0,
                            const float* position, const float* normal,
                            const float* depth, bool orthographic,
                            const Vec3& camPos, const Vec3& camDir,
@@ -104,9 +106,25 @@ inline void pt2ReflectPass(const IrradianceCacheParams& p, int W, int H,
                          v.radiance.z + v.albedo.z * sky.z};
               }
             }
-            res.color[pix * 4 + 0] += k * L.x;
-            res.color[pix * 4 + 1] += k * L.y;
-            res.color[pix * 4 + 2] += k * L.z;
+            if (!reflF0.empty()) {
+              // Principled scenes: weigh the mirror by Schlick at the
+              // incidence angle. POV pixels carry the neutral F0 (1,1,1),
+              // for which Schlick is exactly 1 (bitwise k*L).
+              float cosI = -indot;
+              if (cosI < 0.0f) cosI = 0.0f;
+              if (cosI > 1.0f) cosI = 1.0f;
+              const Vec3 F = schlickF(
+                  Vec3{reflF0[pix * 3 + 0], reflF0[pix * 3 + 1],
+                       reflF0[pix * 3 + 2]},
+                  cosI);
+              res.color[pix * 4 + 0] += k * F.x * L.x;
+              res.color[pix * 4 + 1] += k * F.y * L.y;
+              res.color[pix * 4 + 2] += k * F.z * L.z;
+            } else {
+              res.color[pix * 4 + 0] += k * L.x;
+              res.color[pix * 4 + 1] += k * L.y;
+              res.color[pix * 4 + 2] += k * L.z;
+            }
           }
         }
         if (prog)

@@ -139,7 +139,7 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
                           RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 1, cbuf, 4);
           N = safeNormalize(Vec3{nbuf[0], nbuf[1], nbuf[2]});
           Ng = safeNormalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z});
-          const float kd = p.mesh->materialForTri(rh.hit.primID).diffuse;
+          const float kd = p.mesh->materialForTri(rh.hit.primID).diffuseWeight();
           albedo[0] = kd * cbuf[0];
           albedo[1] = kd * cbuf[1];
           albedo[2] = kd * cbuf[2];
@@ -166,9 +166,9 @@ inline void tracePt1GBuffer(const IrradianceCacheParams& p,
                                           : b.cylMat[rh.hit.primID];
           N = safeNormalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z});
           Ng = N;
-          albedo[0] = pm.diffuse * fc.x;
-          albedo[1] = pm.diffuse * fc.y;
-          albedo[2] = pm.diffuse * fc.z;
+          albedo[0] = pm.diffuseWeight() * fc.x;
+          albedo[1] = pm.diffuseWeight() * fc.y;
+          albedo[2] = pm.diffuseWeight() * fc.z;
         }
         // Face-forward toward the viewer (dot(N, -rd) < 0 => flip).
         if (dot(N, rd) > 0.0f) N = Vec3{-N.x, -N.y, -N.z};

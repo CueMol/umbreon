@@ -168,7 +168,10 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
                           std::vector<float>& giRefl,
                           std::vector<uint8_t>& giElig,
                           std::vector<float>& reflAmt,
-                          std::vector<float>& reflAlpha, std::size_t pix,
+                          std::vector<float>& reflAlpha,
+                          std::vector<float>& reflF0,
+                          std::vector<float>& reflTan,
+                          std::vector<float>& reflAniso, std::size_t pix,
                           const PixelResult& pr) {
   res.color[pix * 4 + 0] = pr.r;
   res.color[pix * 4 + 1] = pr.g;
@@ -193,6 +196,23 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
     // GGX lobe alpha of the traced reflection (glossy pass pixel ownership;
     // 0 = mirror). Allocated only under pt2Glossy.
     if (!reflAlpha.empty()) reflAlpha[pix] = pr.reflAlpha;
+    // Fresnel F0 of the traced reflection (principled; (1,1,1) = the
+    // bitwise-neutral POV value). Allocated only when the scene carries a
+    // principled material.
+    if (!reflF0.empty()) {
+      reflF0[pix * 3 + 0] = pr.reflF0.x;
+      reflF0[pix * 3 + 1] = pr.reflF0.y;
+      reflF0[pix * 3 + 2] = pr.reflF0.z;
+    }
+    // Anisotropy frame of the glossy lobe (principled sphere/cylinder;
+    // zero tangent / aspect 1 = isotropic pixel). Allocated only when an
+    // anisotropic principled primitive exists.
+    if (!reflTan.empty()) {
+      reflTan[pix * 3 + 0] = pr.reflTangent.x;
+      reflTan[pix * 3 + 1] = pr.reflTangent.y;
+      reflTan[pix * 3 + 2] = pr.reflTangent.z;
+      reflAniso[pix] = pr.reflAspect;
+    }
   }
   // Albedo guide (denoiser demodulation or AO AOV dump). Written whenever the
   // buffer was allocated above (wantAlbedoGuide).
@@ -238,10 +258,13 @@ void storePixelResult(FrameResult& res, const RenderOptions& opt,
                       std::vector<int>& giGroup, std::vector<uint32_t>& giGeom,
                       std::vector<float>& giRefl, std::vector<uint8_t>& giElig,
                       std::vector<float>& reflAmt,
-                      std::vector<float>& reflAlpha, std::size_t pix,
+                      std::vector<float>& reflAlpha,
+                      std::vector<float>& reflF0,
+                      std::vector<float>& reflTan,
+                      std::vector<float>& reflAniso, std::size_t pix,
                       const PixelResult& pr) {
   storeShadingChannels(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt,
-                       reflAlpha, pix, pr);
+                       reflAlpha, reflF0, reflTan, reflAniso, pix, pr);
   storeGBufChannels(res, opt, pix, pr);
 }
 
@@ -368,6 +391,34 @@ detail::Pt1CameraBasis toPt1Basis(const Camera& cam, const CameraBasis& cb) {
   camb.persHalfW = cb.persHalfW;
   camb.persHalfH = cb.persHalfH;
   return camb;
+}
+
+// Does any material in the scene select the principled shading model?
+// Drives the pt2 specular-channel allocation and the non-pt2 advisory below;
+// a plain scan, so POV-only scenes pay one pass over the material lists.
+bool sceneHasPrincipled(const Scene& scene) {
+  if (scene.mesh.material.model == ShadingModel::Principled) return true;
+  for (const Material& m : scene.mesh.materials)
+    if (m.model == ShadingModel::Principled) return true;
+  for (const Sphere& s : scene.spheres)
+    if (s.material.model == ShadingModel::Principled) return true;
+  for (const Cylinder& c : scene.cylinders)
+    if (c.material.model == ShadingModel::Principled) return true;
+  return false;
+}
+
+// Anisotropic principled primitives (spheres/cylinders): drives the E_spec
+// tangent-frame buffer allocation. Mesh materials are excluded -- mesh
+// anisotropy is inert until a per-vertex tangent attribute exists.
+bool sceneHasPrincipledAniso(const Scene& scene) {
+  auto aniso = [](const Material& m) {
+    return m.model == ShadingModel::Principled && m.pbr.anisotropy != 0.0f;
+  };
+  for (const Sphere& s : scene.spheres)
+    if (aniso(s.material)) return true;
+  for (const Cylinder& c : scene.cylinders)
+    if (aniso(c.material)) return true;
+  return false;
 }
 
 // POV-native lights (direction the light travels -> direction to light), plus
@@ -499,7 +550,10 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                   const std::vector<float>& giRefl,
                   const std::vector<uint8_t>& giElig,
                   const std::vector<float>& reflAmt,
-                  const std::vector<float>& reflAlpha, FrameResult& res,
+                  const std::vector<float>& reflAlpha,
+                  const std::vector<float>& reflF0,
+                  const std::vector<float>& reflTan,
+                  const std::vector<float>& reflAniso, FrameResult& res,
                   const detail::GiProgressBudget& budget) {
     // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
     // the sky through its miss term, so the combination counts the sky twice.
@@ -872,10 +926,11 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     // for exactly these pixels (HitShade::reflectivity gate). Pixels whose
     // lobe is glossy (reflAlpha > 0) are excluded here and handled below.
     if (!reflAmt.empty()) {
-      detail::pt2ReflectPass(gp, W, H, reflAmt, reflAlpha, res.position.data(),
-                             res.normal.data(), res.depth.data(),
-                             scene.camera.orthographic, scene.camera.position,
-                             cb.dir, opt.pt2Emissive, res, &budget.reflect);
+      detail::pt2ReflectPass(gp, W, H, reflAmt, reflAlpha, reflF0,
+                             res.position.data(), res.normal.data(),
+                             res.depth.data(), scene.camera.orthographic,
+                             scene.camera.position, cb.dir, opt.pt2Emissive,
+                             res, &budget.reflect);
     }
     budget.reflect.finish();
 
@@ -894,7 +949,8 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
         std::fprintf(stderr, "pt2: glossy reflection over %zu px (spp=%d)\n",
                      nGlossy, std::max(1, opt.pt2GlossySpp));
         std::vector<float> Espec;
-        detail::pt2GlossyPass(gp, W, H, reflAmt, reflAlpha,
+        detail::pt2GlossyPass(gp, W, H, reflAmt, reflAlpha, reflF0, reflTan,
+                              reflAniso,
                               res.position.data(), res.normal.data(),
                               res.depth.data(), scene.camera.orthographic,
                               scene.camera.position, cb.dir, opt.pt2Emissive,
@@ -903,17 +959,103 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                               &budget.glossy);
         budget.glossy.finish();
         if (opt.pt1Denoise && opt.pt2GlossyDenoise) {
-          // Constant-white albedo guide: OIDN rejects a normal guide without
-          // an albedo image, and the reflected content is uncorrelated with
-          // the surface pigment (a real albedo guide would edge-stop the
-          // reflection at pigment boundaries). Flat white = no edge stops.
-          const std::vector<float> albedoOne(
-              static_cast<std::size_t>(W) * H * 3, 1.0f);
-          const int used =
-              detail::denoisePt1E(W, H, Espec, albedoOne.data(),
-                                  res.normal.data(), res.position.data(), opt,
-                                  &budget.glossyDenoise);
-          (void)used;
+          const int ss = std::max(1, opt.supersample);
+          if (ss <= 1 || W % ss != 0 || H % ss != 0) {
+            // Render grid == output grid: denoise E_spec in place.
+            // Constant-white albedo guide: OIDN rejects a normal guide
+            // without an albedo image, and the reflected content is
+            // uncorrelated with the surface pigment (a real albedo guide
+            // would edge-stop the reflection at pigment boundaries).
+            const std::vector<float> albedoOne(
+                static_cast<std::size_t>(W) * H * 3, 1.0f);
+            const int used =
+                detail::denoisePt1E(W, H, Espec, albedoOne.data(),
+                                    res.normal.data(), res.position.data(),
+                                    opt, &budget.glossyDenoise);
+            (void)used;
+          } else {
+            // Supersampled render grid: OIDN at the full grid costs ss^2 x
+            // the output-res filter (measured +3.7 s of a 6.1 s render at
+            // ss=3, 700^2 out) for detail the ss^2 box-average largely
+            // discards. Instead: glossy-masked box-downsample of E_spec and
+            // its guides to the OUTPUT grid, denoise there, joint-bilateral
+            // upsample back (same guide weights as the diffuse E upsample).
+            const int Wo = W / ss, Ho = H / ss;
+            const std::size_t nout = static_cast<std::size_t>(Wo) * Ho;
+            detail::Pt1GBuffer g;  // synthetic low-res guide grid
+            g.w = Wo;
+            g.h = Ho;
+            g.normal.assign(nout * 3, 0.0f);
+            g.depth.assign(nout, 0.0f);
+            g.hit.assign(nout, 0);
+            std::vector<float> Eo(nout * 3, 0.0f);
+            std::vector<float> posLow(nout * 3, 0.0f);
+            tbb::parallel_for(tbb::blocked_range<int>(0, Ho),
+                              [&](const tbb::blocked_range<int>& rows) {
+              for (int oy = rows.begin(); oy != rows.end(); ++oy) {
+                for (int ox = 0; ox < Wo; ++ox) {
+                  const std::size_t opix =
+                      static_cast<std::size_t>(oy) * Wo + ox;
+                  Vec3 eS{0, 0, 0}, nS{0, 0, 0}, pS{0, 0, 0};
+                  float zS = 0.0f;
+                  int cnt = 0;
+                  for (int sy = 0; sy < ss; ++sy) {
+                    for (int sx = 0; sx < ss; ++sx) {
+                      const std::size_t pix =
+                          static_cast<std::size_t>(oy * ss + sy) * W +
+                          (ox * ss + sx);
+                      if (reflAmt[pix] <= 0.0f || reflAlpha[pix] <= 0.0f)
+                        continue;
+                      ++cnt;
+                      eS.x += Espec[pix * 3 + 0];
+                      eS.y += Espec[pix * 3 + 1];
+                      eS.z += Espec[pix * 3 + 2];
+                      nS.x += res.normal[pix * 3 + 0];
+                      nS.y += res.normal[pix * 3 + 1];
+                      nS.z += res.normal[pix * 3 + 2];
+                      pS.x += res.position[pix * 3 + 0];
+                      pS.y += res.position[pix * 3 + 1];
+                      pS.z += res.position[pix * 3 + 2];
+                      zS += res.depth[pix];
+                    }
+                  }
+                  if (cnt == 0) continue;  // no glossy sample in this cell
+                  const float inv = 1.0f / static_cast<float>(cnt);
+                  Eo[opix * 3 + 0] = eS.x * inv;
+                  Eo[opix * 3 + 1] = eS.y * inv;
+                  Eo[opix * 3 + 2] = eS.z * inv;
+                  const Vec3 nAvg = safeNormalize(
+                      Vec3{nS.x * inv, nS.y * inv, nS.z * inv});
+                  g.normal[opix * 3 + 0] = nAvg.x;
+                  g.normal[opix * 3 + 1] = nAvg.y;
+                  g.normal[opix * 3 + 2] = nAvg.z;
+                  g.depth[opix] = zS * inv;
+                  posLow[opix * 3 + 0] = pS.x * inv;
+                  posLow[opix * 3 + 1] = pS.y * inv;
+                  posLow[opix * 3 + 2] = pS.z * inv;
+                  g.hit[opix] = 1;
+                }
+              }
+            });
+            const std::vector<float> albedoOne(nout * 3, 1.0f);
+            const int used =
+                detail::denoisePt1E(Wo, Ho, Eo, albedoOne.data(),
+                                    g.normal.data(), posLow.data(), opt,
+                                    &budget.glossyDenoise);
+            (void)used;
+            // Joint-bilateral upsample back to the render grid on exactly
+            // the glossy pixels (full-res normal/depth as edge stops).
+            std::vector<uint8_t> elig(static_cast<std::size_t>(W) * H, 0);
+            for (std::size_t i = 0; i < elig.size(); ++i)
+              elig[i] = (reflAmt[i] > 0.0f && reflAlpha[i] > 0.0f) ? 1 : 0;
+            const std::vector<float> occLow(nout, 1.0f);
+            std::vector<float> Eup, occUp;
+            detail::upsampleJointBilateral(
+                W, H, res.normal.data(), res.depth.data(), elig.data(), g,
+                Eo, occLow, opt.pt1UpsampleNormalPow,
+                opt.pt1UpsampleDepthScale, Eup, occUp);
+            Espec.swap(Eup);
+          }
         }
         budget.glossyDenoise.finish();
         tbb::parallel_for(tbb::blocked_range<int>(0, H),
@@ -1137,6 +1279,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   const float persHalfW = cb.persHalfW, persHalfH = cb.persHalfH;
 
   const std::vector<Light> lights = buildSceneLights(scene, opt, cb);
+  // Principled materials: direct GGX shading works under every mode; only
+  // the traced specular indirect is pt2-gated (elsewhere the fake Fresnel
+  // environment term stands in). Advisory only -- bytes unaffected.
+  const bool hasPrincipled = sceneHasPrincipled(scene);
+  if (hasPrincipled && opt.gi && opt.giIntegrator != 2)
+    std::fprintf(stderr,
+                 "principled: traced specular reflection requires --integrator "
+                 "pt2; using the Fresnel*background approximation (cache "
+                 "approximates the diffuse weight)\n");
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
   // term is material.ambient * pigment, applied below via ambK.
   const Vec3 ambLight = scene.ambientColor;  // expected <1,1,1> on the embree path
@@ -1171,8 +1322,14 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   // (empty = the pass is off, and storeShadingChannels skips the write).
   // reflAlpha is the GGX lobe width of the same hit (glossy pass ownership;
   // 0 = the single-ray mirror pass), allocated only under pt2Glossy.
+  // reflF0 is the per-pixel Fresnel F0 (principled), allocated only when a
+  // principled material exists -- empty keeps the passes on the verbatim
+  // scalar k*L path (byte-identity for POV scenes).
   std::vector<float> reflAmt;
   std::vector<float> reflAlpha;
+  std::vector<float> reflF0;
+  std::vector<float> reflTan;
+  std::vector<float> reflAniso;
   if (opt.gi) {
     const std::size_t npix = static_cast<std::size_t>(W) * H;
     giGroup.assign(npix, -1);
@@ -1182,6 +1339,11 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
     if (opt.giIntegrator == 2 && opt.pt2Reflect) {
       reflAmt.assign(npix, 0.0f);
       if (opt.pt2Glossy) reflAlpha.assign(npix, 0.0f);
+      if (hasPrincipled) reflF0.assign(npix * 3, 1.0f);
+      if (opt.pt2Glossy && sceneHasPrincipledAniso(scene)) {
+        reflTan.assign(npix * 3, 0.0f);
+        reflAniso.assign(npix, 1.0f);
+      }
     }
   }
 
@@ -1234,7 +1396,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
 
       const std::size_t pix = (static_cast<std::size_t>(py) * W + px);
       storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig, reflAmt,
-                       reflAlpha, pix, pr);
+                       reflAlpha, reflF0, reflTan, reflAniso, pix, pr);
     }
   }
   if (progress) progress->advance(
@@ -1443,7 +1605,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                 const std::size_t pix = static_cast<std::size_t>(py) * W + px;
                 if (edgesGbuf) {
                   storeShadingChannels(res, opt, giGroup, giGeom, giRefl,
-                                       giElig, reflAmt, reflAlpha, pix, rep);
+                                       giElig, reflAmt, reflAlpha, reflF0,
+                                       reflTan, reflAniso, pix, rep);
                   // Center subpixel: exact G-buffer from its own first hit
                   // (centers[XY] traced this subpixel). Others: probe.
                   if (i == cSub && j == cSub)
@@ -1452,8 +1615,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
                     storeProbeGBuf(px, py, pix);
                 } else {
                   storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
-                                   reflAmt, reflAlpha,
-                                   pix, rep);
+                                   reflAmt, reflAlpha, reflF0, reflTan,
+                                   reflAniso, pix, rep);
                 }
               }
             }
@@ -1471,8 +1634,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
               // either way pr carries the first-hit G-buffer, so a full store
               // reproduces the grid render's G-buffer bitwise.
               storePixelResult(res, opt, giGroup, giGeom, giRefl, giElig,
-                               reflAmt, reflAlpha, pix,
-                               pr);
+                               reflAmt, reflAlpha, reflF0, reflTan, reflAniso,
+                               pix, pr);
             }
           }
         }
@@ -1517,7 +1680,8 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   if (!giCancelled && opt.gi &&
       (meshPresent(built) || realCsgPresent(built)) && opt.giIntegrator >= 1) {
     runPt1GiPass(scene, opt, built, m, lights, ambLight, aoUpAxis, cb, W, H,
-                 giRefl, giElig, reflAmt, reflAlpha, res, giBudget);
+                 giRefl, giElig, reflAmt, reflAlpha, reflF0, reflTan,
+                 reflAniso, res, giBudget);
   } else if (!giCancelled && opt.gi && meshPresent(built)) {
     runIrradianceCacheGiPass(scene, opt, built, m, lights, ambLight, aoUpAxis,
                              W, H, giGroup, giGeom, giRefl, res);

@@ -9,6 +9,10 @@
 # scene files are plain git content (see .gitattributes: only *.inc/*.png/
 # *.qsc are LFS), so pov_scene_reader and the pt1/render tests need no label.
 
+add_executable(test_material_convert test_material_convert.cpp)
+target_link_libraries(test_material_convert PRIVATE bench_core)
+add_test(NAME material_convert COMMAND test_material_convert)
+
 add_executable(test_mesh2_reader test_mesh2_reader.cpp)
 target_link_libraries(test_mesh2_reader PRIVATE bench_core)
 add_test(
@@ -47,6 +51,12 @@ if(TARGET umbreon)
   add_executable(test_pt2_render test_pt2_render.cpp)
   target_link_libraries(test_pt2_render PRIVATE umbreon)
   add_test(NAME pt2_render COMMAND test_pt2_render)
+
+  # Principled BSDF subset: bitwise diffuse parity with the POV model,
+  # determinism of the GGX direct paths, fill-light / mode-commonality rules.
+  add_executable(test_principled test_principled.cpp)
+  target_link_libraries(test_principled PRIVATE umbreon)
+  add_test(NAME principled COMMAND test_principled)
 
   # pt1 numeric gather tests: estimator vs analytic irradiance values.
   add_executable(test_pt1_gather test_pt1_gather.cpp)

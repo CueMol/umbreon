@@ -40,6 +40,7 @@
 
 #include "experimental/pt1/pt1_gather.hpp"
 #include "render/progress_slice.hpp"
+#include "shading/principled.hpp"
 #include "shading/secondary_rays.hpp"
 #include "scene.hpp"
 
@@ -55,13 +56,25 @@ inline float pt2GgxLambda(float alpha, float cosT) {
   return 0.5f * (std::sqrt(1.0f + alpha * alpha * t2) - 1.0f);
 }
 
+// Anisotropic Smith Lambda for a unit direction w in the (t1, t2, N) tangent
+// frame. Isotropic pixels keep calling pt2GgxLambda above (the two are
+// mathematically equal at ax == ay but not bitwise -- different op order).
+inline float pt2GgxLambdaAniso(float ax, float ay, const Vec3& w) {
+  const float z2 = std::fmax(w.z * w.z, 1.0e-12f);
+  const float t2 = (ax * ax * w.x * w.x + ay * ay * w.y * w.y) / z2;
+  return 0.5f * (std::sqrt(1.0f + t2) - 1.0f);
+}
+
 // Heitz 2018 (JCGT 7(4), Appendix A): sample the GGX distribution of VISIBLE
 // normals for view direction `wo` (local frame, wo.z > 0). Returns the unit
 // microfacet normal wm. With this pdf the reflection estimator's weight
-// reduces to G2/G1(wo) -- no D, no Jacobian, numerically robust.
-inline Vec3 pt2SampleGgxVndf(const Vec3& wo, float alpha, float u1, float u2) {
+// reduces to G2/G1(wo) -- no D, no Jacobian, numerically robust. The
+// anisotropic form (ax, ay); isotropic callers pass (alpha, alpha), which
+// runs the exact float ops of the former isotropic version (bitwise-safe).
+inline Vec3 pt2SampleGgxVndf(const Vec3& wo, float ax, float ay, float u1,
+                             float u2) {
   // Transform to the hemisphere configuration (stretch by alpha).
-  const Vec3 Vh = safeNormalize(Vec3{alpha * wo.x, alpha * wo.y, wo.z});
+  const Vec3 Vh = safeNormalize(Vec3{ax * wo.x, ay * wo.y, wo.z});
   // Orthonormal basis around Vh (T1 in the tangent plane of the config).
   const Vec3 T1 = (Vh.z < 0.999f)
                       ? safeNormalize(cross(Vec3{0.0f, 0.0f, 1.0f}, Vh))
@@ -81,7 +94,7 @@ inline Vec3 pt2SampleGgxVndf(const Vec3& wo, float alpha, float u1, float u2) {
                 t1 * T1.y + t2 * T2.y + t3 * Vh.y,
                 t1 * T1.z + t2 * T2.z + t3 * Vh.z};
   return safeNormalize(
-      Vec3{alpha * Nh.x, alpha * Nh.y, std::fmax(0.0f, Nh.z)});
+      Vec3{ax * Nh.x, ay * Nh.y, std::fmax(0.0f, Nh.z)});
 }
 
 // Glossy reflection gather at the RENDER grid: for pixels with
@@ -93,6 +106,9 @@ inline Vec3 pt2SampleGgxVndf(const Vec3& wo, float alpha, float u1, float u2) {
 inline void pt2GlossyPass(const IrradianceCacheParams& p, int W, int H,
                           const std::vector<float>& reflAmt,
                           const std::vector<float>& reflAlpha,
+                          const std::vector<float>& reflF0,
+                          const std::vector<float>& reflTan,
+                          const std::vector<float>& reflAniso,
                           const float* position, const float* normal,
                           const float* depth, bool orthographic,
                           const Vec3& camPos, const Vec3& camDir, bool emissive,
@@ -128,24 +144,51 @@ inline void pt2GlossyPass(const IrradianceCacheParams& p, int W, int H,
               wiV = safeNormalize(
                   Vec3{P.x - camPos.x, P.y - camPos.y, P.z - camPos.z});
             }
+            // Anisotropic frame (principled sphere/cylinder pixels): the
+            // rotation-baked tangent from the hit shader replaces the
+            // canonical frame and the lobe alphas stretch by the aspect.
+            // Isotropic pixels keep every original expression verbatim.
+            bool anisoPix = false;
+            float ax = alpha, ay = alpha;
+            Frame f;
+            if (!reflTan.empty()) {
+              const Vec3 T{reflTan[pix * 3 + 0], reflTan[pix * 3 + 1],
+                           reflTan[pix * 3 + 2]};
+              const float aspect = reflAniso[pix];
+              if (aspect != 1.0f && dot(T, T) > 0.5f) {
+                anisoPix = true;
+                f = Frame{T, cross(N, T), N};
+                ax = alpha / aspect;
+                if (ax > 1.0f) ax = 1.0f;
+                ay = alpha * aspect;
+              }
+            }
+            if (!anisoPix) f = frameFromNormal(N);
             // Local frame with N = +z; view direction wo points AWAY from the
             // surface. Clamp wo.z to keep the VNDF configuration valid when
             // the G-buffer normal grazes the view ray.
-            const Frame f = frameFromNormal(N);
             const Vec3 woW{-wiV.x, -wiV.y, -wiV.z};
             Vec3 wo{dot(woW, f.t), dot(woW, f.b), dot(woW, f.n)};
             if (wo.z < 1.0e-4f) wo.z = 1.0e-4f;
             wo = safeNormalize(wo);
-            const float lamO = pt2GgxLambda(alpha, wo.z);
+            const float lamO = anisoPix ? pt2GgxLambdaAniso(ax, ay, wo)
+                                        : pt2GgxLambda(alpha, wo.z);
             const float t0 = (depth && depth[pix] > 0.0f) ? depth[pix] : 1.0f;
             const uint32_t seedPix =
                 hashU32(static_cast<uint32_t>(pix)) ^ seedMix;
+            // Per-pixel Fresnel F0 (principled). POV pixels in a mixed scene
+            // carry the neutral (1,1,1), for which Schlick is exactly 1.
+            const bool haveF0 = !reflF0.empty();
+            const Vec3 F0pix =
+                haveF0 ? Vec3{reflF0[pix * 3 + 0], reflF0[pix * 3 + 1],
+                              reflF0[pix * 3 + 2]}
+                       : Vec3{1.0f, 1.0f, 1.0f};
 
             Vec3 sum{0.0f, 0.0f, 0.0f};
             for (int s = 0; s < spp; ++s) {
               float u1, u2;
               pt2SobolBurley2D(static_cast<uint32_t>(s), seedPix, &u1, &u2);
-              const Vec3 wm = pt2SampleGgxVndf(wo, alpha, u1, u2);
+              const Vec3 wm = pt2SampleGgxVndf(wo, ax, ay, u1, u2);
               const float owm = dot(wo, wm);
               const Vec3 wl{2.0f * owm * wm.x - wo.x,
                             2.0f * owm * wm.y - wo.y,
@@ -156,7 +199,8 @@ inline void pt2GlossyPass(const IrradianceCacheParams& p, int W, int H,
               if (wl.z <= 0.0f) continue;
               // VNDF estimator weight: f*cos/pdf = G2/G1(wo) with
               // height-correlated Smith G2 = 1/(1 + Lo + Li), G1 = 1/(1 + Lo).
-              const float lamI = pt2GgxLambda(alpha, wl.z);
+              const float lamI = anisoPix ? pt2GgxLambdaAniso(ax, ay, wl)
+                                          : pt2GgxLambda(alpha, wl.z);
               const float weight = (1.0f + lamO) / (1.0f + lamO + lamI);
               const Vec3 rdir = safeNormalize(
                   Vec3{f.t.x * wl.x + f.b.x * wl.y + f.n.x * wl.z,
@@ -189,9 +233,18 @@ inline void pt2GlossyPass(const IrradianceCacheParams& p, int W, int H,
                            v.radiance.z + v.albedo.z * sky.z};
                 }
               }
-              sum.x += weight * L.x;
-              sum.y += weight * L.y;
-              sum.z += weight * L.z;
+              if (haveF0) {
+                // Fold the per-sample Fresnel into the VNDF weight (the
+                // half-vector cosine is dot(wo, wm)).
+                const Vec3 F = schlickF(F0pix, owm);
+                sum.x += weight * F.x * L.x;
+                sum.y += weight * F.y * L.y;
+                sum.z += weight * F.z * L.z;
+              } else {
+                sum.x += weight * L.x;
+                sum.y += weight * L.y;
+                sum.z += weight * L.z;
+              }
             }
             Espec[pix * 3 + 0] = sum.x * invSpp;
             Espec[pix * 3 + 1] = sum.y * invSpp;

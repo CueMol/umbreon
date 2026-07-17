@@ -69,6 +69,13 @@ struct PixelResult {
   // First-hit GGX lobe alpha of the traced reflection (see
   // HitShade::reflAlpha); 0 = mirror / no glossy pass.
   float reflAlpha = 0.0f;
+  // First-hit Fresnel F0 of the traced reflection (see HitShade::reflF0);
+  // the (1,1,1) default is the bitwise-neutral POV value.
+  Vec3 reflF0{1.0f, 1.0f, 1.0f};
+  // First-hit anisotropy frame of the traced glossy lobe (see
+  // HitShade::reflTangent / reflAspect); zero tangent / aspect 1 = isotropic.
+  Vec3 reflTangent{0.0f, 0.0f, 0.0f};
+  float reflAspect = 1.0f;
 };
 
 // First-hit edge G-buffer of one primary ray, WITHOUT shading: what the
@@ -221,6 +228,9 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   uint8_t firstAoPatched = 0;
   float firstReflectivity = 0.0f;
   float firstReflAlpha = 0.0f;
+  Vec3 firstReflF0{1.0f, 1.0f, 1.0f};
+  Vec3 firstReflTangent{0.0f, 0.0f, 0.0f};
+  float firstReflAspect = 1.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -284,6 +294,9 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       firstAoPatched = hs.aoPatched;
       firstReflectivity = hs.reflectivity;
       firstReflAlpha = hs.reflAlpha;
+      firstReflF0 = hs.reflF0;
+      firstReflTangent = hs.reflTangent;
+      firstReflAspect = hs.reflAspect;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -355,7 +368,10 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                      firstOpacity,
                      firstAoPatched,
                      firstReflectivity,
-                     firstReflAlpha};
+                     firstReflAlpha,
+                     firstReflF0,
+                     firstReflTangent,
+                     firstReflAspect};
 }
 
 }  // namespace detail

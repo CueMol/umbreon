@@ -67,6 +67,16 @@ struct HitShade {
   // specular > 0 (a highlight-bearing surface reflects with the SAME width as
   // its Blinn highlight). 0 = the single-ray mirror pass owns the pixel.
   float reflAlpha = 0.0f;
+  // Fresnel F0 of the traced reflection (principled materials): the mirror /
+  // glossy passes weigh each reflected sample by Schlick(F0, cos). The
+  // NEUTRAL default (1,1,1) makes Schlick identically 1, so POV pixels in a
+  // mixed scene reproduce the plain k*L composite bitwise.
+  Vec3 reflF0{1.0f, 1.0f, 1.0f};
+  // Anisotropy frame of the traced glossy lobe (principled sphere/cylinder):
+  // rotation-baked world tangent (zero vector = isotropic pixel) and the
+  // Disney aspect (1 = isotropic). Shared definition with the direct pass.
+  Vec3 reflTangent{0.0f, 0.0f, 0.0f};
+  float reflAspect = 1.0f;
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -206,19 +216,50 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // gathered, occlusion-aware indirect in a post-pass. Folding the receiver's
     // diffuse reflectance (mat.diffuse * pigment) here lets the post-pass do a
     // plain L += giIntensity * giReflectance * E_cached. The outline/primitive
-    // path keeps its ambient (flat color) and gets no indirect.
-    if (c.opt.gi) {
+    // path keeps its ambient (flat color) and gets no indirect. Toon/NPR
+    // finishes (Material::toonLike -- incl. the unlit "nolighting" flat
+    // color, whose only light IS the ambient term) are exempt: GI neither
+    // replaces their ambient nor composites indirect onto them, and their
+    // ambient evaluates at UNIT ambient -- under GI the scene ambientColor
+    // carries the gather's energy split (the bench dims it to
+    // _light_inten * _amb_frac), not the toon look's base color, so unit
+    // ambient makes the GI render match the non-GI look. Outside GI
+    // (basic/AO modes) toon follows the scene ambient/AO exactly as before.
+    if (c.opt.gi && triMat.toonLike()) {
+      ambLight = Vec3{1.0f, 1.0f, 1.0f};
+    } else if (c.opt.gi) {
       hs.giReflectance =
-          Vec3{triMat.diffuse * C.x, triMat.diffuse * C.y, triMat.diffuse * C.z};
+          Vec3{triMat.diffuseWeight() * C.x, triMat.diffuseWeight() * C.y,
+               triMat.diffuseWeight() * C.z};
       hs.giEligible = 1;
       ambLight = Vec3{0.0f, 0.0f, 0.0f};
     }
-    const bool traceRefl = c.opt.giIntegrator == 2 && c.opt.pt2Reflect &&
-                           c.opt.gi && triMat.reflection > 0.0f;
+    // Traced-reflection ownership: POV materials opt in via `reflection`;
+    // principled materials whenever their specular lobe exists (metallic or
+    // dielectric F0 > 0). Principled folds the Fresnel into the pass
+    // (reflF0), so reflectivity is 1 and the lobe width is alpha = r^2
+    // (below the mirror cut the single-ray mirror pass owns the pixel;
+    // pt2Glossy off keeps every principled reflection a mirror).
+    const bool principled = triMat.model == ShadingModel::Principled;
+    const bool pbrSpec =
+        principled &&
+        (triMat.pbr.metallic > 1e-4f || triMat.pbr.specular > 1e-4f);
+    const bool traceRefl =
+        c.opt.giIntegrator == 2 && c.opt.pt2Reflect && c.opt.gi &&
+        (principled ? pbrSpec : triMat.reflection > 0.0f);
     if (traceRefl) {
-      hs.reflectivity = triMat.reflection;
-      if (c.opt.pt2Glossy && triMat.specular > 0.0f)
-        hs.reflAlpha = pt2GgxAlphaFromRoughness(triMat.roughness);
+      if (principled) {
+        hs.reflectivity = 1.0f;
+        hs.reflF0 = principledF0(triMat, C);
+        if (c.opt.pt2Glossy) {
+          const float a = triMat.pbr.roughness * triMat.pbr.roughness;
+          hs.reflAlpha = (a >= kPt2GlossyAlphaMin) ? a : 0.0f;
+        }
+      } else {
+        hs.reflectivity = triMat.reflection;
+        if (c.opt.pt2Glossy && triMat.specular > 0.0f)
+          hs.reflAlpha = pt2GgxAlphaFromRoughness(triMat.roughness);
+      }
     }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
@@ -305,10 +346,14 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       // and record the reflectance for the post-pass composite. Gated on the
       // integrator so the cache path stays byte-identical (its GI remains
       // mesh-only). The normal/albedo AOVs feed the full-res gather and the
-      // OIDN guides.
-      if (c.opt.gi && c.opt.giIntegrator >= 1) {
+      // OIDN guides. Toon/unlit finishes are exempt and evaluate their
+      // ambient at UNIT ambient under GI (see the mesh branch).
+      if (c.opt.gi && c.opt.giIntegrator >= 1 && pm.toonLike()) {
+        ambLight = Vec3{1.0f, 1.0f, 1.0f};
+      } else if (c.opt.gi && c.opt.giIntegrator >= 1) {
         hs.giReflectance =
-            Vec3{pm.diffuse * C.x, pm.diffuse * C.y, pm.diffuse * C.z};
+            Vec3{pm.diffuseWeight() * C.x, pm.diffuseWeight() * C.y,
+                 pm.diffuseWeight() * C.z};
         hs.giEligible = 1;
         hs.albedo = C;
         hs.normal = N;
@@ -318,18 +363,89 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // Real primitives receive light shadows (a buried atom is occluded from the
     // lights); outline decoration is never shadowed (silhouette must not darken).
     const bool primShadows = !fromEdge && shadowsActive;
-    const bool traceReflP = c.opt.giIntegrator == 2 && c.opt.pt2Reflect &&
-                            c.opt.gi && !fromEdge && pm.reflection > 0.0f;
+    // Anisotropy tangent frame (principled sphere/cylinder only): sphere =
+    // world-z pole (t1 = meridian direction), cylinder = axis projected to
+    // the tangent plane. Poles, caps and degenerate projections fall back to
+    // isotropic (tanValid stays false). The anisotropyRotation is baked into
+    // the tangent HERE so the direct highlight and the E_spec glossy pass
+    // share one frame definition.
+    Vec3 anisoT{0.0f, 0.0f, 0.0f};
+    float anisoAspect = 1.0f;
+    bool tanValid = false;
+    if (pm.model == ShadingModel::Principled && pm.pbr.anisotropy != 0.0f &&
+        !fromEdge) {
+      Vec3 t1{0.0f, 0.0f, 0.0f};
+      if (isSphere) {
+        // Pole = world +Y (the vertical/up axis). CueMol exports scenes in
+        // CAMERA coordinates (view axis = z), so a z pole would face the
+        // camera on every sphere -- putting the tangent-field singularity
+        // and its isotropic fallback disk dead center in the highlight. The
+        // up axis keeps the poles at the top/bottom rim, seen at grazing.
+        if (std::fabs(N.y) < 0.999f) {
+          const Vec3 tPhi =
+              safeNormalize(cross(Vec3{0.0f, 1.0f, 0.0f}, N));
+          t1 = cross(N, tPhi);  // meridian (theta) direction
+          tanValid = true;
+        }
+      } else {
+        const std::vector<Vec3>& axes =
+            isCapped ? c.built.cylCapAxis : c.built.cylAxis;
+        if (!axes.empty()) {
+          const Vec3 A = axes[rh.hit.primID];
+          const Vec3 ngu = safeNormalize(Ng, N);
+          if (std::fabs(dot(ngu, A)) < 0.99f) {  // cap hit -> isotropic
+            const float andn = dot(A, N);
+            const Vec3 proj{A.x - N.x * andn, A.y - N.y * andn,
+                            A.z - N.z * andn};
+            if (dot(proj, proj) >= 1.0e-12f) {
+              t1 = safeNormalize(proj);
+              tanValid = true;
+            }
+          }
+        }
+      }
+      if (tanValid) {
+        if (pm.pbr.anisotropyRotation != 0.0f) {
+          const float ang = pm.pbr.anisotropyRotation * 6.2831853072f;
+          const Vec3 t2 = cross(N, t1);
+          const float ca = std::cos(ang), sa = std::sin(ang);
+          t1 = Vec3{ca * t1.x + sa * t2.x, ca * t1.y + sa * t2.y,
+                    ca * t1.z + sa * t2.z};
+        }
+        anisoT = t1;
+        anisoAspect = principledAspect(pm.pbr.anisotropy);
+      }
+    }
+    // Traced-reflection ownership, primitive path (see the mesh branch).
+    const bool principledP = pm.model == ShadingModel::Principled;
+    const bool pbrSpecP =
+        principledP && (pm.pbr.metallic > 1e-4f || pm.pbr.specular > 1e-4f);
+    const bool traceReflP =
+        c.opt.giIntegrator == 2 && c.opt.pt2Reflect && c.opt.gi && !fromEdge &&
+        (principledP ? pbrSpecP : pm.reflection > 0.0f);
     if (traceReflP) {
-      hs.reflectivity = pm.reflection;
-      if (c.opt.pt2Glossy && pm.specular > 0.0f)
-        hs.reflAlpha = pt2GgxAlphaFromRoughness(pm.roughness);
+      if (principledP) {
+        hs.reflectivity = 1.0f;
+        hs.reflF0 = principledF0(pm, C);
+        if (c.opt.pt2Glossy) {
+          const float a = pm.pbr.roughness * pm.pbr.roughness;
+          hs.reflAlpha = (a >= kPt2GlossyAlphaMin) ? a : 0.0f;
+          if (tanValid) {
+            hs.reflTangent = anisoT;
+            hs.reflAspect = anisoAspect;
+          }
+        }
+      } else {
+        hs.reflectivity = pm.reflection;
+        if (c.opt.pt2Glossy && pm.specular > 0.0f)
+          hs.reflAlpha = pt2GgxAlphaFromRoughness(pm.roughness);
+      }
     }
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, primShadows,
                           c.opt.shadowSamples * c.shadowSampleMul, px, py,
-                          traceReflP);
+                          traceReflP, tanValid ? &anisoT : nullptr);
     hs.opacity = fc.w;
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]
