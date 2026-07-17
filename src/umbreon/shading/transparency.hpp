@@ -66,6 +66,9 @@ struct PixelResult {
   // First-hit Material::reflection under pt2 traced reflection (see
   // HitShade::reflectivity); 0 otherwise / on escape.
   float reflectivity = 0.0f;
+  // First-hit GGX lobe alpha of the traced reflection (see
+  // HitShade::reflAlpha); 0 = mirror / no glossy pass.
+  float reflAlpha = 0.0f;
 };
 
 // First-hit edge G-buffer of one primary ray, WITHOUT shading: what the
@@ -217,6 +220,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   float firstOpacity = 1.0f;
   uint8_t firstAoPatched = 0;
   float firstReflectivity = 0.0f;
+  float firstReflAlpha = 0.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -279,6 +283,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       firstOpacity = hs.opacity;
       firstAoPatched = hs.aoPatched;
       firstReflectivity = hs.reflectivity;
+      firstReflAlpha = hs.reflAlpha;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -349,7 +354,8 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                      firstGiEligible,
                      firstOpacity,
                      firstAoPatched,
-                     firstReflectivity};
+                     firstReflectivity,
+                     firstReflAlpha};
 }
 
 }  // namespace detail

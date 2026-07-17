@@ -240,8 +240,11 @@ pt2 にもそのまま適用される。以下は pt2 が追加するもの:
 |---|---|---|
 | `--pt2-pattern <sobol\|bluenoise>` | bluenoise | first-bounce の 2D サンプル配置。bluenoise は 1 本のグローバル Sobol 列を Morton 曲線でピクセルに配分し、残差ノイズを screen-space blue noise 化(OIDN が消しやすい) |
 | `--pt2-emissive <on\|off>` | on | emissive geometry(`finish emission`)が周囲を照らす GI 輸送。direct pass の自己発光と二重計上しない |
-| `--pt2-emissive-nee <on\|off>` | on | emissive mesh 三角形への NEE + balance-heuristic MIS。小さく明るい emitter のノイズを大幅減(実測 +32dB @spp8)。CSG emitter(球/円柱)は BSDF サンプリングのみ |
-| `--pt2-reflect <on\|off>` | on | `finish reflection` の面をミラーレイ 1 本で実ジオメトリに反射(フェイクの reflection*background を置換)。反射材のないシーンでは bit-exact スキップ |
+| `--pt2-emissive-nee <on\|off>` | on | emissive geometry への NEE + balance-heuristic MIS。小さく明るい emitter のノイズを大幅減(mesh 実測 +32dB @spp8)。対象 = mesh 三角形 + REAL CSG 球(solid-angle cone サンプリング)+ capped 円柱(側面 + cap の面積サンプリング)。open 円柱チェーンと fromEdge 装飾のみ BSDF サンプリングのままで不偏 |
+| `--pt2-reflect <on\|off>` | on | `finish reflection` の面をミラーレイ 1 本で実ジオメトリに反射(フェイクの reflection*background を置換)。反射材のないシーンでは bit-exact スキップ。off は glossy(下記)も無効化する(reflection バッファがマスターゲート) |
+| `--pt2-glossy <on\|off>` | on | glossy GGX 反射(pt2.3-E): `reflection` かつ `specular > 0` の finish は、ハイライトと同じ幅(roughness→GGX α 変換)の GGX ローブで映り込みをぼかす(VNDF importance sampling)。`specular == 0` の反射面は従来通り完全ミラー。該当材のないシーンでは bit-exact スキップ |
+| `--pt2-glossy-spp <int>` | 8 | glossy ピクセルあたりの反射レイ数 |
+| `--pt2-glossy-denoise <on\|off>` | on | glossy 反射バッファ(E_spec)への OIDN(normal/position guide、albedo guide なし)。`--denoise on` も必要 |
 | `--pt2-adaptive <on\|off>` | off | 分散適応 spp: 未収束ピクセルだけ追加サンプル(Cycles 型 split-buffer)。凹部の多いシーンで等時間 +1dB 程度 |
 | `--pt2-adaptive-thresh <f>` | 0.15 | 適応 spp のノイズ閾値(小さいほど広く追いサンプル) |
 | `--pt2-adaptive-mul <int>` | 4 | 適応 spp の総予算 = mul × spp |

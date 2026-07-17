@@ -386,13 +386,17 @@ inline Vec3 pt1GatherPoint(const IrradianceCacheParams& p, const Vec3& P,
       // Emitted term: at b == 1 with emissive NEE active, this hit competes
       // with the NEE strategy at the gather origin -- weigh it by the balance
       // heuristic (pt2EmissiveHitWeight is 1 for non-emitter hits and for
-      // CSG emitters, which NEE does not cover). Deeper vertices have no NEE
-      // partner, so their emission keeps full weight.
+      // the emitter kinds NEE does not cover: open cylinder chains and
+      // fromEdge decoration). Deeper vertices have no NEE partner, so their
+      // emission keeps full weight.
       float emW = 1.0f;
-      if (ext && ext->emissiveLights && b == 1 &&
-          p.built->records[rh.hit.geomID].kind == GeomKind::Mesh)
-        emW = pt2EmissiveHitWeight(*ext->emissiveLights, rh.hit.primID,
-                                   rh.ray.tfar, cand0Cos, wi);
+      if (ext && ext->emissiveLights && b == 1)
+        emW = pt2EmissiveHitWeight(*ext->emissiveLights,
+                                   p.built->records[rh.hit.geomID].kind,
+                                   rh.hit.primID, org, wi, rh.ray.tfar,
+                                   cand0Cos,
+                                   Vec3{rh.hit.Ng_x, rh.hit.Ng_y,
+                                        rh.hit.Ng_z});
       L.x += throughput.x * (v.radiance.x + emW * v.emitted.x);
       L.y += throughput.y * (v.radiance.y + emW * v.emitted.y);
       L.z += throughput.z * (v.radiance.z + emW * v.emitted.z);

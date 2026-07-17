@@ -60,6 +60,10 @@ constexpr double kSpatialRayPerPixel = 150.0e-9;
 // pt2 traced reflection: one mirror ray + NEE on reflective pixels; budgeted
 // at the full grid (the pass skips non-reflective pixels cheaply).
 constexpr double kReflectPerPixel = 30.0e-9;
+// pt2 glossy GGX reflection: one traced ray + NEE per sample per glossy
+// pixel; budgeted at the full grid times spp (over-counts glossy-free scenes,
+// which only makes the bar finish early -- same doctrine as reflect).
+constexpr double kGlossyPerSamplePixel = 30.0e-9;
 // "edge patch re-gathered 11138 rim pixel(s) (0.1% of grid)".
 constexpr double kEdgePatchPixelFrac = 0.001;
 // The irradiance cache is experimental and its pass is NOT instrumented (see
@@ -95,9 +99,11 @@ struct GiCostEstimate {
   double upsample = 0.0;
   double edgePatch = 0.0;
   double composite = 0.0;
+  double glossy = 0.0;         // pt2 glossy GGX reflection gather
+  double glossyDenoise = 0.0;  // OIDN on the glossy E_spec buffer
   double total() const noexcept {
     return gbuffer + gather + spatial + reflect + denoise + upsample +
-           edgePatch + composite;
+           edgePatch + composite + glossy + glossyDenoise;
   }
 };
 
@@ -144,6 +150,12 @@ inline GiCostEstimate giCostEstimate(const RenderOptions& opt, int W,
   }
   if (opt.giIntegrator == 2 && opt.pt2Reflect)
     e.reflect = kReflectPerPixel * nHi;
+  if (opt.giIntegrator == 2 && opt.pt2Reflect && opt.pt2Glossy) {
+    e.glossy =
+        kGlossyPerSamplePixel * nHi * std::max(1, opt.pt2GlossySpp);
+    if (opt.pt1Denoise && opt.pt2GlossyDenoise)
+      e.glossyDenoise = kDenoisePerPixel * nHi;
+  }
   if (opt.pt1Denoise) e.denoise = kDenoisePerPixel * nLow;
   e.composite = kCompositePerPixel * nHi;
   return e;
@@ -163,6 +175,8 @@ struct GiProgressBudget {
   ProgressSlice upsample;
   ProgressSlice edgePatch;
   ProgressSlice composite;
+  ProgressSlice glossy;
+  ProgressSlice glossyDenoise;
 };
 
 inline GiProgressBudget makeGiBudget(RenderProgress* progress,
@@ -180,11 +194,13 @@ inline GiProgressBudget makeGiBudget(RenderProgress* progress,
   b.gbuffer = slice(est.gbuffer);
   b.gather = slice(est.gather);
   b.spatial = slice(est.spatial);
-  b.reflect = slice(est.reflect);
   b.denoise = slice(est.denoise);
   b.upsample = slice(est.upsample);
   b.edgePatch = slice(est.edgePatch);
   b.composite = slice(est.composite);
+  b.reflect = slice(est.reflect);
+  b.glossy = slice(est.glossy);
+  b.glossyDenoise = slice(est.glossyDenoise);
   b.total = std::max<std::uint64_t>(1, at);
   return b;
 }

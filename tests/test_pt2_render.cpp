@@ -17,6 +17,11 @@
 //     changing the total energy.
 //  5. Feature gates: on scenes without the relevant material/light, each
 //     pt2 extension is a bit-exact no-op (reflection, emissive NEE).
+//  6. Glossy GGX reflection (pt2.3-E): pixel partition against the mirror
+//     pass (specular == 0 keeps the exact single-ray mirror; alpha below
+//     kPt2GlossyAlphaMin degenerates to it bitwise), determinism (run-to-run
+//     and thread-count), near-mirror consistency and spp convergence of the
+//     VNDF estimator.
 //
 // Deliberately NOT tested: ReSTIR spatial resampling (--pt2-rounds). It is
 // measured-dead for stills and kept only as a video/pt3 substrate; see the
@@ -25,6 +30,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+
+#include <tbb/global_control.h>
 
 #include "test_util.hpp"
 #include "umbreon.hpp"
@@ -97,6 +104,61 @@ umbreon::Scene makeScene(bool emissivePanel, float lightAngularRadius) {
   sc.background = {0.1f, 0.1f, 0.15f};
   sc.ambientColor = {0.5f, 0.5f, 0.5f};
   return sc;
+}
+
+// Reflective-floor variant for the glossy tests: the floor carries POV
+// `reflection` plus the given specular/roughness finish, the red CSG sphere
+// above provides content for the reflection to pick up.
+umbreon::Scene makeReflScene(float specular, float roughness) {
+  umbreon::Scene sc = makeScene(false, 0.0f);
+  sc.mesh.material.reflection = 0.3f;
+  sc.mesh.material.specular = specular;
+  sc.mesh.material.roughness = roughness;
+  return sc;
+}
+
+// CSG-emitter variant: replace the big matte sphere with a small bright
+// emissive one and/or add an emissive capped cylinder bond hovering over the
+// non-emissive floor (the emitter geometry the CSG NEE must sample).
+umbreon::Scene makeCsgEmissiveScene(bool sphereEmitter, bool cylEmitter) {
+  umbreon::Scene sc = makeScene(false, 0.0f);
+  sc.spheres.clear();
+  if (sphereEmitter) {
+    umbreon::Sphere sp;
+    sp.center = {0.0f, 1.2f, 0.0f};
+    sp.radius = 0.4f;
+    sp.color = {1.0f, 0.55f, 0.1f, 1.0f};
+    sp.material.ambient = 0.0f;
+    sp.material.diffuse = 0.2f;
+    sp.material.emission = 3.0f;
+    sc.spheres.push_back(sp);
+  }
+  if (cylEmitter) {
+    umbreon::Cylinder cy;
+    cy.p0 = {-2.0f, 0.8f, 1.0f};
+    cy.p1 = {-0.8f, 0.8f, 1.0f};
+    cy.radius = 0.3f;
+    cy.color = {0.3f, 0.6f, 1.0f, 1.0f};
+    cy.material.ambient = 0.0f;
+    cy.material.diffuse = 0.2f;
+    cy.material.emission = 3.0f;
+    cy.open = false;  // capped bond (CONE_LINEAR_CURVE)
+    sc.cylinders.push_back(cy);
+  }
+  return sc;
+}
+
+// Mean squared error over the RGB channels of two frames.
+double mseRgb(const umbreon::FrameResult& a, const umbreon::FrameResult& b) {
+  double s = 0.0;
+  const std::size_t n = a.color.size() / 4;
+  for (std::size_t p = 0; p < n; ++p)
+    for (int c = 0; c < 3; ++c) {
+      const double d = static_cast<double>(a.color[p * 4 + c]) -
+                       static_cast<double>(b.color[p * 4 + c]);
+      s += d * d;
+    }
+  return s / static_cast<double>(n * 3);
 }
 
 umbreon::RenderOptions makeOpts(int integrator) {
@@ -269,6 +331,165 @@ int main() {
     const umbreon::FrameResult a2 = umbreon::render(sc, on);
     s.check("adaptive spp is run-to-run bit-exact",
             bitEqual(a1.color, a2.color));
+  }
+
+  // 7) Glossy gates: without a reflective material the flag is a bit-exact
+  //    no-op; a reflective but specular-free material stays with the exact
+  //    mirror pass (glossy on/off bitwise equal); gi off is a no-op too.
+  {
+    const umbreon::Scene plain = makeScene(false, 0.0f);
+    umbreon::RenderOptions a = makeOpts(2);
+    umbreon::RenderOptions b = makeOpts(2);
+    b.pt2Glossy = false;
+    const umbreon::FrameResult fa = umbreon::render(plain, a);
+    const umbreon::FrameResult fb = umbreon::render(plain, b);
+    s.check("no reflective material: --pt2-glossy is a bit-exact no-op",
+            bitEqual(fa.color, fb.color));
+
+    const umbreon::Scene mirror = makeReflScene(0.0f, 0.02f);
+    const umbreon::FrameResult ma = umbreon::render(mirror, a);
+    const umbreon::FrameResult mb = umbreon::render(mirror, b);
+    s.check("specular==0 keeps the exact mirror pass (glossy on/off bitwise)",
+            bitEqual(ma.color, mb.color));
+
+    umbreon::RenderOptions ga = makeOpts(2);
+    umbreon::RenderOptions gb = makeOpts(2);
+    ga.gi = false;
+    gb.gi = false;
+    gb.pt2Glossy = false;
+    const umbreon::Scene glossy = makeReflScene(0.4f, 0.05f);
+    const umbreon::FrameResult g1 = umbreon::render(glossy, ga);
+    const umbreon::FrameResult g2 = umbreon::render(glossy, gb);
+    s.check("glossy flag is a no-op with gi off",
+            bitEqual(g1.color, g2.color));
+  }
+
+  // 8) Glossy determinism: run-to-run and thread-count bit-exactness (pure
+  //    per-pixel Sobol/tea2 streams, disjoint tile writes).
+  {
+    const umbreon::Scene sc = makeReflScene(0.4f, 0.05f);
+    umbreon::RenderOptions o = makeOpts(2);
+    const umbreon::FrameResult f1 = umbreon::render(sc, o);
+    const umbreon::FrameResult f2 = umbreon::render(sc, o);
+    s.check("glossy render is run-to-run bit-exact",
+            bitEqual(f1.color, f2.color));
+
+    umbreon::FrameResult t1;
+    {
+      tbb::global_control one(tbb::global_control::max_allowed_parallelism, 1);
+      t1 = umbreon::render(sc, o);
+    }
+    s.check("glossy render: 1 thread == N threads (bitwise)",
+            bitEqual(t1.color, f1.color));
+  }
+
+  // 9) Alpha degeneracy and near-mirror consistency: a roughness below the
+  //    kPt2GlossyAlphaMin cut snaps to the mirror pass bitwise; a barely
+  //    glossy lobe (alpha ~0.045) must land close to the mirror mean.
+  {
+    umbreon::RenderOptions on = makeOpts(2);
+    umbreon::RenderOptions off = makeOpts(2);
+    off.pt2Glossy = false;
+    // roughness 1e-4 -> blinn exp 1e4 -> alpha ~0.0141 < kPt2GlossyAlphaMin.
+    const umbreon::Scene snap = makeReflScene(0.4f, 1.0e-4f);
+    const umbreon::FrameResult s1 = umbreon::render(snap, on);
+    const umbreon::FrameResult s2 = umbreon::render(snap, off);
+    s.check("alpha below the mirror cut degenerates bitwise",
+            bitEqual(s1.color, s2.color));
+
+    const umbreon::Scene near = makeReflScene(0.4f, 0.001f);
+    const umbreon::FrameResult n1 = umbreon::render(near, on);
+    const umbreon::FrameResult n2 = umbreon::render(near, off);
+    const float m1 = meanLum(n1), m2 = meanLum(n2);
+    s.check("near-mirror glossy mean within 3% of the mirror render",
+            std::fabs(m1 - m2) <= 0.03f * std::fmax(m1, m2));
+  }
+
+  // 10) VNDF estimator consistency: the sample mean must be stable across
+  //     spp (8 vs 64 within 2% on the image mean).
+  {
+    const umbreon::Scene sc = makeReflScene(0.4f, 0.1f);
+    umbreon::RenderOptions a = makeOpts(2);
+    umbreon::RenderOptions b = makeOpts(2);
+    a.pt2GlossySpp = 8;
+    b.pt2GlossySpp = 64;
+    const umbreon::FrameResult fa = umbreon::render(sc, a);
+    const umbreon::FrameResult fb = umbreon::render(sc, b);
+    const float ma = meanLum(fa), mb = meanLum(fb);
+    s.check("glossy estimator: spp 8 vs 64 image mean within 2%",
+            std::fabs(ma - mb) <= 0.02f * std::fmax(ma, mb));
+  }
+
+  // 11) CSG emitter NEE, unbiasedness: NEE and BSDF-only are estimators of
+  //     the same transport, so high-spp image means must agree -- for the
+  //     emissive sphere (cone sampling) and the emissive capped cylinder
+  //     (area sampling of side + caps) separately.
+  {
+    umbreon::RenderOptions a = makeOpts(2);
+    umbreon::RenderOptions b = makeOpts(2);
+    a.pt1Spp = 256;
+    b.pt1Spp = 256;
+    b.pt2EmissiveNee = false;
+    const umbreon::Scene sph = makeCsgEmissiveScene(true, false);
+    const umbreon::FrameResult sa = umbreon::render(sph, a);
+    const umbreon::FrameResult sb = umbreon::render(sph, b);
+    const float msa = meanLum(sa), msb = meanLum(sb);
+    s.check("CSG sphere NEE and BSDF-only converge to the same mean (2%)",
+            std::fabs(msa - msb) <= 0.02f * std::fmax(msa, msb));
+
+    const umbreon::Scene cyl = makeCsgEmissiveScene(false, true);
+    const umbreon::FrameResult ca = umbreon::render(cyl, a);
+    const umbreon::FrameResult cb = umbreon::render(cyl, b);
+    const float mca = meanLum(ca), mcb = meanLum(cb);
+    s.check("CSG cylinder NEE and BSDF-only converge to the same mean (2%)",
+            std::fabs(mca - mcb) <= 0.02f * std::fmax(mca, mcb));
+  }
+
+  // 12) CSG emitter NEE, variance: at spp=8 the NEE render must sit at
+  //     least 2x closer (MSE) to the converged reference than BSDF-only --
+  //     the point of sampling the emitter instead of hoping to hit it.
+  {
+    const umbreon::Scene sc = makeCsgEmissiveScene(true, true);
+    umbreon::RenderOptions ref = makeOpts(2);
+    ref.pt1Spp = 256;
+    const umbreon::FrameResult fr = umbreon::render(sc, ref);
+    umbreon::RenderOptions on = makeOpts(2);
+    umbreon::RenderOptions off = makeOpts(2);
+    on.pt1Spp = 8;
+    off.pt1Spp = 8;
+    off.pt2EmissiveNee = false;
+    const umbreon::FrameResult fon = umbreon::render(sc, on);
+    const umbreon::FrameResult foff = umbreon::render(sc, off);
+    s.check("CSG emitter NEE at spp=8 halves the MSE vs BSDF-only",
+            mseRgb(fon, fr) <= 0.5 * mseRgb(foff, fr));
+  }
+
+  // 13) CSG emitter gates: fromEdge decoration must be excluded from the
+  //     emitter scan (NEE flag = bit-exact no-op), and the CSG-emitter
+  //     render stays deterministic run-to-run and across thread counts.
+  {
+    umbreon::Scene deco = makeCsgEmissiveScene(true, false);
+    deco.spheres[0].fromEdgeMacro = true;
+    umbreon::RenderOptions a = makeOpts(2);
+    umbreon::RenderOptions b = makeOpts(2);
+    b.pt2EmissiveNee = false;
+    const umbreon::FrameResult da = umbreon::render(deco, a);
+    const umbreon::FrameResult db = umbreon::render(deco, b);
+    s.check("fromEdge emissive decoration: NEE flag is a bit-exact no-op",
+            bitEqual(da.color, db.color));
+
+    const umbreon::Scene sc = makeCsgEmissiveScene(true, true);
+    const umbreon::FrameResult f1 = umbreon::render(sc, a);
+    const umbreon::FrameResult f2 = umbreon::render(sc, a);
+    s.check("CSG emitter NEE is run-to-run bit-exact",
+            bitEqual(f1.color, f2.color));
+    umbreon::FrameResult t1;
+    {
+      tbb::global_control one(tbb::global_control::max_allowed_parallelism, 1);
+      t1 = umbreon::render(sc, a);
+    }
+    s.check("CSG emitter NEE: 1 thread == N threads (bitwise)",
+            bitEqual(t1.color, f1.color));
   }
 
   return s.report();

@@ -89,6 +89,9 @@ struct Options {
   int pt2AdaptiveMul = 4;   // --pt2-adaptive-mul (total = mul * spp)
   bool pt2Reflect = true;   // --pt2-reflect on|off (traced mirror reflection)
   bool pt2EmissiveNee = true;  // --pt2-emissive-nee on|off (NEE+MIS vs BSDF-only)
+  bool pt2Glossy = true;    // --pt2-glossy on|off (GGX glossy reflection)
+  int pt2GlossySpp = 8;     // --pt2-glossy-spp (GGX lobe rays per pixel)
+  bool pt2GlossyDenoise = true;  // --pt2-glossy-denoise on|off (OIDN on E_spec)
 
   // --- denoise ---
   // -1 = unset: resolved in main to atrous when GI is on, else None (so non-GI

@@ -62,6 +62,11 @@ struct HitShade {
   // shade then skips its fake reflection*background and the GI post-pass
   // composites reflection * L(mirror ray) instead. 0 otherwise.
   float reflectivity = 0.0f;
+  // GGX roughness alpha of the traced reflection lobe (pt2 glossy pass):
+  // > 0 only when reflectivity > 0, pt2Glossy is on and the finish carries
+  // specular > 0 (a highlight-bearing surface reflects with the SAME width as
+  // its Blinn highlight). 0 = the single-ray mirror pass owns the pixel.
+  float reflAlpha = 0.0f;
 };
 
 // Everything shadeHit() reads, gathered once per frame. References point at the
@@ -210,7 +215,11 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     }
     const bool traceRefl = c.opt.giIntegrator == 2 && c.opt.pt2Reflect &&
                            c.opt.gi && triMat.reflection > 0.0f;
-    if (traceRefl) hs.reflectivity = triMat.reflection;
+    if (traceRefl) {
+      hs.reflectivity = triMat.reflection;
+      if (c.opt.pt2Glossy && triMat.specular > 0.0f)
+        hs.reflAlpha = pt2GgxAlphaFromRoughness(triMat.roughness);
+    }
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, shadowsActive,
@@ -311,7 +320,11 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     const bool primShadows = !fromEdge && shadowsActive;
     const bool traceReflP = c.opt.giIntegrator == 2 && c.opt.pt2Reflect &&
                             c.opt.gi && !fromEdge && pm.reflection > 0.0f;
-    if (traceReflP) hs.reflectivity = pm.reflection;
+    if (traceReflP) {
+      hs.reflectivity = pm.reflection;
+      if (c.opt.pt2Glossy && pm.specular > 0.0f)
+        hs.reflAlpha = pt2GgxAlphaFromRoughness(pm.roughness);
+    }
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, primShadows,
