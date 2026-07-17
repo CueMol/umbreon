@@ -121,12 +121,16 @@ int main() {
   }
 
   // Mirror: reflection without a highlight -> polished metal, roughness 0.
+  // The raw reflection scalar is CARRIED (it drives the non-pt2 fake
+  // environment term at the exact POV amount).
   {
     Material in;
     in.reflection = 0.8f;
     const Material out = toPrincipledMaterial(in);
     s.check("highlight-less reflection -> metallic mirror",
             near(out.pbr.metallic, 1.0f) && near(out.pbr.roughness, 0.0f));
+    s.check("reflection scalar carried for the fake env term",
+            near(out.reflection, 0.8f));
   }
 
   // FLAGGED HEURISTIC: reflection + highlight -> partial metallic by the

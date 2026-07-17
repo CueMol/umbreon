@@ -274,18 +274,29 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
   }
 
   // Fake environment specular (the non-pt2 degradation path, mirroring POV's
-  // reflection * bg term and its !traceReflection gate): a metal/glossy
-  // surface picks up the background tint through its Fresnel. Under pt2 the
-  // traced mirror/glossy pass owns the term (traceReflection == true). The
-  // background is constant, so the zeroth-order lobe integral is exact up to
-  // the single-scatter albedo. Skipped entirely at f0max == 0 (Schlick would
-  // otherwise be nonzero at grazing even for F0 = 0), which also keeps the
-  // diffuse-only bitwise parity with the POV model.
-  if (!traceReflection && f0max > 0.0f) {
-    const Vec3 F = schlickF(F0, ndv);
-    out.x += F.x * bg.x;
-    out.y += F.y * bg.y;
-    out.z += F.z * bg.z;
+  // reflection * bg term and its !traceReflection gate). Under pt2 the
+  // traced mirror/glossy pass owns the term (traceReflection == true).
+  // Amount rules, tuned for raytracing-mode fidelity of converted scenes:
+  //  - Material::reflection > 0 (a converted POV finish carries its original
+  //    scalar; dormant otherwise under Principled): use reflection * bg --
+  //    BIT-FAITHFUL to the POV fake term, so converted metals/mirrors keep
+  //    their POV environment brightness.
+  //  - else: constant F0 * bg (NOT the Schlick curve: the grazing rise would
+  //    paint a bright rim on every dielectric against a bright background,
+  //    a term the POV model never had; the Fresnel curve belongs to the
+  //    traced pt2 path, where it is evaluated per sample against real
+  //    geometry). Skipped entirely at f0max == 0, which keeps the
+  //    diffuse-only bitwise parity with the POV model.
+  if (!traceReflection) {
+    if (mat.reflection > 0.0f) {
+      out.x += mat.reflection * bg.x;
+      out.y += mat.reflection * bg.y;
+      out.z += mat.reflection * bg.z;
+    } else if (f0max > 0.0f) {
+      out.x += F0.x * bg.x;
+      out.y += F0.y * bg.y;
+      out.z += F0.z * bg.z;
+    }
   }
   return out;
 }

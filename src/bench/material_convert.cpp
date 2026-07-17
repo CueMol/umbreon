@@ -82,9 +82,12 @@ Material toPrincipledMaterial(const Material& in) {
       out.pbr.metallic = std::max(out.pbr.metallic, clamp01(in.reflection));
     }
   }
-  // Dropped, by design: brilliance (Lambert diffuse), the empirical metallic
-  // highlight tint (F0 = pigment supersedes it) and the raw reflection
-  // scalar (principled never reads it).
+  // Dropped, by design: brilliance (Lambert diffuse) and the empirical
+  // metallic highlight tint (F0 = pigment supersedes it). The raw
+  // `reflection` scalar is CARRIED (out = in above): under Principled it is
+  // dormant in the BSDF but drives the non-pt2 fake environment term at the
+  // exact POV amount (reflection * bg), keeping the raytracing-mode look of
+  // converted metals/mirrors close to their POV source.
   return out;
 }
 

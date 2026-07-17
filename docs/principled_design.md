@@ -74,9 +74,14 @@ world z のみで出るため保存不要。rotation は (t1,t2) を回転(0.25 
 - **diffuse 間接も共通**: kd の seam(giReflectance / pt1 gather / OIDN guide / cache
   oneBounceRadiance)が model 対応
 - **specular 間接だけ段階劣化**: pt2 = traced mirror/glossy(E_spec、Fresnel per-sample)。
-  それ以外 = フェイク環境項 `schlickF(F0, N·V) × background`(POV の reflection×bg と
-  同型・同ゲート。f0max == 0 で完全 skip)。pt2 では traced が所有するピクセルで skip
-  され二重計上しない
+  それ以外 = フェイク環境項。額の規則(raytracing モード忠実度のための設計):
+  `Material::reflection > 0`(変換材が持ち越した POV スカラー)なら **`reflection × bg`
+  = POV のフェイク項と同額**; さもなければ **`F0 × bg`(定数、Schlick カーブなし)**。
+  定数にする理由: Schlick の grazing 立ち上がりは明背景で全 dielectric の縁に白い
+  シーンを乗せ、変換シーンの raytracing モード忠実度を壊す(POV の reflection 0 材には
+  存在しない項)。Fresnel カーブは実ジオメトリに対して per-sample 評価される traced
+  pt2 経路の担当。f0max == 0 かつ reflection == 0 で完全 skip(diffuse-only parity の
+  必要条件)。pt2 では traced が所有するピクセルで skip され二重計上しない
 - POV↔principled の混在シーンは材ごとに正しく共存する(reflF0 の中立既定 (1,1,1) で
   POV ピクセルの合成は bit 不変)
 
@@ -133,7 +138,8 @@ CueMol の「トゥーン」プリセットは将来も Pov モデル(極端値)
 | ハイライトなし | `pbr.specular = 0`(dielectric ローブなし) |
 | `reflection > 0`、ハイライトなし | `pbr.metallic = 1, pbr.roughness = 0`(研磨金属ミラー、F0 = pigment) |
 | `reflection > 0` + ハイライトあり | **`pbr.metallic = max(既値, clamp01(reflection))`** — dielectric F0 上限 0.08 では reflection 0.3 の床がほぼ消えるための部分金属化。**要目視判定のヒューリスティック**(代替 = metallic 0 の物理プラスチック) |
-| brilliance / metallic tint / reflection スカラー | 写像後は読まれない(破棄を文書化) |
+| brilliance / metallic tint | 写像後は読まれない(破棄を文書化) |
+| `reflection` スカラー | **持ち越し**: Principled の BSDF は読まないが、非 pt2 モードのフェイク環境項が POV と同額の `reflection × bg` として使う(raytracing モード忠実度。§5 参照) |
 
 ## 7. E_spec denoise の解像度(S5、実測 2026-07-17)
 
