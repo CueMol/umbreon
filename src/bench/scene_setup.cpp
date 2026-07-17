@@ -8,6 +8,7 @@
 
 #include "edges/object_space_edges.hpp"
 #include "geom/mesh2_reader.hpp"
+#include "material_convert.hpp"
 #include "pov/pov_scene_reader.hpp"
 
 namespace umbreon {
@@ -93,6 +94,30 @@ bool buildSceneFromPov(Options& opt, Scene& scene, RenderOptions& ropt,
   scene.mesh = std::move(geo.mesh);
   scene.spheres = std::move(geo.spheres);
   scene.cylinders = std::move(geo.cylinders);
+  // --material principled: post-parse conversion of every finish (block
+  // materials, per-face texture_list slots, per-primitive inline textures
+  // and the defaults all funnel into these four sinks). Baked NPR outline
+  // decoration (fromEdgeMacro) stays POV -- it must remain flat; the
+  // object-space edge cylinders are generated later with flatOutline and
+  // are equally untouched.
+  if (opt.materialModel == 1) {
+    scene.mesh.material = umbreon::toPrincipledMaterial(scene.mesh.material);
+    for (umbreon::Material& mm : scene.mesh.materials)
+      mm = umbreon::toPrincipledMaterial(mm);
+    std::size_t converted = 1 + scene.mesh.materials.size();
+    for (umbreon::Sphere& sp : scene.spheres)
+      if (!sp.fromEdgeMacro) {
+        sp.material = umbreon::toPrincipledMaterial(sp.material);
+        ++converted;
+      }
+    for (umbreon::Cylinder& cy : scene.cylinders)
+      if (!cy.fromEdgeMacro) {
+        cy.material = umbreon::toPrincipledMaterial(cy.material);
+        ++converted;
+      }
+    std::printf("  material model: principled (%zu finish(es) converted)\n",
+                converted);
+  }
   if (opt.outlineScale != 1.0f) {
     for (umbreon::Sphere& s : scene.spheres) s.radius *= opt.outlineScale;
     for (umbreon::Cylinder& c : scene.cylinders) c.radius *= opt.outlineScale;

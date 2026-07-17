@@ -218,6 +218,7 @@ stratified サンプリング on / 1 バウンス）。irradiance cache は expe
 | フラグ | 既定 | 効果 / 注意 |
 |---|---|---|
 | `--integrator <cache\|pt1\|pt2>` | pt1 | 間接光インテグレータの選択。`pt1`/`pt2` の明示指定は `--gi on` を含意。pt2 = pt1 の gather コア + 下記拡張(Sobol/blue-noise サンプラー、emissive GI、area light、traced reflection、適応 spp) |
+| `--material <pov\|principled>` | pov | 全 POV finish を principled GGX subset へ post-parse 変換(fromEdge 装飾は除外)。lossy 変換: diffuse-only finish のみ bitwise 不変、ハイライト・反射材は見た目が変わる(それが目的)。写像表は [principled_design.md](principled_design.md) §6 |
 | `--spp <int>` | 8 | pt1: ピクセルあたりの gather レイ数 |
 | `--indirect-res <full\|half\|quarter\|out>` | out | pt1: gather 解像度。レンダーグリッド（supersample 後）の 1/{1,2,4}、`out` は最終出力サイズ。full 以外は joint bilateral upsample + シルエットリムの full-res パッチ（`--pt1-edge-patch`） |
 | `--pt1-edge-patch <on\|off>` | on | 縮小 gather グリッドが解決できないシルエット縁ピクセルを full-res で再 gather |

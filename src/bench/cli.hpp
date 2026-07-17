@@ -59,6 +59,9 @@ struct Options {
   // These mirror the RenderOptions defaults -- scene_setup copies them over
   // unconditionally, so they must not drift apart. ---
   int giIntegrator = 1;         // 1 = pt1 (default), 0 = irradiance cache
+  int materialModel = 0;        // --material pov(0)|principled(1): convert
+                                // every parsed POV finish to the principled
+                                // subset (lossy; see material_convert.hpp)
   int pt1Spp = 8;               // --spp: gather rays per pixel
   bool pt1HalfRes = true;       // legacy; consulted only if pt1GatherDiv == 0
   int pt1GatherDiv = -1;        // --indirect-res full|half|quarter|out (out)

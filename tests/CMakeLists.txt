@@ -9,6 +9,10 @@
 # scene files are plain git content (see .gitattributes: only *.inc/*.png/
 # *.qsc are LFS), so pov_scene_reader and the pt1/render tests need no label.
 
+add_executable(test_material_convert test_material_convert.cpp)
+target_link_libraries(test_material_convert PRIVATE bench_core)
+add_test(NAME material_convert COMMAND test_material_convert)
+
 add_executable(test_mesh2_reader test_mesh2_reader.cpp)
 target_link_libraries(test_mesh2_reader PRIVATE bench_core)
 add_test(

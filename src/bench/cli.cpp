@@ -360,6 +360,16 @@ Options parseCli(int argc, char** argv) {
         fail("--integrator expects cache/pt1/pt2");
       continue;
     }
+    if (a == "--material") {
+      std::string v = value("--material");
+      if (v == "pov")
+        o.materialModel = 0;
+      else if (v == "principled")
+        o.materialModel = 1;
+      else
+        fail("--material expects pov/principled");
+      continue;
+    }
     if (a == "--pt2-pattern") {
       std::string v = value("--pt2-pattern");
       if (v == "sobol")
@@ -1146,6 +1156,9 @@ void printUsage(const char* prog) {
       "                           Sobol/blue-noise sampler + emissive GI;\n"
       "                           cache is experimental (pt1/pt2 imply\n"
       "                           --gi on)                              [pt1]\n"
+      "  --material <pov|principled> convert every POV finish to the\n"
+      "                           principled GGX subset (lossy: only\n"
+      "                           diffuse-only finishes stay bitwise)   [pov]\n"
       "  --pt2-pattern <sobol|bluenoise> pt2 first-bounce sample\n"
       "                           arrangement                     [bluenoise]\n"
       "  --pt2-emissive <on|off>  pt2: emissive geometry lights its\n"
