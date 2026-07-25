@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <condition_variable>
-#include <cstdio>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -94,12 +93,16 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
     sumA += gb.alpha;
     maxGroup = std::max(maxGroup, gb.group);
   }
-  if (sumA > 1.0f + 1.0e-4f)
-    std::fprintf(stderr,
-                 "warning: group-alpha blend weights sum to %.3f (> 1); the "
-                 "background pass weight is clamped to 0\n",
-                 sumA);
-  const float bgW = std::fmax(0.0f, 1.0f - sumA);
+  // The background weight is NEGATIVE once the blend weights sum to more than
+  // 1, and that is the correct value rather than an error to clamp away. What
+  // makes the blend faithful is that the pass weights sum to exactly 1:
+  // geometry outside every blend group appears identically in all passes, so
+  // it is reproduced unchanged only while (1 - sum) + sum == 1. Clamping the
+  // background weight to 0 leaves the total at `sum`, which scales the whole
+  // frame by that factor and clips opaque geometry to white. blendpng, whose
+  // closed form this is, lets the same coefficient go negative (its
+  // solvebeta + front-to-back lerp chain produces 1 - sum(beta) directly).
+  const float bgW = 1.0f - sumA;
 
   std::vector<uint8_t> hideAll(static_cast<std::size_t>(maxGroup) + 1, 0);
   for (const GroupBlend& gb : scene.groupBlend) hideAll[gb.group] = 1;
