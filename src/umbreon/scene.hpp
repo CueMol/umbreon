@@ -362,6 +362,11 @@ struct Cylinder {
 // The group's geometry renders OPAQUE (colors untouched) inside its own pass;
 // fragment alpha (per-vertex color.w / POV native transmit) is orthogonal and
 // still composites front-to-back "over" within each pass.
+// sum_i a_i is NOT capped at 1: several sections may each be nearly opaque. The
+// background coefficient then goes negative, which is what keeps the pass
+// weights summing to exactly 1 -- the property that leaves geometry outside
+// every blend group (it appears identically in all passes) unchanged. blendpng
+// behaves the same way; only the final pixel is clamped to the output range.
 struct GroupBlend {
   uint16_t group = 0;  // transparency group (CueMol section) id
   float alpha = 1.0f;  // blend weight (CueMol group alpha; blendpng beta)

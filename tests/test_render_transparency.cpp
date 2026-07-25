@@ -205,6 +205,30 @@ int main() {
       s.check("T8 fragment-in-blend B", approx(dsp(f.color[kCenterRgba + 2]), 0.5f * dspHalf, 1e-4f));
     }
 
+    // T9: weights summing to MORE than 1 must not scale the rest of the frame.
+    // Geometry outside every blend group appears identically in every pass, so
+    // it survives only while the weights sum to exactly 1 -- which needs the
+    // background weight 1 - sum to go NEGATIVE (-0.9 here), exactly as
+    // blendpng's solvebeta + lerp chain produces it. Clamping that weight to 0
+    // would leave the total at 1.9 and scale the grey quad by it, clipping to
+    // white. The grey quad sits in FRONT of both blend groups, so every pass
+    // shows it at the center and the expected value is the quad itself.
+    {
+      umbreon::Mesh m;
+      addQuad(m, {0, 0, 1, 1.0f}, 0.0f, 1);           // blend group 1 (behind)
+      addQuad(m, {0, 1, 0, 1.0f}, 0.5f, 2);           // blend group 2 (behind)
+      addQuad(m, {0.5f, 0.5f, 0.5f, 1.0f}, 1.0f, 0);  // opaque grey, no group
+      umbreon::Scene sc =
+          sceneOfBlend(std::move(m), {0, 0, 0}, {{1, 0.95f}, {2, 0.95f}});
+      umbreon::RenderOptions o; o.width = 5; o.height = 5;
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      const float dspGrey = dsp(0.5f);
+      s.check("T9 sum>1 keeps opaque R", approx(dsp(f.color[kCenterRgba + 0]), dspGrey, 1e-4f));
+      s.check("T9 sum>1 keeps opaque G", approx(dsp(f.color[kCenterRgba + 1]), dspGrey, 1e-4f));
+      s.check("T9 sum>1 keeps opaque B", approx(dsp(f.color[kCenterRgba + 2]), dspGrey, 1e-4f));
+      s.check("T9 sum>1 alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
+
     // ===== Fragment alpha (intrinsic per-color opacity): front-to-back "over",
     // EVERY surface composited (no dedup), order-DEPENDENT -- POV native
     // transmit. Selected whenever the group has no blend entry (groupBlend
