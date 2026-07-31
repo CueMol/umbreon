@@ -138,6 +138,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/edges/edge_mesh_bvh.cpp
     src/umbreon/edges/analytic_silhouette.cpp
     src/umbreon/umbreon.cpp
+    src/umbreon/log.cpp
   )
   # Namespaced alias so in-tree (add_subdirectory) consumers link the same
   # 'umbreon::umbreon' target name an installed find_package() would provide.
@@ -215,7 +216,7 @@ endif()
 # Public-surface SSOT: keep the install(FILES) list below in sync with the
 # table in docs/api/libumbreon.md and the per-header visibility markers
 # ("libumbreon PUBLIC API header" vs "... INTERNAL header"). All three must
-# list the same 8 public headers (umbreon.hpp, scene.hpp,
+# list the same 9 public headers (umbreon.hpp, scene.hpp, log.hpp,
 # render/render_types.hpp and its four sub-headers edge_types.hpp /
 # render_options.hpp / frame_result.hpp / render_progress.hpp,
 # postprocess/image_ops.hpp).
@@ -226,6 +227,7 @@ if(TARGET umbreon)
   # Public headers, preserving the layout umbreon.hpp #includes (scene.hpp and
   # render/render_types.hpp) so an installed <umbreon/umbreon.hpp> resolves them.
   install(FILES src/umbreon/umbreon.hpp src/umbreon/scene.hpp
+    src/umbreon/log.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
   # render_types.hpp is an umbrella over the three sub-headers; all four ship
   # so both the historical single include and per-concern includes resolve.

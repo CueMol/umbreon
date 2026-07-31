@@ -7,6 +7,7 @@
 // shading path is in shading.hpp instead.
 #pragma once
 
+#include "../log.hpp"
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -39,7 +40,7 @@ inline const char* rtcErrorString(RTCError code) {
 // of corrupting the image silently.
 inline void embreeErrorCallback(void* /*userPtr*/, RTCError code,
                                 const char* str) {
-  std::fprintf(stderr, "embree error %d (%s): %s\n", static_cast<int>(code),
+  umbreon::logMessage(umbreon::LogLevel::Warning, "embree error %d (%s): %s", static_cast<int>(code),
                rtcErrorString(code), (str != nullptr) ? str : "");
 }
 

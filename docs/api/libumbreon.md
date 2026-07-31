@@ -112,6 +112,7 @@ downstream から直接 include しないでください）。
 | --- | --- |
 | `<umbreon/umbreon.hpp>` | エントリポイント `render()`、`UMBREON_VERSION_*` |
 | `<umbreon/scene.hpp>` | `Scene` / `Mesh` / `Material` / `Sphere` / `Cylinder` / `Camera` / `DistantLight` / `Fog` / `Vec3` 等 |
+| `<umbreon/log.hpp>` | `LogLevel` / `LogSink` / `setLogSink()`（診断メッセージの受け取り先。未設定なら従来どおり stderr） |
 | `<umbreon/render/render_types.hpp>` | 下記3ヘッダを取り込むアンブレラ（歴史的な単一 include を維持） |
 | `<umbreon/render/edge_types.hpp>` | `EdgeClass` / `EdgeStyle` / **`StrokeEdgeOptions`** / **`ObjectSpaceEdgeOptions`** |
 | `<umbreon/render/render_options.hpp>` | `RenderOptions` |

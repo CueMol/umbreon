@@ -3,6 +3,7 @@
 // (stroke_render.hpp:renderStrokeChains). Also the UMBREON_SCREEN_EDGE_DUMP
 // debug sink (PPM/CSV crack dumps). Stages 1-3 live in screen_edge_*.cpp;
 // see screen_vector_edges.hpp for the pipeline overview.
+#include "../log.hpp"
 #include "edges/screen_vector_edges.hpp"
 
 #include <algorithm>
@@ -206,7 +207,7 @@ void writeCrackDump(const char* prefix, const CrackField& cf,
       std::fprintf(f, "P6\n%d %d\n255\n", PW, PH);
       std::fwrite(img.data(), 1, img.size(), f);
       std::fclose(f);
-      std::fprintf(stderr, "[screen-edges] dumped %s (%dx%d)\n", path.c_str(),
+      umbreon::logMessage(umbreon::LogLevel::Info, "[screen-edges] dumped %s (%dx%d)", path.c_str(),
                    PW, PH);
     }
   }
@@ -277,7 +278,7 @@ void writeCrackDump(const char* prefix, const CrackField& cf,
       }
     }
     std::fclose(f);
-    std::fprintf(stderr, "[screen-edges] dumped %s (%zu rows)\n", path.c_str(),
+    umbreon::logMessage(umbreon::LogLevel::Info, "[screen-edges] dumped %s (%zu rows)", path.c_str(),
                  rows);
   }
 }
@@ -447,10 +448,10 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       for (std::uint8_t c : ch.edgeClass)
         if (c < 5) ++cc[c];
       for (std::uint8_t f : ch.edgeFlags) st += (f & 1);
-      std::fprintf(stderr,
+      umbreon::logMessage(umbreon::LogLevel::Info,
                    "[screen-edges]   chain %zu bbox=(%.0f,%.0f)-(%.0f,%.0f) "
                    "edgels=%zu sil=%d obj=%d gap=%d crease=%d strong=%zu "
-                   "closed=%d deg=%d/%d\n",
+                   "closed=%d deg=%d/%d",
                    ci, x0, y0, x1, y1, ch.edgeClass.size(), cc[1], cc[2],
                    cc[3], cc[4], st, ch.closed ? 1 : 0, ch.deg0, ch.deg1);
     }
@@ -465,9 +466,9 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       for (std::uint8_t f : ch.edgeFlags) nStrong += (f & 1);
     }
     for (const StrokeChainInput& in : drawChains) nPts += in.pts.size();
-    std::fprintf(stderr,
+    umbreon::logMessage(umbreon::LogLevel::Info,
                  "[screen-edges] traced=%zu kept=%zu edgels=%zu (sil=%d "
-                 "obj=%d gap=%d crease=%d) gapStrong=%zu drawn=%zu pts=%zu\n",
+                 "obj=%d gap=%d crease=%d) gapStrong=%zu drawn=%zu pts=%zu",
                  tracedRaw, traced.size(), nEdgels, clsCount[1], clsCount[2],
                  clsCount[3], clsCount[4], nStrong, drawChains.size(), nPts);
   }

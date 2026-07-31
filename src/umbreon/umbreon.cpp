@@ -9,22 +9,57 @@
 
 #include "postprocess/image_ops.hpp"
 #include "render/pipeline.hpp"
+#include "log.hpp"
+#include "render/scene_build.hpp"  // embreeErrorCallback
 
 namespace umbreon {
 namespace {
 
-// Copy `s` with every primitive whose group is flagged in `hide` removed
-// (indexed by group id; ids beyond the mask are kept). Vertex buffers are
-// shared wholesale -- only the triangle index list and its per-tri side tables
-// shrink -- so unreferenced vertices stay in the buffers, which the tracer
-// never visits.
-Scene hideGroups(const Scene& s, const std::vector<uint8_t>& hide) {
+// Owns one RTCDevice for the lifetime of a multipass render. Embree's device
+// setup (task scheduler init) is per-device, not per-scene, so the group-alpha
+// passes share one instead of each building and tearing down their own.
+class SharedDevice {
+ public:
+  SharedDevice() : device_(rtcNewDevice(nullptr)) {
+    // A null device is not fatal here: renderFrame falls back to creating its
+    // own per pass, which is exactly the previous behaviour.
+    // Same error handler renderFrame installs on a device it owns, so a
+    // shared device reports Embree errors identically.
+    if (device_) rtcSetDeviceErrorFunction(device_, detail::embreeErrorCallback, nullptr);
+  }
+  ~SharedDevice() {
+    if (device_) rtcReleaseDevice(device_);
+  }
+  SharedDevice(const SharedDevice&) = delete;
+  SharedDevice& operator=(const SharedDevice&) = delete;
+  RTCDevice get() const { return device_; }
+
+ private:
+  RTCDevice device_;
+};
+
+// Rewrite `out` as `s` minus every primitive whose group is flagged in `hide`
+// (indexed by group id; ids beyond the mask are kept). Vertex buffers are kept
+// wholesale -- only the triangle index list and its per-tri side tables shrink
+// -- so unreferenced vertices stay in the buffers, which the tracer never
+// visits.
+//
+// `out` is the multipass WORKING COPY, not a fresh Scene: it already carries
+// s's vertex buffers (positions / normals / colors are identical in every
+// pass and can be tens of MB), so a pass rewrites only the primitive lists
+// instead of copying the whole mesh again. `meshDropped` tracks the one case
+// that invalidates that -- a pass whose geometry is entirely hidden has to
+// clear the mesh -- so the next pass knows to restore the buffers.
+void applyHideGroups(const Scene& s, const std::vector<uint8_t>& hide,
+                     Scene& out, bool& meshDropped) {
   auto hidden = [&](uint16_t g) {
     return g < hide.size() && hide[g] != 0;
   };
 
-  Scene out = s;
-  out.groupBlend.clear();  // each pass renders plain (no nested blending)
+  if (meshDropped) {
+    out.mesh = s.mesh;  // a previous pass cleared it (see below)
+    meshDropped = false;
+  }
 
   const std::size_t ntri = s.mesh.triangleCount();
   std::vector<uint32_t> idx;
@@ -43,21 +78,45 @@ Scene hideGroups(const Scene& s, const std::vector<uint8_t>& hide) {
     // (soup) fallback, which would resurrect ALL original vertices as
     // triangles -- drop the mesh entirely instead.
     out.mesh = Mesh{};
+    meshDropped = true;
   } else {
     out.mesh.index = std::move(idx);
     out.mesh.triMaterialId = std::move(mat);
     out.mesh.triGroupId = std::move(grp);
   }
 
-  out.spheres.erase(
-      std::remove_if(out.spheres.begin(), out.spheres.end(),
-                     [&](const Sphere& sp) { return hidden(sp.group); }),
-      out.spheres.end());
-  out.cylinders.erase(
-      std::remove_if(out.cylinders.begin(), out.cylinders.end(),
-                     [&](const Cylinder& cy) { return hidden(cy.group); }),
-      out.cylinders.end());
-  return out;
+  out.spheres.clear();
+  for (const Sphere& sp : s.spheres)
+    if (!hidden(sp.group)) out.spheres.push_back(sp);
+  out.cylinders.clear();
+  for (const Cylinder& cy : s.cylinders)
+    if (!hidden(cy.group)) out.cylinders.push_back(cy);
+}
+
+/// Report a finished GI render's per-stage cost. Info level, so it reaches a
+/// host that installed a log sink and stays off the CLI's stderr (the bench
+/// prints its own report from the same FrameResult).
+void logPt1Timing(const RenderOptions& opt, const Pt1Timing& t,
+                  const Pt1RayCounts& rays, std::uint64_t passCount) {
+  if (!opt.gi) return;
+  logMessage(LogLevel::Info,
+             "pt1 timing (%llu pass%s): bvh_build %.3f  primary %.3f  "
+             "direct %.3f  gather %.3f  denoise %.3f  upsample %.3f  "
+             "total %.3f (s)",
+             static_cast<unsigned long long>(passCount),
+             passCount == 1 ? "" : "es", t.bvhBuild, t.primary, t.direct,
+             t.gather, t.denoise, t.upsample, t.total);
+  // Ray counts turn the timing into a rate, which is what tells a slow render
+  // from a big one: the same seconds mean different things at 5 and at 50
+  // Mrays/s. Only the LAST pass's counters survive in the carrier frame, so
+  // this is per-pass rather than a total.
+  const double total = double(rays.gatherRays + rays.neeRays + rays.gbufferRays);
+  if (total > 0.0 && t.total > 0.0) {
+    logMessage(LogLevel::Info,
+               "  last pass: %.2f Mrays (gather %.2f, NEE %.2f, gbuffer %.2f)",
+               total / 1e6, double(rays.gatherRays) / 1e6,
+               double(rays.neeRays) / 1e6, double(rays.gbufferRays) / 1e6);
+  }
 }
 
 }  // namespace
@@ -83,6 +142,7 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
                               RenderProgress* progress) {
   if (scene.groupBlend.empty()) {
     FrameResult f = renderFrame(scene, opt, progress);
+    logPt1Timing(opt, f.pt1Timing, f.pt1Rays, 1);
     if (progress && !f.cancelled) progress->markDone();
     return f;
   }
@@ -115,6 +175,16 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
   // render -- the final layer pass, which for the common single-group case is
   // the full scene. Zero-weight passes still render: skipping them would
   // silently change which pass carries those.
+  // One device for every pass of this render (see SharedDevice).
+  const SharedDevice device;
+
+  // One working scene for every pass: the vertex buffers are pass-invariant, so
+  // they are copied once here and each pass rewrites only its primitive lists
+  // (applyHideGroups). Nested blending is off in a pass by construction.
+  Scene work = scene;
+  work.groupBlend.clear();
+  bool workMeshDropped = false;
+
   FrameResult carrier;
   std::vector<float> acc;
   double seconds = 0.0;
@@ -124,11 +194,18 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
   const std::uint64_t passCount = 1 + scene.groupBlend.size();
   std::uint64_t passIndex = 0;
   bool cancelled = false;
-  auto addPass = [&](const Scene& ps, float w) {
+  auto addPass = [&](const std::vector<uint8_t>& hide, float w) {
     if (cancelled) return;  // a prior pass was cancelled: stop the chain
     if (progress) progress->beginPass(passIndex, passCount);
     ++passIndex;
-    FrameResult f = renderFrame(ps, opt, progress);
+    // Group-alpha transparency costs one FULL render per blend group plus one
+    // for the background, which is the single most surprising thing about a
+    // transparent scene's render time. Say so, per pass.
+    logMessage(LogLevel::Info, "group-alpha pass %llu/%llu (weight %.3f)",
+               static_cast<unsigned long long>(passIndex),
+               static_cast<unsigned long long>(passCount), w);
+    applyHideGroups(scene, hide, work, workMeshDropped);
+    FrameResult f = renderFrame(work, opt, progress, device.get());
     if (f.cancelled) cancelled = true;
     seconds += f.renderSeconds;
     timing.bvhBuild += f.pt1Timing.bvhBuild;
@@ -148,11 +225,11 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
     carrier = std::move(f);
   };
 
-  addPass(hideGroups(scene, hideAll), bgW);
+  addPass(hideAll, bgW);
   for (const GroupBlend& gb : scene.groupBlend) {
     std::vector<uint8_t> hide = hideAll;
     hide[gb.group] = 0;  // keep this group (opaque), hide the other layers
-    addPass(hideGroups(scene, hide), gb.alpha);
+    addPass(hide, gb.alpha);
   }
 
   // Map the blended sRGB values back to FrameResult's linear-ish domain so
@@ -171,6 +248,7 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
   carrier.renderSeconds = seconds;
   carrier.pt1Timing = timing;
   carrier.cancelled = cancelled;
+  logPt1Timing(opt, timing, carrier.pt1Rays, passCount);
   if (progress && !cancelled) progress->markDone();
   return carrier;
 }

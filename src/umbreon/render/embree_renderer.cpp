@@ -1,3 +1,4 @@
+#include "../log.hpp"
 #include "render/embree_renderer.hpp"
 
 #include <algorithm>
@@ -278,7 +279,9 @@ void EmbreeRenderer::releaseEmbree() {
     scene_ = nullptr;
   }
   if (device_) {
-    rtcReleaseDevice(device_);
+    // A shared device belongs to the caller (setSharedDevice); only a device
+    // this renderer created is released here.
+    if (device_ != sharedDevice_) rtcReleaseDevice(device_);
     device_ = nullptr;
   }
 }
@@ -558,10 +561,10 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     // Env-dome lights are DIRECT distant lights; the pt1 gather also collects
     // the sky through its miss term, so the combination counts the sky twice.
     if (opt.envLights > 0)
-      std::fprintf(stderr,
-                   "warning: --integrator pt1 with env-dome lights (--env-light"
+      umbreon::logMessage(umbreon::LogLevel::Warning,
+                   "--integrator pt1 with env-dome lights (--env-light"
                    " %d) double-counts the sky energy; use the gather sky "
-                   "(--sky/--sky-radiance) instead\n",
+                   "(--sky/--sky-radiance) instead",
                    opt.envLights);
     const Aabb b = scene.mesh.bounds();
     const float diag = b.valid() ? b.diagonal() : 1.0f;
@@ -617,9 +620,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     const int pt2AdaptExtra =
         pt2Adapt ? spp * (std::max(2, opt.pt2AdaptiveMul) - 1) : 0;
     if ((opt.giIntegrator == 2) && opt.pt2Adaptive && pt2Restir)
-      std::fprintf(stderr,
-                   "warning: --pt2-adaptive is ignored with --pt2-rounds > 0 "
-                   "(reservoirs do not compose with the two-pass merge)\n");
+      umbreon::logMessage(umbreon::LogLevel::Warning,
+                   "--pt2-adaptive is ignored with --pt2-rounds > 0 "
+                   "(reservoirs do not compose with the two-pass merge)");
     // ReSTIR reservoirs live on the gather grid, sized in each branch below.
     std::vector<detail::Pt2Reservoir> reservoirs;
     detail::Pt2SpatialParams sparams;
@@ -635,9 +638,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
         emissiveLights = detail::pt2BuildEmissiveLights(m, scene);
         if (!emissiveLights.empty()) {
           pt2CfgStorage.emissiveLights = &emissiveLights;
-          std::fprintf(stderr,
+          umbreon::logMessage(umbreon::LogLevel::Info,
                        "pt2: emissive NEE over %zu triangle(s) + %zu CSG "
-                       "record(s)\n",
+                       "record(s)",
                        emissiveLights.tris.size(),
                        emissiveLights.csg.size());
         }
@@ -681,9 +684,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       pt2CfgStorage.sampleIndexOffset = 0;
       detail::pt2MergeRefined(gw, gh, amask, spp, pt2AdaptExtra, Er, occr, E,
                               occ);
-      std::fprintf(stderr,
+      umbreon::logMessage(umbreon::LogLevel::Info,
                    "pt2: adaptive refined %zu px (%.1f%% of grid) with +%d "
-                   "spp\n",
+                   "spp",
                    nref,
                    100.0 * static_cast<double>(nref) /
                        (static_cast<double>(gw) * gh),
@@ -781,10 +784,10 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       budget.upsample.finish();
       const uint64_t holes = upsampleHoles.load(std::memory_order_relaxed);
       if (holes > 0 && !opt.pt1EdgePatch)
-        std::fprintf(stderr,
+        umbreon::logMessage(umbreon::LogLevel::Warning,
                      "%s: %llu eligible pixel(s) found no valid gather "
                      "sample in the upsample window (thin features at 1/%d "
-                     "gather res lose their indirect)\n",
+                     "gather res lose their indirect)",
                      giTag, static_cast<unsigned long long>(holes), gatherDiv);
       const auto tu1 = std::chrono::high_resolution_clock::now();
       res.pt1Timing.upsample = std::chrono::duration<double>(tu1 - tu0).count();
@@ -830,9 +833,9 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
           const auto tp1 = std::chrono::high_resolution_clock::now();
           res.pt1Timing.gather +=
               std::chrono::duration<double>(tp1 - tp0).count();
-          std::fprintf(stderr,
+          umbreon::logMessage(umbreon::LogLevel::Info,
                        "%s: edge patch re-gathered %zu rim pixel(s) "
-                       "(%.1f%% of grid) at full res\n",
+                       "(%.1f%% of grid) at full res",
                        giTag, patchCount,
                        100.0 * static_cast<double>(patchCount) /
                            static_cast<double>(needsPatch.size()));
@@ -946,7 +949,7 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
       for (std::size_t i = 0; i < reflAlpha.size(); ++i)
         if (reflAmt[i] > 0.0f && reflAlpha[i] > 0.0f) ++nGlossy;
       if (nGlossy > 0) {
-        std::fprintf(stderr, "pt2: glossy reflection over %zu px (spp=%d)\n",
+        umbreon::logMessage(umbreon::LogLevel::Info, "pt2: glossy reflection over %zu px (spp=%d)",
                      nGlossy, std::max(1, opt.pt2GlossySpp));
         std::vector<float> Espec;
         detail::pt2GlossyPass(gp, W, H, reflAmt, reflAlpha, reflF0, reflTan,
@@ -1097,11 +1100,11 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
         res.pt1Timing.gather > 0.0
             ? totalRays / res.pt1Timing.gather / 1.0e6
             : 0.0;
-    std::fprintf(stderr,
+    umbreon::logMessage(umbreon::LogLevel::Info,
                  "%s: 1/%d-res gather %dx%d spp=%d -> gather %.3fs denoise "
                  "%.3fs upsample %.3fs\n"
                  "%s: rays gather %.1fM (hit %.0f%%) nee %.1fM (occ %.0f%%) "
-                 "nee_frac %.2f  %.1f Mrays/s\n",
+                 "nee_frac %.2f  %.1f Mrays/s",
                  giTag, gatherDiv, W, H, spp,
                  res.pt1Timing.gather, res.pt1Timing.denoise,
                  res.pt1Timing.upsample, giTag,
@@ -1235,9 +1238,9 @@ void runIrradianceCacheGiPass(const Scene& scene, const RenderOptions& opt,
       }
     });
 
-    std::fprintf(stderr,
+    umbreon::logMessage(umbreon::LogLevel::Info,
                  "gi: irradiance cache built -- %zu records (spacing %.4g, "
-                 "samples %d, maxDist %.4g)\n",
+                 "samples %d, maxDist %.4g)",
                  cache.records.size(), gp.spacing, gp.samples, gp.maxDistance);
 }
 
@@ -1250,9 +1253,14 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   releaseEmbree();
 
   if (progress) progress->beginPhase(RenderPhase::Setup);
-  RTCDevice device = rtcNewDevice(nullptr);
-  if (!device) throw std::runtime_error("rtcNewDevice failed");
-  rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
+  // A caller-supplied device is borrowed as-is (it already carries its error
+  // handler); otherwise this render owns the one it creates.
+  RTCDevice device = sharedDevice_;
+  if (!device) {
+    device = rtcNewDevice(nullptr);
+    if (!device) throw std::runtime_error("rtcNewDevice failed");
+    rtcSetDeviceErrorFunction(device, embreeErrorCallback, nullptr);
+  }
 
   // Build all Embree geometry (cold, once per frame). On a build error this
   // releases the partial scene and throws; release the device too before
@@ -1262,7 +1270,7 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   try {
     built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
   } catch (...) {
-    rtcReleaseDevice(device);
+    if (device != sharedDevice_) rtcReleaseDevice(device);
     throw;
   }
   const auto tBvh1 = std::chrono::high_resolution_clock::now();
@@ -1284,10 +1292,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   // environment term stands in). Advisory only -- bytes unaffected.
   const bool hasPrincipled = sceneHasPrincipled(scene);
   if (hasPrincipled && opt.gi && opt.giIntegrator != 2)
-    std::fprintf(stderr,
+    umbreon::logMessage(umbreon::LogLevel::Warning,
                  "principled: traced specular reflection requires --integrator "
                  "pt2; using the Fresnel*background approximation (cache "
-                 "approximates the diffuse weight)\n");
+                 "approximates the diffuse weight)");
   // POV ambient radiance: ambient_light defaults to <1,1,1>; the mesh ambient
   // term is material.ambient * pigment, applied below via ambK.
   const Vec3 ambLight = scene.ambientColor;  // expected <1,1,1> on the embree path
@@ -1647,10 +1655,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
 
   if (const long long capped = cappedRays.load(std::memory_order_relaxed);
       capped > 0) {
-    std::fprintf(stderr,
-                 "warning: %lld ray(s) reached the transparent-layer cap (%d); "
+    umbreon::logMessage(umbreon::LogLevel::Warning,
+                 "%lld ray(s) reached the transparent-layer cap (%d); "
                  "transmission past that depth was dropped -- raise "
-                 "maxTransparentLayers if it is visible\n",
+                 "maxTransparentLayers if it is visible",
                  capped, opt.maxTransparentLayers);
   }
 

@@ -7,6 +7,8 @@
 // Internal API (not installed); the public surface is umbreon::render().
 #pragma once
 
+#include <embree4/rtcore.h>
+
 #include "render/render_types.hpp"
 #include "scene.hpp"
 
@@ -17,7 +19,13 @@ namespace umbreon {
 // When `progress` is non-null it receives phase/row updates and is polled for
 // cooperative cancellation at pass boundaries (a cancelled render returns a
 // partial frame with cancelled == true). Null keeps the default path unchanged.
+//
+// `sharedDevice` lets a caller that renders several frames back to back -- the
+// group-alpha multipass in umbreon.cpp -- supply ONE RTCDevice for all of them
+// instead of paying Embree's device setup per frame. The caller keeps
+// ownership; nullptr creates and releases a device per frame, as before.
 FrameResult renderFrame(const Scene& scene, const RenderOptions& opt,
-                        RenderProgress* progress = nullptr);
+                        RenderProgress* progress = nullptr,
+                        RTCDevice sharedDevice = nullptr);
 
 }  // namespace umbreon
