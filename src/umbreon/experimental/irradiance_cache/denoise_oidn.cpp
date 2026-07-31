@@ -2,6 +2,7 @@
 // located OpenImageDenoise (CMake: UMBREON_WITH_OIDN=ON => UMBREON_HAVE_OIDN). The
 // pipeline guards the call with the same macro, so this translation unit is absent
 // from the link when OIDN is unavailable.
+#include "../../log.hpp"
 #include "experimental/irradiance_cache/denoise.hpp"
 
 #ifdef UMBREON_HAVE_OIDN
@@ -64,7 +65,7 @@ bool denoiseOidn(FrameResult& frame, const RenderOptions& opt,
   device.commit();
   const auto tDev1 = clock::now();
   if (device.getError() != oidn::Error::None) {
-    std::fprintf(stderr, "warning: OIDN device init failed; skipping denoise\n");
+    umbreon::logMessage(umbreon::LogLevel::Warning, "OIDN device init failed; skipping denoise");
     return false;
   }
 
@@ -94,8 +95,8 @@ bool denoiseOidn(FrameResult& frame, const RenderOptions& opt,
   filter.execute();
   const auto tExe1 = clock::now();
   if (opt.pt1Stats)
-    std::fprintf(stderr,
-                 "oidn: device %.3fs  filter %.3fs  execute %.3fs (%dx%d)\n",
+    umbreon::logMessage(umbreon::LogLevel::Info,
+                 "oidn: device %.3fs  filter %.3fs  execute %.3fs (%dx%d)",
                  std::chrono::duration<double>(tDev1 - tDev0).count(),
                  std::chrono::duration<double>(tFil1 - tDev1).count(),
                  std::chrono::duration<double>(tExe1 - tFil1).count(), W, H);
@@ -107,8 +108,8 @@ bool denoiseOidn(FrameResult& frame, const RenderOptions& opt,
     // the UI asked the render to stop. Report it silently; the frame is left
     // untouched either way, and the caller must not run a fallback denoise.
     if (err != oidn::Error::Cancelled)
-      std::fprintf(stderr,
-                   "warning: OIDN execute failed (%s); skipping denoise\n",
+      umbreon::logMessage(umbreon::LogLevel::Warning,
+                   "OIDN execute failed (%s); skipping denoise",
                    msg ? msg : "unknown");
     return false;
   }

@@ -1,3 +1,4 @@
+#include "../log.hpp"
 #include "render/pipeline.hpp"
 
 #include <algorithm>
@@ -17,7 +18,7 @@
 namespace umbreon {
 
 FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
-                        RenderProgress* progress) {
+                        RenderProgress* progress, RTCDevice sharedDevice) {
   // The two NPR edge methods both draw the silhouette and would double-ink if
   // run together (stroke ribbons over object-space edge cylinders); reject the
   // combination rather than silently picking one.
@@ -57,9 +58,9 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // the grid path with a warning. Normalizing HERE keeps the group-alpha
   // multipass consistent (every pass sees the same normalized options).
   if (hi.aaMode == 1 && hi.gi) {
-    std::fprintf(stderr,
-                 "warning: --aa adaptive is not supported with --gi yet; "
-                 "falling back to grid supersampling\n");
+    umbreon::logMessage(umbreon::LogLevel::Warning,
+                 "--aa adaptive is not supported with --gi yet; "
+                 "falling back to grid supersampling");
     hi.aaMode = 0;
   }
   // Coarse-AO "output resolution" sentinel: resolve -1 to the supersample
@@ -71,9 +72,9 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // keeps the group-alpha multipass consistent (every pass sees the same
   // normalized options).
   if (hi.aoResDiv > 1 && hi.gi) {
-    std::fprintf(stderr,
-                 "warning: --ao-res out is not supported with --gi yet; "
-                 "falling back to full-resolution AO\n");
+    umbreon::logMessage(umbreon::LogLevel::Warning,
+                 "--ao-res out is not supported with --gi yet; "
+                 "falling back to full-resolution AO");
     hi.aoResDiv = 0;
   }
 
@@ -88,7 +89,31 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     progress->setPhasePlan(
         detail::toPhasePlan(detail::renderCostEstimate(scene, hi, ss)));
 
+  // What this pass is actually about to do. A host's render log otherwise
+  // shows only phase names, which say where the render is but not what it was
+  // asked for -- and the settings that decide the cost (the supersampled grid,
+  // the GI sample count, the gather resolution) are exactly what someone
+  // reading a slow render's log needs to see.
+  logMessage(LogLevel::Info,
+             "render %dx%d ss%d (grid %dx%d), %zu tris / %zu spheres / "
+             "%zu cylinders%s%s",
+             finalW, finalH, ss, hi.width, hi.height, scene.mesh.triangleCount(),
+             scene.spheres.size(), scene.cylinders.size(),
+             hi.strokeEdges.enable ? ", edges" : "",
+             hi.aoSamples > 0 ? ", AO" : "");
+  if (hi.gi) {
+    // gatherDiv was resolved above: 1 = the full hi-res grid, ss = one gather
+    // per OUTPUT pixel (the fast path), k = an explicit 1/k grid.
+    logMessage(LogLevel::Info,
+               "  GI pt%d %dspp, gather grid 1/%d of the render grid%s",
+               hi.giIntegrator, hi.pt1Spp, hi.pt1GatherDiv,
+               hi.pt1Denoise ? ", OIDN denoise" : "");
+  }
+
   EmbreeRenderer renderer;
+  // Borrow the caller's device when one was supplied (group-alpha multipass),
+  // so its passes do not each re-initialise Embree.
+  renderer.setSharedDevice(sharedDevice);
   FrameResult frame = renderer.render(scene, hi, progress);
   // Setup / CoarseAo / Primary / GlobalIllum phases ran inside render(); if it
   // was cancelled mid-flight the buffers are partial -- skip the post-passes and
@@ -207,9 +232,9 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
       frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
     }
 #else
-    std::fprintf(stderr,
-                 "warning: OIDN denoiser backend not built (UMBREON_WITH_OIDN "
-                 "off); falling back to the built-in a-trous denoiser\n");
+    umbreon::logMessage(umbreon::LogLevel::Warning,
+                 "OIDN denoiser backend not built (UMBREON_WITH_OIDN "
+                 "off); falling back to the built-in a-trous denoiser");
     denoiseAtrous(frame, opt);
     frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
 #endif

@@ -39,6 +39,15 @@ class EmbreeRenderer {
   FrameResult render(const Scene& scene, const RenderOptions& opt,
                      RenderProgress* progress = nullptr);
 
+  // Render against a device the CALLER owns instead of creating one per
+  // render(). An RTCDevice is scene-independent -- it is a container for
+  // scenes/geometries, and building several scenes from one device in sequence
+  // is its normal use -- but creating one re-initialises Embree's task
+  // scheduler, which the group-alpha multipass (umbreon.cpp) would otherwise
+  // pay once per pass for nothing. The device must outlive this renderer and is
+  // NOT released here; nullptr restores the owned-device default.
+  void setSharedDevice(RTCDevice device) { sharedDevice_ = device; }
+
   // Any-hit occlusion test against the live committed scene along the segment
   // P->Q, trimmed by `eps` (relative + absolute floor) at both ends to skip
   // self-hits. True if any geometry occludes the segment in the OPEN interval
@@ -65,6 +74,9 @@ class EmbreeRenderer {
   void releaseEmbree();
 
   RTCDevice device_ = nullptr;
+  // Caller-owned device (setSharedDevice). While device_ == sharedDevice_ the
+  // handle is borrowed and releaseEmbree() must not release it.
+  RTCDevice sharedDevice_ = nullptr;
   RTCScene scene_ = nullptr;  // committed BVH; owned, released in releaseEmbree()
   // Mesh geometry identity captured at render() time, so occluded() can map an
   // excluded mesh-triangle id to an Embree (geomID, primID) hit. meshGeomID_ is

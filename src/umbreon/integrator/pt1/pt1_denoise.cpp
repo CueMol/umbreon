@@ -5,6 +5,7 @@
 // umbreon target (NOT header-inline) so UMBREON_HAVE_OIDN is evaluated exactly
 // once: an inline definition would give library and test translation units
 // different bodies (ODR violation) since the macro is target-private.
+#include "../../log.hpp"
 #include "integrator/pt1/pt1_integrator.hpp"
 
 #include <cmath>
@@ -64,9 +65,9 @@ int denoisePt1E(int w, int h, std::vector<float>& E, const float* albedo,
     used = static_cast<int>(DenoiserBackend::AtrousBilateral);
   }
 #else
-  std::fprintf(stderr,
-               "warning: pt1 denoise requested but OIDN is unavailable "
-               "(UMBREON_WITH_OIDN=OFF); using the a-trous fallback\n");
+  umbreon::logMessage(umbreon::LogLevel::Warning,
+               "pt1 denoise requested but OIDN is unavailable "
+               "(UMBREON_WITH_OIDN=OFF); using the a-trous fallback");
   denoiseAtrous(tmp, dopt);
   used = static_cast<int>(DenoiserBackend::AtrousBilateral);
 #endif
