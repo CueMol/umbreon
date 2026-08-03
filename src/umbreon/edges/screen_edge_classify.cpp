@@ -297,6 +297,21 @@ inline std::uint8_t classifyPair(const float* viewZ,
       dbg->g0[dbgCell] = std::fabs(vzB - vzA);
       dbg->reason[dbgCell] = ScreenCrackDebug::kSubThreshold;
     }
+    // Ridge detection: when BOTH one-sided slopes fall away from the crack
+    // (each outer neighbor deeper), the crack sits on a local depth MINIMUM
+    // -- a convex ridge crease between two visible faces (e.g. a sheet's
+    // edge fold). The surface is connected through the sub-pixel ridge, so
+    // this is a crease, not an occlusion. The fold probe cannot see it (no
+    // wall occupies the far-anchored window; the ridge pops ABOVE the near
+    // sample), hence this profile test. A genuine occlusion rim slopes
+    // deeper TOWARD its silhouette, so its near side never falls away.
+    // A ridge crack (1) never promotes to STRONG (no isolated dashes) and
+    // (2) carries kCrackRidgeBit, so the prune's strong-chain hysteresis
+    // does not extend to a ridge run fused to a contour's end (the tail
+    // stub). It still inks WEAK: mid-chain ridge runs bracketed by genuine
+    // contour evidence keep drawn lines continuous, exactly like any other
+    // weak hysteresis crack.
+    const bool ridge = sA < -0.25f * px && sB < -0.25f * px;
     const float weakRatio = std::max(0.0f, std::min(1.0f, p.weakGapRatio));
     if (std::min(gapA, gapB) > weakRatio * p.depthGapPx * px) {
       const float g0 = std::fabs(vzB - vzA);
@@ -316,8 +331,9 @@ inline std::uint8_t classifyPair(const float* viewZ,
       if (g0 > gLeft && g0 >= gRight) {
         const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
         // STRONG: full absolute threshold + step dominance (the raw step must
-        // dwarf the near side's own recession; see nearSideRecession).
-        bool strong = std::min(gapA, gapB) > p.depthGapPx * px;
+        // dwarf the near side's own recession; see nearSideRecession). A
+        // ridge crease never promotes (see the ridge comment above).
+        bool strong = !ridge && std::min(gapA, gapB) > p.depthGapPx * px;
         if (strong && p.stepDominanceK > 0.0f) {
           const float rec = nearSideRecession(viewZ, objectId, W, H, ia, ib);
           strong = rec >= 0.0f && g0 > p.stepDominanceK * std::max(rec, px);
@@ -396,7 +412,8 @@ inline std::uint8_t classifyPair(const float* viewZ,
             bgAlongCrack(objectId, W, H, ax, ay, rightCrack,
                          p.bgClearancePx)) {
           if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kInkedWeak;
-          return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner;
+          return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner |
+                 (ridge ? kCrackRidgeBit : std::uint8_t{0});
         }
         if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kBgKilled;
       } else if (dbg) {

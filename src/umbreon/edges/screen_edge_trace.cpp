@@ -130,7 +130,9 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
     const std::uint8_t byte = crackByte(cf, e);
     markConsumed(cf, e);
     ch.edgeClass.push_back(byte & kCrackClassMask);
-    ch.edgeFlags.push_back((byte & kCrackStrongBit) ? 1 : 0);
+    ch.edgeFlags.push_back(
+        static_cast<std::uint8_t>(((byte & kCrackStrongBit) ? 1 : 0) |
+                                  ((byte & kCrackRidgeBit) ? 2 : 0)));
     const int owner = crackOwnerPixel(cf, e, byte);
     ch.edgeGroup.push_back(
         objectId ? static_cast<std::uint16_t>(objectId[owner] >> 2) : 0);

@@ -60,11 +60,16 @@ enum class CrackClass : std::uint8_t {
 // consumed scratch bit used by the Stage-2 tracer, [5] the hysteresis
 // STRONG bit (DepthGap only): the crack passed the full strong gate, not just
 // the weak candidate threshold. A traced chain survives the Stage-2.5 prune
-// only with strong (or non-DepthGap) support; see keepScreenChain.
+// only with strong (or non-DepthGap) support; see keepScreenChain. [6] the
+// RIDGE bit (weak DepthGap only): the crack sits on a convex ridge crease
+// (both one-sided slopes fall away) -- a connected surface fold, not an
+// occlusion. It never promotes to strong, and the prune's strong-chain
+// hysteresis does not keep a ridge run dangling at a chain end.
 constexpr std::uint8_t kCrackClassMask = 0x07;
 constexpr std::uint8_t kCrackOwnerBit = 0x08;
 constexpr std::uint8_t kCrackConsumedBit = 0x10;
 constexpr std::uint8_t kCrackStrongBit = 0x20;
+constexpr std::uint8_t kCrackRidgeBit = 0x40;
 
 // The classified crack lattice of a W x H pixel buffer. right[y*W+x] is the
 // crack between pixels (x,y) and (x+1,y) (valid for x < W-1; the x == W-1
@@ -259,7 +264,8 @@ struct ScreenChain {
   std::vector<ScreenChainVert> pts;
   std::vector<std::uint8_t> edgeClass;
   std::vector<std::uint16_t> edgeGroup;
-  // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis).
+  // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis),
+  // bit 1 = the crack's kCrackRidgeBit (convex ridge crease).
   std::vector<std::uint8_t> edgeFlags;
   // Per edgel, the owner pixel's first-hit surface alpha (1 when the tracer
   // was given no surfAlpha buffer). The per-VERTEX alpha in `pts` is a

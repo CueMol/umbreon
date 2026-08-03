@@ -1298,5 +1298,45 @@ int main() {
             countClass(cf, CrackClass::DepthGap) > 0);
   }
 
+  // ---- (15) ridge crease: never STRONG, weak carries the ridge flag ------
+  // A convex ridge (both one-sided slopes fall away from the crack) is a
+  // connected-surface crease: the depth step comes from the two faces'
+  // slopes, not an occlusion. The crack profile is taken from the real case
+  // (a sheet's edge fold): shallow flanks falling away on both sides, a
+  // 17-unit step across the crease, normals ~90 deg apart so the ndelta
+  // rescue WOULD fire -- the ridge test must block the promotion while the
+  // crack still inks weak (hysteresis continuity) with edgeFlags bit 1 set
+  // (the prune's strong-chain exemption does not keep ridge tails).
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        if (x <= 7)
+          b.set(x, y, 9, 200.0f + 0.81f * static_cast<float>(7 - x), 0.7f,
+                0.0f, 0.72f);
+        else
+          b.set(x, y, 9, 217.0f + 1.04f * static_cast<float>(x - 8), -0.7f,
+                0.0f, 0.72f);
+      }
+    CrackField cf = classify(b, defaults);
+    int strongN = 0, ridgeWeak = 0;
+    for (std::uint8_t v : cf.right) {
+      if ((v & kCrackClassMask) !=
+          static_cast<std::uint8_t>(CrackClass::DepthGap))
+        continue;
+      if (v & kCrackStrongBit) ++strongN;
+      else if (v & umbreon::kCrackRidgeBit) ++ridgeWeak;
+    }
+    s.check_eq("ridge: never promotes to strong", strongN, 0);
+    s.check_eq("ridge: weak cracks carry the ridge flag", ridgeWeak, 16);
+    // Traced in isolation the pure-ridge chain has no support: pruned.
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    s.check_eq("ridge: unsupported ridge chain pruned", chains.size(),
+               static_cast<std::size_t>(0));
+  }
+
   return s.report();
 }

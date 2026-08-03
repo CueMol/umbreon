@@ -109,6 +109,8 @@ inline bool crackColor(std::uint8_t byte, std::uint8_t reason, float gapA,
         rgb[0] = 255, rgb[1] = 0, rgb[2] = 0;  // strong: red
       } else if (probeVal == 2) {
         rgb[0] = 255, rgb[1] = 0, rgb[2] = 255;  // probe-vetoed fold: magenta
+      } else if (byte & kCrackRidgeBit) {
+        rgb[0] = 0, rgb[1] = 128, rgb[2] = 96;  // ridge crease (weak): teal
       } else {
         rgb[0] = 80, rgb[1] = 120, rgb[2] = 255;  // weak: blue
       }
@@ -324,10 +326,38 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   ScreenCrackDebug dbg;
   // Clip-cut G-buffer planes: present only when the scene's view-clip planes
   // are set (see FrameResult); boundaries the planes cut stay line-free.
+  // The interior flag is DILATED (Chebyshev, one output pixel) before use:
+  // along a cut rim the sampling can land on 1-2 hi-res px slivers of the
+  // object's own near-edge-on SIDE WALL -- frontface hits that carry no
+  // clipCut flag but are as much a slab artifact as the interior they hug.
+  // Every such sliver lies within a pixel of flagged interior, so the
+  // dilated mask absorbs it (and any crack it forms) into the veto.
   ScreenClipAovs clipAovs;
   const bool hasClip = !frame.clipCut.empty();
+  std::vector<std::uint8_t> cutDilated;
   if (hasClip) {
-    clipAovs.cut = frame.clipCut.data();
+    const int r = static_cast<int>(std::lround(ssScale));
+    const std::uint8_t* src = frame.clipCut.data();
+    cutDilated.assign(static_cast<std::size_t>(W) * H, 0);
+    std::vector<std::uint8_t> tmp(static_cast<std::size_t>(W) * H, 0);
+    for (int y = 0; y < H; ++y) {  // horizontal max filter
+      const std::size_t row = static_cast<std::size_t>(y) * W;
+      for (int x = 0; x < W; ++x) {
+        std::uint8_t v = 0;
+        for (int k = std::max(0, x - r); k <= std::min(W - 1, x + r); ++k)
+          v |= src[row + k];
+        tmp[row + x] = v;
+      }
+    }
+    for (int y = 0; y < H; ++y) {  // vertical max filter
+      for (int x = 0; x < W; ++x) {
+        std::uint8_t v = 0;
+        for (int k = std::max(0, y - r); k <= std::min(H - 1, y + r); ++k)
+          v |= tmp[static_cast<std::size_t>(k) * W + x];
+        cutDilated[static_cast<std::size_t>(y) * W + x] = v;
+      }
+    }
+    clipAovs.cut = cutDilated.data();
     clipAovs.nearVz = frame.clipNearVz.data();
     clipAovs.farVz = frame.clipFarVz.data();
     cp.clipNearVz = scene.clipNear;
