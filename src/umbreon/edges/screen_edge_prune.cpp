@@ -211,10 +211,14 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
       const ScreenChain& ch = traced[i];
       const std::size_t nE = ch.edgeClass.size();
       // Strong self-support exemption: a chain that would be kept on its own
-      // strong DepthGap evidence keeps its weak end runs too.
+      // strong DepthGap evidence keeps its weak end runs too -- EXCEPT runs
+      // of RIDGE cracks (edgeFlags bit 1): a ridge crease fused to the
+      // contour's end is a connected-surface fold, not the contour's
+      // tapering tail, so the hysteresis must not extend onto it (it would
+      // draw a crease stub sticking out of the contour).
+      bool exempt = false;
       {
         int strong = 0;
-        bool exempt = false;
         for (std::size_t e = 0; e < ch.edgeFlags.size(); ++e) {
           if (ch.edgeClass[e] ==
                   static_cast<std::uint8_t>(CrackClass::DepthGap) &&
@@ -223,12 +227,16 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
             break;
           }
         }
-        if (exempt) continue;
       }
       auto weakAt = [&](std::size_t e) {
-        return ch.edgeClass[e] ==
-                   static_cast<std::uint8_t>(CrackClass::DepthGap) &&
-               !(e < ch.edgeFlags.size() && (ch.edgeFlags[e] & 1));
+        if (ch.edgeClass[e] !=
+            static_cast<std::uint8_t>(CrackClass::DepthGap))
+          return false;
+        const std::uint8_t f =
+            e < ch.edgeFlags.size() ? ch.edgeFlags[e] : std::uint8_t{0};
+        if (f & 1) return false;                  // strong edgel
+        if (exempt && !(f & 2)) return false;     // exempt keeps non-ridge weak
+        return true;
       };
       std::size_t lead = 0;
       while (lead < nE && weakAt(lead)) ++lead;

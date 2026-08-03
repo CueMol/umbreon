@@ -30,6 +30,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "edges/mesh_feature_edges.hpp"
@@ -59,11 +60,16 @@ enum class CrackClass : std::uint8_t {
 // consumed scratch bit used by the Stage-2 tracer, [5] the hysteresis
 // STRONG bit (DepthGap only): the crack passed the full strong gate, not just
 // the weak candidate threshold. A traced chain survives the Stage-2.5 prune
-// only with strong (or non-DepthGap) support; see keepScreenChain.
+// only with strong (or non-DepthGap) support; see keepScreenChain. [6] the
+// RIDGE bit (weak DepthGap only): the crack sits on a convex ridge crease
+// (both one-sided slopes fall away) -- a connected surface fold, not an
+// occlusion. It never promotes to strong, and the prune's strong-chain
+// hysteresis does not keep a ridge run dangling at a chain end.
 constexpr std::uint8_t kCrackClassMask = 0x07;
 constexpr std::uint8_t kCrackOwnerBit = 0x08;
 constexpr std::uint8_t kCrackConsumedBit = 0x10;
 constexpr std::uint8_t kCrackStrongBit = 0x20;
+constexpr std::uint8_t kCrackRidgeBit = 0x40;
 
 // The classified crack lattice of a W x H pixel buffer. right[y*W+x] is the
 // crack between pixels (x,y) and (x+1,y) (valid for x < W-1; the x == W-1
@@ -96,8 +102,19 @@ struct ScreenCrackDebug {
     kBgKilled = 3,       // weak within bgClearancePx of background
     kInked = 4,          // classified DepthGap STRONG
     kInkedWeak = 5,      // classified DepthGap weak (hysteresis candidate)
+    kClipVeto = 6,       // clip-cut boundary (slab artifact): no crack at all
   };
   ScreenCrackDebugPlane right, down;
+};
+
+// Clip-cut G-buffer planes (FrameResult::clipCut / clipNearVz / clipFarVz;
+// present only when the scene's view-clip planes are set AND edges are on).
+// classifyCracks uses them to keep clip-cut boundaries line-free: a slab
+// cross-section is a viewing artifact, not a silhouette.
+struct ScreenClipAovs {
+  const std::uint8_t* cut = nullptr;  // 1 = clip-cut interior first hit
+  const float* nearVz = nullptr;      // bg: removed-hit vz in [0, clipNear)
+  const float* farVz = nullptr;       // bg: removed-hit vz beyond clipFar
 };
 
 // Stage-1 parameters. The class gates mirror the stroke master nature toggles
@@ -172,6 +189,14 @@ struct ScreenClassifyParams {
   // min(|nA.V|, |nB.V|))) with V the view forward axis.
   float creaseAngleDeg = 30.0f;
   float grazeK = 1.0f;
+  // View-clip planes (Scene::clipNear/clipFar, linear view-z; +-inf = off).
+  // With the clip AOVs they also veto fg|fg cracks whose cut surface exits
+  // the slab within ~1 px across the crack (far plane: the DEEPER side's
+  // continuation crosses clipFar; near plane: the NEARER side's crosses
+  // clipNear): the boundary against whatever is visible behind/around a cut
+  // is a slab artifact, not a contour.
+  float clipNearVz = -std::numeric_limits<float>::infinity();
+  float clipFarVz = std::numeric_limits<float>::infinity();
   // Fold probe (edge-of-visible-surface test) gating the strongNdelta rescue,
   // active only when classifyCracks is given an occlusion query. A rescued
   // crack is a genuine occlusion contour only when the NEAR surface actually
@@ -202,12 +227,15 @@ struct ScreenClassifyParams {
 // `probe`, when non-null and non-empty, is the segment occlusion query the
 // strongNdelta rescue's fold probe casts (see ScreenClassifyParams
 // ::probeWindowFrac); null/empty keeps the pre-probe rescue behavior.
+// `clip`, when non-null, supplies the clip-cut G-buffer planes: cracks along
+// boundaries the view-clip planes cut classify as nothing (kClipVeto).
 CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
                           const ScreenProj& sp,
                           const ScreenClassifyParams& params,
                           ScreenCrackDebug* dbg = nullptr,
-                          const OcclusionQuery* probe = nullptr);
+                          const OcclusionQuery* probe = nullptr,
+                          const ScreenClipAovs* clip = nullptr);
 
 // One traced chain vertex, in STROKE pixel coordinates: the pixel-corner
 // lattice node (cx,cy), cx in [0..W], cy in [0..H], maps to (cx-0.5, cy-0.5)
@@ -236,7 +264,8 @@ struct ScreenChain {
   std::vector<ScreenChainVert> pts;
   std::vector<std::uint8_t> edgeClass;
   std::vector<std::uint16_t> edgeGroup;
-  // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis).
+  // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis),
+  // bit 1 = the crack's kCrackRidgeBit (convex ridge crease).
   std::vector<std::uint8_t> edgeFlags;
   // Per edgel, the owner pixel's first-hit surface alpha (1 when the tracer
   // was given no surfAlpha buffer). The per-VERTEX alpha in `pts` is a

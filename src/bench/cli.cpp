@@ -669,6 +669,14 @@ Options parseCli(int argc, char** argv) {
       o.povGain = static_cast<float>(std::atof(value("--pov-gain").c_str()));
       continue;
     }
+    if (a == "--clip-near") {
+      o.clipNear = static_cast<float>(std::atof(value("--clip-near").c_str()));
+      continue;
+    }
+    if (a == "--clip-far") {
+      o.clipFar = static_cast<float>(std::atof(value("--clip-far").c_str()));
+      continue;
+    }
     if (a == "--outline-scale") {
       o.outlineScale =
           static_cast<float>(std::atof(value("--outline-scale").c_str()));
@@ -1060,6 +1068,11 @@ void printUsage(const char* prog) {
       "  -H, --height <int>       image height         [768;  .pov: 300]\n"
       "  --declare <name=value>   predefine a POV constant (.pov path)\n"
       "  --pov-gain <float>       exposure gain for POV lights   [1.20]\n"
+      "  --clip-near <z>          view clipping plane (CueMol slab front):\n"
+      "                           linear view-z, camera-forward distance\n"
+      "  --clip-far <z>           view clipping plane (slab back); geometry\n"
+      "                           outside [near, far] is not drawn, and\n"
+      "                           --edges draws no line along the cut\n"
       "  --outline-scale <float>  radius x for spheres/cylinders [1.00]\n"
       "  --supersample <int>      render NxN and downsample  [1; .pov: 3]\n"
       "  --aa <grid|adaptive>     antialiasing: full grid / adaptive refine [grid]\n"

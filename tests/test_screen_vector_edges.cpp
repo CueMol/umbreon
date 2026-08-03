@@ -15,6 +15,7 @@
 // regions split chains exactly at the T-junction corners (open-chain
 // endpoints have lattice degree != 2); every active crack is consumed exactly
 // once; the trace is deterministic.
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstddef>
@@ -1122,13 +1123,16 @@ int main() {
     // Step 30 over flat sides: full threshold (30 > 12) passes, dominance
     // (30 > 250) fails, ndelta = 1 > 0.3 -> rescue candidate on every row.
     const ScreenProj sp = unitProj(16, 16);
-    int calls = 0;
+    // classifyCracks runs TBB-parallel: the counter must be atomic.
+    std::atomic<int> calls{0};
     float vz0 = 0.0f, vz1 = 0.0f;
     bool hit = true;  // fold: window occupied
     const umbreon::OcclusionQuery query = [&](const umbreon::Vec3& p,
                                               const umbreon::Vec3& q,
                                               const int*, int) {
-      ++calls;
+      calls.fetch_add(1, std::memory_order_relaxed);
+      // Every row probes the same geometry, so these race benignly to the
+      // same values under TBB.
       vz0 = -p.z;  // depth along dir = (0,0,-1) from pos (0,0,0)
       vz1 = -q.z;
       return hit;
@@ -1136,7 +1140,7 @@ int main() {
     CrackField cf = umbreon::classifyCracks(
         16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(), sp,
         defaults, nullptr, &query);
-    s.check_eq("fold probe: probed once per row", calls, 16);
+    s.check_eq("fold probe: probed once per row", calls.load(), 16);
     s.check("fold probe: window start = vzFar - frac*dz",
             std::fabs(vz0 - (130.0f - 7.5f)) < 1.0e-3f);
     s.check("fold probe: window end just above the far surface",
@@ -1220,6 +1224,122 @@ int main() {
     s.check_eq("junction chop: kept strong = merged interior", strongKept,
                static_cast<int>(bestLen));
     s.check_eq("junction chop: pure-weak rungs erased", weakKept, 0);
+  }
+
+  // ---- (14) clip-cut vetoes: cut boundaries classify as nothing ----------
+  // Interior veto: a crack touching a clip-cut interior pixel (renderer
+  // clipCut flag) never inks, regardless of class.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 100.0f : 500.0f);  // strong step
+    std::vector<std::uint8_t> cut(16 * 16, 0);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 8; x < 16; ++x) cut[b.idx(x, y)] = 1;  // deep side is cut
+    umbreon::ScreenClipAovs clip;
+    clip.cut = cut.data();
+    CrackField cf = umbreon::classifyCracks(
+        16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(),
+        unitProj(16, 16), defaults, nullptr, nullptr, &clip);
+    s.check_eq("clip interior: step crack fully vetoed", countActive(cf), 0);
+    // Without the clip AOVs the same field inks the step (control).
+    s.check_eq("clip interior: control still fires",
+               countClass(classify(b, defaults), CrackClass::DepthGap), 16);
+  }
+  // Silhouette veto: the outline is a far-plane cut when the removed hit
+  // recorded behind the bg pixel continues the fg surface's depth; an
+  // unrelated removed hit keeps the outline.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 8; ++x)
+        b.set(x, y, 9, 100.0f + 5.0f * static_cast<float>(x));  // slope 5/px
+    // fg edge pixel x=7: vz 135, one-sided slope 5 -> prediction 140.
+    std::vector<float> farVz(16 * 16, 0.0f);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 8; x < 16; ++x) farVz[b.idx(x, y)] = 140.0f;
+    umbreon::ScreenClipAovs clip;
+    clip.farVz = farVz.data();
+    CrackField cf = umbreon::classifyCracks(
+        16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(),
+        unitProj(16, 16), defaults, nullptr, nullptr, &clip);
+    s.check_eq("clip silhouette: depth-continuous cut edge vetoed",
+               countClass(cf, CrackClass::Silhouette), 0);
+    for (float& v : farVz) v = v > 0.0f ? 300.0f : 0.0f;  // unrelated object
+    cf = umbreon::classifyCracks(16, 16, b.viewZ.data(), b.objectId.data(),
+                                 b.normal.data(), unitProj(16, 16), defaults,
+                                 nullptr, nullptr, &clip);
+    s.check_eq("clip silhouette: unrelated removed hit keeps the outline",
+               countClass(cf, CrackClass::Silhouette), 16);
+  }
+  // fg|fg far-plane veto: the DEEPER side's continuation exits the slab
+  // across the crack -> slab artifact; with the plane off the step inks.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        // near side flat 100; deep side 500 at the crack, receding away at
+        // 10/px -> continuation across the crack = 510.
+        const float vz =
+            x < 8 ? 100.0f : 500.0f - 10.0f * static_cast<float>(x - 8);
+        b.set(x, y, 9, vz);
+      }
+    std::vector<std::uint8_t> cut(16 * 16, 0);  // no interior flags
+    umbreon::ScreenClipAovs clip;
+    clip.cut = cut.data();
+    ScreenClassifyParams p = defaults;
+    p.clipFarVz = 505.0f;  // continuation 510 exits the slab
+    CrackField cf = umbreon::classifyCracks(
+        16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(),
+        unitProj(16, 16), p, nullptr, nullptr, &clip);
+    s.check_eq("clip fg|fg: far-cut step vetoed", countActive(cf), 0);
+    p.clipFarVz = std::numeric_limits<float>::infinity();
+    cf = umbreon::classifyCracks(16, 16, b.viewZ.data(), b.objectId.data(),
+                                 b.normal.data(), unitProj(16, 16), p,
+                                 nullptr, nullptr, &clip);
+    s.check("clip fg|fg: plane off restores the contour",
+            countClass(cf, CrackClass::DepthGap) > 0);
+  }
+
+  // ---- (15) ridge crease: never STRONG, weak carries the ridge flag ------
+  // A convex ridge (both one-sided slopes fall away from the crack) is a
+  // connected-surface crease: the depth step comes from the two faces'
+  // slopes, not an occlusion. The crack profile is taken from the real case
+  // (a sheet's edge fold): shallow flanks falling away on both sides, a
+  // 17-unit step across the crease, normals ~90 deg apart so the ndelta
+  // rescue WOULD fire -- the ridge test must block the promotion while the
+  // crack still inks weak (hysteresis continuity) with edgeFlags bit 1 set
+  // (the prune's strong-chain exemption does not keep ridge tails).
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        if (x <= 7)
+          b.set(x, y, 9, 200.0f + 0.81f * static_cast<float>(7 - x), 0.7f,
+                0.0f, 0.72f);
+        else
+          b.set(x, y, 9, 217.0f + 1.04f * static_cast<float>(x - 8), -0.7f,
+                0.0f, 0.72f);
+      }
+    CrackField cf = classify(b, defaults);
+    int strongN = 0, ridgeWeak = 0;
+    for (std::uint8_t v : cf.right) {
+      if ((v & kCrackClassMask) !=
+          static_cast<std::uint8_t>(CrackClass::DepthGap))
+        continue;
+      if (v & kCrackStrongBit) ++strongN;
+      else if (v & umbreon::kCrackRidgeBit) ++ridgeWeak;
+    }
+    s.check_eq("ridge: never promotes to strong", strongN, 0);
+    s.check_eq("ridge: weak cracks carry the ridge flag", ridgeWeak, 16);
+    // Traced in isolation the pure-ridge chain has no support: pruned.
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data());
+    s.check_eq("ridge: unsupported ridge chain pruned", chains.size(),
+               static_cast<std::size_t>(0));
   }
 
   return s.report();

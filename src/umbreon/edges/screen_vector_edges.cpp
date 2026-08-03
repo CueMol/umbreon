@@ -109,6 +109,8 @@ inline bool crackColor(std::uint8_t byte, std::uint8_t reason, float gapA,
         rgb[0] = 255, rgb[1] = 0, rgb[2] = 0;  // strong: red
       } else if (probeVal == 2) {
         rgb[0] = 255, rgb[1] = 0, rgb[2] = 255;  // probe-vetoed fold: magenta
+      } else if (byte & kCrackRidgeBit) {
+        rgb[0] = 0, rgb[1] = 128, rgb[2] = 96;  // ridge crease (weak): teal
       } else {
         rgb[0] = 80, rgb[1] = 120, rgb[2] = 255;  // weak: blue
       }
@@ -118,6 +120,12 @@ inline bool crackColor(std::uint8_t byte, std::uint8_t reason, float gapA,
       return true;
     default:
       break;
+  }
+  // Clip-cut veto has no DepthGap gaps to clear the noise floor: color it
+  // unconditionally (brown) so cut boundaries are visible in the dump.
+  if (reason == ScreenCrackDebug::kClipVeto) {
+    rgb[0] = 160, rgb[1] = 96, rgb[2] = 0;  // brown
+    return true;
   }
   if (std::min(gapA, gapB) <= noiseFloor) return false;
   switch (reason) {
@@ -316,13 +324,71 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   if (cp.crease && !normalPtr) cp.crease = false;
   const char* dumpPrefix = std::getenv("UMBREON_SCREEN_EDGE_DUMP");
   ScreenCrackDebug dbg;
+  // Clip-cut G-buffer planes: present only when the scene's view-clip planes
+  // are set (see FrameResult); boundaries the planes cut stay line-free.
+  // The interior flag is DILATED (Chebyshev, one output pixel) before use:
+  // along a cut rim the sampling can land on 1-2 hi-res px slivers of the
+  // object's own near-edge-on SIDE WALL -- frontface hits that carry no
+  // clipCut flag but are as much a slab artifact as the interior they hug.
+  // Every such sliver lies within a pixel of flagged interior, so the
+  // dilated mask absorbs it (and any crack it forms) into the veto.
+  ScreenClipAovs clipAovs;
+  const bool hasClip = !frame.clipCut.empty();
+  std::vector<std::uint8_t> cutDilated;
+  if (hasClip) {
+    const int r = static_cast<int>(std::lround(ssScale));
+    const std::uint8_t* src = frame.clipCut.data();
+    cutDilated.assign(static_cast<std::size_t>(W) * H, 0);
+    std::vector<std::uint8_t> tmp(static_cast<std::size_t>(W) * H, 0);
+    for (int y = 0; y < H; ++y) {  // horizontal max filter
+      const std::size_t row = static_cast<std::size_t>(y) * W;
+      for (int x = 0; x < W; ++x) {
+        std::uint8_t v = 0;
+        for (int k = std::max(0, x - r); k <= std::min(W - 1, x + r); ++k)
+          v |= src[row + k];
+        tmp[row + x] = v;
+      }
+    }
+    for (int y = 0; y < H; ++y) {  // vertical max filter
+      for (int x = 0; x < W; ++x) {
+        std::uint8_t v = 0;
+        for (int k = std::max(0, y - r); k <= std::min(H - 1, y + r); ++k)
+          v |= tmp[static_cast<std::size_t>(k) * W + x];
+        cutDilated[static_cast<std::size_t>(y) * W + x] = v;
+      }
+    }
+    clipAovs.cut = cutDilated.data();
+    clipAovs.nearVz = frame.clipNearVz.data();
+    clipAovs.farVz = frame.clipFarVz.data();
+    cp.clipNearVz = scene.clipNear;
+    cp.clipFarVz = scene.clipFar;
+  }
   CrackField cf = classifyCracks(W, H, frame.viewZ.data(),
                                  frame.objectId.data(), normalPtr, sp, cp,
                                  dumpPrefix ? &dbg : nullptr,
-                                 occluded ? &occluded : nullptr);
-  if (dumpPrefix)
+                                 occluded ? &occluded : nullptr,
+                                 hasClip ? &clipAovs : nullptr);
+  if (dumpPrefix) {
     writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
                    frame.objectId.data(), normalPtr, sp, cp);
+    // Raw clip-cut planes for offline analysis (full frame, debug only).
+    if (hasClip) {
+      const std::size_t n = static_cast<std::size_t>(W) * H;
+      const std::string base = std::string(dumpPrefix) + "_clip";
+      if (std::FILE* f = std::fopen((base + "_cut.u8").c_str(), "wb")) {
+        std::fwrite(clipAovs.cut, 1, n, f);
+        std::fclose(f);
+      }
+      if (std::FILE* f = std::fopen((base + "_nearvz.f32").c_str(), "wb")) {
+        std::fwrite(clipAovs.nearVz, sizeof(float), n, f);
+        std::fclose(f);
+      }
+      if (std::FILE* f = std::fopen((base + "_farvz.f32").c_str(), "wb")) {
+        std::fwrite(clipAovs.farVz, sizeof(float), n, f);
+        std::fclose(f);
+      }
+    }
+  }
 
   // Stage 2: trace, then Stage 2.5: hysteresis prune + retrace. The optional
   // surfAlpha AOV attributes per-vertex surface opacity so transparent

@@ -76,6 +76,17 @@ struct PixelResult {
   // HitShade::reflTangent / reflAspect); zero tangent / aspect 1 = isotropic.
   Vec3 reflTangent{0.0f, 0.0f, 0.0f};
   float reflAspect = 1.0f;
+  // Clip-cut G-buffer (captured only when the scene clip planes are set AND
+  // the stroke edge pass is on; all-zero otherwise). clipCut = 1 marks a
+  // first hit on the INTERIOR (backface) of a surface whose front the near
+  // plane clipped away -- the visual signature of a slab cut, confirmed by
+  // an any-hit ray over [0, clipNear). For BACKGROUND pixels clipNearVz /
+  // clipFarVz record the view-z of what the clip planes removed along the
+  // ray (0 = nothing removed): the edge pass tests depth continuity against
+  // these to tell a clip-cut boundary from a real silhouette.
+  uint8_t clipCut = 0;
+  float clipNearVz = 0.0f;
+  float clipFarVz = 0.0f;
 };
 
 // First-hit edge G-buffer of one primary ray, WITHOUT shading: what the
@@ -89,7 +100,90 @@ struct GBufProbe {
   uint32_t objectId = 0xFFFFFFFFu;
   uint32_t materialId = 0xFFFFFFFFu;
   float surfAlpha = 1.0f;
+  // Clip-cut captures, mirroring PixelResult (see there for semantics).
+  uint8_t clipCut = 0;
+  float clipNearVz = 0.0f;
+  float clipFarVz = 0.0f;
 };
+
+// ---- view-clip helpers (Scene::clipNear/clipFar via ShadeContext) ----------
+
+// Per-ray t range of the view-z clip interval: t = vz / dot(rd, camDir)
+// (ortho: exactly vz). Returns {0, +inf} when clipping is off.
+struct ClipT {
+  float tnear = 0.0f;
+  float tfar = std::numeric_limits<float>::infinity();
+  bool on = false;
+};
+inline ClipT clipRangeT(const ShadeContext& sc, const Vec3& rd,
+                        const Vec3& camDir) {
+  ClipT c;
+  const float inf = std::numeric_limits<float>::infinity();
+  if (sc.clipNearZ <= -inf && sc.clipFarZ >= inf) return c;
+  const float cosr = dot(rd, camDir);
+  if (cosr <= 1.0e-6f) return c;  // degenerate/backward ray: leave unclipped
+  c.on = true;
+  if (sc.clipNearZ > 0.0f) c.tnear = sc.clipNearZ / cosr;
+  if (sc.clipFarZ < inf) c.tfar = sc.clipFarZ / cosr;
+  return c;
+}
+
+// True when the hit is a BACKFACE: the geometric normal points along the ray
+// (mesh winding / analytic outward normals both satisfy this from inside).
+inline bool backfaceHit(const RTCRayHit& rh, const Vec3& rd) {
+  return rh.hit.Ng_x * rd.x + rh.hit.Ng_y * rd.y + rh.hit.Ng_z * rd.z > 0.0f;
+}
+
+// Any-hit over (eps, tMax): true when a clipped-away surface exists in front
+// of the near plane along this ray -- confirms a backface first hit is a
+// clip-cut interior rather than a legitimately visible open-mesh backface.
+inline bool clipConfirmFront(RTCScene scene, const Vec3& org, const Vec3& rd,
+                             float tMax) {
+  RTCRay r{};
+  r.org_x = org.x;
+  r.org_y = org.y;
+  r.org_z = org.z;
+  r.dir_x = rd.x;
+  r.dir_y = rd.y;
+  r.dir_z = rd.z;
+  r.tnear = std::max(1.0e-4f, 1.0e-4f * tMax);
+  r.tfar = tMax * (1.0f - 1.0e-4f);
+  if (r.tnear >= r.tfar) return false;
+  r.mask = 0xFFFFFFFFu;
+  r.flags = 0;
+  r.time = 0.0f;
+  RTCOccludedArguments oargs;
+  rtcInitOccludedArguments(&oargs);
+  rtcOccluded1(scene, &r, &oargs);
+  return r.tfar < 0.0f;  // any occluder found
+}
+
+// First hit in [t0, t1): its linear view-z, or 0 when none. For background
+// pixels under clipping this reports what the clip planes removed along the
+// ray (the edge pass's depth-continuity reference).
+inline float clipProbeRange(RTCScene scene, const Vec3& org, const Vec3& rd,
+                            const Vec3& camDir, float t0, float t1) {
+  if (t0 >= t1) return 0.0f;
+  RTCRayHit rh;
+  rh.ray.org_x = org.x;
+  rh.ray.org_y = org.y;
+  rh.ray.org_z = org.z;
+  rh.ray.dir_x = rd.x;
+  rh.ray.dir_y = rd.y;
+  rh.ray.dir_z = rd.z;
+  rh.ray.tnear = t0;
+  rh.ray.tfar = t1;
+  rh.ray.mask = 0xFFFFFFFFu;
+  rh.ray.flags = 0;
+  rh.ray.time = 0.0f;
+  rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+  rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+  RTCIntersectArguments iargs;
+  rtcInitIntersectArguments(&iargs);
+  rtcIntersect1(scene, &rh, &iargs);
+  if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID) return 0.0f;
+  return rh.ray.tfar * dot(rd, camDir);
+}
 
 // Trace one primary ray and fill the first-hit G-buffer. MIRRORS the G-buffer
 // branch of shadeHit (hit_shader.hpp): the mesh path interpolates the slot-0
@@ -102,6 +196,7 @@ struct GBufProbe {
 inline GBufProbe probeGBuffer(const ShadeContext& sc, const Vec3& org,
                               const Vec3& rd, const Vec3& camDir) {
   GBufProbe g;
+  const ClipT clip = clipRangeT(sc, rd, camDir);
   RTCRayHit rh;
   rh.ray.org_x = org.x;
   rh.ray.org_y = org.y;
@@ -109,8 +204,8 @@ inline GBufProbe probeGBuffer(const ShadeContext& sc, const Vec3& org,
   rh.ray.dir_x = rd.x;
   rh.ray.dir_y = rd.y;
   rh.ray.dir_z = rd.z;
-  rh.ray.tnear = 0.0f;
-  rh.ray.tfar = std::numeric_limits<float>::infinity();
+  rh.ray.tnear = clip.tnear;
+  rh.ray.tfar = clip.tfar;
   rh.ray.mask = 0xFFFFFFFFu;
   rh.ray.flags = 0;
   rh.ray.time = 0.0f;
@@ -120,8 +215,28 @@ inline GBufProbe probeGBuffer(const ShadeContext& sc, const Vec3& org,
   rtcInitIntersectArguments(&iargs);
   rtcIntersect1(sc.built.scene, &rh, &iargs);
   if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
-      rh.hit.geomID >= sc.built.records.size())
+      rh.hit.geomID >= sc.built.records.size()) {
+    // Background: record what the clip planes removed along the ray (the
+    // stroke edge pass's clip-cut discriminator; see PixelResult).
+    if (clip.on) {
+      // The margins must stay tiny (float-ulp scale): a cut surface nearly
+      // PARALLEL to the clip plane has its removed part hugging the plane,
+      // and a larger epsilon would swallow exactly the hit the edge pass
+      // needs to recognize the cut boundary.
+      if (clip.tnear > 0.0f)
+        g.clipNearVz = clipProbeRange(sc.built.scene, org, rd, camDir,
+                                      std::max(1.0e-4f, 1.0e-6f * clip.tnear),
+                                      clip.tnear * (1.0f - 1.0e-6f));
+      if (clip.tfar < std::numeric_limits<float>::infinity())
+        g.clipFarVz = clipProbeRange(sc.built.scene, org, rd, camDir,
+                                     clip.tfar * (1.0f + 1.0e-6f),
+                                     std::numeric_limits<float>::infinity());
+    }
     return g;  // background sentinels
+  }
+  if (clip.on && clip.tnear > 0.0f && backfaceHit(rh, rd) &&
+      clipConfirmFront(sc.built.scene, org, rd, clip.tnear))
+    g.clipCut = 1;
 
   g.viewZ = rh.ray.tfar * dot(rd, camDir);
   const GeomRecord& rec = sc.built.records[rh.hit.geomID];
@@ -231,11 +346,19 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   Vec3 firstReflF0{1.0f, 1.0f, 1.0f};
   Vec3 firstReflTangent{0.0f, 0.0f, 0.0f};
   float firstReflAspect = 1.0f;
+  uint8_t firstClipCut = 0;
+  float clipNearVzOut = 0.0f;
+  float clipFarVzOut = 0.0f;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
+  // View clipping (Scene::clipNear/clipFar): the whole transparency walk is
+  // clamped to the clip t range, so geometry outside the slab is never
+  // composited. Off (the default) leaves the walk byte-identical.
+  const ClipT clip = clipRangeT(sc, rd, camDir);
+
   const float kOpaque = 1.0f - 1e-4f;  // opacity at/above this == opaque
-  float tnear = 0.0f;
+  float tnear = clip.tnear;
   const int maxIters = opt.transparency ? (opt.maxTransparentLayers + 1) : 1;
 
   for (int iter = 0; iter < maxIters; ++iter) {
@@ -247,7 +370,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
     rh.ray.dir_y = rd.y;
     rh.ray.dir_z = rd.z;
     rh.ray.tnear = tnear;
-    rh.ray.tfar = std::numeric_limits<float>::infinity();
+    rh.ray.tfar = clip.tfar;
     rh.ray.mask = 0xFFFFFFFFu;
     rh.ray.flags = 0;
     rh.ray.time = 0.0f;
@@ -297,6 +420,12 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       firstReflF0 = hs.reflF0;
       firstReflTangent = hs.reflTangent;
       firstReflAspect = hs.reflAspect;
+      // Clip-cut interior: a backface first hit whose clipped-away front is
+      // confirmed by an any-hit ray over [0, clipNear) (edge G-buffer only).
+      if (clip.on && clip.tnear > 0.0f && opt.strokeEdges.enable &&
+          backfaceHit(rh, rd) &&
+          clipConfirmFront(rscene, org, rd, clip.tnear))
+        firstClipCut = 1;
     }
 
     if (!opt.transparency || hs.opacity >= kOpaque) {
@@ -337,6 +466,21 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       cappedRays.fetch_add(1, std::memory_order_relaxed);
   }
 
+  // Background pixel under clipping: record what the clip planes removed
+  // along the ray -- the stroke edge pass's clip-cut discriminator (edge
+  // G-buffer only; matches probeGBuffer's miss capture).
+  if (clip.on && opt.strokeEdges.enable && nearDepth == 0.0f) {
+    // Tiny (float-ulp scale) margins: see probeGBuffer's miss capture.
+    if (clip.tnear > 0.0f)
+      clipNearVzOut = clipProbeRange(rscene, org, rd, camDir,
+                                     std::max(1.0e-4f, 1.0e-6f * clip.tnear),
+                                     clip.tnear * (1.0f - 1.0e-6f));
+    if (clip.tfar < std::numeric_limits<float>::infinity())
+      clipFarVzOut = clipProbeRange(rscene, org, rd, camDir,
+                                    clip.tfar * (1.0f + 1.0e-6f),
+                                    std::numeric_limits<float>::infinity());
+  }
+
   // Fragments over the opaque floor. The base (floor / background) contributes
   // COLOR only where it is covered (baseCov), so an opaque background
   // (default) leaves opaque scenes byte-unchanged, while a transparent
@@ -371,7 +515,10 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                      firstReflAlpha,
                      firstReflF0,
                      firstReflTangent,
-                     firstReflAspect};
+                     firstReflAspect,
+                     firstClipCut,
+                     clipNearVzOut,
+                     clipFarVzOut};
 }
 
 }  // namespace detail

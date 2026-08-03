@@ -1,6 +1,7 @@
 // Command-line option parsing for the prototype.
 #pragma once
 
+#include <limits>
 #include <map>
 #include <string>
 
@@ -128,6 +129,11 @@ struct Options {
   // Radius multiplier for CueMol spheres/cylinders (silhouette outlines), to
   // calibrate their on-screen thickness against POV-Ray.
   float outlineScale = 1.0f;
+  // View-space clipping planes (Scene::clipNear/clipFar, the CueMol slab):
+  // linear view-z (camera-forward distance, same units as the viewZ AOV).
+  // NaN = unset (clipping off).
+  float clipNear = std::numeric_limits<float>::quiet_NaN();
+  float clipFar = std::numeric_limits<float>::quiet_NaN();
   // Supersampling factor: render at N x the output resolution and box-average
   // down in linear space. Matches POV-Ray's adaptive antialiasing on the thin
   // silhouette lines far better than per-pixel sampling alone. The .pov path
