@@ -42,4 +42,15 @@ bool worldToScreen(const ScreenProj& sp, const Vec3& P, float& x, float& y,
   return true;
 }
 
+Vec3 screenToWorld(const ScreenProj& sp, float x, float y, float vz) {
+  const float u = (x + 0.5f) * 2.0f / static_cast<float>(sp.W) - 1.0f;
+  const float v = 1.0f - (y + 0.5f) * 2.0f / static_cast<float>(sp.H);
+  if (sp.ortho) {
+    return sp.pos + sp.right * (u * sp.halfW) + sp.up * (v * sp.halfH) +
+           sp.dir * vz;
+  }
+  return sp.pos + sp.dir * vz + sp.right * (u * sp.persHalfW * vz) +
+         sp.up * (v * sp.persHalfH * vz);
+}
+
 }  // namespace umbreon

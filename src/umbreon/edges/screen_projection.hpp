@@ -38,4 +38,10 @@ ScreenProj makeScreenProj(const Camera& cam, int w, int h);
 bool worldToScreen(const ScreenProj& sp, const Vec3& P, float& x, float& y,
                    float& vz);
 
+// Inverse of worldToScreen: the world point that projects to pixel coordinate
+// (x,y) (top-left origin, pixel centers at integers) at linear view-z `vz`.
+// Used by the screen-edge fold probe to reconstruct crack surface points from
+// the viewZ AOV.
+Vec3 screenToWorld(const ScreenProj& sp, float x, float y, float vz);
+
 }  // namespace umbreon

@@ -158,7 +158,15 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
         frame.color[p * 4 + 3] = a;
       }
     }
-    applyStrokeEdges(frame, scene, opt, OcclusionQuery{}, OcclusionQuery{});
+    // The renderer's live BVH backs the extractor's fold probe (a segment
+    // occlusion test per strongNdelta-rescue candidate crack); the plain
+    // any-hit path is used (no exclude faces / filters).
+    applyStrokeEdges(frame, scene, opt,
+                     [&renderer](const Vec3& p, const Vec3& q,
+                                 const int* excludeFaces, int nExclude) {
+                       return renderer.occluded(p, q, excludeFaces, nExclude);
+                     },
+                     OcclusionQuery{});
   }
 
   // Fog / downsample / denoise / gamma: the finishing pass. One last cancel

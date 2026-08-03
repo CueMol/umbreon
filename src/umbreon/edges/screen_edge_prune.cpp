@@ -76,6 +76,31 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
     std::vector<char> kept(n, 0), interior(n, 0);
     for (std::size_t i = 0; i < n; ++i) {
       kept[i] = keepScreenChain(traced[i], minStrong) ? 1 : 0;
+      // Junction-chop keep (mirrors the Stage-4 speck filter's junction-aware
+      // exemption): where two boundaries entangle within a pixel, their
+      // cross-cracks junction the lattice every 1-2 steps and the tracer
+      // chops a CONTIGUOUS strong contour into 1-3-edgel fragments, none of
+      // which reaches minStrong on its own -- the per-fragment count would
+      // erase a boundary whose classification is continuously strong. A
+      // sub-minStrong fragment carrying strong evidence whose BOTH ends are
+      // junctions (degree >= 3) is such a chopped piece: keep it this round;
+      // the retrace after the neighbors' erase re-merges it and the merged
+      // chain faces the normal minStrong test. A fragment whose junctions
+      // dissolve without re-merging turns free-ended and is dropped by the
+      // next round's re-evaluation (erases are permanent, so this cannot
+      // oscillate). Pure-weak fragments stay with the propagation rule below.
+      if (!kept[i] && !traced[i].closed && traced[i].deg0 >= 3 &&
+          traced[i].deg1 >= 3) {
+        const ScreenChain& ch = traced[i];
+        for (std::size_t e = 0; e < ch.edgeFlags.size(); ++e) {
+          if (ch.edgeClass[e] ==
+                  static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+              (ch.edgeFlags[e] & 1)) {
+            kept[i] = 1;
+            break;
+          }
+        }
+      }
       // INTERIOR support = a non-outline feature: strong DepthGap, ObjectId
       // or Crease. A pure-Silhouette chain supports weak neighbors only as
       // an anchor, never on its own: otherwise any weak line whose both ends

@@ -15,16 +15,17 @@ namespace umbreon {
 // which builds a miter-joined offset RIBBON per run and hard-fills the triangle
 // strips composited over frame.color in LINEAR space at hi-res (the box
 // downsample antialiases). The default (edges off) path never reaches here, so
-// the no-edge render stays byte-identical. The occluded/occludedRaw QI queries
-// are unused by the screen source (its visibility is exact from the z-buffer)
-// and are kept only for signature stability.
+// the no-edge render stays byte-identical. `occluded` feeds the screen
+// source's Stage-1 fold probe (one segment ray per strongNdelta-rescue
+// candidate; NOT per-vertex QI -- visibility stays exact from the z-buffer);
+// occludedRaw is unused and kept only for signature stability.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
                       const OcclusionQuery& occludedRaw) {
-  (void)occluded; (void)occludedRaw;
+  (void)occludedRaw;
   const StrokeEdgeOptions& se = opt.strokeEdges;
   if (!se.enable) return;
-  applyScreenVectorEdges(frame, scene, opt);
+  applyScreenVectorEdges(frame, scene, opt, occluded);
 }
 
 

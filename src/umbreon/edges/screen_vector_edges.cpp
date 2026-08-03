@@ -92,9 +92,11 @@ void mergeShortClassRuns(std::vector<std::uint8_t>& cls, int minLen) {
 
 // Crack color by class byte, or by kill reason for un-inked candidates whose
 // min gap exceeds `noiseFloor` (world units at that crack). Returns false for
-// "draw nothing".
+// "draw nothing". `probeVal` is the fold-probe outcome (ScreenCrackDebugPlane
+// ::probe): a weak crack whose rescue the probe vetoed draws magenta.
 inline bool crackColor(std::uint8_t byte, std::uint8_t reason, float gapA,
-                       float gapB, float noiseFloor, std::uint8_t rgb[3]) {
+                       float gapB, float noiseFloor, std::uint8_t probeVal,
+                       std::uint8_t rgb[3]) {
   switch (static_cast<CrackClass>(byte & kCrackClassMask)) {
     case CrackClass::Silhouette:
       rgb[0] = rgb[1] = rgb[2] = 255;  // white
@@ -105,6 +107,8 @@ inline bool crackColor(std::uint8_t byte, std::uint8_t reason, float gapA,
     case CrackClass::DepthGap:
       if (byte & kCrackStrongBit) {
         rgb[0] = 255, rgb[1] = 0, rgb[2] = 0;  // strong: red
+      } else if (probeVal == 2) {
+        rgb[0] = 255, rgb[1] = 0, rgb[2] = 255;  // probe-vetoed fold: magenta
       } else {
         rgb[0] = 80, rgb[1] = 120, rgb[2] = 255;  // weak: blue
       }
@@ -191,13 +195,13 @@ void writeCrackDump(const char* prefix, const CrackField& cf,
         if (x + 1 < W &&
             crackColor(cf.right[cell], dbg.right.reason[cell],
                        dbg.right.gapA[cell], dbg.right.gapB[cell], noiseFloor,
-                       rgb) &&
+                       dbg.right.probe[cell], rgb) &&
             ix + 1 < PW)
           put(ix + 1, iy, rgb[0], rgb[1], rgb[2]);
         if (y + 1 < H &&
             crackColor(cf.down[cell], dbg.down.reason[cell],
                        dbg.down.gapA[cell], dbg.down.gapB[cell], noiseFloor,
-                       rgb) &&
+                       dbg.down.probe[cell], rgb) &&
             iy + 1 < PH)
           put(ix, iy + 1, rgb[0], rgb[1], rgb[2]);
       }
@@ -237,7 +241,7 @@ void writeCrackDump(const char* prefix, const CrackField& cf,
     if (!f) return;
     std::fprintf(f,
                  "plane,x,y,reason,gapA_px,gapB_px,sA_px,sB_px,g0_px,"
-                 "slopesum_px,ndotvA,ndotvB,ndelta\n");
+                 "slopesum_px,ndotvA,ndotvB,ndelta,probe\n");
     std::size_t rows = 0;
     for (int plane = 0; plane < 2; ++plane) {
       const ScreenCrackDebugPlane& d = plane == 0 ? dbg.right : dbg.down;
@@ -268,11 +272,12 @@ void writeCrackDump(const char* prefix, const CrackField& cf,
                               (la * lb);
           }
           std::fprintf(f, "%c,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.4f,"
-                          "%.4f,%.5f\n",
+                          "%.4f,%.5f,%d\n",
                        plane == 0 ? 'r' : 'd', x, y, d.reason[cell],
                        d.gapA[cell] / px, d.gapB[cell] / px, d.sA[cell] / px,
                        d.sB[cell] / px, d.g0[cell] / px,
-                       std::fabs(d.sA[cell] + d.sB[cell]) / px, nvA, nvB, nd);
+                       std::fabs(d.sA[cell] + d.sB[cell]) / px, nvA, nvB, nd,
+                       d.probe[cell]);
           ++rows;
         }
       }
@@ -286,7 +291,8 @@ void writeCrackDump(const char* prefix, const CrackField& cf,
 }  // namespace
 
 void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
-                            const RenderOptions& opt) {
+                            const RenderOptions& opt,
+                            const OcclusionQuery& occluded) {
   const StrokeEdgeOptions& se = opt.strokeEdges;
   const int W = frame.width, H = frame.height;
   if (W <= 0 || H <= 0) return;
@@ -312,7 +318,8 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   ScreenCrackDebug dbg;
   CrackField cf = classifyCracks(W, H, frame.viewZ.data(),
                                  frame.objectId.data(), normalPtr, sp, cp,
-                                 dumpPrefix ? &dbg : nullptr);
+                                 dumpPrefix ? &dbg : nullptr,
+                                 occluded ? &occluded : nullptr);
   if (dumpPrefix)
     writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
                    frame.objectId.data(), normalPtr, sp, cp);
