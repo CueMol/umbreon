@@ -252,6 +252,11 @@ void storeGBufChannels(FrameResult& res, const RenderOptions& opt,
     res.objectId[pix] = pr.objectId;
     res.materialId[pix] = pr.materialId;
     res.surfAlpha[pix] = pr.firstOpacity;
+    if (!res.clipCut.empty()) {
+      res.clipCut[pix] = pr.clipCut;
+      res.clipNearVz[pix] = pr.clipNearVz;
+      res.clipFarVz[pix] = pr.clipFarVz;
+    }
   }
 }
 
@@ -473,6 +478,12 @@ void allocateFrameBuffers(const Scene& scene, const RenderOptions& opt, int W,
       res.objectId.assign(npix, 0xFFFFFFFFu);
       res.materialId.assign(npix, 0xFFFFFFFFu);
       res.surfAlpha.assign(npix, 1.0f);
+      // Clip-cut G-buffer: only when the scene's view-clip planes are set.
+      if (scene.clipEnabled()) {
+        res.clipCut.assign(npix, 0);
+        res.clipNearVz.assign(npix, 0.0f);
+        res.clipFarVz.assign(npix, 0.0f);
+      }
     }
     // normal doubles as the OIDN guide / cache spatial key, so it is allocated
     // for the edge pass OR the AO AOV dump. The remaining AO AOVs (albedo, the
@@ -1316,8 +1327,12 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
       runCoarseAoPrepass(scene, opt, built, m, cb, W, H, res);
 
 
-  const ShadeContext sc{built,     m,   lights, ambLight,
-                        bg,        opt, aoUpAxis, aoGrid.get()};
+  ShadeContext sc{built,     m,   lights, ambLight,
+                  bg,        opt, aoUpAxis, aoGrid.get()};
+  // View clipping (Scene::clipNear/clipFar): consumed by integratePixel /
+  // probeGBuffer; infinite defaults keep the walk byte-identical.
+  sc.clipNearZ = scene.clipNear;
+  sc.clipFarZ = scene.clipFar;
 
   // Per-pixel GI cache seed side-channels (component id / Embree geomID of the
   // first hit). Kept local to render() (not in FrameResult): the cache build
@@ -1482,6 +1497,11 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
       res.objectId[pix] = gp.objectId;
       res.materialId[pix] = gp.materialId;
       res.surfAlpha[pix] = gp.surfAlpha;
+      if (!res.clipCut.empty()) {
+        res.clipCut[pix] = gp.clipCut;
+        res.clipNearVz[pix] = gp.clipNearVz;
+        res.clipFarVz[pix] = gp.clipFarVz;
+      }
     };
 
     // Phase 1: shade ONE center subpixel per output pixel at its true hi-res

@@ -72,6 +72,10 @@ if(TARGET umbreon)
   target_link_libraries(test_fog PRIVATE umbreon)
   add_test(NAME fog COMMAND test_fog)
 
+  add_executable(test_clip_planes test_clip_planes.cpp)
+  target_link_libraries(test_clip_planes PRIVATE umbreon)
+  add_test(NAME clip_planes COMMAND test_clip_planes)
+
   add_executable(test_image_ops test_image_ops.cpp)
   target_link_libraries(test_image_ops PRIVATE umbreon)
   add_test(NAME image_ops COMMAND test_image_ops)

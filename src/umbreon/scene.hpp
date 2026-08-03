@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "render/render_types.hpp"
@@ -439,6 +440,23 @@ struct Scene {
   Fog fog;                            // optional POV fog (post-process)
   float aoDistance = 1.0e20f;         // AO ray max distance (scene-scaled)
   float assumedGamma = 1.0f;         // POV assumed_gamma (from global_settings)
+
+  // View-space clipping planes (the CueMol slab). When set, primary camera
+  // rays are clamped to linear view-z in [clipNear, clipFar] -- the same axis
+  // and units as the viewZ AOV (distance along the camera forward axis from
+  // the camera position) -- so geometry outside the range is not drawn. Pass
+  // UNCLIPPED geometry and set these two values; umbreon does the clipping.
+  // The stroke edge pass (strokeEdges.enable) then suppresses silhouette
+  // lines along boundaries the planes cut: a clipped cross-section is a
+  // viewing artifact, not a real silhouette. Secondary rays (shadows, AO, GI)
+  // are NOT clipped -- like the interactive GL view, the slab is a display
+  // device, not scene geometry. Infinite defaults keep clipping off.
+  float clipNear = -std::numeric_limits<float>::infinity();
+  float clipFar = std::numeric_limits<float>::infinity();
+  bool clipEnabled() const {
+    return clipNear > -std::numeric_limits<float>::infinity() ||
+           clipFar < std::numeric_limits<float>::infinity();
+  }
 
   // Group-alpha (section) transparency realized as a blendpng-equivalent
   // multi-pass post-blend (see GroupBlend above). Empty (default) => a single

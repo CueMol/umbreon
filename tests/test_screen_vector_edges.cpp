@@ -1222,5 +1222,81 @@ int main() {
     s.check_eq("junction chop: pure-weak rungs erased", weakKept, 0);
   }
 
+  // ---- (14) clip-cut vetoes: cut boundaries classify as nothing ----------
+  // Interior veto: a crack touching a clip-cut interior pixel (renderer
+  // clipCut flag) never inks, regardless of class.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, 9, x < 8 ? 100.0f : 500.0f);  // strong step
+    std::vector<std::uint8_t> cut(16 * 16, 0);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 8; x < 16; ++x) cut[b.idx(x, y)] = 1;  // deep side is cut
+    umbreon::ScreenClipAovs clip;
+    clip.cut = cut.data();
+    CrackField cf = umbreon::classifyCracks(
+        16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(),
+        unitProj(16, 16), defaults, nullptr, nullptr, &clip);
+    s.check_eq("clip interior: step crack fully vetoed", countActive(cf), 0);
+    // Without the clip AOVs the same field inks the step (control).
+    s.check_eq("clip interior: control still fires",
+               countClass(classify(b, defaults), CrackClass::DepthGap), 16);
+  }
+  // Silhouette veto: the outline is a far-plane cut when the removed hit
+  // recorded behind the bg pixel continues the fg surface's depth; an
+  // unrelated removed hit keeps the outline.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 8; ++x)
+        b.set(x, y, 9, 100.0f + 5.0f * static_cast<float>(x));  // slope 5/px
+    // fg edge pixel x=7: vz 135, one-sided slope 5 -> prediction 140.
+    std::vector<float> farVz(16 * 16, 0.0f);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 8; x < 16; ++x) farVz[b.idx(x, y)] = 140.0f;
+    umbreon::ScreenClipAovs clip;
+    clip.farVz = farVz.data();
+    CrackField cf = umbreon::classifyCracks(
+        16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(),
+        unitProj(16, 16), defaults, nullptr, nullptr, &clip);
+    s.check_eq("clip silhouette: depth-continuous cut edge vetoed",
+               countClass(cf, CrackClass::Silhouette), 0);
+    for (float& v : farVz) v = v > 0.0f ? 300.0f : 0.0f;  // unrelated object
+    cf = umbreon::classifyCracks(16, 16, b.viewZ.data(), b.objectId.data(),
+                                 b.normal.data(), unitProj(16, 16), defaults,
+                                 nullptr, nullptr, &clip);
+    s.check_eq("clip silhouette: unrelated removed hit keeps the outline",
+               countClass(cf, CrackClass::Silhouette), 16);
+  }
+  // fg|fg far-plane veto: the DEEPER side's continuation exits the slab
+  // across the crack -> slab artifact; with the plane off the step inks.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        // near side flat 100; deep side 500 at the crack, receding away at
+        // 10/px -> continuation across the crack = 510.
+        const float vz =
+            x < 8 ? 100.0f : 500.0f - 10.0f * static_cast<float>(x - 8);
+        b.set(x, y, 9, vz);
+      }
+    std::vector<std::uint8_t> cut(16 * 16, 0);  // no interior flags
+    umbreon::ScreenClipAovs clip;
+    clip.cut = cut.data();
+    ScreenClassifyParams p = defaults;
+    p.clipFarVz = 505.0f;  // continuation 510 exits the slab
+    CrackField cf = umbreon::classifyCracks(
+        16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(),
+        unitProj(16, 16), p, nullptr, nullptr, &clip);
+    s.check_eq("clip fg|fg: far-cut step vetoed", countActive(cf), 0);
+    p.clipFarVz = std::numeric_limits<float>::infinity();
+    cf = umbreon::classifyCracks(16, 16, b.viewZ.data(), b.objectId.data(),
+                                 b.normal.data(), unitProj(16, 16), p,
+                                 nullptr, nullptr, &clip);
+    s.check("clip fg|fg: plane off restores the contour",
+            countClass(cf, CrackClass::DepthGap) > 0);
+  }
+
   return s.report();
 }

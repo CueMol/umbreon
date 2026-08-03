@@ -133,14 +133,93 @@ inline std::uint8_t classifyPair(const float* viewZ,
                                  const ScreenClassifyParams& p,
                                  ScreenCrackDebugPlane* dbg = nullptr,
                                  std::size_t dbgCell = 0,
-                                 const OcclusionQuery* probe = nullptr) {
+                                 const OcclusionQuery* probe = nullptr,
+                                 const ScreenClipAovs* clip = nullptr) {
   const bool bgA = objectId[ia] == kBackground;
   const bool bgB = objectId[ib] == kBackground;
   if (bgA && bgB) return 0;
 
+  // Clip-cut veto (interior): any crack touching the INTERIOR of a clip-cut
+  // surface (a backface first hit whose clipped-away front was confirmed by
+  // the renderer, FrameResult::clipCut) is a slab artifact -- the cut
+  // cross-section and its rim stay line-free.
+  if (clip && clip->cut &&
+      ((!bgA && clip->cut[ia]) || (!bgB && clip->cut[ib]))) {
+    if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kClipVeto;
+    return 0;
+  }
+
+  // Clip-cut veto (far plane, fg|fg): a surface cut by the far plane is the
+  // DEEPER side of the crack (what shows across the cut is necessarily
+  // nearer -- nothing deeper than the plane survives). The deeper surface
+  // was CUT here, not ended, when its one-sided linear continuation exits
+  // the slab within ~1 px: the boundary is a slab artifact, not a contour.
+  // The fg|bg analogue is handled exactly in the Silhouette branch below via
+  // the recorded removed-hit depth.
+  if (clip && !bgA && !bgB) {
+    const float inf = std::numeric_limits<float>::infinity();
+    if (p.clipFarVz < inf) {
+      const int iDeep = viewZ[ia] >= viewZ[ib] ? ia : ib;
+      const int iOutD = iDeep == ia ? iOutA : iOutB;
+      const bool outDValid = iDeep == ia ? outAValid : outBValid;
+      const float px = pixelSizeAt(sp, viewZ[iDeep]);
+      const float clampS = p.slopeClampPx * px;
+      const float s =
+          sideSlope(viewZ, objectId, iDeep, iOutD, outDValid, clampS);
+      if (viewZ[iDeep] + s >= p.clipFarVz - p.depthGapPx * px) {
+        if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kClipVeto;
+        return 0;
+      }
+    }
+    // Near-plane mirror: the NEARER side's surface is cut by the near plane
+    // at this crack (its continuation crosses clipNear within ~1 px); the
+    // crack against the surface revealed through the cut window is a slab
+    // artifact.
+    if (p.clipNearVz > -inf) {
+      const int iNear = viewZ[ia] <= viewZ[ib] ? ia : ib;
+      const int iOutN = iNear == ia ? iOutA : iOutB;
+      const bool outNValid = iNear == ia ? outAValid : outBValid;
+      const float px = pixelSizeAt(sp, viewZ[iNear]);
+      const float clampS = p.slopeClampPx * px;
+      const float s =
+          sideSlope(viewZ, objectId, iNear, iOutN, outNValid, clampS);
+      if (viewZ[iNear] + s <= p.clipNearVz + p.depthGapPx * px) {
+        if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kClipVeto;
+        return 0;
+      }
+    }
+  }
+
   // 1. Silhouette: exactly one side background; the foreground pixel owns.
   if (bgA != bgB) {
     if (!p.silhouette) return 0;
+    // Clip-cut veto (bg boundary): not a real silhouette when the clip
+    // planes removed a depth-CONTINUOUS continuation of the fg surface
+    // behind the bg pixel -- the fg surface was CUT, it did not end. Predict
+    // the bg pixel's depth from the fg side's one-sided slope (the
+    // contact-veto extrapolation form) and compare with the removed hit the
+    // renderer recorded along the bg ray (clipNearVz / clipFarVz). A
+    // different clipped object behind the bg pixel has an unrelated depth
+    // and keeps the outline.
+    if (clip && (clip->nearVz || clip->farVz)) {
+      const int iFg = bgA ? ib : ia;
+      const int iBg = bgA ? ia : ib;
+      const int iOutFg = bgA ? iOutB : iOutA;
+      const bool outFgValid = bgA ? outBValid : outAValid;
+      const float px = pixelSizeAt(sp, viewZ[iFg]);
+      const float clampS = p.slopeClampPx * px;
+      const float s =
+          sideSlope(viewZ, objectId, iFg, iOutFg, outFgValid, clampS);
+      const float pred = viewZ[iFg] + s;
+      const float tol = p.depthGapPx * px;
+      const float rn = clip->nearVz ? clip->nearVz[iBg] : 0.0f;
+      const float rf = clip->farVz ? clip->farVz[iBg] : 0.0f;
+      if ((rn > 0.0f && std::fabs(rn - pred) <= tol) ||
+          (rf > 0.0f && std::fabs(rf - pred) <= tol)) {
+        if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kClipVeto;
+        return 0;
+      }
+    }
     const std::uint8_t owner = bgA ? kCrackOwnerBit : 0;
     return static_cast<std::uint8_t>(CrackClass::Silhouette) | owner;
   }
@@ -361,7 +440,8 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
                           const ScreenProj& sp,
                           const ScreenClassifyParams& params,
-                          ScreenCrackDebug* dbg, const OcclusionQuery* probe) {
+                          ScreenCrackDebug* dbg, const OcclusionQuery* probe,
+                          const ScreenClipAovs* clip) {
   CrackField cf;
   cf.W = W;
   cf.H = H;
@@ -399,13 +479,13 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
               cf.right[cell] = classifyPair(
                   viewZ, objectId, normal, W, H, ia, ia + 1, ia - 1,
                   x - 1 >= 0, ia + 2, x + 2 < W, sp, cosCreaseBase, params,
-                  dbg ? &dbg->right : nullptr, cell, probe);
+                  dbg ? &dbg->right : nullptr, cell, probe, clip);
             }
             if (y + 1 < H) {  // down crack (x,y)-(x,y+1)
               cf.down[cell] = classifyPair(
                   viewZ, objectId, normal, W, H, ia, ia + W, ia - W,
                   y - 1 >= 0, ia + 2 * W, y + 2 < H, sp, cosCreaseBase,
-                  params, dbg ? &dbg->down : nullptr, cell, probe);
+                  params, dbg ? &dbg->down : nullptr, cell, probe, clip);
             }
           }
         }

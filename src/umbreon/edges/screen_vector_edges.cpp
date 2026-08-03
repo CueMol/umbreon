@@ -119,6 +119,12 @@ inline bool crackColor(std::uint8_t byte, std::uint8_t reason, float gapA,
     default:
       break;
   }
+  // Clip-cut veto has no DepthGap gaps to clear the noise floor: color it
+  // unconditionally (brown) so cut boundaries are visible in the dump.
+  if (reason == ScreenCrackDebug::kClipVeto) {
+    rgb[0] = 160, rgb[1] = 96, rgb[2] = 0;  // brown
+    return true;
+  }
   if (std::min(gapA, gapB) <= noiseFloor) return false;
   switch (reason) {
     case ScreenCrackDebug::kNmsSuppressed:
@@ -316,10 +322,22 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   if (cp.crease && !normalPtr) cp.crease = false;
   const char* dumpPrefix = std::getenv("UMBREON_SCREEN_EDGE_DUMP");
   ScreenCrackDebug dbg;
+  // Clip-cut G-buffer planes: present only when the scene's view-clip planes
+  // are set (see FrameResult); boundaries the planes cut stay line-free.
+  ScreenClipAovs clipAovs;
+  const bool hasClip = !frame.clipCut.empty();
+  if (hasClip) {
+    clipAovs.cut = frame.clipCut.data();
+    clipAovs.nearVz = frame.clipNearVz.data();
+    clipAovs.farVz = frame.clipFarVz.data();
+    cp.clipNearVz = scene.clipNear;
+    cp.clipFarVz = scene.clipFar;
+  }
   CrackField cf = classifyCracks(W, H, frame.viewZ.data(),
                                  frame.objectId.data(), normalPtr, sp, cp,
                                  dumpPrefix ? &dbg : nullptr,
-                                 occluded ? &occluded : nullptr);
+                                 occluded ? &occluded : nullptr,
+                                 hasClip ? &clipAovs : nullptr);
   if (dumpPrefix)
     writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
                    frame.objectId.data(), normalPtr, sp, cp);

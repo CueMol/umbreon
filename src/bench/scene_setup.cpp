@@ -209,6 +209,9 @@ bool buildSceneFromPov(Options& opt, Scene& scene, RenderOptions& ropt,
   scene.lights = ps.lights;
   scene.background = ps.background;
   scene.fog = ps.fog;
+  // View clipping planes (--clip-near / --clip-far): NaN = unset.
+  if (!std::isnan(opt.clipNear)) scene.clipNear = opt.clipNear;
+  if (!std::isnan(opt.clipFar)) scene.clipFar = opt.clipFar;
 
   // Ambient light color/energy. Without GI this is the neutral white the
   // material finish-ambient term multiplies. With GI it carries the ambient

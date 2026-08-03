@@ -59,6 +59,15 @@ struct FrameResult {
   // transparent surface inks with that surface's transparency (per-vertex
   // alpha varies linearly along the stroke via the standard lerp).
   std::vector<float> surfAlpha;           // width*height   first-hit opacity
+  // Clip-cut G-buffer: sized ONLY when strokeEdges is on AND the scene's
+  // view-clip planes (Scene::clipNear/clipFar) are set. clipCut[pix] = 1
+  // marks a first hit on the interior (backface) of a clip-cut surface; for
+  // BACKGROUND pixels clipNearVz / clipFarVz record the view-z of what the
+  // clip planes removed along the ray (0 = nothing). The stroke edge pass
+  // suppresses lines along boundaries these captures identify as clip cuts.
+  std::vector<std::uint8_t> clipCut;      // width*height
+  std::vector<float> clipNearVz;          // width*height
+  std::vector<float> clipFarVz;           // width*height
   // AO / surface-irradiance-cache AOVs: sized and written ONLY when
   // RenderOptions::aoWriteAov is on (else left empty, keeping the default path
   // byte-identical). albedo/normal above are the OIDN guide; these are the AO

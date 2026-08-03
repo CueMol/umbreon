@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 #include <embree4/rtcore.h>
 
@@ -105,6 +106,12 @@ struct ShadeContext {
   int seedW = 0;
   int aoSampleMul = 1;
   int shadowSampleMul = 1;
+  // View-space clip range (Scene::clipNear/clipFar): integratePixel and
+  // probeGBuffer clamp primary rays to it and, with the stroke edge pass on,
+  // capture the clip-cut G-buffer the edge pass consumes. Infinite defaults
+  // keep clipping off (byte-identical legacy path).
+  float clipNearZ = -std::numeric_limits<float>::infinity();
+  float clipFarZ = std::numeric_limits<float>::infinity();
 };
 
 // AO factors for one hit: with the coarse grid active (--ao-res out), try the
