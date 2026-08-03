@@ -368,9 +368,27 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                                  dumpPrefix ? &dbg : nullptr,
                                  occluded ? &occluded : nullptr,
                                  hasClip ? &clipAovs : nullptr);
-  if (dumpPrefix)
+  if (dumpPrefix) {
     writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
                    frame.objectId.data(), normalPtr, sp, cp);
+    // Raw clip-cut planes for offline analysis (full frame, debug only).
+    if (hasClip) {
+      const std::size_t n = static_cast<std::size_t>(W) * H;
+      const std::string base = std::string(dumpPrefix) + "_clip";
+      if (std::FILE* f = std::fopen((base + "_cut.u8").c_str(), "wb")) {
+        std::fwrite(clipAovs.cut, 1, n, f);
+        std::fclose(f);
+      }
+      if (std::FILE* f = std::fopen((base + "_nearvz.f32").c_str(), "wb")) {
+        std::fwrite(clipAovs.nearVz, sizeof(float), n, f);
+        std::fclose(f);
+      }
+      if (std::FILE* f = std::fopen((base + "_farvz.f32").c_str(), "wb")) {
+        std::fwrite(clipAovs.farVz, sizeof(float), n, f);
+        std::fclose(f);
+      }
+    }
+  }
 
   // Stage 2: trace, then Stage 2.5: hysteresis prune + retrace. The optional
   // surfAlpha AOV attributes per-vertex surface opacity so transparent

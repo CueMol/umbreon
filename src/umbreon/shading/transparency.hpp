@@ -219,13 +219,17 @@ inline GBufProbe probeGBuffer(const ShadeContext& sc, const Vec3& org,
     // Background: record what the clip planes removed along the ray (the
     // stroke edge pass's clip-cut discriminator; see PixelResult).
     if (clip.on) {
+      // The margins must stay tiny (float-ulp scale): a cut surface nearly
+      // PARALLEL to the clip plane has its removed part hugging the plane,
+      // and a larger epsilon would swallow exactly the hit the edge pass
+      // needs to recognize the cut boundary.
       if (clip.tnear > 0.0f)
         g.clipNearVz = clipProbeRange(sc.built.scene, org, rd, camDir,
-                                      std::max(1.0e-4f, 1.0e-4f * clip.tnear),
-                                      clip.tnear * (1.0f - 1.0e-4f));
+                                      std::max(1.0e-4f, 1.0e-6f * clip.tnear),
+                                      clip.tnear * (1.0f - 1.0e-6f));
       if (clip.tfar < std::numeric_limits<float>::infinity())
         g.clipFarVz = clipProbeRange(sc.built.scene, org, rd, camDir,
-                                     clip.tfar * (1.0f + 1.0e-4f),
+                                     clip.tfar * (1.0f + 1.0e-6f),
                                      std::numeric_limits<float>::infinity());
     }
     return g;  // background sentinels
@@ -466,13 +470,14 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   // along the ray -- the stroke edge pass's clip-cut discriminator (edge
   // G-buffer only; matches probeGBuffer's miss capture).
   if (clip.on && opt.strokeEdges.enable && nearDepth == 0.0f) {
+    // Tiny (float-ulp scale) margins: see probeGBuffer's miss capture.
     if (clip.tnear > 0.0f)
       clipNearVzOut = clipProbeRange(rscene, org, rd, camDir,
-                                     std::max(1.0e-4f, 1.0e-4f * clip.tnear),
-                                     clip.tnear * (1.0f - 1.0e-4f));
+                                     std::max(1.0e-4f, 1.0e-6f * clip.tnear),
+                                     clip.tnear * (1.0f - 1.0e-6f));
     if (clip.tfar < std::numeric_limits<float>::infinity())
       clipFarVzOut = clipProbeRange(rscene, org, rd, camDir,
-                                    clip.tfar * (1.0f + 1.0e-4f),
+                                    clip.tfar * (1.0f + 1.0e-6f),
                                     std::numeric_limits<float>::infinity());
   }
 

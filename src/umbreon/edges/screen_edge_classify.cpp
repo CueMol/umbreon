@@ -219,6 +219,26 @@ inline std::uint8_t classifyPair(const float* viewZ,
         if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kClipVeto;
         return 0;
       }
+      // Plane-hugging cut boundary: a fg surface whose depth HUGS a clip
+      // plane at the outline is the cut cross-section (or the wall band
+      // where the surface meets the plane) -- e.g. a face nearly PARALLEL
+      // to the plane, whose removed side the 1-px continuation above cannot
+      // predict (the surface crests at the boundary). By the cut-face
+      // convention its outline gets no silhouette, whether the other side
+      // is removed geometry or plain background (the visible remainder's
+      // outline would otherwise fragment into dashes wherever the interior
+      // veto reaches it). A revealed surface seen through a cut window sits
+      // well inside the slab, so its real outline never trips this.
+      const float inf = std::numeric_limits<float>::infinity();
+      const float band =
+          (p.clipNearVz > -inf && p.clipFarVz < inf)
+              ? 0.02f * (p.clipFarVz - p.clipNearVz)
+              : 50.0f * px;
+      if ((p.clipNearVz > -inf && viewZ[iFg] - p.clipNearVz <= band) ||
+          (p.clipFarVz < inf && p.clipFarVz - viewZ[iFg] <= band)) {
+        if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kClipVeto;
+        return 0;
+      }
     }
     const std::uint8_t owner = bgA ? kCrackOwnerBit : 0;
     return static_cast<std::uint8_t>(CrackClass::Silhouette) | owner;
