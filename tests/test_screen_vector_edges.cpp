@@ -1105,6 +1105,71 @@ int main() {
     s.check("fog off: far end fully inked (no depth fade)", lum(34, 3) < 0.1f);
   }
 
+  // ---- (16) round caps and round joins (--stroke-cap/--stroke-join) ------
+  // Butt/miter defaults are locked bit-identical elsewhere; here the round
+  // geometry contract: a round cap inks the half-disk beyond the butt end,
+  // and a round join replaces the miter spike with an arc of the stroke's
+  // half-width radius.
+  {
+    auto renderChain = [&](std::vector<umbreon::StrokePoint> pts,
+                           bool roundCap, bool roundJoin, int W, int H) {
+      umbreon::FrameResult fr;
+      fr.width = W;
+      fr.height = H;
+      fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      umbreon::Scene scene;
+      umbreon::RenderOptions opt;
+      opt.width = W;
+      opt.height = H;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.thickness = 8;  // half-width 4
+      opt.strokeEdges.roundCap = roundCap;
+      opt.strokeEdges.roundJoin = roundJoin;
+      std::vector<umbreon::StrokeChainInput> chain(1);
+      chain[0].pts = std::move(pts);
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      return fr;
+    };
+    auto lumAt = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    // Cap: horizontal stroke ending at x=10.5; pixel (9,10) lies beyond the
+    // butt end (distance 1.6 from the endpoint, well inside radius 4).
+    const std::vector<umbreon::StrokePoint> capPts = {
+        {10.5f, 10.5f, 10.0f, 1.0f, true}, {30.5f, 10.5f, 10.0f, 1.0f, true}};
+    {
+      umbreon::FrameResult butt = renderChain(capPts, false, false, 40, 21);
+      umbreon::FrameResult round = renderChain(capPts, true, false, 40, 21);
+      s.check("round cap: butt leaves the end pixel blank",
+              lumAt(butt, 9, 10) > 0.9f);
+      s.check("round cap: half-disk inks beyond the end",
+              lumAt(round, 9, 10) < 0.1f);
+      s.check("round cap: outside the cap radius stays blank",
+              lumAt(round, 5, 10) > 0.9f);
+    }
+    // Join: L-shaped 90-degree corner at (20.5,20.5); the miter tip reaches
+    // (24.5,24.5) so pixel (24,24) inks under miter but lies OUTSIDE the
+    // radius-4 round arc (distance ~4.9); pixel (22,22) (distance ~2.1) inks
+    // under both.
+    const std::vector<umbreon::StrokePoint> joinPts = {
+        {5.5f, 20.5f, 10.0f, 1.0f, true},
+        {20.5f, 20.5f, 10.0f, 1.0f, true},
+        {20.5f, 5.5f, 10.0f, 1.0f, true}};
+    {
+      umbreon::FrameResult miter = renderChain(joinPts, false, false, 40, 40);
+      umbreon::FrameResult round = renderChain(joinPts, false, true, 40, 40);
+      s.check("round join: miter spike inks the far corner",
+              lumAt(miter, 24, 24) < 0.1f);
+      s.check("round join: arc removes the spike",
+              lumAt(round, 24, 24) > 0.9f);
+      s.check("round join: inside the arc still inked (miter)",
+              lumAt(miter, 22, 22) < 0.1f);
+      s.check("round join: inside the arc still inked (round)",
+              lumAt(round, 22, 22) < 0.1f);
+    }
+  }
+
   // ---- (12) fold probe: edge-of-visible-surface test gates the rescue -----
   // A dominance-failing step whose sides have clearly different normals is a
   // strongNdelta-rescue candidate: either a genuine occlusion contour (empty

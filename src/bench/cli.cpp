@@ -924,6 +924,26 @@ Options parseCli(int argc, char** argv) {
         fail("--stroke-smooth expects on/off");
       continue;
     }
+    if (a == "--stroke-cap") {
+      const std::string v = value("--stroke-cap");
+      if (v == "round")
+        o.strokeRoundCap = true;
+      else if (v == "butt")
+        o.strokeRoundCap = false;
+      else
+        fail("--stroke-cap expects butt/round");
+      continue;
+    }
+    if (a == "--stroke-join") {
+      const std::string v = value("--stroke-join");
+      if (v == "round")
+        o.strokeRoundJoin = true;
+      else if (v == "miter")
+        o.strokeRoundJoin = false;
+      else
+        fail("--stroke-join expects miter/round");
+      continue;
+    }
     if (a == "--edge-qi-dots") {
       std::string v = value("--edge-qi-dots");
       if (o.ok && !parseBool(v, o.strokeQiDots))
@@ -1114,6 +1134,8 @@ void printUsage(const char* prog) {
       "  --stroke-border <on|off> occluding cross-section boundary lines    [on]\n"
       "  --stroke-taper <on|off>  taper stroke width toward its ends (demo) [off]\n"
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"
+      "  --stroke-cap <butt|round> line end caps                        [butt]\n"
+      "  --stroke-join <miter|round> corner joins                      [miter]\n"
       "  --edge-qi-dots <on|off>  overlay pre-majority QI flags as dots (debug)[off]\n"
       "  --edge-qi-vertex-dots <on|off> overlay raw per-vertex QI vis dots (debug)[off]\n"
       "  --edge-qi-vertex-delta <float> offset vertex QI probe along mesh normal[0]\n"

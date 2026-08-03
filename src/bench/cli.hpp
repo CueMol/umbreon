@@ -285,6 +285,10 @@ struct Options {
   bool strokeTaper = false;
   // Demo geometry shader (--stroke-smooth): corner-preserving backbone smoothing.
   bool strokeSmooth = false;
+  // --stroke-cap round: half-disk fans beyond stroke ends (default butt).
+  bool strokeRoundCap = false;
+  // --stroke-join round: arc fans at corners instead of miters (default miter).
+  bool strokeRoundJoin = false;
   // DEBUG (--edge-qi-dots): overlay the PRE-majority QI class vs final decision as
   // colored dots, to visualize the per-ViewEdge majority rule on the render.
   bool strokeQiDots = false;

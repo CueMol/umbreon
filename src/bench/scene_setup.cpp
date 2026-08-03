@@ -287,6 +287,8 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
     ropt.strokeEdges.border = opt.strokeBorder;
     ropt.strokeEdges.taper = opt.strokeTaper;
     ropt.strokeEdges.smooth = opt.strokeSmooth;
+    ropt.strokeEdges.roundCap = opt.strokeRoundCap;
+    ropt.strokeEdges.roundJoin = opt.strokeRoundJoin;
     ropt.strokeEdges.debugQiDots = opt.strokeQiDots;
     ropt.strokeEdges.debugQiVertexDots = opt.strokeQiVertexDots;
     ropt.strokeEdges.debugQiVertexDelta = opt.strokeQiVertexDelta;
