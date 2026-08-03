@@ -37,8 +37,10 @@ using OcclusionQuery =
 // Detect, chain, stylize and composite Freestyle-style stroke edges over
 // `frame.color` in place, at the frame's current (hi-res) resolution. Dispatches
 // to the screen-space vector edge extractor (edges/screen_vector_edges.hpp).
-// `occluded` and `occludedRaw` are accepted for API compatibility but ignored
-// (the screen source derives visibility from the z-buffer, not ray casting).
+// `occluded`, when non-empty, feeds the extractor's fold probe (one segment ray
+// per strongNdelta-rescue candidate crack -- an edge-of-visible-surface test,
+// not per-vertex QI; visibility stays exact from the z-buffer). `occludedRaw`
+// is accepted for API compatibility but ignored.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
                       const OcclusionQuery& occludedRaw = OcclusionQuery{});

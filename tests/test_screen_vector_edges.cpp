@@ -63,7 +63,9 @@ struct Buffers {
   }
 };
 
-// Ortho projection with pixelSize == 1 world unit (halfH = H/2).
+// Ortho projection with pixelSize == 1 world unit (halfH = H/2). The full
+// basis is filled so the fold probe's screenToWorld reconstruction works
+// (viewZ maps to world -z).
 ScreenProj unitProj(int W, int H) {
   ScreenProj sp;
   sp.ortho = true;
@@ -72,6 +74,8 @@ ScreenProj unitProj(int W, int H) {
   sp.halfW = static_cast<float>(W) * 0.5f;
   sp.halfH = static_cast<float>(H) * 0.5f;
   sp.dir = {0.0f, 0.0f, -1.0f};
+  sp.right = {1.0f, 0.0f, 0.0f};
+  sp.up = {0.0f, 1.0f, 0.0f};
   return sp;
 }
 
@@ -1098,6 +1102,124 @@ int main() {
     };
     s.check("fog off: near end fully inked", lum(5, 3) < 0.1f);
     s.check("fog off: far end fully inked (no depth fade)", lum(34, 3) < 0.1f);
+  }
+
+  // ---- (12) fold probe: edge-of-visible-surface test gates the rescue -----
+  // A dominance-failing step whose sides have clearly different normals is a
+  // strongNdelta-rescue candidate: either a genuine occlusion contour (empty
+  // gap -> rescued STRONG) or a sharp same-surface fold (a wall connects the
+  // depths -> veto, stays weak). The probe's answer decides; the segment must
+  // sample the FAR-ANCHORED window [vzFar - max(frac*dz, 2px), vzFar - eps].
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        if (x < 8)
+          b.set(x, y, 9, 100.0f);  // near, facing (0,0,1)
+        else
+          b.set(x, y, 9, 130.0f, 1.0f, 0.0f, 0.0f);  // far, edge-on normal
+      }
+    // Step 30 over flat sides: full threshold (30 > 12) passes, dominance
+    // (30 > 250) fails, ndelta = 1 > 0.3 -> rescue candidate on every row.
+    const ScreenProj sp = unitProj(16, 16);
+    int calls = 0;
+    float vz0 = 0.0f, vz1 = 0.0f;
+    bool hit = true;  // fold: window occupied
+    const umbreon::OcclusionQuery query = [&](const umbreon::Vec3& p,
+                                              const umbreon::Vec3& q,
+                                              const int*, int) {
+      ++calls;
+      vz0 = -p.z;  // depth along dir = (0,0,-1) from pos (0,0,0)
+      vz1 = -q.z;
+      return hit;
+    };
+    CrackField cf = umbreon::classifyCracks(
+        16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(), sp,
+        defaults, nullptr, &query);
+    s.check_eq("fold probe: probed once per row", calls, 16);
+    s.check("fold probe: window start = vzFar - frac*dz",
+            std::fabs(vz0 - (130.0f - 7.5f)) < 1.0e-3f);
+    s.check("fold probe: window end just above the far surface",
+            std::fabs(vz1 - (130.0f - 0.5f)) < 1.0e-3f);
+    s.check_eq("fold probe: hit -> veto, weak DepthGap per row",
+               countClass(cf, CrackClass::DepthGap), 16);
+    int strongN = 0;
+    for (std::uint8_t v : cf.right)
+      if ((v & kCrackClassMask) ==
+              static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+          (v & kCrackStrongBit))
+        ++strongN;
+    s.check_eq("fold probe: hit -> no strong crack", strongN, 0);
+
+    // Same scene, empty window -> genuine contour, the rescue holds.
+    hit = false;
+    cf = umbreon::classifyCracks(16, 16, b.viewZ.data(), b.objectId.data(),
+                                 b.normal.data(), sp, defaults, nullptr,
+                                 &query);
+    strongN = 0;
+    for (std::uint8_t v : cf.right)
+      if ((v & kCrackStrongBit)) ++strongN;
+    s.check_eq("fold probe: miss -> rescued strong per row", strongN, 16);
+
+    // No probe bound (tests / callers without a BVH): pre-probe behavior,
+    // the rescue fires (fail-open).
+    cf = umbreon::classifyCracks(16, 16, b.viewZ.data(), b.objectId.data(),
+                                 b.normal.data(), sp, defaults);
+    strongN = 0;
+    for (std::uint8_t v : cf.right)
+      if ((v & kCrackStrongBit)) ++strongN;
+    s.check_eq("fold probe: unbound -> rescue fail-open", strongN, 16);
+  }
+
+  // ---- (13) junction-chop keep: entangled strong contour survives prune ---
+  // A strong vertical contour crossed by weak rungs every 2 rows is chopped
+  // into 2-edgel fragments, none reaching minStrong on its own. The interior
+  // fragments (both ends junctions) must survive the prune, re-merge on the
+  // retrace and pass the strong test as ONE chain; the pure-weak rungs and
+  // the free-ended terminal stubs are erased. Without the junction-chop keep
+  // the WHOLE continuously-strong line vanished.
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        // Strong step 400 over flat sides (dominates), plus a weak rung step
+        // of 8 (above the weak threshold 6, below the full 12) every 2 rows.
+        const int rung = y / 2;
+        float vz = x < 8 ? 100.0f : 500.0f;
+        vz += 8.0f * static_cast<float>(rung);
+        b.set(x, y, 9, vz);
+      }
+    CrackField cf = classify(b, defaults);
+    int strongRaw = 0;
+    for (std::uint8_t v : cf.right)
+      if (v & kCrackStrongBit) ++strongRaw;
+    s.check_eq("junction chop: 16 strong cracks classified", strongRaw, 16);
+    std::vector<ScreenChain> chains =
+        umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
+    chains = umbreon::pruneWeakChains(cf, std::move(chains), b.viewZ.data(),
+                                      b.objectId.data(), 4);
+    int strongKept = 0, weakKept = 0;
+    std::size_t bestLen = 0;
+    for (const ScreenChain& ch : chains) {
+      std::size_t st = 0;
+      for (std::size_t e = 0; e < ch.edgeClass.size(); ++e) {
+        if (ch.edgeClass[e] !=
+            static_cast<std::uint8_t>(CrackClass::DepthGap))
+          continue;
+        if (e < ch.edgeFlags.size() && (ch.edgeFlags[e] & 1)) {
+          ++strongKept;
+          ++st;
+        } else {
+          ++weakKept;
+        }
+      }
+      bestLen = std::max(bestLen, st);
+    }
+    s.check("junction chop: interior strong body survives as one chain",
+            bestLen >= 12);
+    s.check_eq("junction chop: kept strong = merged interior", strongKept,
+               static_cast<int>(bestLen));
+    s.check_eq("junction chop: pure-weak rungs erased", weakKept, 0);
   }
 
   return s.report();

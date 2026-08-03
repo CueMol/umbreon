@@ -122,7 +122,8 @@ inline float nearSideRecession(const float* viewZ,
 // (second: right/bottom). iOutA / iOutB are the outer straight-line neighbors
 // (a's far side, b's far side) with validity flags. Returns the packed crack
 // byte (0 = no edge). `dbg`, when non-null, receives the same-id DepthGap
-// branch diagnostics at cell `dbgCell` (dump path only).
+// branch diagnostics at cell `dbgCell` (dump path only). `probe`, when
+// non-null and non-empty, is the fold probe's segment occlusion query.
 inline std::uint8_t classifyPair(const float* viewZ,
                                  const std::uint32_t* objectId,
                                  const float* normal, int W, int H, int ia,
@@ -131,7 +132,8 @@ inline std::uint8_t classifyPair(const float* viewZ,
                                  const ScreenProj& sp, float cosCreaseBase,
                                  const ScreenClassifyParams& p,
                                  ScreenCrackDebugPlane* dbg = nullptr,
-                                 std::size_t dbgCell = 0) {
+                                 std::size_t dbgCell = 0,
+                                 const OcclusionQuery* probe = nullptr) {
   const bool bgA = objectId[ia] == kBackground;
   const bool bgB = objectId[ib] == kBackground;
   if (bgA && bgB) return 0;
@@ -258,6 +260,41 @@ inline std::uint8_t classifyPair(const float* viewZ,
                                        nA[2] * nB[2]) /
                                           (lA * lB);
               strong = nd > p.strongNdelta;
+              // Fold probe (edge-of-visible-surface test): a sharp
+              // same-surface fold (front face bending into a near-edge-on
+              // side wall) ALSO has ndelta >> strongNdelta, but its wall
+              // CONNECTS the two depths -- no occlusion, no contour. Probe
+              // the far-anchored window of the depth interval with one
+              // segment ray: the fold's wall contains the far pixel itself
+              // and so always occupies the window (hit -> veto), while at a
+              // true contour both the near rim's overhang and a back-facing
+              // curl hang from the TOP of the interval and never reach the
+              // far surface (miss -> the rescue holds). See
+              // ScreenClassifyParams::probeWindowFrac.
+              if (strong && probe && *probe) {
+                const int iNear = vzA <= vzB ? ia : ib;
+                const int iFar = iNear == ia ? ib : ia;
+                const float dz = viewZ[iFar] - viewZ[iNear];
+                const float epsW = 0.5f * px;
+                float winH = std::max(p.probeWindowFrac * dz, 2.0f * px);
+                winH = std::min(winH, dz - 2.0f * epsW);
+                if (winH <= 0.0f) {
+                  // Gap thinner than the numerical guards: depth-continuous
+                  // contact, not a contour step.
+                  strong = false;
+                } else {
+                  const int nx = iNear % W, ny = iNear / W;
+                  const int fx = iFar % W, fy = iFar / W;
+                  const Vec3 p0 = screenToWorld(
+                      sp, static_cast<float>(nx), static_cast<float>(ny),
+                      viewZ[iFar] - winH);
+                  const Vec3 p1 = screenToWorld(
+                      sp, static_cast<float>(fx), static_cast<float>(fy),
+                      viewZ[iFar] - epsW);
+                  if ((*probe)(p0, p1, nullptr, 0)) strong = false;
+                }
+                if (dbg) dbg->probe[dbgCell] = strong ? 1 : 2;
+              }
             }
           }
         }
@@ -324,7 +361,7 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
                           const ScreenProj& sp,
                           const ScreenClassifyParams& params,
-                          ScreenCrackDebug* dbg) {
+                          ScreenCrackDebug* dbg, const OcclusionQuery* probe) {
   CrackField cf;
   cf.W = W;
   cf.H = H;
@@ -340,6 +377,7 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
       pl->sB.assign(cells, 0.0f);
       pl->g0.assign(cells, 0.0f);
       pl->reason.assign(cells, ScreenCrackDebug::kNotEvaluated);
+      pl->probe.assign(cells, 0);
     }
   }
   if (W < 2 && H < 2) return cf;
@@ -361,13 +399,13 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
               cf.right[cell] = classifyPair(
                   viewZ, objectId, normal, W, H, ia, ia + 1, ia - 1,
                   x - 1 >= 0, ia + 2, x + 2 < W, sp, cosCreaseBase, params,
-                  dbg ? &dbg->right : nullptr, cell);
+                  dbg ? &dbg->right : nullptr, cell, probe);
             }
             if (y + 1 < H) {  // down crack (x,y)-(x,y+1)
               cf.down[cell] = classifyPair(
                   viewZ, objectId, normal, W, H, ia, ia + W, ia - W,
                   y - 1 >= 0, ia + 2 * W, y + 2 < H, sp, cosCreaseBase,
-                  params, dbg ? &dbg->down : nullptr, cell);
+                  params, dbg ? &dbg->down : nullptr, cell, probe);
             }
           }
         }

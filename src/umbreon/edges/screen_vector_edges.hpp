@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "edges/mesh_feature_edges.hpp"
+#include "edges/stroke_edges.hpp"
 #include "render/render_types.hpp"
 
 namespace umbreon {
@@ -82,6 +83,10 @@ struct CrackField {
 struct ScreenCrackDebugPlane {
   std::vector<float> gapA, gapB, sA, sB, g0;
   std::vector<std::uint8_t> reason;
+  // Fold-probe outcome for the ndelta rescue: 0 = probe not run, 1 = window
+  // empty (edge of the visible surface -> rescued STRONG), 2 = window hit
+  // (surface continues across the gap -> rescue vetoed, crack stays weak).
+  std::vector<std::uint8_t> probe;
 };
 struct ScreenCrackDebug {
   enum Reason : std::uint8_t {
@@ -167,23 +172,42 @@ struct ScreenClassifyParams {
   // min(|nA.V|, |nB.V|))) with V the view forward axis.
   float creaseAngleDeg = 30.0f;
   float grazeK = 1.0f;
+  // Fold probe (edge-of-visible-surface test) gating the strongNdelta rescue,
+  // active only when classifyCracks is given an occlusion query. A rescued
+  // crack is a genuine occlusion contour only when the NEAR surface actually
+  // ENDS at the crack; a sharp same-surface fold (a front face bending into a
+  // near-edge-on side wall) also has ndelta >> strongNdelta but its wall
+  // CONNECTS the two depths. Discriminate by probing the FAR-ANCHORED window
+  // of the depth interval [vzFar - max(frac * dz, 2 px), vzFar - 0.5 px] with
+  // a segment from the near pixel's lateral position to the far pixel's: a
+  // fold's wall contains the far pixel itself, so the wall always occupies
+  // the window (hit -> veto, stay weak); at a true contour both the near
+  // rim's overhang and a back-facing curl hang from the TOP of the interval
+  // and never reach the far surface (miss -> rescue holds). The far anchor is
+  // what keeps both failure modes out of the window.
+  float probeWindowFrac = 0.25f;
 };
 
 // Stage 1: classify every 4-neighbor pixel-pair crack of the hi-res AOV
 // buffers. viewZ is the linear view-z (0 / undefined for background pixels --
 // background is keyed on objectId), objectId uses 0xFFFFFFFFu as the
 // background sentinel, normal is the world-space per-pixel shading normal
-// (3 floats per pixel; only read when params.crease). `sp` supplies the
-// projection half-extents for pixelSize (build with makeScreenProj at the SAME
-// W x H as the buffers). Buffers must not alias the returned field. Runs
+// (3 floats per pixel; only read when params.crease or for the strongNdelta
+// rescue). `sp` supplies the projection basis for pixelSize and the fold
+// probe's point reconstruction (build with makeScreenProj at the SAME W x H
+// as the buffers). Buffers must not alias the returned field. Runs
 // TBB-parallel over rows; the result is deterministic. `dbg`, when non-null,
 // is resized to the planes and filled with per-crack DepthGap diagnostics
 // (debug/dump path only; the normal path passes nullptr at zero cost).
+// `probe`, when non-null and non-empty, is the segment occlusion query the
+// strongNdelta rescue's fold probe casts (see ScreenClassifyParams
+// ::probeWindowFrac); null/empty keeps the pre-probe rescue behavior.
 CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
                           const ScreenProj& sp,
                           const ScreenClassifyParams& params,
-                          ScreenCrackDebug* dbg = nullptr);
+                          ScreenCrackDebug* dbg = nullptr,
+                          const OcclusionQuery* probe = nullptr);
 
 // One traced chain vertex, in STROKE pixel coordinates: the pixel-corner
 // lattice node (cx,cy), cx in [0..W], cy in [0..H], maps to (cx-0.5, cy-0.5)
@@ -263,7 +287,13 @@ void eraseChainCracks(CrackField& cf, const ScreenChain& ch, std::size_t e0,
                       std::size_t e1);
 
 // Stage 2.5: hysteresis prune + retrace. Keeps every self-supported chain
-// (keepScreenChain), then propagates support to pure-weak OPEN chains whose
+// (keepScreenChain) plus every sub-minStrong open fragment that carries at
+// least one STRONG DepthGap edgel with BOTH ends at junctions (degree >= 3):
+// where two boundaries entangle within a pixel the tracer chops a
+// continuously-strong contour into 1-3-edgel pieces, and the per-fragment
+// strong count alone would erase all of them (the junction-chop keep; such
+// pieces re-merge on the retrace and the merged chain faces the normal
+// minStrong test). Then propagates support to pure-weak OPEN chains whose
 // BOTH endpoint corners coincide with an endpoint of an already-kept chain
 // (a weak fragment bridging kept boundaries -- e.g. the near-cusp tail of a
 // contour between the strong contour body and the silhouette outline, or a
@@ -327,8 +357,11 @@ void simplifyRdp(std::vector<ScreenChainVert>& pts, bool closed, float eps);
 // the EdgeStyle slots, and hand the chains to the shared draw stage
 // (stroke_render.hpp:renderStrokeChains). Requires the edge AOVs (viewZ /
 // objectId / normal) at the frame's (hi-res) resolution -- they are captured
-// whenever strokeEdges.enable is on. No QI machinery runs under this source.
+// whenever strokeEdges.enable is on. No QI (visibility) rays run under this
+// source; `occluded`, when non-empty, is used only by the Stage-1 fold probe
+// (one segment ray per strongNdelta-rescue candidate, see classifyCracks).
 void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
-                            const RenderOptions& opt);
+                            const RenderOptions& opt,
+                            const OcclusionQuery& occluded = OcclusionQuery{});
 
 }  // namespace umbreon
