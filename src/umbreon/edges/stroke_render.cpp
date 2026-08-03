@@ -105,6 +105,14 @@ struct StyledStrip {
   std::vector<std::array<float, 3>> colors;
   int precedence = 0;     // nature tie-break key (lower paints first)
   float depthKey = 0.0f;  // min view-z over the run (FARTHER = larger); primary sort
+  // Round cap / round join ARC FANS: a triangle soup rasterized after the
+  // body quads (3*i vertices in fanPts; triangle i carries the constant ink
+  // alpha/color of its backbone vertex in fanAlpha[i]/fanColor[i]). Empty --
+  // and the body path byte-identical -- unless --stroke-cap/--stroke-join
+  // round is on.
+  std::vector<Vec2> fanPts;
+  std::vector<float> fanAlpha;
+  std::vector<std::array<float, 3>> fanColor;
 };
 
 // Build a miter-joined ribbon strip for a backbone polyline `bb` (>= 2 points)
@@ -200,6 +208,152 @@ Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
     out[2 * (n - 1) + 1] = bb[n - 1] - sd * R[n - 1];
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Round caps / round joins (--stroke-cap round, --stroke-join round).
+
+// Append an arc fan (triangle soup) around `p` sweeping from offset vector
+// `a0` to `a1`, subdivided at ~1 px arc steps. The sweep normally takes the
+// SHORT way; `via` breaks the tie for a 180-degree cap sweep and guards
+// against the wrong side in general: when the sweep midpoint points away
+// from `via`, the direction is flipped. The radius lerps |a0| -> |a1| along
+// the sweep, so asymmetric (tapered) widths blend smoothly. Every triangle
+// (p, q_i, q_i+1) is recorded with its backbone vertex `src` for the
+// attribute lookup at rep-build time.
+void appendArcFan(const Vec2& p, const Vec2& a0, const Vec2& a1,
+                  const Vec2& via, std::size_t src, std::vector<Vec2>& fanPts,
+                  std::vector<std::size_t>& fanSrc) {
+  const float r0 = norm2(a0), r1 = norm2(a1);
+  if (r0 <= kZero || r1 <= kZero) return;
+  const Vec2 u0{a0.x / r0, a0.y / r0};
+  const Vec2 u1{a1.x / r1, a1.y / r1};
+  const float c = std::max(-1.0f, std::min(1.0f, dot2(u0, u1)));
+  const float ang = std::acos(c);
+  if (ang <= 1.0e-3f) return;
+  const float crossU = u0.x * u1.y - u0.y * u1.x;
+  float sgn = crossU >= 0.0f ? 1.0f : -1.0f;
+  {  // orient the sweep toward `via` (the outward / outer-wedge side)
+    const float half = 0.5f * sgn * ang;
+    const float cs = std::cos(half), sn = std::sin(half);
+    const Vec2 mid{u0.x * cs - u0.y * sn, u0.x * sn + u0.y * cs};
+    if (dot2(mid, via) < 0.0f) sgn = -sgn;
+  }
+  const int steps = std::max(
+      2, static_cast<int>(std::ceil(ang * std::max(r0, r1))));
+  Vec2 prev = p + a0;
+  for (int i = 1; i <= steps; ++i) {
+    const float t = static_cast<float>(i) / static_cast<float>(steps);
+    const float th = sgn * ang * t;
+    const float cs = std::cos(th), sn = std::sin(th);
+    const Vec2 u{u0.x * cs - u0.y * sn, u0.x * sn + u0.y * cs};
+    const float r = r0 + (r1 - r0) * t;
+    const Vec2 q = p + u * r;
+    fanPts.push_back(p);
+    fanPts.push_back(prev);
+    fanPts.push_back(q);
+    fanSrc.push_back(src);
+    prev = q;
+  }
+}
+
+// Round-join variant of buildStrip: an interior vertex whose turn exceeds
+// ~10 degrees emits TWO segment-aligned pairs (prev-normal, then next-normal)
+// instead of one miter pair, so both adjacent quads end square at the corner
+// -- no miter spike -- and the OUTER wedge between them is filled with an arc
+// fan. Near-straight corners keep a single averaged pair (visually identical
+// to a round join there and it keeps the strip compact). `pairSrc` maps each
+// emitted pair to its backbone vertex so the caller can duplicate the
+// per-vertex attributes (alphas / fog colors); fan triangles land in
+// fanPts/fanSrc via appendArcFan.
+Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
+                      const std::vector<float>& R,
+                      std::vector<std::size_t>& pairSrc,
+                      std::vector<Vec2>& fanPts,
+                      std::vector<std::size_t>& fanSrc) {
+  Strip out;
+  const std::size_t n = bb.size();
+  if (n < 2 || L.size() != n || R.size() != n) return out;
+
+  auto orth = [](const Vec2& d) { return Vec2{-d.y, d.x}; };
+  auto unit = [](const Vec2& d) {
+    const float l = norm2(d);
+    return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
+  };
+  auto pushPair = [&](const Vec2& l, const Vec2& r, std::size_t src) {
+    out.push_back(l);
+    out.push_back(r);
+    pairSrc.push_back(src);
+  };
+  const float kStraightCos = 0.9848f;  // cos(10 deg)
+
+  {  // first vertex: normal of the first segment
+    const Vec2 sd = orth(unit(bb[1] - bb[0]));
+    pushPair(bb[0] + sd * L[0], bb[0] - sd * R[0], 0);
+  }
+  for (std::size_t k = 1; k + 1 < n; ++k) {
+    const Vec2& p = bb[k];
+    const Vec2 udirP = unit(p - bb[k - 1]);
+    const Vec2 udirN = unit(bb[k + 1] - p);
+    const Vec2 sdP = orth(udirP);
+    const Vec2 sdN = orth(udirN);
+    const float lw = L[k], rw = R[k];
+    const float turnCos = dot2(udirP, udirN);
+    Vec2 sdAvg = sdP + sdN;
+    const bool degenerate =
+        norm2(udirP) <= kZero || norm2(udirN) <= kZero || norm2(sdAvg) <= kZero;
+    if (degenerate || turnCos >= kStraightCos) {
+      sdAvg = degenerate ? Vec2{0.0f, 0.0f} : unit(sdAvg);
+      pushPair(p + sdAvg * lw, p - sdAvg * rw, k);
+      continue;
+    }
+    // Square segment ends on both sides of the corner...
+    pushPair(p + sdP * lw, p - sdP * rw, k);
+    pushPair(p + sdN * lw, p - sdN * rw, k);
+    // ...plus the arc fan on the OUTER side of the turn (cross(dirP, dirN)
+    // > 0 turns toward +y in raster space, putting the exterior wedge on the
+    // RIGHT (-normal) side; < 0 on the LEFT).
+    const float crossD = udirP.x * udirN.y - udirP.y * udirN.x;
+    const Vec2 a0 = crossD > 0.0f ? Vec2{-sdP.x * rw, -sdP.y * rw}
+                                  : Vec2{sdP.x * lw, sdP.y * lw};
+    const Vec2 a1 = crossD > 0.0f ? Vec2{-sdN.x * rw, -sdN.y * rw}
+                                  : Vec2{sdN.x * lw, sdN.y * lw};
+    appendArcFan(p, a0, a1, a0 + a1, k, fanPts, fanSrc);
+  }
+  {  // last vertex: normal of the last segment
+    const Vec2 sd = orth(unit(bb[n - 1] - bb[n - 2]));
+    pushPair(bb[n - 1] + sd * L[n - 1], bb[n - 1] - sd * R[n - 1], n - 1);
+  }
+  return out;
+}
+
+// Half-disk cap fans beyond the run's two endpoints (--stroke-cap round):
+// sweep from the left offset through the OUTWARD pole to the right offset,
+// radius lerping between the endpoint's left/right half-widths (a tapered
+// end keeps its thin tip).
+void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
+                   const std::vector<float>& R, std::vector<Vec2>& fanPts,
+                   std::vector<std::size_t>& fanSrc) {
+  const std::size_t n = bb.size();
+  if (n < 2) return;
+  auto orth = [](const Vec2& d) { return Vec2{-d.y, d.x}; };
+  auto unit = [](const Vec2& d) {
+    const float l = norm2(d);
+    return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
+  };
+  {  // start: outward = against the first segment
+    const Vec2 d = unit(bb[1] - bb[0]);
+    const Vec2 sd = orth(d);
+    appendArcFan(bb[0], sd * L[0], Vec2{-sd.x * R[0], -sd.y * R[0]},
+                 Vec2{-d.x, -d.y}, 0, fanPts, fanSrc);
+  }
+  {  // end: outward = along the last segment
+    const Vec2 d = unit(bb[n - 1] - bb[n - 2]);
+    const Vec2 sd = orth(d);
+    appendArcFan(bb[n - 1], sd * L[n - 1],
+                 Vec2{-sd.x * R[n - 1], -sd.y * R[n - 1]}, d, n - 1, fanPts,
+                 fanSrc);
+  }
 }
 
 // Hard-fill one 2D triangle into the framebuffer with a linear over-composite
@@ -334,9 +488,13 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
 // the quad to the color+alpha-interpolating fill (the depth-fog gradient); it
 // composes with `alphas` (constant `opacity` is used where `alphas` is null).
 void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
-                    const Strip& strip, const float col[3], float opacity,
-                    const float* alphas = nullptr,
-                    const std::array<float, 3>* colors = nullptr) {
+                    const StyledStrip& ss) {
+  const Strip& strip = ss.strip;
+  const float* col = ss.color;
+  const float opacity = ss.opacity;
+  const float* alphas = ss.alphas.empty() ? nullptr : ss.alphas.data();
+  const std::array<float, 3>* colors =
+      ss.colors.empty() ? nullptr : ss.colors.data();
   const std::size_t pairs = strip.size() / 2;
   for (std::size_t k = 0; k + 1 < pairs; ++k) {
     const Vec2& l0 = strip[2 * k];
@@ -362,6 +520,15 @@ void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
       fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity);
       fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity);
     }
+  }
+  // Round cap/join arc fans: constant alpha/color per triangle (resolved at
+  // rep-build time from the fan's backbone vertex). Empty unless
+  // --stroke-cap/--stroke-join round.
+  for (std::size_t i = 0; i < ss.fanAlpha.size(); ++i) {
+    const float a = ss.fanAlpha[i];
+    fillTriangleAlpha(color, W, rowBegin, rowEnd, ss.fanPts[3 * i],
+                      ss.fanPts[3 * i + 1], ss.fanPts[3 * i + 2],
+                      ss.fanColor[i].data(), a, a, a);
   }
 }
 
@@ -716,8 +883,11 @@ void resampleStroke(Stroke& s, float stepPx) {
 // opacity times the sampled surface alpha); when it varies along the run the
 // per-vertex values ride StyledStrip::alphas and the rasterizer interpolates,
 // otherwise the constant path is kept (bit-identical opaque output).
-// precedence keys the nature for the overlap sort.
-void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
+// precedence keys the nature for the overlap sort. roundCap/roundJoin
+// (--stroke-cap/--stroke-join round) switch the strip builder and append the
+// cap/join arc fans; both off keeps the legacy butt/miter path byte-identical.
+void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
+                     std::vector<StyledStrip>& out) {
   const int precedence = s.precedence;
   const std::size_t minRun = 2;
   std::vector<Vec2> pos;
@@ -728,7 +898,18 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
   auto flush = [&]() {
     if (pos.size() >= minRun) {
       StyledStrip ss;
-      ss.strip = buildStrip(pos, lw, rw);
+      // pairSrc maps strip pairs back to backbone vertices: identity for the
+      // legacy miter builder, with duplicated corner entries under round
+      // joins. fanSrc does the same per arc-fan triangle.
+      std::vector<std::size_t> pairSrc, fanSrc;
+      if (roundJoin) {
+        ss.strip = buildStripRound(pos, lw, rw, pairSrc, ss.fanPts, fanSrc);
+      } else {
+        ss.strip = buildStrip(pos, lw, rw);
+        pairSrc.resize(pos.size());
+        for (std::size_t i = 0; i < pairSrc.size(); ++i) pairSrc[i] = i;
+      }
+      if (roundCap) appendCapFans(pos, lw, rw, ss.fanPts, fanSrc);
       ss.color[0] = col[0];
       ss.color[1] = col[1];
       ss.color[2] = col[2];
@@ -742,7 +923,10 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
       if (uniform) {
         ss.opacity = av.front();  // constant path (== legacy when surfA == 1)
       } else {
-        ss.alphas = av;  // per-vertex gradient path
+        // Per-vertex gradient path, gathered per strip PAIR (identity for
+        // the miter builder -> exact legacy array).
+        ss.alphas.reserve(pairSrc.size());
+        for (std::size_t src : pairSrc) ss.alphas.push_back(av[src]);
       }
       // Per-vertex ink color varies only when the depth-fog shader ran on an
       // opaque background; a uniform run keeps the constant `color` (byte-
@@ -753,7 +937,18 @@ void buildStrokeReps(const Stroke& s, std::vector<StyledStrip>& out) {
           colUniform = false;
           break;
         }
-      if (!colUniform) ss.colors = cv;  // per-vertex fog color gradient
+      if (!colUniform) {  // per-pair fog color gradient
+        ss.colors.reserve(pairSrc.size());
+        for (std::size_t src : pairSrc) ss.colors.push_back(cv[src]);
+      }
+      // Arc fan attributes: the constant alpha/color of each fan triangle's
+      // backbone vertex (matches whatever the body would paint there).
+      ss.fanAlpha.reserve(fanSrc.size());
+      ss.fanColor.reserve(fanSrc.size());
+      for (std::size_t src : fanSrc) {
+        ss.fanAlpha.push_back(av[src]);
+        ss.fanColor.push_back(cv[src]);
+      }
       ss.precedence = precedence;
       ss.depthKey = depthMin;
       out.push_back(std::move(ss));
@@ -905,7 +1100,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
 
     // Build the variable-width ribbon strips (one per maximal visible run).
-    buildStrokeReps(stroke, strips);
+    buildStrokeReps(stroke, se.roundCap, se.roundJoin, strips);
   }
 
   if (strips.empty()) return;
@@ -932,10 +1127,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       [&](const tbb::blocked_range<int>& rows) {
         const int rb = rows.begin(), re = rows.end();
         for (const StyledStrip& ss : strips)
-          rasterizeStrip(frame.color, W, rb, re, ss.strip, ss.color,
-                         ss.opacity,
-                         ss.alphas.empty() ? nullptr : ss.alphas.data(),
-                         ss.colors.empty() ? nullptr : ss.colors.data());
+          rasterizeStrip(frame.color, W, rb, re, ss);
       });
 }
 

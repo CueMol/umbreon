@@ -167,6 +167,16 @@ struct StrokeEdgeOptions {
   // above a threshold) so genuine angular features are not rounded. Off by default
   // (byte-identical); --stroke-smooth on enables it.
   bool smooth = false;
+  // Round LINE CAPS (--stroke-cap round): append a half-disk fan beyond each
+  // stroke end (radius = the endpoint half-widths, so a tapered end keeps its
+  // thin tip). Off (butt caps, the flat legacy ends) by default;
+  // byte-identical when off.
+  bool roundCap = false;
+  // Round JOINS (--stroke-join round): replace the miter at interior corners
+  // with segment-aligned quad ends plus an arc fan on the OUTER side of the
+  // turn -- no miter spike, rounded corners. Off (miter with the Freestyle
+  // spike clamp) by default; byte-identical when off.
+  bool roundJoin = false;
   // VERIFICATION mode (--edges-only): draw ONLY the edge strokes over a blank
   // background (the surface color is cleared to the scene background before the
   // stroke pass; the AOVs -- and thus edge extraction / surfAlpha -- are
