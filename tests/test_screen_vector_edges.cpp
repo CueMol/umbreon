@@ -15,6 +15,7 @@
 // regions split chains exactly at the T-junction corners (open-chain
 // endpoints have lattice degree != 2); every active crack is consumed exactly
 // once; the trace is deterministic.
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstddef>
@@ -1122,13 +1123,16 @@ int main() {
     // Step 30 over flat sides: full threshold (30 > 12) passes, dominance
     // (30 > 250) fails, ndelta = 1 > 0.3 -> rescue candidate on every row.
     const ScreenProj sp = unitProj(16, 16);
-    int calls = 0;
+    // classifyCracks runs TBB-parallel: the counter must be atomic.
+    std::atomic<int> calls{0};
     float vz0 = 0.0f, vz1 = 0.0f;
     bool hit = true;  // fold: window occupied
     const umbreon::OcclusionQuery query = [&](const umbreon::Vec3& p,
                                               const umbreon::Vec3& q,
                                               const int*, int) {
-      ++calls;
+      calls.fetch_add(1, std::memory_order_relaxed);
+      // Every row probes the same geometry, so these race benignly to the
+      // same values under TBB.
       vz0 = -p.z;  // depth along dir = (0,0,-1) from pos (0,0,0)
       vz1 = -q.z;
       return hit;
@@ -1136,7 +1140,7 @@ int main() {
     CrackField cf = umbreon::classifyCracks(
         16, 16, b.viewZ.data(), b.objectId.data(), b.normal.data(), sp,
         defaults, nullptr, &query);
-    s.check_eq("fold probe: probed once per row", calls, 16);
+    s.check_eq("fold probe: probed once per row", calls.load(), 16);
     s.check("fold probe: window start = vzFar - frac*dz",
             std::fabs(vz0 - (130.0f - 7.5f)) < 1.0e-3f);
     s.check("fold probe: window end just above the far surface",
