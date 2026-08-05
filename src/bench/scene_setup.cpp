@@ -340,6 +340,12 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
     seedSlot(kSilSlot, opt.strokeSilhouette);
     seedSlot(kObjSlot, opt.strokeBorder);
     seedSlot(kCreaseSlot, opt.strokeCrease);
+    // Global silhouette-mode default (--stroke-outline): reaches every group
+    // through the seeded table below AND the defaultStyle fallback (empty
+    // table / out-of-range groups). A per-section --edge override replaces
+    // the style wholesale, mode included.
+    ds.silhouetteMode = opt.strokeOutline ? umbreon::SilhouetteMode::Outline
+                                          : umbreon::SilhouetteMode::Full;
 
     scene.groupEdgeStyle.assign(groupNames.size(), ds);
     if (!opt.sectionEdge.empty()) {

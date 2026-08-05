@@ -381,6 +381,118 @@ int main() {
             countClass(classify(b, defaults), CrackClass::DepthGap) > 0);
   }
 
+  // ---- (5o) Outline mode: same-section self-occlusion suppressed ----------
+  // SilhouetteMode::Outline draws only the section union's outer contour:
+  // the same-id DepthGap and the same-section mixed-kind DepthGap are
+  // suppressed at classification, while the fg/bg Silhouette and the
+  // cross-section ObjectId boundaries are unaffected.
+  {
+    // (a) fg square over background with an internal same-id depth step:
+    // Full inks the interior step, Outline keeps only the perimeter.
+    Buffers b(16, 16);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x)
+        b.set(x, y, (2u << 2) | 1u, x < 8 ? 10.0f : 60.0f);
+    const CrackField full = classify(b, defaults);
+    s.check_eq("outline (a): Full keeps the perimeter silhouette",
+               countClass(full, CrackClass::Silhouette), 32);
+    s.check("outline (a): Full inks the interior step",
+            countClass(full, CrackClass::DepthGap) > 0);
+    ScreenClassifyParams p = defaults;
+    std::vector<umbreon::SilhouetteMode> mode(3, umbreon::SilhouetteMode::Full);
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();
+    const CrackField cf = classify(b, p);
+    s.check_eq("outline (a): interior step suppressed",
+               countClass(cf, CrackClass::DepthGap), 0);
+    s.check_eq("outline (a): perimeter silhouette unchanged",
+               countClass(cf, CrackClass::Silhouette), 32);
+    s.check_eq("outline (a): nothing else fires", countActive(cf), 32);
+  }
+  {
+    // (b) same-section mixed-kind step (the (5c) layout) is suppressed too.
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), x < 8 ? 10.0f : 60.0f);
+    ScreenClassifyParams p = defaults;
+    std::vector<umbreon::SilhouetteMode> mode(6, umbreon::SilhouetteMode::Full);
+    mode[5] = umbreon::SilhouetteMode::Outline;
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();
+    s.check_eq("outline (b): mixed-kind step suppressed",
+               countActive(classify(b, p)), 0);
+  }
+  {
+    // (c) mixed-mode frame: group 1 (Full) still inks its own step, group 2
+    // (Outline) does not, and the cross-section boundary inks regardless.
+    Buffers b(24, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 24; ++x) {
+        const std::uint32_t id = x < 12 ? (1u << 2) : (2u << 2);
+        const float vz = (x < 6 || (x >= 12 && x < 18)) ? 10.0f : 60.0f;
+        b.set(x, y, id, vz);
+      }
+    ScreenClassifyParams p = defaults;
+    std::vector<umbreon::SilhouetteMode> mode(3, umbreon::SilhouetteMode::Full);
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();
+    const CrackField cf = classify(b, p);
+    s.check_eq("outline (c): Full group's step inks per row",
+               countClass(cf, CrackClass::DepthGap), 16);
+    s.check_eq("outline (c): cross-section boundary inks per row",
+               countClass(cf, CrackClass::ObjectId), 16);
+    s.check_eq("outline (c): Outline group's step suppressed (nothing else)",
+               countActive(cf), 32);
+    // Full group's step is at (5,y)-(6,y); the Outline group's would-be step
+    // at (17,y)-(18,y) must be silent.
+    s.check("outline (c): DepthGap sits on the Full group's step",
+            (cf.right[b.idx(5, 8)] & kCrackClassMask) ==
+                static_cast<std::uint8_t>(CrackClass::DepthGap));
+    s.check_eq("outline (c): Outline group's step crack byte is 0",
+               static_cast<int>(cf.right[b.idx(17, 8)]), 0);
+  }
+  {
+    // (d) default-mode fallback: a null table (and a too-short table) uses
+    // silhModeDefault for every (out-of-range) group.
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, (2u << 2) | 1u, x < 8 ? 10.0f : 60.0f);
+    ScreenClassifyParams p = defaults;
+    p.silhModeDefault = umbreon::SilhouetteMode::Outline;
+    s.check_eq("outline (d): null table + Outline default suppresses",
+               countActive(classify(b, p)), 0);
+    std::vector<umbreon::SilhouetteMode> mode(1, umbreon::SilhouetteMode::Full);
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();  // group 2 out of range -> default
+    s.check_eq("outline (d): out-of-range group falls back to Outline default",
+               countActive(classify(b, p)), 0);
+  }
+  {
+    // (e) Outline must not kill creases: the same-id DepthGap block is
+    // skipped but the pair still falls through to the crease test.
+    Buffers b(16, 16);
+    const float c45 = std::sqrt(0.5f);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        if (x < 8)
+          b.set(x, y, 1u << 2, 10.0f, -c45, 0.0f, c45);
+        else
+          b.set(x, y, 1u << 2, 10.0f, c45, 0.0f, c45);
+      }
+    ScreenClassifyParams p = defaults;
+    p.crease = true;
+    std::vector<umbreon::SilhouetteMode> mode(2, umbreon::SilhouetteMode::Full);
+    mode[1] = umbreon::SilhouetteMode::Outline;
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();
+    s.check_eq("outline (e): crease still fires on an Outline section",
+               countClass(classify(b, p), CrackClass::Crease), 16);
+  }
+
   // ---- tracer helpers ------------------------------------------------------
   using umbreon::ScreenChain;
   auto totalEdgels = [](const std::vector<ScreenChain>& chains) {

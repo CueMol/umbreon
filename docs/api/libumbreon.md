@@ -114,7 +114,7 @@ downstream から直接 include しないでください）。
 | `<umbreon/scene.hpp>` | `Scene` / `Mesh` / `Material` / `Sphere` / `Cylinder` / `Camera` / `DistantLight` / `Fog` / `Vec3` 等 |
 | `<umbreon/log.hpp>` | `LogLevel` / `LogSink` / `setLogSink()`（診断メッセージの受け取り先。未設定なら従来どおり stderr） |
 | `<umbreon/render/render_types.hpp>` | 下記3ヘッダを取り込むアンブレラ（歴史的な単一 include を維持） |
-| `<umbreon/render/edge_types.hpp>` | `EdgeClass` / `EdgeStyle` / **`StrokeEdgeOptions`** / **`ObjectSpaceEdgeOptions`** |
+| `<umbreon/render/edge_types.hpp>` | `EdgeClass` / `EdgeStyle` / `SilhouetteMode` / **`StrokeEdgeOptions`** / **`ObjectSpaceEdgeOptions`** |
 | `<umbreon/render/render_options.hpp>` | `RenderOptions` |
 | `<umbreon/render/frame_result.hpp>` | `FrameResult` / `Pt1Timing` / `Pt1RayCounts` |
 | `<umbreon/render/render_progress.hpp>` | `RenderPhase` / `RenderProgress`（進捗・キャンセルチャネル） |
@@ -533,6 +533,11 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
 - **スタイリング（方式A）**: `EdgeClass`（Silhouette / Disconnected / Object / Material / Crease）
   ごとに `EdgeClassStyle`（色・不透明度・幅）を束ねた `EdgeStyle` を `strokeEdges.defaultStyle`、
   CueMol セクション（透過グループ）単位の上書きは `Scene::groupEdgeStyle` で指定する。
+  `EdgeStyle::silhouetteMode`（`SilhouetteMode`）はセクション単位のシルエット抽出モード:
+  `Full`（既定）は同一セクション内の自己遮蔽も depth-gap 線として描く。`Outline` は
+  セクションの union の外形線のみ描く（同一セクションのオブジェクトが背後にある境界は
+  線を引かない。背景との境界と他セクションとの境界は従来通り）。モードの異なる
+  セクションは 1 フレーム内で共存できる。
 - **非破壊**: 方式B は内部でエッジ円柱を `Scene` に追加するが、`render()` は `const Scene&` を
   受け取り、追加は**内部の一時コピー**に対して行う。呼び出し側の `Scene` は変更されない。
 

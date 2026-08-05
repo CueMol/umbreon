@@ -320,6 +320,15 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   cp.creaseAngleDeg = se.creaseAngleDeg;
   cp.grazeK = se.screenGrazeK;
   cp.bgClearancePx = static_cast<int>(std::lround(ssScale));
+  // Per-section silhouette mode table (indexed by group id); classification
+  // reads it via objectId >> 2. Kept alive across the classifyCracks call.
+  std::vector<SilhouetteMode> groupMode;
+  groupMode.reserve(scene.groupEdgeStyle.size());
+  for (const EdgeStyle& es : scene.groupEdgeStyle)
+    groupMode.push_back(es.silhouetteMode);
+  cp.groupSilhMode = groupMode.empty() ? nullptr : groupMode.data();
+  cp.groupSilhModeCount = groupMode.size();
+  cp.silhModeDefault = se.defaultStyle.silhouetteMode;
   const float* normalPtr = frame.normal.empty() ? nullptr : frame.normal.data();
   if (cp.crease && !normalPtr) cp.crease = false;
   const char* dumpPrefix = std::getenv("UMBREON_SCREEN_EDGE_DUMP");

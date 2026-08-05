@@ -29,6 +29,7 @@
 //            (the shared draw stage, stroke_render.hpp)
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -50,7 +51,8 @@ enum class CrackClass : std::uint8_t {
                    // contours are suppressed (surface contact, not occlusion)
   DepthGap = 3,    // same-id slope-adaptive view-z discontinuity, or a
                    // same-section mixed-kind boundary across a depth step
-                   // (self-occlusion between primitives of one section)
+                   // (self-occlusion between primitives of one section);
+                   // suppressed for SilhouetteMode::Outline sections
   Crease = 4,      // same objectId, shading-normal fold
 };
 
@@ -127,6 +129,15 @@ struct ScreenClassifyParams {
   bool silhouette = true;
   bool objectBoundary = true;
   bool crease = false;
+  // Per-SECTION silhouette mode table, indexed by group id (objectId >> 2).
+  // A null table or an out-of-range group falls back to silhModeDefault.
+  // Outline suppresses the same-section self-occlusion cracks (the same-id
+  // DepthGap and the same-section mixed-kind DepthGap): only the section
+  // union's outer contour inks. Both sides of a suppressed crack share one
+  // section, so there is no ambiguity about whose mode applies.
+  const SilhouetteMode* groupSilhMode = nullptr;
+  std::size_t groupSilhModeCount = 0;
+  SilhouetteMode silhModeDefault = SilhouetteMode::Full;
   // DepthGap: fire when BOTH one-sided planar extrapolations miss the far
   // pixel by more than depthGapPx * pixelSize (world units per lateral pixel;
   // this is the second-derivative form of the Mol*-style curvature veto -- a
