@@ -82,11 +82,20 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    at junctions), Douglas-Peucker simplification, junction-aware speck
    filter (isolated specks and free-end spurs drop; short junction-to-
    junction pieces of a larger boundary survive).
-4. **Draw**: chains are split into same-class runs (sharing their boundary
-   vertex, so geometry stays continuous across a style change), mapped onto
-   the per-section `EdgeStyle` slots (Silhouette -> `sil`, ObjectId -> `obj`,
-   DepthGap -> `disc` with a `sil` fallback, Crease -> `crease`) and handed
-   to the shared stroke renderer.
+4. **Draw**: chains are split into same-(class, group) runs (sharing their
+   boundary vertex, so geometry stays continuous across a style change): a
+   chain that walks across a section change -- the shared outer silhouette
+   of two touching sections, or an ObjectId boundary whose nearer-pixel
+   owner flips -- draws each section's part with that section's own style.
+   The short-run relabel filter operates on the (class, group) pair and
+   never fuses across a section change. Each run's vertex surface alpha AND
+   view-z are re-attributed from the run's own edgels, so opacity, the fog
+   fade and the depth paint key never leak across a junction (a near
+   section's silhouette must not inherit the fogged depth of a far section
+   it junctions into). Runs are mapped onto the per-section `EdgeStyle`
+   slots (Silhouette -> `sil`, ObjectId -> `obj`, DepthGap -> `disc` with a
+   `sil` fallback, Crease -> `crease`) and handed to the shared stroke
+   renderer.
 
 ## Flags
 

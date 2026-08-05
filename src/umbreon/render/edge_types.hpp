@@ -82,8 +82,9 @@ struct StrokeEdgeOptions {
   float screenSimplifyPx = 0.4f;     // Douglas-Peucker eps, FINAL px
   int screenSmoothIters = 2;         // Chaikin corner-cut iterations
   float screenMinLenPx = 4.0f;       // drop chains shorter than this, FINAL px
-  // Relabel a class run shorter than this (FINAL px) when bracketed by two
-  // runs of one same class (style-flicker suppression; geometry unchanged).
+  // Relabel a (class, group) run shorter than this (FINAL px) when bracketed
+  // by two runs of one same (class, group) key (style-flicker suppression;
+  // geometry unchanged; never fuses across a section change).
   int screenClassMergeLen = 2;
   float screenGrazeK = 1.0f;  // crease grazing-angle widening factor
 

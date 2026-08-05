@@ -556,6 +556,12 @@ int main() {
       if (v.vz != 10.0f) attrs = false;
     s.check("square trace: silhouette class, group 7, vz 10 throughout",
             attrs);
+    // Per-edgel owner vz is stored on the chain (Stage 4 re-attributes the
+    // per-run vertex vz from it, exactly like edgeAlpha).
+    bool vzStored = c.edgeVz.size() == c.edgeClass.size();
+    for (float v : c.edgeVz)
+      if (v != 10.0f) vzStored = false;
+    s.check("square trace: per-edgel owner vz stored (edgeVz)", vzStored);
   }
 
   // ---- (T2) overlapping squares: T-junction split + full consumption ------
@@ -1517,6 +1523,272 @@ int main() {
                                       b.objectId.data());
     s.check_eq("ridge: unsupported ridge chain pruned", chains.size(),
                static_cast<std::size_t>(0));
+  }
+
+  // ---- (16) short-run relabel operates on the (class, group) PAIR ---------
+  // Flicker inside one section still fuses; a genuine section change never
+  // does (fusing it would draw one section's contour with the other's
+  // style), and sub-threshold owner-group jitter on an interpenetrating
+  // boundary collapses to the bracketing group.
+  {
+    const std::uint8_t S = static_cast<std::uint8_t>(CrackClass::Silhouette);
+    const std::uint8_t D = static_cast<std::uint8_t>(CrackClass::DepthGap);
+    const std::uint8_t O = static_cast<std::uint8_t>(CrackClass::ObjectId);
+    {
+      std::vector<std::uint8_t> cls = {S, S, D, S, S};
+      std::vector<std::uint16_t> grp = {7, 7, 7, 7, 7};
+      umbreon::mergeShortClassRuns(cls, grp, 2);
+      s.check("run merge: same-group class flicker fuses",
+              cls == std::vector<std::uint8_t>({S, S, S, S, S}));
+    }
+    {
+      std::vector<std::uint8_t> cls = {S, S, D, S, S};
+      std::vector<std::uint16_t> grp = {1, 1, 1, 2, 2};
+      const std::vector<std::uint8_t> cls0 = cls;
+      const std::vector<std::uint16_t> grp0 = grp;
+      umbreon::mergeShortClassRuns(cls, grp, 2);
+      s.check("run merge: cross-group brackets refuse to fuse",
+              cls == cls0 && grp == grp0);
+    }
+    {
+      std::vector<std::uint8_t> cls = {O, O, O, O, O};
+      std::vector<std::uint16_t> grp = {1, 1, 2, 1, 1};
+      umbreon::mergeShortClassRuns(cls, grp, 2);
+      s.check("run merge: owner-group jitter collapses",
+              grp == std::vector<std::uint16_t>({1, 1, 1, 1, 1}));
+    }
+    {
+      std::vector<std::uint8_t> cls = {S, D, S};
+      std::vector<std::uint16_t> grp = {1, 2, 2};
+      const std::vector<std::uint8_t> cls0 = cls;
+      umbreon::mergeShortClassRuns(cls, grp, 2);
+      s.check("run merge: class jitter across a group change refused",
+              cls == cls0 && grp == std::vector<std::uint16_t>({1, 2, 2}));
+    }
+  }
+
+  // ---- (17) per-(class, group) runs: each section draws its OWN style -----
+  // Two same-depth touching rectangles of different sections: the boundary
+  // between them is depth-continuous contact (never inked, locked by (5)),
+  // so their shared outer silhouette traces as ONE closed loop whose owner
+  // group flips at the degree-2 touch corners. The Stage-4 splitter must cut
+  // the loop at the group changes so each section's rim draws with its own
+  // color and width (previously the whole loop took the first edgel's group).
+  {
+    const int W = 48, H = 32;
+    umbreon::FrameResult frame;
+    frame.width = W;
+    frame.height = H;
+    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+    for (int y = 8; y < 24; ++y)
+      for (int x = 4; x < 44; ++x) {
+        const std::size_t i = static_cast<std::size_t>(y) * W + x;
+        frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+        frame.viewZ[i] = 50.0f;
+      }
+    umbreon::Scene scene;
+    scene.camera.position = {0.0f, 0.0f, 100.0f};
+    scene.camera.direction = {0.0f, 0.0f, -1.0f};
+    scene.camera.up = {0.0f, 1.0f, 0.0f};
+    scene.camera.orthographic = true;
+    scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+    scene.background = {1.0f, 1.0f, 1.0f};
+    scene.groupEdgeStyle.assign(3, umbreon::EdgeStyle{});
+    auto seedSil = [&](int g, float r, float gc, float bc, float w) {
+      umbreon::EdgeClassStyle& cs =
+          scene.groupEdgeStyle[g]
+              .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+      cs.enabled = true;
+      cs.color[0] = r;
+      cs.color[1] = gc;
+      cs.color[2] = bc;
+      cs.width = w;
+    };
+    seedSil(1, 1.0f, 0.0f, 0.0f, 2.0f);  // section 1: red, half-width 1
+    seedSil(2, 0.0f, 0.0f, 1.0f, 6.0f);  // section 2: blue, half-width 3
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;  // full-opacity ink over the blank bg
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+
+    auto chan = [&](int x, int y, int c) {
+      return frame.color[(static_cast<std::size_t>(y) * W + x) * 4 + c];
+    };
+    // Window scans over each section's top rim (rim line y = 7.5).
+    bool redOn1 = false, blueOn1 = false, blueOn2 = false, redOn2 = false;
+    for (int y = 6; y <= 10; ++y)
+      for (int x = 6; x <= 20; ++x) {
+        if (chan(x, y, 0) - chan(x, y, 2) > 0.5f) redOn1 = true;
+        if (chan(x, y, 2) - chan(x, y, 0) > 0.5f) blueOn1 = true;
+      }
+    for (int y = 6; y <= 10; ++y)
+      for (int x = 28; x <= 42; ++x) {
+        if (chan(x, y, 2) - chan(x, y, 0) > 0.5f) blueOn2 = true;
+        if (chan(x, y, 0) - chan(x, y, 2) > 0.5f) redOn2 = true;
+      }
+    s.check("group split: section 1 rim inks red", redOn1);
+    s.check("group split: no blue leaks onto section 1 rim", !blueOn1);
+    s.check("group split: section 2 rim inks blue", blueOn2);
+    s.check("group split: no red leaks onto section 2 rim", !redOn2);
+    // Width: 2.5 px above the rim line only the wide (section 2) stroke inks.
+    bool wideAbove = false, narrowAbove = false;
+    for (int x = 28; x <= 42; ++x)
+      if (chan(x, 5, 2) - chan(x, 5, 0) > 0.5f) wideAbove = true;
+    for (int x = 6; x <= 20; ++x)
+      if (chan(x, 5, 0) < 0.9f) narrowAbove = true;
+    s.check("group split: wide section inks 2.5 px off the rim", wideAbove);
+    s.check("group split: narrow section does not", !narrowAbove);
+  }
+
+  // ---- (18) per-run vz re-attribution: fog must not leak across a group ---
+  // change. A vertical ObjectId boundary whose nearer-pixel owner flips
+  // mid-line (top: section 1 at vz 100, heavily fogged; bottom: section 2 at
+  // vz 20, unfogged). The far section's internal depth step is suppressed
+  // with Outline mode so the flip corner stays degree 2 and the boundary
+  // traces as ONE chain. Without the per-run split + vz re-attribution the
+  // collapsed straight line lerps vz 100 -> 20 end to end and the near
+  // (unfogged) half inks visibly fog-colored.
+  {
+    const int W = 32, H = 32;
+    umbreon::FrameResult frame;
+    frame.width = W;
+    frame.height = H;
+    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t i = static_cast<std::size_t>(y) * W + x;
+        if (x < 16) {
+          frame.objectId[i] = 1u << 2;
+          frame.viewZ[i] = 100.0f;
+        } else {
+          frame.objectId[i] = 2u << 2;
+          frame.viewZ[i] = y < 16 ? 500.0f : 20.0f;
+        }
+      }
+    umbreon::Scene scene;
+    scene.camera.position = {0.0f, 0.0f, 100.0f};
+    scene.camera.direction = {0.0f, 0.0f, -1.0f};
+    scene.camera.up = {0.0f, 1.0f, 0.0f};
+    scene.camera.orthographic = true;
+    scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+    scene.fog.enabled = true;
+    scene.fog.color = {1.0f, 0.0f, 0.0f};  // red fog isolates the vz path
+    scene.fog.start = 20.0f;               // vz 20 -> f=1 (pure ink)
+    scene.fog.end = 110.0f;                // vz 100 -> f~0.11 (mostly fog)
+    scene.groupEdgeStyle.assign(3, umbreon::EdgeStyle{});
+    for (int g : {1, 2}) {
+      umbreon::EdgeClassStyle& cs =
+          scene.groupEdgeStyle[g]
+              .cls[static_cast<int>(umbreon::EdgeClass::Object)];
+      cs.enabled = true;  // black, opacity 1, width 2 (identical styles)
+    }
+    // Suppress section 2's internal 500|20 step so the owner-flip corner
+    // stays degree 2 (one chain through it).
+    scene.groupEdgeStyle[2].silhouetteMode = umbreon::SilhouetteMode::Outline;
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;  // NOT edgesOnly: FogShader must run
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+
+    auto chan = [&](int x, int y, int c) {
+      return frame.color[(static_cast<std::size_t>(y) * W + x) * 4 + c];
+    };
+    // Below the flip (owner vz 20, f=1): every inked pixel stays pure black.
+    bool inked = false, leaked = false;
+    for (int y = 19; y <= 22; ++y)
+      for (int x = 13; x <= 18; ++x) {
+        if (chan(x, y, 1) > 0.5f) continue;  // uninked (white bg)
+        inked = true;
+        if (chan(x, y, 0) > 0.1f) leaked = true;  // red fog on the near run
+      }
+    s.check("vz split: near run inks below the flip", inked);
+    s.check("vz split: no fog leak onto the near run", !leaked);
+    // Above the flip (owner vz 100): the far run IS fog-tinted (sanity).
+    bool fogged = false;
+    for (int y = 8; y <= 12; ++y)
+      for (int x = 13; x <= 18; ++x)
+        if (chan(x, y, 1) < 0.5f && chan(x, y, 0) > 0.3f) fogged = true;
+    s.check("vz split: far run carries the fog tint", fogged);
+  }
+
+  // ---- (19) owner view-z discontinuity splits a run WITHIN one section ----
+  // Two touching rectangles of ONE section at very different depths, with
+  // Outline mode suppressing the internal same-id step: the union silhouette
+  // walks through the touch corner as one chain with uniform class AND
+  // group, but the owner depth jumps near -> far there (a near strand's
+  // contour continuing into a far strand's, e.g. a coil in front of a
+  // fogged loop of the same CueMol section). The jump exceeds the slope
+  // clamp (no surface slopes that fast), so the run must split: without the
+  // split, collinear collapse reduces the straight top rim to two vertices
+  // and the draw stage lerps the depth (and thus the fog color) across the
+  // whole rim, fogging the near half.
+  {
+    const int W = 48, H = 32;
+    umbreon::FrameResult frame;
+    frame.width = W;
+    frame.height = H;
+    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+    for (int y = 8; y < 24; ++y)
+      for (int x = 4; x < 44; ++x) {
+        const std::size_t i = static_cast<std::size_t>(y) * W + x;
+        frame.objectId[i] = 1u << 2;              // ONE section throughout
+        frame.viewZ[i] = x < 24 ? 20.0f : 500.0f;  // jump 480 > clamp 300
+      }
+    umbreon::Scene scene;
+    scene.camera.position = {0.0f, 0.0f, 100.0f};
+    scene.camera.direction = {0.0f, 0.0f, -1.0f};
+    scene.camera.up = {0.0f, 1.0f, 0.0f};
+    scene.camera.orthographic = true;
+    scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+    scene.fog.enabled = true;
+    scene.fog.color = {1.0f, 0.0f, 0.0f};  // red fog isolates the vz path
+    scene.fog.start = 20.0f;               // near rim -> f=1 (pure ink)
+    scene.fog.end = 110.0f;                // far rim (500) -> f=0 (all fog)
+    scene.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    umbreon::EdgeClassStyle& cs =
+        scene.groupEdgeStyle[1]
+            .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    cs.enabled = true;  // black, opacity 1, width 2
+    // Suppress the internal 20|500 same-id step so the touch corner stays
+    // degree 2 (the silhouette loop walks through it).
+    scene.groupEdgeStyle[1].silhouetteMode = umbreon::SilhouetteMode::Outline;
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;  // NOT edgesOnly: FogShader must run
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+
+    auto chan = [&](int x, int y, int c) {
+      return frame.color[(static_cast<std::size_t>(y) * W + x) * 4 + c];
+    };
+    // Near half of the top rim: inked and pure black (no red fog leak).
+    bool inked = false, leaked = false;
+    for (int y = 6; y <= 9; ++y)
+      for (int x = 6; x <= 18; ++x) {
+        if (chan(x, y, 1) > 0.5f) continue;  // uninked
+        inked = true;
+        if (chan(x, y, 0) > 0.1f) leaked = true;
+      }
+    s.check("vz jump split: near rim inks", inked);
+    s.check("vz jump split: no fog leak onto the near rim", !leaked);
+    // Far half of the top rim: fog-tinted (sanity that fog is live).
+    bool fogged = false;
+    for (int y = 6; y <= 9; ++y)
+      for (int x = 30; x <= 42; ++x)
+        if (chan(x, y, 1) < 0.5f && chan(x, y, 0) > 0.3f) fogged = true;
+    s.check("vz jump split: far rim carries the fog tint", fogged);
   }
 
   return s.report();
