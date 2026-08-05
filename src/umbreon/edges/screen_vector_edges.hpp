@@ -45,7 +45,10 @@ namespace umbreon {
 // (EdgeStyle::cls[], see natureStyleSlot's screen analogue in the .cpp).
 enum class CrackClass : std::uint8_t {
   None = 0,
-  Silhouette = 1,  // exactly one side is background
+  Silhouette = 1,  // exactly one side is background, or a cross-section
+                   // boundary whose NEAR side is an Outline-mode section
+                   // (owner-side outline promotion: the section's outer
+                   // contour regardless of what is behind it)
   ObjectId = 2,    // both foreground, cross-section objectId differs across a
                    // depth step; depth-continuous contact/intersection
                    // contours are suppressed (surface contact, not occlusion)
@@ -134,7 +137,10 @@ struct ScreenClassifyParams {
   // Outline suppresses the same-section self-occlusion cracks (the same-id
   // DepthGap and the same-section mixed-kind DepthGap): only the section
   // union's outer contour inks. Both sides of a suppressed crack share one
-  // section, so there is no ambiguity about whose mode applies.
+  // section, so there is no ambiguity about whose mode applies. On a
+  // cross-section crack the NEAR (owner) side's mode is consulted instead:
+  // an Outline owner promotes the crack from ObjectId to Silhouette so the
+  // contour survives whatever section sits behind the group.
   const SilhouetteMode* groupSilhMode = nullptr;
   std::size_t groupSilhModeCount = 0;
   SilhouetteMode silhModeDefault = SilhouetteMode::Full;

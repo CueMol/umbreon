@@ -44,8 +44,12 @@ struct EdgeClassStyle {
 // section as a depth-gap line (an object overlapping another object of the
 // same section still gets a line). Outline suppresses those same-section
 // self-occlusion lines at extraction time and keeps only the outer contour
-// of the section's union: boundaries against the background (Silhouette
-// class) and against OTHER sections (Object class) are unaffected.
+// of the section's union, drawn as the Silhouette class in the section's
+// sil style: both the boundary against the background and the boundary
+// against another section BEHIND the group (so the contour never breaks
+// where e.g. a mesh sits behind it). Where the Outline section is itself
+// the farther side, the nearer section's Object boundary line applies as
+// usual (hidden lines are still never drawn).
 enum class SilhouetteMode : uint8_t {
   Full = 0,
   Outline = 1,

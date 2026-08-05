@@ -116,8 +116,11 @@ it inks only across a genuine depth step (occlusion), while depth-continuous
 contact/intersection contours -- a stick penetrating a ribbon of another
 section, a bond embedded in an atom -- are always suppressed, thresholded by
 `--stroke-depth-gap`. Same-section steps ink as depth-gap lines under
-`--stroke-silhouette`. The `--edge-qi-*` flags are inert here
-(no QI runs; visibility is exact from the z-buffer).
+`--stroke-silhouette`. One exception to the border gate: a cross-section
+boundary whose NEAR side is an Outline-mode section promotes to `Silhouette`
+and follows `--stroke-silhouette` instead (see Outline mode below). The
+`--edge-qi-*` flags are inert here (no QI runs; visibility is exact from the
+z-buffer).
 
 ## Outline mode
 
@@ -127,12 +130,20 @@ silhouette toggle extracts for that section:
 - `Full` (default) -- current behavior: every self-occlusion inside the
   section inks as a depth-gap line, so an object overlapping another object
   of the SAME section still gets a line.
-- `Outline` -- only the outer contour of the section's UNION inks. Both
-  same-section DepthGap variants (the same-id step and the mixed-kind step)
-  are suppressed at classification time, before tracing, so silhouette
-  chains are not chopped by phantom junctions. Boundaries against the
-  background (`Silhouette`) and against OTHER sections (`ObjectId`, under
-  `--stroke-border`) are unaffected.
+- `Outline` -- only the outer contour of the section's UNION inks, and it
+  inks COMPLETELY, regardless of what is behind the group. Both same-section
+  DepthGap variants (the same-id step and the mixed-kind step) are suppressed
+  at classification time, before tracing, so silhouette chains are not
+  chopped by phantom junctions. The contour itself is uniform: the boundary
+  against the background classifies as `Silhouette`, and a cross-section
+  boundary where the Outline section is the NEAR side is promoted from
+  `ObjectId` to `Silhouette` as well (owner-side outline promotion), so both
+  draw with the section's `sil` style under `--stroke-silhouette` -- the
+  contour does not break where another section's mesh sits behind the group,
+  even with the `obj` slot disabled. Where the Outline section is the FARTHER
+  side, the nearer section's `ObjectId` boundary (under `--stroke-border`)
+  applies unchanged; hidden lines are still never drawn, and depth-continuous
+  contact boundaries stay suppressed in every mode.
 
 `--stroke-outline on` sets Outline as the default for every section; a
 per-section `--edge` spec sets it with the `mode` attribute, e.g.

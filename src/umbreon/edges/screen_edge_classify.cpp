@@ -267,7 +267,11 @@ inline std::uint8_t classifyPair(const float* viewZ,
   // toggle, same-section as DepthGap under the silhouette toggle (it is a
   // self-occlusion, exactly like the same-id depth gap below -- do NOT fall
   // through to it, though: its plain sideSlope would leak the other
-  // primitive's depth across the kind boundary).
+  // primitive's depth across the kind boundary). One exception: a
+  // cross-section crack whose NEAR side is an Outline-mode section promotes
+  // to Silhouette under the silhouette toggle (owner-side outline promotion
+  // below), so the section's outer contour does not depend on what is behind
+  // it.
   //
   // Contact veto: same slope-adaptive one-sided-extrapolation form and
   // depthGapPx threshold as the DepthGap test below, so a grazing surface
@@ -281,10 +285,20 @@ inline std::uint8_t classifyPair(const float* viewZ,
   // a contact.
   if (objectId[ia] != objectId[ib]) {
     const bool sameSection = (objectId[ia] >> 2) == (objectId[ib] >> 2);
-    if (sameSection ? (!p.silhouette || outlineMode(p, objectId[ia]))
-                    : !p.objectBoundary)
-      return 0;
     const float vzA = viewZ[ia], vzB = viewZ[ib];
+    // Owner-side outline promotion: when the NEAR side of a cross-section
+    // crack is an Outline-mode section, the crack IS that section's outer
+    // contour (the thing behind it just happens to be another section, not
+    // the background), so classify it as Silhouette. It then resolves against
+    // the owner's sil style under the silhouette gate, keeping the contour
+    // complete even with the obj slot disabled. With p.silhouette off the
+    // classic ObjectId path applies unchanged.
+    const bool outlineSil =
+        !sameSection && p.silhouette &&
+        outlineMode(p, vzA <= vzB ? objectId[ia] : objectId[ib]);
+    if (sameSection ? (!p.silhouette || outlineMode(p, objectId[ia]))
+                    : (!outlineSil && !p.objectBoundary))
+      return 0;
     const float px = pixelSizeAt(sp, std::min(vzA, vzB));
     const float clampS = p.slopeClampPx * px;
     const float tol = p.depthGapPx * px;
@@ -297,7 +311,8 @@ inline std::uint8_t classifyPair(const float* viewZ,
     if (std::min(gapA, gapB) <= tol) return 0;  // contact
     const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
     return static_cast<std::uint8_t>(sameSection ? CrackClass::DepthGap
-                                                 : CrackClass::ObjectId) |
+                                     : outlineSil ? CrackClass::Silhouette
+                                                  : CrackClass::ObjectId) |
            owner;
   }
 
