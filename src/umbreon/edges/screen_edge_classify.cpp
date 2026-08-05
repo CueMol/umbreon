@@ -262,16 +262,19 @@ inline std::uint8_t classifyPair(const float* viewZ,
   // Either way the ink decision is the same: surfaces in CONTACT (a
   // sphere/cylinder penetrating a mesh, a bond embedded in an atom) have
   // CONTINUOUS viewZ across the crack at the 3D intersection contour and are
-  // never inked; only a genuine occlusion step draws. The two cases differ
-  // only in class/gate: cross-section inks as ObjectId under the border
-  // toggle, same-section as DepthGap under the silhouette toggle (it is a
-  // self-occlusion, exactly like the same-id depth gap below -- do NOT fall
-  // through to it, though: its plain sideSlope would leak the other
-  // primitive's depth across the kind boundary). One exception: a
-  // cross-section crack whose NEAR side is an Outline-mode section promotes
-  // to Silhouette under the silhouette toggle (owner-side outline promotion
-  // below), so the section's outer contour does not depend on what is behind
-  // it.
+  // not inked by default; only a genuine occlusion step draws. The
+  // contactBoundary toggle revives the CROSS-section contact contour (the
+  // intersection curve where one section plunges into another; same-section
+  // contact stays seamless) with a deterministic owner -- see the contact
+  // branch below. The two cases differ only in class/gate: cross-section
+  // inks as ObjectId under the border toggle, same-section as DepthGap under
+  // the silhouette toggle (it is a self-occlusion, exactly like the same-id
+  // depth gap below -- do NOT fall through to it, though: its plain
+  // sideSlope would leak the other primitive's depth across the kind
+  // boundary). One exception: a cross-section crack whose NEAR side is an
+  // Outline-mode section promotes to Silhouette under the silhouette toggle
+  // (owner-side outline promotion below), so the section's outer contour
+  // does not depend on what is behind it.
   //
   // Contact veto: same slope-adaptive one-sided-extrapolation form and
   // depthGapPx threshold as the DepthGap test below, so a grazing surface
@@ -297,7 +300,10 @@ inline std::uint8_t classifyPair(const float* viewZ,
         !sameSection && p.silhouette &&
         outlineMode(p, vzA <= vzB ? objectId[ia] : objectId[ib]);
     if (sameSection ? (!p.silhouette || outlineMode(p, objectId[ia]))
-                    : (!outlineSil && !p.objectBoundary))
+                    : (!outlineSil && !p.objectBoundary &&
+                       !(p.contactBoundary && p.silhouette &&
+                         (outlineMode(p, objectId[ia]) ||
+                          outlineMode(p, objectId[ib])))))
       return 0;
     const float px = pixelSizeAt(sp, std::min(vzA, vzB));
     const float clampS = p.slopeClampPx * px;
@@ -308,7 +314,30 @@ inline std::uint8_t classifyPair(const float* viewZ,
     const float gapB = std::fabs(
         vzA - (vzB + contactSideSlope(viewZ, objectId, normal, sp, ib, iOutB,
                                       outBValid, clampS, p.borderGrazeCos)));
-    if (std::min(gapA, gapB) <= tol) return 0;  // contact
+    const bool contact = std::min(gapA, gapB) <= tol;
+    if (contact && (sameSection || !p.contactBoundary)) return 0;
+    if (contact) {
+      // Contact lines: ownership must be DETERMINISTIC here -- at a
+      // depth-continuous boundary the near side is numerical noise, and a
+      // noisy owner would flicker the (class, group) run key along the
+      // contour (alternating styles, dashed lines where one side's slot is
+      // disabled). A single Outline-mode side owns (the contour belongs to
+      // that section's outline, Silhouette class in its sil style);
+      // otherwise the smaller group id owns (ObjectId under the border
+      // gate; Silhouette when both sides are Outline).
+      const bool outA = p.silhouette && outlineMode(p, objectId[ia]);
+      const bool outB = p.silhouette && outlineMode(p, objectId[ib]);
+      const bool sil = outA || outB;
+      if (!sil && !p.objectBoundary) return 0;
+      const std::uint8_t owner =
+          outA != outB ? (outA ? 0 : kCrackOwnerBit)
+                       : ((objectId[ia] >> 2) <= (objectId[ib] >> 2)
+                              ? 0
+                              : kCrackOwnerBit);
+      return static_cast<std::uint8_t>(sil ? CrackClass::Silhouette
+                                           : CrackClass::ObjectId) |
+             owner;
+    }
     const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
     return static_cast<std::uint8_t>(sameSection ? CrackClass::DepthGap
                                      : outlineSil ? CrackClass::Silhouette

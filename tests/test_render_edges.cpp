@@ -363,5 +363,61 @@ int main() {
             minR(f, 32, 6, 3) > 0.9f);
   }
 
+  // ===== S3: contact lines (strokeEdges.contact) on an intersection =====
+  // An Outline-mode sphere (group 1, sil slot only) pierced at its equator by
+  // the full-frame quad mesh (group 0, all slots disabled, z=0): the sphere/
+  // quad screen boundary is the circle x^2+y^2=1 where the two surfaces meet
+  // at CONTINUOUS depth -- the contact veto suppresses it by default, and
+  // strokeEdges.contact inks it as the Outline side's Silhouette (the
+  // deterministic contact owner), closing the group's contour where it
+  // plunges into the mesh.
+  {
+    using umbreon::Vec3;
+    auto contactScene = [&]() {
+      umbreon::Scene sc;
+      sc.camera = makeOrthoCam();  // ortho, frames [-2,2]^2
+      sc.background = {1, 1, 1};
+      umbreon::Sphere a;
+      a.center = {0, 0, 0};
+      a.radius = 1.0f;
+      a.color = pigment;
+      a.group = 1;
+      sc.spheres.push_back(a);
+      sc.mesh = makeQuad(pigment);  // full [-2,2]^2 quad at z=0, group 0
+      umbreon::EdgeStyle es;
+      umbreon::EdgeClassStyle& sil =
+          es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+      sil.enabled = true;  // black, opacity 1 (defaults), width 2
+      sil.width = 2.0f;
+      es.silhouetteMode = umbreon::SilhouetteMode::Outline;
+      sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+      sc.groupEdgeStyle[1] = es;
+      return sc;
+    };
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    auto minR = [](const umbreon::FrameResult& f, int cx, int cy, int r) {
+      float m = 1.0f;
+      for (int y = cy - r; y <= cy + r; ++y)
+        for (int x = cx - r; x <= cx + r; ++x)
+          m = std::min(m, f.color[(static_cast<std::size_t>(y) * 64 + x) * 4]);
+      return m;
+    };
+    // Default (contact off): the intersection circle stays silent.
+    const umbreon::FrameResult off = umbreon::render(contactScene(), o);
+    s.check("S3 contact off: circle top silent", minR(off, 32, 16, 3) > 0.9f);
+    s.check("S3 contact off: circle left silent", minR(off, 16, 32, 3) > 0.9f);
+    // Contact on: the circle inks (world (0,1) -> px (32,16), world (-1,0) ->
+    // px (16,32)) while the interior stays clean.
+    o.strokeEdges.contact = true;
+    const umbreon::FrameResult on = umbreon::render(contactScene(), o);
+    s.check("S3 contact on: circle top inked", minR(on, 32, 16, 3) < 0.5f);
+    s.check("S3 contact on: circle left inked", minR(on, 16, 32, 3) < 0.5f);
+    s.check("S3 contact on: interior stays clean", minR(on, 32, 32, 2) > 0.9f);
+  }
+
   return s.report();
 }
