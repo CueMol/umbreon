@@ -48,10 +48,12 @@ enum class CrackClass : std::uint8_t {
   Silhouette = 1,  // exactly one side is background, or a cross-section
                    // boundary whose NEAR side is an Outline-mode section
                    // (owner-side outline promotion: the section's outer
-                   // contour regardless of what is behind it)
+                   // contour regardless of what is behind it), or an
+                   // Outline-owned contact contour under contactBoundary
   ObjectId = 2,    // both foreground, cross-section objectId differs across a
                    // depth step; depth-continuous contact/intersection
                    // contours are suppressed (surface contact, not occlusion)
+                   // unless contactBoundary inks them (smaller group id owns)
   DepthGap = 3,    // same-id slope-adaptive view-z discontinuity, or a
                    // same-section mixed-kind boundary across a depth step
                    // (self-occlusion between primitives of one section);
@@ -131,6 +133,15 @@ struct ScreenClipAovs {
 struct ScreenClassifyParams {
   bool silhouette = true;
   bool objectBoundary = true;
+  // Ink depth-CONTINUOUS cross-section boundaries (the intersection contour
+  // where one section's primitive plunges into another section's surface)
+  // instead of vetoing them as contact. Cross-section only: same-section
+  // contact (a bond embedded in an atom) never inks. Ownership is
+  // DETERMINISTIC because the near side is numerical noise at a contact: a
+  // single Outline-mode side owns (Silhouette class, its outer contour);
+  // otherwise the smaller group id owns (ObjectId under objectBoundary,
+  // Silhouette when both sides are Outline). Wired from the contact toggle.
+  bool contactBoundary = false;
   bool crease = false;
   // Per-SECTION silhouette mode table, indexed by group id (objectId >> 2).
   // A null table or an out-of-range group falls back to silhModeDefault.

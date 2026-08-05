@@ -106,6 +106,7 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 | `--stroke-screen-smooth <int>` | 2 | Chaikin iterations |
 | `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all) |
 | `--stroke-outline <on|off>` | off | outer-contour silhouette mode (`SilhouetteMode::Outline`) as the global default for every section |
+| `--stroke-contact <on|off>` | off | ink depth-continuous CROSS-section contact/intersection contours (the curve where one section plunges into another) |
 
 The nature toggles keep their meaning under the screen source:
 `--stroke-silhouette` gates the fg/bg contour AND the same-id depth gap,
@@ -114,8 +115,14 @@ The nature toggles keep their meaning under the screen source:
 sections, and between mixed primitive kinds of one section) is depth-aware:
 it inks only across a genuine depth step (occlusion), while depth-continuous
 contact/intersection contours -- a stick penetrating a ribbon of another
-section, a bond embedded in an atom -- are always suppressed, thresholded by
-`--stroke-depth-gap`. Same-section steps ink as depth-gap lines under
+section, a bond embedded in an atom -- are suppressed by default,
+thresholded by `--stroke-depth-gap`. `--stroke-contact on` revives the
+CROSS-section contact contour (same-section contact stays seamless), in Full
+and Outline modes alike. Because the near side is numerical noise at a
+contact, its owner is deterministic instead: a single Outline-mode side owns
+(and draws its `sil` style as `Silhouette`); otherwise the smaller group id
+owns (its `obj` style under `--stroke-border`, `sil` when both sides are
+Outline). Same-section steps ink as depth-gap lines under
 `--stroke-silhouette`. One exception to the border gate: a cross-section
 boundary whose NEAR side is an Outline-mode section promotes to `Silhouette`
 and follows `--stroke-silhouette` instead (see Outline mode below). The
@@ -143,7 +150,9 @@ silhouette toggle extracts for that section:
   even with the `obj` slot disabled. Where the Outline section is the FARTHER
   side, the nearer section's `ObjectId` boundary (under `--stroke-border`)
   applies unchanged; hidden lines are still never drawn, and depth-continuous
-  contact boundaries stay suppressed in every mode.
+  contact boundaries stay suppressed in every mode unless `--stroke-contact
+  on` inks them (an Outline side then owns the contact contour, closing the
+  group's outline where it plunges into another section's surface).
 
 `--stroke-outline on` sets Outline as the default for every section; a
 per-section `--edge` spec sets it with the `mode` attribute, e.g.

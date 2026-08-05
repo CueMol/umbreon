@@ -573,6 +573,125 @@ int main() {
                countActive(classify(b, p)), 0);
   }
 
+  // ---- (5p) cross-section contact lines under contactBoundary -------------
+  // p.contactBoundary inks the depth-continuous cross-section boundary the
+  // contact veto normally suppresses (the intersection contour where one
+  // group's primitive plunges into another group's mesh). Ownership must be
+  // DETERMINISTIC because the near side is numerical noise at a contact: a
+  // single Outline-mode side owns (Silhouette, its outer contour); otherwise
+  // the smaller group id owns (ObjectId under the border gate, Silhouette
+  // when both sides are Outline). Same-section contact and the occlusion-step
+  // owner rule are untouched.
+  {
+    Buffers b(16, 16);
+    auto fill = [&](float vzRight) {
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          b.set(x, y, x < 8 ? (1u << 2) : (2u << 2), x < 8 ? 10.0f : vzRight);
+    };
+    fill(10.0f);  // equal depth: every boundary pair is a contact
+    std::vector<umbreon::SilhouetteMode> mode(3, umbreon::SilhouetteMode::Full);
+    ScreenClassifyParams p = defaults;
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();
+
+    // Default off: the veto stands.
+    s.check_eq("contact (5p): flag off keeps the veto",
+               countActive(classify(b, p)), 0);
+
+    p.contactBoundary = true;
+
+    // Both Full: ObjectId owned by the smaller group id (first pixel).
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("contact (5p): both Full inks ObjectId",
+                 countClass(cf, CrackClass::ObjectId), 16);
+      s.check_eq("contact (5p): both Full, nothing else", countActive(cf), 16);
+      s.check("contact (5p): both Full owned by the smaller group id",
+              (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
+    }
+
+    // Both Full with the border gate off: nothing inks.
+    p.objectBoundary = false;
+    s.check_eq("contact (5p): both Full needs the border gate",
+               countActive(classify(b, p)), 0);
+    p.objectBoundary = true;
+
+    // One Outline side owns regardless of id order: group 2 (the LARGER id,
+    // second pixel) is Outline, so the owner bit is SET -- the Outline
+    // preference beats the smaller-id tiebreak.
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("contact (5p): Outline side inks Silhouette",
+                 countClass(cf, CrackClass::Silhouette), 16);
+      s.check_eq("contact (5p): Outline side, nothing else", countActive(cf),
+                 16);
+      s.check("contact (5p): Outline side owns over the smaller id",
+              (cf.right[b.idx(7, 8)] & kCrackOwnerBit) != 0);
+    }
+
+    // Outline on the smaller-id side: owner bit clear.
+    mode[1] = umbreon::SilhouetteMode::Outline;
+    mode[2] = umbreon::SilhouetteMode::Full;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("contact (5p): Outline group 1 inks Silhouette",
+                 countClass(cf, CrackClass::Silhouette), 16);
+      s.check("contact (5p): Outline group 1 owns (first pixel)",
+              (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
+    }
+
+    // Silhouette gate off: the Outline preference is moot; smaller id owns
+    // an ObjectId line under the border gate.
+    mode[1] = umbreon::SilhouetteMode::Full;
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    p.silhouette = false;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("contact (5p): silhouette off falls back to ObjectId",
+                 countClass(cf, CrackClass::ObjectId), 16);
+      s.check("contact (5p): silhouette off owned by the smaller id",
+              (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
+    }
+    p.silhouette = true;
+
+    // Both Outline: Silhouette owned by the smaller id.
+    mode[1] = umbreon::SilhouetteMode::Outline;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("contact (5p): both Outline inks Silhouette",
+                 countClass(cf, CrackClass::Silhouette), 16);
+      s.check("contact (5p): both Outline owned by the smaller id",
+              (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
+    }
+    mode[1] = mode[2] = umbreon::SilhouetteMode::Full;
+
+    // Same-section mixed-kind contact stays silent: the flag is
+    // cross-section only (a bond embedded in an atom draws no seam).
+    {
+      Buffers bs(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          bs.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), 10.0f);
+      s.check_eq("contact (5p): same-section contact stays silent",
+                 countActive(classify(bs, p)), 0);
+    }
+
+    // A genuine occlusion step keeps the near-side owner rule even with the
+    // flag on: far-side Outline does not steal the crack (no promotion, no
+    // contact ownership).
+    fill(60.0f);
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("contact (5p): occlusion step stays ObjectId",
+                 countClass(cf, CrackClass::ObjectId), 16);
+      s.check("contact (5p): occlusion step owned by the near side",
+              (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
+    }
+  }
+
   // ---- tracer helpers ------------------------------------------------------
   using umbreon::ScreenChain;
   auto totalEdgels = [](const std::vector<ScreenChain>& chains) {

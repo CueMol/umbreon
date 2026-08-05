@@ -317,6 +317,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   ScreenClassifyParams cp;
   cp.silhouette = se.silhouette;
   cp.objectBoundary = se.border;
+  cp.contactBoundary = se.contact;
   cp.crease = se.crease;
   cp.depthGapPx = se.screenDepthGapPx;
   cp.slopeClampPx = se.screenSlopeClampPx;

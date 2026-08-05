@@ -104,10 +104,20 @@ struct StrokeEdgeOptions {
   // two different CueMol sections). When on, borders are drawn only across a
   // depth step (occlusion); depth-continuous contact/intersection contours
   // (e.g. a stick penetrating a ribbon of another section, a bond embedded in
-  // an atom) are always suppressed. Same-section primitive boundaries follow
-  // the same depth rule but ink as depth-gap lines under the silhouette
-  // toggle, not this one.
+  // an atom) are suppressed unless `contact` below inks them. Same-section
+  // primitive boundaries follow the same depth rule but ink as depth-gap
+  // lines under the silhouette toggle, not this one.
   bool border = true;
+  // Screen source: also ink the depth-CONTINUOUS cross-section boundary (the
+  // intersection contour where one section's primitive plunges into another
+  // section's surface), in Full and Outline silhouette modes alike.
+  // Cross-section only; same-section contact never inks. The owner whose
+  // style applies is deterministic (the near side is numerical noise at a
+  // contact): a single Outline-mode side owns and draws its sil style as
+  // Silhouette; otherwise the smaller group id owns and draws its obj style
+  // under `border` (sil when both sides are Outline). Default off: contours
+  // match the pre-flag output exactly.
+  bool contact = false;
 
   // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
   // Ray-cast visibility is analytic, so no 3D lift is needed (raise == 0).

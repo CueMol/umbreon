@@ -281,6 +281,9 @@ struct Options {
   bool strokeSilhouette = true;
   bool strokeCrease = false;
   bool strokeBorder = true;
+  // --stroke-contact: also ink depth-continuous cross-section contact/
+  // intersection contours (screen source; see StrokeEdgeOptions::contact).
+  bool strokeContact = false;
   // --stroke-outline: outer-contour silhouette mode (SilhouetteMode::Outline)
   // as the global default for every section: same-section self-occlusion
   // draws no line, only the section union's outer contour inks. A per-section

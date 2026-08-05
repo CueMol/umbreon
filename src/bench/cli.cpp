@@ -922,6 +922,12 @@ Options parseCli(int argc, char** argv) {
         fail("--stroke-border expects on/off");
       continue;
     }
+    if (a == "--stroke-contact") {
+      std::string v = value("--stroke-contact");
+      if (o.ok && !parseBool(v, o.strokeContact))
+        fail("--stroke-contact expects on/off");
+      continue;
+    }
     if (a == "--stroke-outline") {
       std::string v = value("--stroke-outline");
       if (o.ok && !parseBool(v, o.strokeOutline))
@@ -1150,6 +1156,8 @@ void printUsage(const char* prog) {
       "  --stroke-silhouette <on|off> stroke silhouette nature             [on]\n"
       "  --stroke-crease <on|off> stroke crease nature                    [off]\n"
       "  --stroke-border <on|off> occluding cross-section boundary lines    [on]\n"
+      "  --stroke-contact <on|off> ink depth-continuous cross-section contact\n"
+      "                            (intersection) contours                  [off]\n"
       "  --stroke-outline <on|off> outer-contour silhouettes: no same-section\n"
       "                            self-occlusion lines; the contour draws even\n"
       "                            against objects behind the section       [off]\n"
