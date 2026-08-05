@@ -300,5 +300,68 @@ int main() {
     s.check("S1 Outline: outer rim still inked", minR(fo, 8, 32, 3) < 0.5f);
   }
 
+  // ===== S2: Outline contour survives another section BEHIND the group =====
+  // An Outline-mode sphere (group 1, only the sil slot enabled -- the shipped
+  // `--edge ID=sil:mode=outline` setup, obj slot disabled) in front of a
+  // half-plane mesh of the default group 0 (all slots disabled). The sphere/
+  // mesh boundary is a cross-section crack; owner-side outline promotion must
+  // classify it as Silhouette so the sphere's outer contour is complete even
+  // where the mesh, not the background, is behind it.
+  {
+    using umbreon::Vec3;
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();  // ortho, frames [-2,2]^2
+    sc.background = {1, 1, 1};
+    umbreon::Sphere a;
+    a.center = {0, 0, 0};
+    a.radius = 1.0f;
+    a.color = pigment;
+    a.group = 1;
+    sc.spheres.push_back(a);
+    // Half quad covering x in [-2,0], y in [-2,2] at z=-2: BEHIND the sphere,
+    // under its left rim only. Group 0 (empty triGroupId), styles disabled.
+    {
+      const Vec3 p00{-2, -2, -2}, p10{0, -2, -2}, p11{0, 2, -2}, p01{-2, 2, -2};
+      const Vec3 corners[6] = {p00, p10, p11, p00, p11, p01};
+      for (const Vec3& p : corners) {
+        sc.mesh.positions.push_back(p);
+        sc.mesh.normals.push_back({0, 0, 1});
+        sc.mesh.colors.push_back(pigment);
+      }
+    }
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;  // black, opacity 1 (defaults), width 2
+    sil.width = 2.0f;
+    es.silhouetteMode = umbreon::SilhouetteMode::Outline;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    auto minR = [](const umbreon::FrameResult& f, int cx, int cy, int r) {
+      float m = 1.0f;
+      for (int y = cy - r; y <= cy + r; ++y)
+        for (int x = cx - r; x <= cx + r; ++x)
+          m = std::min(m, f.color[(static_cast<std::size_t>(y) * 64 + x) * 4]);
+      return m;
+    };
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    // World (-1,0) -> pixel (16,32): the left rim, mesh behind. This is the
+    // regression probe -- without promotion the ObjectId run resolves against
+    // the disabled obj slot and drops.
+    s.check("S2 Outline: rim over the mesh behind is inked",
+            minR(f, 16, 32, 3) < 0.5f);
+    // World (1,0) -> pixel (48,32): the right rim over background (control).
+    s.check("S2 Outline: rim over background is inked", minR(f, 48, 32, 3) < 0.5f);
+    // World (0,1.6) -> pixel (32,6): the quad's own edge against background;
+    // group 0's styles are all disabled, so nothing may ink there.
+    s.check("S2 Outline: disabled group 0 draws nothing",
+            minR(f, 32, 6, 3) > 0.9f);
+  }
+
   return s.report();
 }

@@ -426,7 +426,9 @@ int main() {
   }
   {
     // (c) mixed-mode frame: group 1 (Full) still inks its own step, group 2
-    // (Outline) does not, and the cross-section boundary inks regardless.
+    // (Outline) does not. The cross-section boundary at (11,y)-(12,y) has the
+    // Outline group 2 on the NEAR side (vz 10 vs 60), so it is promoted from
+    // ObjectId to Silhouette (owner-side outline promotion).
     Buffers b(24, 16);
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 24; ++x) {
@@ -442,8 +444,10 @@ int main() {
     const CrackField cf = classify(b, p);
     s.check_eq("outline (c): Full group's step inks per row",
                countClass(cf, CrackClass::DepthGap), 16);
-    s.check_eq("outline (c): cross-section boundary inks per row",
-               countClass(cf, CrackClass::ObjectId), 16);
+    s.check_eq("outline (c): cross-section boundary promotes to Silhouette",
+               countClass(cf, CrackClass::Silhouette), 16);
+    s.check_eq("outline (c): no ObjectId remains",
+               countClass(cf, CrackClass::ObjectId), 0);
     s.check_eq("outline (c): Outline group's step suppressed (nothing else)",
                countActive(cf), 32);
     // Full group's step is at (5,y)-(6,y); the Outline group's would-be step
@@ -453,6 +457,14 @@ int main() {
                 static_cast<std::uint8_t>(CrackClass::DepthGap));
     s.check_eq("outline (c): Outline group's step crack byte is 0",
                static_cast<int>(cf.right[b.idx(17, 8)]), 0);
+    // The promoted crack's owner is the SECOND pixel (x=12, the nearer
+    // Outline group), so the owner bit is set.
+    const std::uint8_t promoted = cf.right[b.idx(11, 8)];
+    s.check("outline (c): promoted crack is Silhouette class",
+            (promoted & kCrackClassMask) ==
+                static_cast<std::uint8_t>(CrackClass::Silhouette));
+    s.check("outline (c): promoted crack owned by the near Outline pixel",
+            (promoted & kCrackOwnerBit) != 0);
   }
   {
     // (d) default-mode fallback: a null table (and a too-short table) uses
@@ -491,6 +503,74 @@ int main() {
     p.groupSilhModeCount = mode.size();
     s.check_eq("outline (e): crease still fires on an Outline section",
                countClass(classify(b, p), CrackClass::Crease), 16);
+  }
+  {
+    // (f) owner-side outline promotion contract on a cross-section step.
+    // Left half group 1 at vz 10 (near), right half group 2 at vz 60 (far);
+    // the boundary (7,y)-(8,y) fires once per row. The promotion applies only
+    // when the NEAR side is an Outline section: the crack becomes Silhouette
+    // (gated by p.silhouette, styled from the sil slot) so the outer contour
+    // survives even with the obj slot disabled and objects behind the group.
+    Buffers b(16, 16);
+    auto fill = [&](float vzRight) {
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          b.set(x, y, x < 8 ? (1u << 2) : (2u << 2), x < 8 ? 10.0f : vzRight);
+    };
+    fill(60.0f);
+    std::vector<umbreon::SilhouetteMode> mode(3, umbreon::SilhouetteMode::Full);
+    ScreenClassifyParams p = defaults;
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();
+
+    // Outline on the FAR side only: no promotion, classic ObjectId.
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("outline (f): far-side Outline keeps ObjectId",
+                 countClass(cf, CrackClass::ObjectId), 16);
+      s.check_eq("outline (f): far-side Outline, nothing else",
+                 countActive(cf), 16);
+    }
+
+    // Outline on the NEAR side: promoted to Silhouette, owner bit clear
+    // (the FIRST pixel x=7 is the nearer Outline side).
+    mode[1] = umbreon::SilhouetteMode::Outline;
+    mode[2] = umbreon::SilhouetteMode::Full;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("outline (f): near-side Outline promotes to Silhouette",
+                 countClass(cf, CrackClass::Silhouette), 16);
+      s.check_eq("outline (f): near-side Outline, nothing else",
+                 countActive(cf), 16);
+      s.check("outline (f): promoted crack owned by the first pixel",
+              (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
+    }
+
+    // The promotion is gated by p.silhouette, not p.objectBoundary.
+    p.objectBoundary = false;
+    s.check_eq("outline (f): promotion survives objectBoundary off",
+               countClass(classify(b, p), CrackClass::Silhouette), 16);
+    p.silhouette = false;
+    p.objectBoundary = true;
+    {
+      const CrackField cf = classify(b, p);
+      s.check_eq("outline (f): silhouette off falls back to ObjectId",
+                 countClass(cf, CrackClass::ObjectId), 16);
+      s.check_eq("outline (f): fallback has no Silhouette",
+                 countClass(cf, CrackClass::Silhouette), 0);
+    }
+    p.silhouette = true;
+
+    // Both sides Outline: the near side wins, still Silhouette.
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    s.check_eq("outline (f): both Outline promotes to Silhouette",
+               countClass(classify(b, p), CrackClass::Silhouette), 16);
+
+    // Depth-continuous contact is still vetoed in Outline mode.
+    fill(10.0f);
+    s.check_eq("outline (f): equal-depth contact stays silent",
+               countActive(classify(b, p)), 0);
   }
 
   // ---- tracer helpers ------------------------------------------------------
@@ -1692,6 +1772,11 @@ int main() {
     // Suppress section 2's internal 500|20 step so the owner-flip corner
     // stays degree 2 (one chain through it).
     scene.groupEdgeStyle[2].silhouetteMode = umbreon::SilhouetteMode::Outline;
+    // Below the flip section 2 is the near side, so the boundary promotes to
+    // its Silhouette class; enable that slot with the same default style.
+    scene.groupEdgeStyle[2]
+        .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)]
+        .enabled = true;
     umbreon::RenderOptions opt;
     opt.width = W;
     opt.height = H;
