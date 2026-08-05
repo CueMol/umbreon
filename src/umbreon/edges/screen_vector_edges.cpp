@@ -59,30 +59,6 @@ inline int classPrecedence(CrackClass c) {
   }
 }
 
-// Relabel a class run shorter than minLen edgels when bracketed by two runs
-// of one same class (style-flicker suppression along a boundary whose
-// classification alternates, e.g. silhouette <-> depth gap where an object
-// edge grazes the background). Geometry is untouched -- only the labels move,
-// so the continuity guarantee is intact. Linear scan; a closed chain's
-// seam-straddling run pair is left as-is (harmless: one extra style split).
-void mergeShortClassRuns(std::vector<std::uint8_t>& cls, int minLen) {
-  if (minLen <= 1 || cls.size() < 3) return;
-  std::size_t i = 0;
-  while (i < cls.size()) {
-    std::size_t j = i;
-    while (j < cls.size() && cls[j] == cls[i]) ++j;
-    const std::size_t runLen = j - i;
-    if (i > 0 && j < cls.size() && runLen < static_cast<std::size_t>(minLen) &&
-        cls[i - 1] == cls[j]) {
-      for (std::size_t k = i; k < j; ++k) cls[k] = cls[i - 1];
-      // Re-scan from the previous run start would be quadratic; extending the
-      // left run and continuing forward keeps the pass linear and the result
-      // deterministic.
-    }
-    i = j;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Debug dump (UMBREON_SCREEN_EDGE_DUMP=<prefix>): writes <prefix>_cracks.ppm
 // (crack lattice colorized by class / kill reason over a viewZ gray base) and
@@ -298,6 +274,33 @@ void writeCrackDump(const char* prefix, const CrackField& cf,
 
 }  // namespace
 
+// See the header for the contract. The run key is the (class, group) PAIR:
+// a short middle run relabels (both arrays) only when the bracketing runs
+// share one identical key, so flicker inside one section still fuses while
+// a genuine section change never does. Linear scan; extending the left run
+// and continuing forward keeps the pass linear and the result deterministic
+// (a re-scan from the previous run start would be quadratic). A closed
+// chain's seam-straddling run pair is left as-is (harmless: one extra style
+// split).
+void mergeShortClassRuns(std::vector<std::uint8_t>& cls,
+                         std::vector<std::uint16_t>& grp, int minLen) {
+  if (minLen <= 1 || cls.size() < 3 || grp.size() != cls.size()) return;
+  std::size_t i = 0;
+  while (i < cls.size()) {
+    std::size_t j = i;
+    while (j < cls.size() && cls[j] == cls[i] && grp[j] == grp[i]) ++j;
+    const std::size_t runLen = j - i;
+    if (i > 0 && j < cls.size() && runLen < static_cast<std::size_t>(minLen) &&
+        cls[i - 1] == cls[j] && grp[i - 1] == grp[j]) {
+      for (std::size_t k = i; k < j; ++k) {
+        cls[k] = cls[i - 1];
+        grp[k] = grp[i - 1];
+      }
+    }
+    i = j;
+  }
+}
+
 void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                             const RenderOptions& opt,
                             const OcclusionQuery& occluded) {
@@ -320,6 +323,15 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   cp.creaseAngleDeg = se.creaseAngleDeg;
   cp.grazeK = se.screenGrazeK;
   cp.bgClearancePx = static_cast<int>(std::lround(ssScale));
+  // Per-section silhouette mode table (indexed by group id); classification
+  // reads it via objectId >> 2. Kept alive across the classifyCracks call.
+  std::vector<SilhouetteMode> groupMode;
+  groupMode.reserve(scene.groupEdgeStyle.size());
+  for (const EdgeStyle& es : scene.groupEdgeStyle)
+    groupMode.push_back(es.silhouetteMode);
+  cp.groupSilhMode = groupMode.empty() ? nullptr : groupMode.data();
+  cp.groupSilhModeCount = groupMode.size();
+  cp.silhModeDefault = se.defaultStyle.silhouetteMode;
   const float* normalPtr = frame.normal.empty() ? nullptr : frame.normal.data();
   if (cp.crease && !normalPtr) cp.crease = false;
   const char* dumpPrefix = std::getenv("UMBREON_SCREEN_EDGE_DUMP");
@@ -429,22 +441,50 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
         !(ch.deg0 >= 3 && ch.deg1 >= 3))
       continue;
 
-    // Class-run relabel (labels only), then split into maximal same-class
-    // runs. Adjacent runs share their boundary vertex, so the drawn geometry
-    // stays continuous across a style change.
+    // (class, group)-run relabel (labels only; local copies -- the chain's
+    // stored arrays keep the physical owner attribution), then split into
+    // maximal same-(class, group) runs: a chain that walks across a section
+    // change (e.g. the shared outer silhouette of two touching sections, or
+    // an ObjectId boundary whose nearer-pixel owner flips) must not draw the
+    // other section's contour with this section's style. Adjacent runs share
+    // their boundary vertex, so the drawn geometry stays continuous across a
+    // style change.
     std::vector<std::uint8_t> cls = ch.edgeClass;
-    mergeShortClassRuns(cls, mergeLen);
+    std::vector<std::uint16_t> grp = ch.edgeGroup;
+    mergeShortClassRuns(cls, grp, mergeLen);
+
+    // A run also ends at an owner view-z DISCONTINUITY: consecutive edgels
+    // whose owner depths differ by more than the slope clamp cannot lie on
+    // one surface (the clamp is the classifier's bound on a plausible
+    // per-pixel surface slope), so the walk hopped to a different part of
+    // the SAME section across a degree-2 corner -- e.g. a near strand's
+    // silhouette continuing into a far strand's of one CueMol section.
+    // Without the split, collinear collapse + the draw stage's per-vertex
+    // lerp smear the depth jump along the straight line, and the fog fade
+    // of the far part bleeds far into the near (unfogged) part.
+    const bool hasVzArr = ch.edgeVz.size() == ch.edgeClass.size();
+    auto vzContinuous = [&](std::size_t ea, std::size_t eb) {
+      if (!hasVzArr) return true;
+      const float a = ch.edgeVz[ea], b2 = ch.edgeVz[eb];
+      const float px = pixelSizeAt(sp, std::min(a, b2));
+      return std::fabs(b2 - a) <= se.screenSlopeClampPx * px;
+    };
 
     std::size_t e0 = 0;
     while (e0 < cls.size()) {
       std::size_t e1 = e0;
-      while (e1 < cls.size() && cls[e1] == cls[e0]) ++e1;
+      while (e1 < cls.size() && cls[e1] == cls[e0] && grp[e1] == grp[e0] &&
+             (e1 == e0 || vzContinuous(e1 - 1, e1)))
+        ++e1;
       const CrackClass runClass = static_cast<CrackClass>(cls[e0]);
-      // A run spanning the whole closed loop keeps the cyclic treatment.
-      const bool runClosed = ch.closed && e0 == 0 && e1 == cls.size();
+      // A run spanning the whole closed loop keeps the cyclic treatment --
+      // unless the loop seam itself hides a depth jump (the duplicated seam
+      // vertex would average the near and far owner depths).
+      const bool runClosed = ch.closed && e0 == 0 && e1 == cls.size() &&
+                             vzContinuous(cls.size() - 1, 0);
 
       StrokeChainInput in;
-      in.group = ch.edgeGroup[e0];
+      in.group = grp[e0];
       in.precedence = classPrecedence(runClass);
       in.styleSlot = classStyleSlot(runClass);
       // DepthGap falls back to the Silhouette slot when the section never
@@ -462,29 +502,39 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       // Geometry cleanup on the run's vertex slice [e0, e1].
       std::vector<ScreenChainVert> pts(ch.pts.begin() + e0,
                                        ch.pts.begin() + e1 + 1);
-      // Re-attribute vertex alpha from the run's OWN edgels. The chain-level
-      // vertex alpha blends the two adjacent edgels regardless of run
-      // membership, so a run-boundary vertex inherits half of the
-      // neighboring run's owner opacity (e.g. an opaque stick border
-      // junctioning into an edge on a fully transparent surface pushed that
-      // endpoint to 0.5, and the draw stage lerped the leak across the whole
-      // segment). Within the run, interior vertices still average their two
-      // in-run edgels; the endpoints take their single in-run edgel, so the
-      // run's opacity is a function of its own surface only.
-      if (!ch.edgeAlpha.empty()) {
+      // Re-attribute vertex alpha AND view-z from the run's OWN edgels. The
+      // chain-level vertex values blend the two adjacent edgels regardless
+      // of run membership, so a run-boundary vertex inherits half of the
+      // neighboring run's owner attribution: for alpha, an opaque stick
+      // border junctioning into an edge on a fully transparent surface
+      // pushed that endpoint to 0.5 and the draw stage lerped the leak
+      // across the whole segment; for vz, a near section's silhouette
+      // junctioning into a far section's inherited half the far depth, so
+      // the FogShader faded the near line's ink toward the fog color and
+      // the strip depth sort key was pulled off its surface. Within the
+      // run, interior vertices still average their two in-run edgels; the
+      // endpoints take their single in-run edgel, so the run's opacity, fog
+      // fade and paint depth are functions of its own surface only.
+      {
         const std::size_t nV = pts.size();
-        for (std::size_t k = 0; k < nV; ++k) {
-          float a;
+        const bool hasA = !ch.edgeAlpha.empty();
+        const bool hasVz = !ch.edgeVz.empty();
+        for (std::size_t k = 0; k < nV && (hasA || hasVz); ++k) {
+          std::size_t ea, eb;  // the edgel(s) attributed to vertex k
           if (runClosed && (k == 0 || k == nV - 1)) {
-            a = 0.5f * (ch.edgeAlpha[e0] + ch.edgeAlpha[e1 - 1]);
+            ea = e0;
+            eb = e1 - 1;
           } else if (k == 0) {
-            a = ch.edgeAlpha[e0];
+            ea = eb = e0;
           } else if (k == nV - 1) {
-            a = ch.edgeAlpha[e1 - 1];
+            ea = eb = e1 - 1;
           } else {
-            a = 0.5f * (ch.edgeAlpha[e0 + k - 1] + ch.edgeAlpha[e0 + k]);
+            ea = e0 + k - 1;
+            eb = e0 + k;
           }
-          pts[k].alpha = a;
+          if (hasA)
+            pts[k].alpha = 0.5f * (ch.edgeAlpha[ea] + ch.edgeAlpha[eb]);
+          if (hasVz) pts[k].vz = 0.5f * (ch.edgeVz[ea] + ch.edgeVz[eb]);
         }
       }
       collapseCollinear(pts, runClosed);

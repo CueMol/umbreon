@@ -1,5 +1,6 @@
 // Silhouette edge cylinder (POV edge_line / edge_line2) integration tests.
 // Split out of the monolithic test_render.cpp (same assertions, relocated).
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -237,6 +238,67 @@ int main() {
             f.color[kCenterRgba + 2] > f.color[kCenterRgba + 0] + 0.3f);
   }
 
+  // ===== S1: per-group SilhouetteMode (Full vs Outline), stroke edges =====
+  // Two spheres of ONE group overlap in screen space at different depths. Full
+  // mode inks the front sphere's rim ACROSS the back sphere (same-group
+  // self-occlusion); Outline mode suppresses that interior arc and keeps only
+  // the group union's outer contour. This locks the EdgeStyle::silhouetteMode
+  // -> Scene::groupEdgeStyle -> screen-vector classification wiring end to
+  // end. Probes take the min over small windows, not single pixels, because
+  // stroke width / Chaikin smoothing shift exact line positions.
+  {
+    auto edgeScene = [&](umbreon::SilhouetteMode mode) {
+      umbreon::Scene sc;
+      sc.camera = makeOrthoCam();  // ortho, frames [-2,2]^2
+      sc.background = {1, 1, 1};
+      umbreon::Sphere a;  // front
+      a.center = {-0.5f, 0, 0};
+      a.radius = 1.0f;
+      a.color = pigment;
+      a.group = 1;
+      sc.spheres.push_back(a);
+      umbreon::Sphere b;  // behind, same group, screen-overlapping
+      b.center = {0.7f, 0, -3.0f};
+      b.radius = 1.0f;
+      b.color = pigment;
+      b.group = 1;
+      sc.spheres.push_back(b);
+      umbreon::EdgeStyle es;
+      umbreon::EdgeClassStyle& sil =
+          es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+      sil.enabled = true;  // black, opacity 1 (defaults), width 2
+      sil.width = 2.0f;
+      es.silhouetteMode = mode;
+      sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+      sc.groupEdgeStyle[1] = es;
+      return sc;
+    };
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;  // full-opacity lines over blank bg
+    // Min brightness (R) over a (2r+1)^2 window centered at (cx, cy).
+    auto minR = [](const umbreon::FrameResult& f, int cx, int cy, int r) {
+      float m = 1.0f;
+      for (int y = cy - r; y <= cy + r; ++y)
+        for (int x = cx - r; x <= cx + r; ++x)
+          m = std::min(m, f.color[(static_cast<std::size_t>(y) * 64 + x) * 4]);
+      return m;
+    };
+    // World (0.5, 0) -- the front rim over the back sphere -- maps to pixel
+    // (40, 32); world (-1.5, 0) -- the union's outer rim -- to (8, 32).
+    const umbreon::FrameResult ff =
+        umbreon::render(edgeScene(umbreon::SilhouetteMode::Full), o);
+    s.check("S1 Full: interior same-group arc inked",
+            minR(ff, 40, 32, 3) < 0.5f);
+    s.check("S1 Full: outer rim inked", minR(ff, 8, 32, 3) < 0.5f);
+    const umbreon::FrameResult fo =
+        umbreon::render(edgeScene(umbreon::SilhouetteMode::Outline), o);
+    s.check("S1 Outline: interior same-group arc suppressed",
+            minR(fo, 40, 32, 3) > 0.9f);
+    s.check("S1 Outline: outer rim still inked", minR(fo, 8, 32, 3) < 0.5f);
+  }
 
   return s.report();
 }

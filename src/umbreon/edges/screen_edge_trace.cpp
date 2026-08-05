@@ -165,11 +165,12 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
   }
 
   ch.edgeAlpha = edgeA;
+  ch.edgeVz = edgeVz;
 
   // Vertex view-z / surface alpha = mean of the adjacent edgels' owner
   // values; a closed loop's duplicated seed vertex averages the last and
-  // first edgel. (Vertex alpha is chain-level only -- the Stage-4 driver
-  // re-attributes it per class run from edgeAlpha, see the header.)
+  // first edgel. (Vertex vz/alpha are chain-level only -- the Stage-4 driver
+  // re-attributes both per run from edgeVz / edgeAlpha, see the header.)
   const std::size_t nE = edgeVz.size();
   for (std::size_t vi = 0; vi < ch.pts.size(); ++vi) {
     float vz, a;

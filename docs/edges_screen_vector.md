@@ -27,11 +27,12 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    of the hi-res AOVs gets a class on the "crack" between the two pixels:
    - `Silhouette` -- exactly one side is background,
    - `ObjectId`   -- both foreground and the two pixels belong to DIFFERENT
-     sections (`objectId >> 2`). Primitives of the SAME section (a sphere,
-     cylinder and mesh mixed in one CueMol section) never produce an internal
-     edge: their boundary is skipped entirely -- no ObjectId, and it does not
-     fall through to DepthGap/Crease -- so a bond embedded in an atom joins
-     seamlessly. The primitive-kind bits (Sphere/Cylinder/Mesh) are ignored,
+     sections (`objectId >> 2`), across a genuine depth step. A boundary
+     between mixed primitive kinds of ONE section (a sphere, cylinder and
+     mesh mixed in one CueMol section) instead inks as `DepthGap` under the
+     silhouette toggle -- it is a self-occlusion, not a border. Either way a
+     depth-CONTINUOUS contact (a bond embedded in an atom) is never inked,
+     so connecting primitives join seamlessly,
    - `DepthGap`   -- same id, view-z discontinuity. Slope-adaptive: both
      one-sided planar extrapolations must miss the far pixel (a smooth or
      grazing surface is predicted by at least one side; a pure slope change
@@ -50,7 +51,9 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      trace normally but survive only with chain support (Stage 2.5). The
      background-clearance kill applies to weak cracks only, and spares a
      crack whose along-crack strip reaches the background (the terminal
-     piece of a contour landing on the outline),
+     piece of a contour landing on the outline). A section whose
+     `SilhouetteMode` is `Outline` suppresses BOTH DepthGap variants at
+     classification (see "Outline mode" below),
    - `Crease`     -- shading-normal fold (off by default, `--stroke-crease`).
 2. **Crack tracing** (`traceCrackChains`): cracks form paths/loops on the
    pixel-corner lattice; region boundaries are traced into maximal chains
@@ -79,11 +82,20 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    at junctions), Douglas-Peucker simplification, junction-aware speck
    filter (isolated specks and free-end spurs drop; short junction-to-
    junction pieces of a larger boundary survive).
-4. **Draw**: chains are split into same-class runs (sharing their boundary
-   vertex, so geometry stays continuous across a style change), mapped onto
-   the per-section `EdgeStyle` slots (Silhouette -> `sil`, ObjectId -> `obj`,
-   DepthGap -> `disc` with a `sil` fallback, Crease -> `crease`) and handed
-   to the shared stroke renderer.
+4. **Draw**: chains are split into same-(class, group) runs (sharing their
+   boundary vertex, so geometry stays continuous across a style change): a
+   chain that walks across a section change -- the shared outer silhouette
+   of two touching sections, or an ObjectId boundary whose nearer-pixel
+   owner flips -- draws each section's part with that section's own style.
+   The short-run relabel filter operates on the (class, group) pair and
+   never fuses across a section change. Each run's vertex surface alpha AND
+   view-z are re-attributed from the run's own edgels, so opacity, the fog
+   fade and the depth paint key never leak across a junction (a near
+   section's silhouette must not inherit the fogged depth of a far section
+   it junctions into). Runs are mapped onto the per-section `EdgeStyle`
+   slots (Silhouette -> `sil`, ObjectId -> `obj`, DepthGap -> `disc` with a
+   `sil` fallback, Crease -> `crease`) and handed to the shared stroke
+   renderer.
 
 ## Flags
 
@@ -93,6 +105,7 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 | `--stroke-screen-simplify <f>` | 0.4 | Douglas-Peucker tolerance, FINAL px |
 | `--stroke-screen-smooth <int>` | 2 | Chaikin iterations |
 | `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all) |
+| `--stroke-outline <on|off>` | off | outer-contour silhouette mode (`SilhouetteMode::Outline`) as the global default for every section |
 
 The nature toggles keep their meaning under the screen source:
 `--stroke-silhouette` gates the fg/bg contour AND the same-id depth gap,
@@ -105,6 +118,32 @@ section, a bond embedded in an atom -- are always suppressed, thresholded by
 `--stroke-depth-gap`. Same-section steps ink as depth-gap lines under
 `--stroke-silhouette`. The `--edge-qi-*` flags are inert here
 (no QI runs; visibility is exact from the z-buffer).
+
+## Outline mode
+
+`SilhouetteMode` (`EdgeStyle::silhouetteMode`, per section) selects what the
+silhouette toggle extracts for that section:
+
+- `Full` (default) -- current behavior: every self-occlusion inside the
+  section inks as a depth-gap line, so an object overlapping another object
+  of the SAME section still gets a line.
+- `Outline` -- only the outer contour of the section's UNION inks. Both
+  same-section DepthGap variants (the same-id step and the mixed-kind step)
+  are suppressed at classification time, before tracing, so silhouette
+  chains are not chopped by phantom junctions. Boundaries against the
+  background (`Silhouette`) and against OTHER sections (`ObjectId`, under
+  `--stroke-border`) are unaffected.
+
+`--stroke-outline on` sets Outline as the default for every section; a
+per-section `--edge` spec sets it with the `mode` attribute, e.g.
+`--edge _34_35=sil:mode=outline`. Sections with different modes coexist in
+one frame. Note a per-section `--edge` override replaces the seeded style
+WHOLESALE, mode included: a section override that wants outline must restate
+`mode=outline` even when `--stroke-outline on` set the global default.
+Caveat: with `--stroke-crease on`, a suppressed occlusion boundary can still
+ink as `Crease` where the shading normals fold across it (the same
+fall-through Full mode has for sub-threshold pairs); crease is off by
+default.
 
 `UMBREON_SCREEN_EDGE_DEBUG=1` prints one stats line per frame (raw/kept
 chains, edgels per class, strong DepthGap count, drawn chains) for tuning;

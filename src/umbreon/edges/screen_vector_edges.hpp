@@ -25,10 +25,11 @@
 //   Stage 1  classifyCracks    pixel-pair classification -> CrackField
 //   Stage 2  traceCrackChains  deterministic lattice tracing -> ScreenChain[]
 //   Stage 3  cleanup           collinear collapse + Chaikin + RDP + speck
-//   Stage 4  class runs -> StrokeChainInput -> renderStrokeChains
+//   Stage 4  (class, group) runs -> StrokeChainInput -> renderStrokeChains
 //            (the shared draw stage, stroke_render.hpp)
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -50,7 +51,8 @@ enum class CrackClass : std::uint8_t {
                    // contours are suppressed (surface contact, not occlusion)
   DepthGap = 3,    // same-id slope-adaptive view-z discontinuity, or a
                    // same-section mixed-kind boundary across a depth step
-                   // (self-occlusion between primitives of one section)
+                   // (self-occlusion between primitives of one section);
+                   // suppressed for SilhouetteMode::Outline sections
   Crease = 4,      // same objectId, shading-normal fold
 };
 
@@ -127,6 +129,15 @@ struct ScreenClassifyParams {
   bool silhouette = true;
   bool objectBoundary = true;
   bool crease = false;
+  // Per-SECTION silhouette mode table, indexed by group id (objectId >> 2).
+  // A null table or an out-of-range group falls back to silhModeDefault.
+  // Outline suppresses the same-section self-occlusion cracks (the same-id
+  // DepthGap and the same-section mixed-kind DepthGap): only the section
+  // union's outer contour inks. Both sides of a suppressed crack share one
+  // section, so there is no ambiguity about whose mode applies.
+  const SilhouetteMode* groupSilhMode = nullptr;
+  std::size_t groupSilhModeCount = 0;
+  SilhouetteMode silhModeDefault = SilhouetteMode::Full;
   // DepthGap: fire when BOTH one-sided planar extrapolations miss the far
   // pixel by more than depthGapPx * pixelSize (world units per lateral pixel;
   // this is the second-derivative form of the Mol*-style curvature veto -- a
@@ -241,10 +252,13 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
 // lattice node (cx,cy), cx in [0..W], cy in [0..H], maps to (cx-0.5, cy-0.5)
 // (pixel (x,y) center == stroke coordinate (x,y)). vz is the mean owner-pixel
 // linear view-z of the vertex's adjacent edgels (0 when the tracer was given
-// no viewZ buffer). alpha is the mean owner-pixel first-hit surface opacity
-// of the adjacent edgels (1 when the tracer was given no surfAlpha buffer):
-// the draw stage multiplies the stroke opacity by it, so an edge traced on a
-// transparent surface inks with that surface's transparency.
+// no viewZ buffer); like alpha it is a CHAIN-LEVEL convenience that blends
+// across run boundaries -- the Stage-4 driver re-attributes both per run
+// from ScreenChain::edgeVz / edgeAlpha. alpha is the mean owner-pixel
+// first-hit surface opacity of the adjacent edgels (1 when the tracer was
+// given no surfAlpha buffer): the draw stage multiplies the stroke opacity
+// by it, so an edge traced on a transparent surface inks with that surface's
+// transparency.
 struct ScreenChainVert {
   float x = 0.0f, y = 0.0f;
   float vz = 0.0f;
@@ -275,6 +289,13 @@ struct ScreenChain {
   // opacity (an edge on a fully transparent surface must stay invisible no
   // matter what junctions into it).
   std::vector<float> edgeAlpha;
+  // Per edgel, the owner pixel's linear view-z (0 when the tracer was given
+  // no viewZ buffer). Same contract as edgeAlpha: the per-vertex vz in `pts`
+  // blends across run boundaries, and the Stage-4 driver re-attributes each
+  // run's vertex vz from THIS array so a run's fog fade and depth paint key
+  // are a function of its OWN surface only (a near section's silhouette must
+  // not inherit the fogged depth of a far section it junctions into).
+  std::vector<float> edgeVz;
   bool closed = false;
   int deg0 = 0, deg1 = 0;
 };
@@ -379,11 +400,25 @@ void chaikinSmooth(std::vector<ScreenChainVert>& pts, bool closed, int iters);
 // simplified, and the seam re-duplicated.
 void simplifyRdp(std::vector<ScreenChainVert>& pts, bool closed, float eps);
 
+// Relabel a (class, group) run shorter than minLen edgels when bracketed by
+// two runs of ONE identical (class, group) key (style-flicker suppression
+// along a boundary whose classification or owner attribution alternates,
+// e.g. silhouette <-> depth gap where an object edge grazes the background,
+// or the nearer-pixel owner jittering between two interpenetrating
+// sections). Both cls and grp of the middle run are overwritten with the
+// bracketing key. Bracketing runs with DIFFERENT groups never fuse: a real
+// section change (two sections' silhouettes crossing) is structure, not
+// flicker, and fusing it would draw one section's contour with the other's
+// style. Geometry is untouched -- only the labels move. Sizes must match.
+void mergeShortClassRuns(std::vector<std::uint8_t>& cls,
+                         std::vector<std::uint16_t>& grp, int minLen);
+
 // Stage 4 driver (--edges on): classify the frame's edge AOVs,
-// trace the cracks, split each chain into same-class runs (with the short-run
-// relabel filter), clean up each run's geometry (collapse + Chaikin + RDP;
-// whole chains below the speck length are dropped first), map classes onto
-// the EdgeStyle slots, and hand the chains to the shared draw stage
+// trace the cracks, split each chain into same-(class, group) runs (with the
+// short-run relabel filter above), re-attribute each run's vertex alpha/vz
+// from its own edgels, clean up each run's geometry (collapse + Chaikin +
+// RDP; whole chains below the speck length are dropped first), map classes
+// onto the EdgeStyle slots, and hand the chains to the shared draw stage
 // (stroke_render.hpp:renderStrokeChains). Requires the edge AOVs (viewZ /
 // objectId / normal) at the frame's (hi-res) resolution -- they are captured
 // whenever strokeEdges.enable is on. No QI (visibility) rays run under this

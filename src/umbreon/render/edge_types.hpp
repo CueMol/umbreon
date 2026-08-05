@@ -39,11 +39,24 @@ struct EdgeClassStyle {
   float width = 2.0f;                   // dilation radius, hi-res px
 };
 
+// Screen-space silhouette extraction mode for one section (see
+// EdgeStyle::silhouetteMode). Full draws every self-occlusion inside the
+// section as a depth-gap line (an object overlapping another object of the
+// same section still gets a line). Outline suppresses those same-section
+// self-occlusion lines at extraction time and keeps only the outer contour
+// of the section's union: boundaries against the background (Silhouette
+// class) and against OTHER sections (Object class) are unaffected.
+enum class SilhouetteMode : uint8_t {
+  Full = 0,
+  Outline = 1,
+};
+
 // Per CueMol section (per transparency group): a bundle of the five class
 // styles. A section without an explicit override uses
 // StrokeEdgeOptions::defaultStyle.
 struct EdgeStyle {
   EdgeClassStyle cls[static_cast<int>(EdgeClass::Count)];
+  SilhouetteMode silhouetteMode = SilhouetteMode::Full;
 };
 
 // --- Freestyle-style stroke edge rendering (--edges) ----------------------
@@ -69,8 +82,9 @@ struct StrokeEdgeOptions {
   float screenSimplifyPx = 0.4f;     // Douglas-Peucker eps, FINAL px
   int screenSmoothIters = 2;         // Chaikin corner-cut iterations
   float screenMinLenPx = 4.0f;       // drop chains shorter than this, FINAL px
-  // Relabel a class run shorter than this (FINAL px) when bracketed by two
-  // runs of one same class (style-flicker suppression; geometry unchanged).
+  // Relabel a (class, group) run shorter than this (FINAL px) when bracketed
+  // by two runs of one same (class, group) key (style-flicker suppression;
+  // geometry unchanged; never fuses across a section change).
   int screenClassMergeLen = 2;
   float screenGrazeK = 1.0f;  // crease grazing-angle widening factor
 

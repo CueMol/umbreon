@@ -78,14 +78,17 @@ bool parseVec3(const std::string& s, float v[3]) {
 //   spec   := entry ("," entry)*
 //   entry  := class (":" attr)*
 //   class  := sil | disc | obj | mat | crease | all | none
-//   attr   := color=#RRGGBB | width=W | opacity=O
+//   attr   := color=#RRGGBB | width=W | opacity=O | mode=full|outline
 //
 // "all" enables every class, "none" disables every class; either may carry style
 // attributes that then apply to every class it (re)enabled in that entry. A bare
 // class token enables that one class (style attributes scoped to it). Later
 // entries override earlier ones for the same class. Every enabled class starts
-// from a black/opacity-1/width-1 default before its attributes apply. Returns
-// false on any unknown class token or malformed attribute (caller reports it).
+// from a black/opacity-1/width-1 default before its attributes apply. The
+// `mode` attribute sets the section's SilhouetteMode; it is a style-level
+// setting, so it applies to the whole EdgeStyle regardless of which class
+// entry carries it. Returns false on any unknown class token or malformed
+// attribute (caller reports it).
 bool parseEdgeSpec(const std::string& spec, EdgeStyle& out) {
   out = EdgeStyle{};  // all classes disabled, default style
   for (const std::string& entry : split(spec, ',')) {
@@ -132,6 +135,13 @@ bool parseEdgeSpec(const std::string& spec, EdgeStyle& out) {
       } else if (key == "opacity") {
         const float o = static_cast<float>(std::atof(val.c_str()));
         for (int t : targets) out.cls[t].opacity = o;
+      } else if (key == "mode") {
+        if (val == "outline")
+          out.silhouetteMode = SilhouetteMode::Outline;
+        else if (val == "full")
+          out.silhouetteMode = SilhouetteMode::Full;
+        else
+          return false;
       } else {
         return false;
       }
@@ -779,7 +789,7 @@ Options parseCli(int argc, char** argv) {
         if (o.ok && !parseEdgeSpec(kv.substr(eq + 1), st))
           fail("--edge: bad spec '" + kv.substr(eq + 1) +
                "' (classes sil/disc/obj/mat/crease|all|none, attrs "
-               "color=#RRGGBB:width=W:opacity=O)");
+               "color=#RRGGBB:width=W:opacity=O:mode=full|outline)");
         else
           o.sectionEdge[id] = st;
       }
@@ -910,6 +920,12 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--stroke-border");
       if (o.ok && !parseBool(v, o.strokeBorder))
         fail("--stroke-border expects on/off");
+      continue;
+    }
+    if (a == "--stroke-outline") {
+      std::string v = value("--stroke-outline");
+      if (o.ok && !parseBool(v, o.strokeOutline))
+        fail("--stroke-outline expects on/off");
       continue;
     }
     if (a == "--stroke-taper") {
@@ -1108,6 +1124,8 @@ void printUsage(const char* prog) {
       "  --edges-only <on|off>    draw ONLY edges over blank bg, full opacity (verify) [off]\n"
       "  --edge <ID=spec>         per-section edge style (repeatable), e.g.\n"
       "                           _34_35=sil,crease:color=#000000:width=1.5\n"
+      "                           (attr mode=full|outline sets the section's\n"
+      "                           silhouette mode)\n"
       "  --obj-edges <on|off>     analytic object-space edges (sph/cyl/mesh) [off]\n"
       "  --obj-edge-width <float> object-edge cylinder radius (world)   [0.03]\n"
       "  --obj-edge-raise <float> object-edge outward offset (world)    [0.00]\n"
@@ -1132,6 +1150,8 @@ void printUsage(const char* prog) {
       "  --stroke-silhouette <on|off> stroke silhouette nature             [on]\n"
       "  --stroke-crease <on|off> stroke crease nature                    [off]\n"
       "  --stroke-border <on|off> occluding cross-section boundary lines    [on]\n"
+      "  --stroke-outline <on|off> outer-contour silhouettes: no same-section\n"
+      "                            self-occlusion lines                    [off]\n"
       "  --stroke-taper <on|off>  taper stroke width toward its ends (demo) [off]\n"
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"
       "  --stroke-cap <butt|round> line end caps                        [butt]\n"

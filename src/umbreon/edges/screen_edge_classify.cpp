@@ -118,6 +118,17 @@ inline float nearSideRecession(const float* viewZ,
   return s;
 }
 
+// Per-section silhouette-mode lookup for a foreground pixel's objectId.
+// Never called with kBackground (the suppressed branches are both-fg). A null
+// table or an out-of-range group falls back to silhModeDefault.
+inline bool outlineMode(const ScreenClassifyParams& p, std::uint32_t id) {
+  const std::uint32_t g = id >> 2;
+  const SilhouetteMode m = (p.groupSilhMode && g < p.groupSilhModeCount)
+                               ? p.groupSilhMode[g]
+                               : p.silhModeDefault;
+  return m == SilhouetteMode::Outline;
+}
+
 // Classify ONE crack between pixel indices ia (first: left/top) and ib
 // (second: right/bottom). iOutA / iOutB are the outer straight-line neighbors
 // (a's far side, b's far side) with validity flags. Returns the packed crack
@@ -270,7 +281,9 @@ inline std::uint8_t classifyPair(const float* viewZ,
   // a contact.
   if (objectId[ia] != objectId[ib]) {
     const bool sameSection = (objectId[ia] >> 2) == (objectId[ib] >> 2);
-    if (sameSection ? !p.silhouette : !p.objectBoundary) return 0;
+    if (sameSection ? (!p.silhouette || outlineMode(p, objectId[ia]))
+                    : !p.objectBoundary)
+      return 0;
     const float vzA = viewZ[ia], vzB = viewZ[ib];
     const float px = pixelSizeAt(sp, std::min(vzA, vzB));
     const float clampS = p.slopeClampPx * px;
@@ -299,7 +312,9 @@ inline std::uint8_t classifyPair(const float* viewZ,
   // boundary counts as infinitely strong (the silhouette class owns the
   // profile there), which kills the rim annulus next to the outline.
   const float vzA = viewZ[ia], vzB = viewZ[ib];
-  if (p.silhouette) {
+  // An Outline-mode section suppresses the same-id DepthGap (self-occlusion)
+  // block entirely but still falls through to the Crease test below.
+  if (p.silhouette && !outlineMode(p, objectId[ia])) {
     const float vzNear = std::min(vzA, vzB);
     const float px = pixelSizeAt(sp, vzNear);
     const float clampS = p.slopeClampPx * px;
