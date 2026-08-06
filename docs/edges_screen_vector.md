@@ -111,18 +111,38 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    line never thins the object whose contour it draws -- the ink lands on
    the background or on the occluded surface behind instead. Crease runs (a
    surface fold, no occluded side) always draw centered.
-   JUNCTION HANDLING under the outside alignment (all mechanisms are off
-   under `--stroke-align center`, which keeps the legacy geometry
-   byte-identical):
+   JUNCTION HANDLING. The TOPOLOGY mechanisms below (notch bridge,
+   draw-span coalescing, junction weaving and re-wiring) run for EVERY
+   alignment: center and outside share one extracted line structure --
+   junction-continuous bars, stems ending on them -- and differ only in
+   band placement. Only the band machinery (the side vote, the stem
+   clip/extension and the re-centering taper) is outside-specific;
+   `--stroke-align center` draws the same polylines with the legacy
+   symmetric ribbon.
    - NOTCH BRIDGE: where the backbone doubles back on itself within a
      stroke width (chord/arc straightness below ~0.55 over a width window)
      and the detour is SHALLOWER than a stroke width -- the boundary
      looping around a few-px background notch where two surfaces almost
      touch -- the detour is excised from the drawn backbone and bridged
-     straight. The one-sided band would otherwise paint the detour as a
-     spur poking out of the meeting lines. Deeper folds (a real hairpin
+     straight. An offset band would otherwise paint the detour as a spur
+     poking out of the meeting lines; a centered one shows it as a nub.
+     Deeper folds (a real hairpin
      around a wedge) are left in the geometry and the draw stage re-centers
      the ribbon around them instead (AlignRecenterShader).
+   - DRAW-SPAN COALESCING: the (class, group, vz) run split is an
+     ATTRIBUTION construct; where adjacent runs resolve to the SAME drawn
+     style (e.g. a rim switching between Silhouette and the DepthGap->sil
+     fallback at a T junction), share the voted side and paint precedence,
+     and the boundary's depth jump could not visibly shift the fog fade
+     (fog off, or the jump is under ~15% of the fog range -- a LARGER jump
+     keeps the split and its exact per-run fog attribution), they are drawn
+     as ONE polyline. The split would otherwise smooth the halves
+     independently, leave a mid-contour node pair where nothing visibly
+     changes, and leave the outer wedge of any turn at the boundary
+     unfilled (two butt ends where a single stroke would miter). Long
+     straight segments are subdivided before the Chaikin pass (bounding
+     its 1/4-segment corner cut, which the run ends used to pin; the RDP
+     removes the collinear midpoints again).
    - JUNCTION WEAVING (Stage 3.5): the tracer splits chains at every
      lattice corner of degree >= 3, so the BAR of a T junction arrives as
      two chains that would smooth and offset independently -- any angular
@@ -135,6 +155,18 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      one smoothing pass, one unbroken band -- whether or not stems attach.
      Each junction records the woven bar's local direction, band side and
      style key (BarInfo) for the stem handling below.
+     The weave also RE-WIRES junctions the tracer never split: where a
+     stem's cracks die a few px short of the junction (the depth-continuity
+     veto near a contact), the corner stays degree 2 and the other two
+     branches trace straight through as one chain even though they bound
+     the same REGION, not the same surface -- the drawn bar would hop off
+     the front object's contour and bend away, leaving a wedge gap where
+     the stem arrives. When a free end's probe lands on another chain's
+     interior and continues one of its halves clearly straighter than that
+     chain's own turn there (anchored at its sharpest nearby corner), the
+     chain is split at the junction and the stem is spliced onto the
+     continuing half; the remaining half becomes a stem. Iterated to a
+     fixed point so long chains resolve every junction.
    - STEM CLIP: a chain end still sitting at a junction after the weaving
      is a true stem. It keeps its offset band, is EXTENDED into the
      junction (the met line's drawn backbone can sit a few px off its

@@ -2220,9 +2220,10 @@ int main() {
     };
 
     // (20h-1) notch excision: a 2 px wide, 4 px deep background notch in a
-    // rectangle's top rim. Outside: the sub-width detour is bridged, the
-    // rim draws straight and the notch interior stays clean; Center keeps
-    // the legacy detour (the gate holds).
+    // rectangle's top rim. The sub-width detour is bridged for EVERY
+    // alignment (topology is shared): outside draws the rim straight with
+    // a clean interior, and center's symmetric band no longer dips into
+    // the notch either.
     auto renderNotch = [&](umbreon::StrokeAlign align) {
       const int W = 32, H = 32;
       umbreon::FrameResult frame;
@@ -2251,8 +2252,8 @@ int main() {
             lumAt(notchOut, 15, 10) > 0.9f && lumAt(notchOut, 16, 10) > 0.9f);
     const umbreon::FrameResult notchCen =
         renderNotch(umbreon::StrokeAlign::Center);
-    s.check("notch bridge: center keeps the legacy detour",
-            lumAt(notchCen, 16, 10) < 0.5f);
+    s.check("notch bridge: center bridges too (shared topology)",
+            lumAt(notchCen, 16, 10) < 0.5f && lumAt(notchCen, 16, 12) > 0.9f);
 
     // (20h-2) bar continuity: a stem T-ing into a straight rim must not
     // kink the rim -- the two rim chains meeting at the junction corner

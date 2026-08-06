@@ -1268,6 +1268,29 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       q.visible = sp.visible;
       proj.push_back(q);
     }
+    // Clipped junction ends: extend the RASTER backbone a hair past the
+    // vector endpoint, so smoothing deviation of the met line cannot open
+    // a sub-px seam; the end clip culls any overshoot. The vector data
+    // (the node overlay, future exports) keeps the exact on-line endpoint.
+    const float padExt = (0.5f + se.screenSimplifyPx) * ssScale;
+    if (in.clipStart.enabled && proj.size() >= 2) {
+      const Vec2 d = proj[0].p - proj[1].p;
+      const float l = norm2(d);
+      if (l > kZero) {
+        Pt2 q = proj.front();
+        q.p = q.p + d * (padExt / l);
+        proj.insert(proj.begin(), q);
+      }
+    }
+    if (in.clipEnd.enabled && proj.size() >= 2) {
+      const Vec2 d = proj[proj.size() - 1].p - proj[proj.size() - 2].p;
+      const float l = norm2(d);
+      if (l > kZero) {
+        Pt2 q = proj.back();
+        q.p = q.p + d * (padExt / l);
+        proj.push_back(q);
+      }
+    }
 
     // STROKE LAYER: wrap the visibility-tagged polyline as a parametric Stroke
     // (buildStroke), arc-length resample it (resampleStroke), then emit one
