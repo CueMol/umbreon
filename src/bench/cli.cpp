@@ -142,6 +142,13 @@ bool parseEdgeSpec(const std::string& spec, EdgeStyle& out) {
           out.silhouetteMode = SilhouetteMode::Full;
         else
           return false;
+      } else if (key == "align") {
+        if (val == "outside")
+          out.align = StrokeAlign::Outside;
+        else if (val == "center")
+          out.align = StrokeAlign::Center;
+        else
+          return false;
       } else {
         return false;
       }
@@ -966,6 +973,22 @@ Options parseCli(int argc, char** argv) {
         fail("--stroke-join expects miter/round");
       continue;
     }
+    if (a == "--stroke-align") {
+      const std::string v = value("--stroke-align");
+      if (v == "outside")
+        o.strokeAlignOutside = true;
+      else if (v == "center")
+        o.strokeAlignOutside = false;
+      else
+        fail("--stroke-align expects outside/center");
+      continue;
+    }
+    if (a == "--stroke-node-dots") {
+      std::string v = value("--stroke-node-dots");
+      if (o.ok && !parseBool(v, o.strokeNodeDots))
+        fail("--stroke-node-dots expects on/off");
+      continue;
+    }
     if (a == "--edge-qi-dots") {
       std::string v = value("--edge-qi-dots");
       if (o.ok && !parseBool(v, o.strokeQiDots))
@@ -1131,7 +1154,8 @@ void printUsage(const char* prog) {
       "  --edge <ID=spec>         per-section edge style (repeatable), e.g.\n"
       "                           _34_35=sil,crease:color=#000000:width=1.5\n"
       "                           (attr mode=full|outline sets the section's\n"
-      "                           silhouette mode)\n"
+      "                           silhouette mode, align=outside|center its\n"
+      "                           silhouette stroke placement)\n"
       "  --obj-edges <on|off>     analytic object-space edges (sph/cyl/mesh) [off]\n"
       "  --obj-edge-width <float> object-edge cylinder radius (world)   [0.03]\n"
       "  --obj-edge-raise <float> object-edge outward offset (world)    [0.00]\n"
@@ -1165,6 +1189,12 @@ void printUsage(const char* prog) {
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"
       "  --stroke-cap <butt|round> line end caps                        [butt]\n"
       "  --stroke-join <miter|round> corner joins                      [miter]\n"
+      "  --stroke-align <outside|center> ink placement: outside puts the full\n"
+      "                            width on the occluded/background side of a\n"
+      "                            contour so the fore object never thins,\n"
+      "                            center splits it across the line   [outside]\n"
+      "  --stroke-node-dots <on|off> draw SOURCE polylines (per-chain color)\n"
+      "                            + nodes: red = end, green = interior (debug)[off]\n"
       "  --edge-qi-dots <on|off>  overlay pre-majority QI flags as dots (debug)[off]\n"
       "  --edge-qi-vertex-dots <on|off> overlay raw per-vertex QI vis dots (debug)[off]\n"
       "  --edge-qi-vertex-delta <float> offset vertex QI probe along mesh normal[0]\n"

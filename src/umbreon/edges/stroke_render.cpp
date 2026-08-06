@@ -92,11 +92,32 @@ using Strip = std::vector<Vec2>;
 // strip pair) carries a per-vertex effective opacity when the run's alpha
 // varies along it (surface-alpha gradient under the edge); EMPTY means the
 // constant `opacity` applies to the whole strip -- the exact legacy path.
+// Per-pixel end-clip disc (StrokeEndClip resolved for rasterization): a pixel
+// within r2 of (px, py) whose offset has a positive dot with (nx, ny) is
+// culled. nClips == 0 on every legacy path.
+struct ClipDisc {
+  float px = 0.0f, py = 0.0f;
+  float nx = 0.0f, ny = 0.0f;
+  float r2 = 0.0f;
+};
+
+inline bool clippedPx(float x, float y, const ClipDisc* clips, int nClips) {
+  for (int c = 0; c < nClips; ++c) {
+    const float dx = x - clips[c].px, dy = y - clips[c].py;
+    if (dx * dx + dy * dy > clips[c].r2) continue;
+    if (dx * clips[c].nx + dy * clips[c].ny > 0.0f) return true;
+  }
+  return false;
+}
+
 struct StyledStrip {
   Strip strip;
   float color[3] = {0.0f, 0.0f, 0.0f};
   float opacity = 1.0f;
   std::vector<float> alphas;
+  // Active end-clip discs of the source chain (0 on legacy paths).
+  std::array<ClipDisc, 2> clips;
+  int nClips = 0;
   // Per-backbone-vertex ink color (one entry per strip pair) when the color
   // varies along the run -- the depth-fog gradient path (ink melts toward the
   // fog color with distance). EMPTY means the constant `color` applies to the
@@ -330,9 +351,12 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
 // Half-disk cap fans beyond the run's two endpoints (--stroke-cap round):
 // sweep from the left offset through the OUTWARD pole to the right offset,
 // radius lerping between the endpoint's left/right half-widths (a tapered
-// end keeps its thin tip).
+// end keeps its thin tip). capStart/capEnd let the caller skip an end: a
+// junction-tapered end (outside alignment) must stay a butt -- its cap
+// would poke a half-width past the line it meets.
 void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
-                   const std::vector<float>& R, std::vector<Vec2>& fanPts,
+                   const std::vector<float>& R, bool capStart, bool capEnd,
+                   std::vector<Vec2>& fanPts,
                    std::vector<std::size_t>& fanSrc) {
   const std::size_t n = bb.size();
   if (n < 2) return;
@@ -341,13 +365,13 @@ void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
     const float l = norm2(d);
     return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
   };
-  {  // start: outward = against the first segment
+  if (capStart) {  // start: outward = against the first segment
     const Vec2 d = unit(bb[1] - bb[0]);
     const Vec2 sd = orth(d);
     appendArcFan(bb[0], sd * L[0], Vec2{-sd.x * R[0], -sd.y * R[0]},
                  Vec2{-d.x, -d.y}, 0, fanPts, fanSrc);
   }
-  {  // end: outward = along the last segment
+  if (capEnd) {  // end: outward = along the last segment
     const Vec2 d = unit(bb[n - 1] - bb[n - 2]);
     const Vec2 sd = orth(d);
     appendArcFan(bb[n - 1], sd * L[n - 1],
@@ -363,7 +387,8 @@ void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
 // can tile deterministically over screen rows with TBB.
 void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
                   const Vec2& a, const Vec2& b, const Vec2& c,
-                  const float col[3], float opacity) {
+                  const float col[3], float opacity, const ClipDisc* clips,
+                  int nClips) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -391,6 +416,7 @@ void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
           ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
+      if (nClips && clippedPx(px, py, clips, nClips)) continue;
       const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
       compositeOver(&color[idx], col, opacity);
     }
@@ -403,7 +429,8 @@ void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
 // strips keep the fillTriangle path above (bit-identical legacy output).
 void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
                        int rowEnd, const Vec2& a, const Vec2& b, const Vec2& c,
-                       const float col[3], float aA, float aB, float aC) {
+                       const float col[3], float aA, float aB, float aC,
+                       const ClipDisc* clips, int nClips) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -429,6 +456,7 @@ void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
           ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
+      if (nClips && clippedPx(px, py, clips, nClips)) continue;
       const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
       compositeOver(&color[idx], col, w0 * aA + w1 * aB + w2 * aC);
     }
@@ -444,7 +472,8 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
                             int rowEnd, const Vec2& a, const Vec2& b,
                             const Vec2& c, const float colA[3],
                             const float colB[3], const float colC[3], float aA,
-                            float aB, float aC) {
+                            float aB, float aC, const ClipDisc* clips,
+                            int nClips) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -470,6 +499,7 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
           ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
+      if (nClips && clippedPx(px, py, clips, nClips)) continue;
       const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
       const float col[3] = {w0 * colA[0] + w1 * colB[0] + w2 * colC[0],
                             w0 * colA[1] + w1 * colB[1] + w2 * colC[1],
@@ -478,6 +508,69 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
     }
   }
 }
+
+// DEBUG (--stroke-node-dots): hard-fill a disc of radius r around (cx, cy),
+// restricted to rows [rowBegin, rowEnd) like the triangle fills. Used only by
+// the node overlay, never on a production path.
+void fillDisc(std::vector<float>& color, int W, int rowBegin, int rowEnd,
+              float cx, float cy, float r, const float col[3]) {
+  if (r <= 0.0f) return;
+  const int minX = std::max(0, static_cast<int>(std::floor(cx - r)));
+  const int maxX = std::min(W - 1, static_cast<int>(std::ceil(cx + r)));
+  const int minY = std::max(rowBegin, static_cast<int>(std::floor(cy - r)));
+  const int maxY = std::min(rowEnd - 1, static_cast<int>(std::ceil(cy + r)));
+  const float r2 = r * r;
+  for (int y = minY; y <= maxY; ++y) {
+    const float dy = static_cast<float>(y) - cy;
+    for (int x = minX; x <= maxX; ++x) {
+      const float dx = static_cast<float>(x) - cx;
+      if (dx * dx + dy * dy > r2) continue;
+      const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
+      compositeOver(&color[idx], col, 1.0f);
+    }
+  }
+}
+
+// Stamp a hairline segment by walking discs along it (row-clipped like the
+// triangle fills, so the TBB row tiling stays deterministic). DEBUG only.
+void drawThinSegment(std::vector<float>& color, int W, int rowBegin, int rowEnd,
+                     const Vec2& a, const Vec2& b, float r,
+                     const float col[3]) {
+  const float dx = b.x - a.x, dy = b.y - a.y;
+  const float len = std::sqrt(dx * dx + dy * dy);
+  const int steps = std::max(1, static_cast<int>(std::ceil(len * 2.0f)));
+  for (int i = 0; i <= steps; ++i) {
+    const float t = static_cast<float>(i) / static_cast<float>(steps);
+    fillDisc(color, W, rowBegin, rowEnd, a.x + dx * t, a.y + dy * t, r, col);
+  }
+}
+
+// One backbone node of the --stroke-node-dots overlay.
+struct NodeDot {
+  float x = 0.0f, y = 0.0f;
+  bool endpoint = false;
+};
+
+// One drawn polyline of the overlay: the raw node-to-node segments in a
+// per-chain palette color, so consecutive runs (a split contour) read as a
+// color change instead of one continuous black line.
+struct DebugPoly {
+  std::vector<Vec2> pts;
+  float col[3] = {0.0f, 0.0f, 0.0f};
+};
+
+// Palette for the overlay polylines: saturated hues that stay legible under
+// the RED (end) / GREEN (interior) node dots drawn on top.
+constexpr float kNodePalette[8][3] = {
+    {0.00f, 0.20f, 1.00f},  // blue
+    {1.00f, 0.45f, 0.00f},  // orange
+    {0.60f, 0.00f, 0.85f},  // purple
+    {0.00f, 0.60f, 0.65f},  // teal
+    {1.00f, 0.00f, 0.75f},  // magenta
+    {0.45f, 0.30f, 0.05f},  // brown
+    {0.15f, 0.45f, 0.95f},  // steel
+    {0.50f, 0.50f, 0.00f},  // olive
+};
 
 // Rasterize one ribbon strip (2*N border vertices, pairs per backbone vertex) as
 // a triangle strip, restricted to rows [rowBegin,rowEnd). Two triangles per quad
@@ -507,18 +600,20 @@ void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
       const float a0 = alphas ? alphas[k] : opacity;
       const float a1 = alphas ? alphas[k + 1] : opacity;
       fillTriangleColorAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, c0, c0, c1,
-                             a0, a0, a1);
+                             a0, a0, a1, ss.clips.data(), ss.nClips);
       fillTriangleColorAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, c0, c1, c1,
-                             a0, a1, a1);
+                             a0, a1, a1, ss.clips.data(), ss.nClips);
     } else if (alphas) {
       const float a0 = alphas[k], a1 = alphas[k + 1];
       fillTriangleAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, col, a0, a0,
-                        a1);
+                        a1, ss.clips.data(), ss.nClips);
       fillTriangleAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, col, a0, a1,
-                        a1);
+                        a1, ss.clips.data(), ss.nClips);
     } else {
-      fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity);
-      fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity);
+      fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity,
+                   ss.clips.data(), ss.nClips);
+      fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity,
+                   ss.clips.data(), ss.nClips);
     }
   }
   // Round cap/join arc fans: constant alpha/color per triangle (resolved at
@@ -528,7 +623,8 @@ void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
     const float a = ss.fanAlpha[i];
     fillTriangleAlpha(color, W, rowBegin, rowEnd, ss.fanPts[3 * i],
                       ss.fanPts[3 * i + 1], ss.fanPts[3 * i + 2],
-                      ss.fanColor[i].data(), a, a, a);
+                      ss.fanColor[i].data(), a, a, a, ss.clips.data(),
+                      ss.nClips);
   }
 }
 
@@ -587,15 +683,16 @@ struct StrokeShader {
   virtual int shade(Stroke& s) const = 0;
 };
 
-// Constant symmetric half-width (Freestyle ConstantThicknessShader,
-// BasicStrokeShaders.cpp:40-58).
+// Constant per-side half-widths (Freestyle ConstantThicknessShader,
+// BasicStrokeShaders.cpp:40-58; extended to an asymmetric left/right pair
+// for the outside stroke alignment).
 struct ConstantThicknessShader : StrokeShader {
-  float halfThick;
-  explicit ConstantThicknessShader(float h) : halfThick(h) {}
+  float leftThick, rightThick;
+  ConstantThicknessShader(float l, float r) : leftThick(l), rightThick(r) {}
   int shade(Stroke& s) const override {
     for (StrokeVertex& v : s.verts) {
-      v.attr.leftThick = halfThick;
-      v.attr.rightThick = halfThick;
+      v.attr.leftThick = leftThick;
+      v.attr.rightThick = rightThick;
     }
     return 0;
   }
@@ -670,6 +767,71 @@ struct TaperShader : StrokeShader {
       const float scale = endScale + (1.0f - endScale) * k;
       v.attr.leftThick *= scale;
       v.attr.rightThick *= scale;
+    }
+    return 0;
+  }
+};
+
+// Re-centering for the outside stroke alignment: blend the asymmetric
+// left/right half-widths back to their symmetric MEAN (smoothstepped over
+// `taperPx` of arc length; the mean is preserved, so the total width stays
+// the resolved width) around two kinds of anchors:
+//  * FLAGGED ENDS (StrokeChainInput::taperStart/taperEnd): the ribbon
+//    arrives centered where it meets other lines -- an offset butt end
+//    otherwise sticks its full width out sideways past the meeting line.
+//  * INTERIOR FOLDS: where the backbone doubles back on itself within a
+//    stroke-width window -- a contour hairpinning around a narrow
+//    background wedge or a few-px notch excursion where two surfaces
+//    almost touch. The one-sided band paints the excursion's full outer
+//    width to one side, a spur poking far out of the meeting lines (the
+//    legacy centered ribbon spread the same excursion +-half, mostly
+//    swallowed by the neighboring bands). Folding is detected by
+//    STRAIGHTNESS -- the chord/arc ratio over a +-taperPx/2 window: a
+//    reversal scores ~0, a hairpin cos(turn/2), while a box corner (90
+//    degrees) scores ~0.71 and a smooth curve ~1, so crisp corners keep
+//    their offset miter. A direction-based test is NOT robust here: at a
+//    thin notch the window's net vectors cancel to noise.
+struct AlignRecenterShader : StrokeShader {
+  bool atStart, atEnd;
+  float taperPx;
+  AlignRecenterShader(bool s, bool e, float px)
+      : atStart(s), atEnd(e), taperPx(px) {}
+  int shade(Stroke& s) const override {
+    const std::size_t n = s.verts.size();
+    if (n < 2 || taperPx <= 0.0f) return 0;
+    // Distance from each vertex to its nearest re-center anchor.
+    std::vector<float> dist(n, taperPx);
+    if (atStart)
+      for (std::size_t i = 0; i < n; ++i)
+        dist[i] = std::min(dist[i], s.verts[i].ca);
+    if (atEnd)
+      for (std::size_t i = 0; i < n; ++i)
+        dist[i] = std::min(dist[i], s.length2d - s.verts[i].ca);
+    // Interior folds: chord/arc straightness over the +-h window.
+    const float h = 0.5f * taperPx;
+    const float kMinStraight = 0.55f;  // fold = turn beyond ~113 degrees
+    std::vector<float> anchors;
+    std::size_t a = 0, b = 0;
+    for (std::size_t i = 1; i + 1 < n; ++i) {
+      const float ca = s.verts[i].ca;
+      while (a + 1 < i && s.verts[a + 1].ca <= ca - h) ++a;
+      if (b < i + 1) b = i + 1;
+      while (b + 1 < n && s.verts[b].ca < ca + h) ++b;
+      const float arc = s.verts[b].ca - s.verts[a].ca;
+      if (arc <= kZero) continue;
+      const float chord = norm2(s.verts[b].p - s.verts[a].p);
+      if (chord < kMinStraight * arc) anchors.push_back(ca);
+    }
+    for (std::size_t i = 0; i < n && !anchors.empty(); ++i)
+      for (const float ca : anchors)
+        dist[i] = std::min(dist[i], std::fabs(s.verts[i].ca - ca));
+    for (std::size_t i = 0; i < n; ++i) {
+      float k = std::max(0.0f, dist[i] / taperPx);
+      k = k * k * (3.0f - 2.0f * k);  // smoothstep
+      StrokeAttribute& at = s.verts[i].attr;
+      const float mid = 0.5f * (at.leftThick + at.rightThick);
+      at.leftThick = mid + (at.leftThick - mid) * k;
+      at.rightThick = mid + (at.rightThick - mid) * k;
     }
     return 0;
   }
@@ -886,10 +1048,15 @@ void resampleStroke(Stroke& s, float stepPx) {
 // precedence keys the nature for the overlap sort. roundCap/roundJoin
 // (--stroke-cap/--stroke-join round) switch the strip builder and append the
 // cap/join arc fans; both off keeps the legacy butt/miter path byte-identical.
+// capStart/capEnd suppress the round cap at the STROKE's first/last vertex
+// (junction-tapered ends stay butts); interior hidden-run boundaries always
+// cap as before.
 void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
-                     std::vector<StyledStrip>& out) {
+                     bool capStart, bool capEnd, const ClipDisc* chainClips,
+                     int nChainClips, std::vector<StyledStrip>& out) {
   const int precedence = s.precedence;
   const std::size_t minRun = 2;
+  std::size_t runFirst = 0, vIdx = 0;  // stroke-vertex span of the current run
   std::vector<Vec2> pos;
   std::vector<float> lw, rw, av;
   std::vector<std::array<float, 3>> cv;  // per-vertex ink color (fog gradient)
@@ -909,7 +1076,11 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
         pairSrc.resize(pos.size());
         for (std::size_t i = 0; i < pairSrc.size(); ++i) pairSrc[i] = i;
       }
-      if (roundCap) appendCapFans(pos, lw, rw, ss.fanPts, fanSrc);
+      if (roundCap)
+        appendCapFans(pos, lw, rw,
+                      capStart || runFirst != 0,
+                      capEnd || vIdx != s.verts.size(),
+                      ss.fanPts, fanSrc);
       ss.color[0] = col[0];
       ss.color[1] = col[1];
       ss.color[2] = col[2];
@@ -951,6 +1122,8 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
       }
       ss.precedence = precedence;
       ss.depthKey = depthMin;
+      for (int c = 0; c < nChainClips; ++c) ss.clips[c] = chainClips[c];
+      ss.nClips = nChainClips;
       out.push_back(std::move(ss));
     }
     pos.clear();
@@ -959,12 +1132,15 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
     av.clear();
     cv.clear();
   };
-  for (const StrokeVertex& v : s.verts) {
+  for (std::size_t i = 0; i < s.verts.size(); ++i) {
+    const StrokeVertex& v = s.verts[i];
     if (!v.visible) {
+      vIdx = i;  // the run (if any) ended before this hidden vertex
       flush();
       continue;
     }
     if (pos.empty()) {  // run start: capture color/opacity, seed the depth min
+      runFirst = i;
       col[0] = v.attr.color[0];
       col[1] = v.attr.color[1];
       col[2] = v.attr.color[2];
@@ -979,6 +1155,7 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
     av.push_back(v.attr.alpha * v.surfA);
     cv.push_back({v.attr.color[0], v.attr.color[1], v.attr.color[2]});
   }
+  vIdx = s.verts.size();
   flush();
 }
 
@@ -1035,16 +1212,50 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       std::max(1.0f, static_cast<float>(se.resampleStepPx) * ssScale);
 
   std::vector<StyledStrip> strips;
+  std::vector<NodeDot> nodeDots;    // --stroke-node-dots overlay (else empty)
+  std::vector<DebugPoly> debugPolys;
   for (std::size_t ci = 0; ci < chains.size(); ++ci) {
     const StrokeChainInput& in = chains[ci];
     float halfThick = 0.0f, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
     if (!resolveStrokeStyle(scene, se, ssScale, in.styleSlot, in.group,
                             halfThick, col, opacity))
       continue;
+    // DEBUG overlay (--stroke-node-dots): draw the chain as its raw
+    // node-to-node polyline in a palette color instead of the styled ribbon,
+    // and mark every node. Nodes are taken BEFORE the arc-length resample,
+    // so they are the authored vertices, not the dense resampled ones. The
+    // ribbon, its shaders and the junction taper/clip are all skipped --
+    // this mode inspects the SOURCE geometry, not its stylization.
+    if (se.debugNodeDots) {
+      DebugPoly poly;
+      for (int c = 0; c < 3; ++c) poly.col[c] = kNodePalette[ci % 8][c];
+      poly.pts.reserve(in.pts.size());
+      for (std::size_t k = 0; k < in.pts.size(); ++k) {
+        poly.pts.push_back({in.pts[k].x, in.pts[k].y});
+        nodeDots.push_back({in.pts[k].x, in.pts[k].y,
+                            k == 0 || k + 1 == in.pts.size()});
+      }
+      debugPolys.push_back(std::move(poly));
+      continue;
+    }
     // VERIFICATION (--edges-only): ink every line solid, ignoring per-section
     // style opacity and the per-vertex surface alpha, so faint / alpha-
     // following lines stay clearly visible for annotating missing edges.
     if (se.edgesOnly) opacity = 1.0f;
+
+    // Outside stroke alignment: shift the resolved width to the chain's outer
+    // side, keeping the total footprint at 2*halfThick. The inner pad (up to
+    // 0.5 FINAL px) covers the sub-pixel halo left where Chaikin/RDP pull the
+    // backbone off the crack line, and keeps the round-cap fan radius above
+    // appendArcFan's r <= kZero early-out. A hairline (halfThick == pad)
+    // degenerates back to the symmetric ribbon.
+    float leftHalf = halfThick, rightHalf = halfThick;
+    if (in.outsideSide != 0) {
+      const float pad = std::min(halfThick, 0.5f * ssScale);
+      const float outer = 2.0f * halfThick - pad;
+      leftHalf = in.outsideSide > 0 ? outer : pad;
+      rightHalf = in.outsideSide > 0 ? pad : outer;
+    }
 
     // Wrap the source points into the internal visibility-tagged polyline.
     std::vector<Pt2> proj;
@@ -1062,8 +1273,8 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     // (buildStroke), arc-length resample it (resampleStroke), then emit one
     // ribbon per maximal VISIBLE run.
     StrokeAttribute defAttr;
-    defAttr.leftThick = halfThick;
-    defAttr.rightThick = halfThick;
+    defAttr.leftThick = leftHalf;
+    defAttr.rightThick = rightHalf;
     defAttr.color[0] = col[0];
     defAttr.color[1] = col[1];
     defAttr.color[2] = col[2];
@@ -1084,10 +1295,17 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
           /*factorCurvatureDiff=*/0.3f, /*anisoPoint=*/0.0f,
           /*anisoNormal=*/0.08f, /*anisoCurvature=*/0.08f,
           /*carricature=*/1.0f));
-    shaders.push_back(std::make_unique<ConstantThicknessShader>(halfThick));
+    shaders.push_back(
+        std::make_unique<ConstantThicknessShader>(leftHalf, rightHalf));
     shaders.push_back(std::make_unique<ConstantColorShader>(col, opacity));
     if (se.taper)  // demo f(u) shader: taper width toward stroke ends
       shaders.push_back(std::make_unique<TaperShader>(0.5f, 0.15f));
+    // Outside alignment: re-center the offset ribbon over one stroke-width
+    // (2 * halfThick hi-res px) around flagged junction ends and interior
+    // folds.
+    if (in.outsideSide != 0)
+      shaders.push_back(std::make_unique<AlignRecenterShader>(
+          in.taperStart, in.taperEnd, 2.0f * halfThick));
     // Depth fog LAST (after the color shader stamps the ink color/alpha), so
     // distant edge lines recede into the fog exactly like the 3D surface under
     // them (the surface was fogged in the pipeline before this pass). Gated on
@@ -1100,10 +1318,28 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
 
     // Build the variable-width ribbon strips (one per maximal visible run).
-    buildStrokeReps(stroke, se.roundCap, se.roundJoin, strips);
+    // A junction-tapered or clipped end draws no round cap (appendCapFans);
+    // the end clips ride every strip of the chain and cull ink per pixel at
+    // rasterization time.
+    ClipDisc chainClips[2];
+    int nChainClips = 0;
+    for (const StrokeEndClip* ec : {&in.clipStart, &in.clipEnd}) {
+      if (!ec->enabled || ec->radius <= 0.0f) continue;
+      chainClips[nChainClips].px = ec->px;
+      chainClips[nChainClips].py = ec->py;
+      chainClips[nChainClips].nx = ec->nx;
+      chainClips[nChainClips].ny = ec->ny;
+      chainClips[nChainClips].r2 = ec->radius * ec->radius;
+      ++nChainClips;
+    }
+    buildStrokeReps(
+        stroke, se.roundCap, se.roundJoin,
+        !(in.outsideSide != 0 && (in.taperStart || in.clipStart.enabled)),
+        !(in.outsideSide != 0 && (in.taperEnd || in.clipEnd.enabled)),
+        chainClips, nChainClips, strips);
   }
 
-  if (strips.empty()) return;
+  if (strips.empty() && debugPolys.empty()) return;
 
   // Stable-sort strips for compositing. compositeOver paints in array order, so
   // the LAST strip is on top (painter's algorithm). Primary key = DEPTH: sort
@@ -1122,12 +1358,33 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
   // rasterizes EVERY strip in PRECEDENCE order but only the rows in its range,
   // so the result is independent of tile boundaries / thread scheduling
   // (deterministic).
+  // DEBUG node overlay (--stroke-node-dots): hairline polylines first, then
+  // interior nodes, then END nodes on top -- so a vertex shared by two runs
+  // reads as an end, and the two runs' palette colors show the split.
+  // Radii are FINAL px scaled to hi-res so the marks survive the box
+  // downsample.
+  const float rLine = 0.5f * ssScale;
+  const float rInterior = 1.0f * ssScale, rEnd = 1.6f * ssScale;
+  static constexpr float kInteriorCol[3] = {0.0f, 0.85f, 0.0f};  // green
+  static constexpr float kEndCol[3] = {1.0f, 0.0f, 0.0f};        // red
+
   tbb::parallel_for(
       tbb::blocked_range<int>(0, H),
       [&](const tbb::blocked_range<int>& rows) {
         const int rb = rows.begin(), re = rows.end();
         for (const StyledStrip& ss : strips)
           rasterizeStrip(frame.color, W, rb, re, ss);
+        for (const DebugPoly& dp : debugPolys)
+          for (std::size_t k = 0; k + 1 < dp.pts.size(); ++k)
+            drawThinSegment(frame.color, W, rb, re, dp.pts[k], dp.pts[k + 1],
+                            rLine, dp.col);
+        for (const NodeDot& nd : nodeDots)
+          if (!nd.endpoint)
+            fillDisc(frame.color, W, rb, re, nd.x, nd.y, rInterior,
+                     kInteriorCol);
+        for (const NodeDot& nd : nodeDots)
+          if (nd.endpoint)
+            fillDisc(frame.color, W, rb, re, nd.x, nd.y, rEnd, kEndCol);
       });
 }
 

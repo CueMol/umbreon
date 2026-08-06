@@ -1995,5 +1995,575 @@ int main() {
     s.check("vz jump split: far rim carries the fog tint", fogged);
   }
 
+  // ---- (20) outside stroke alignment (--stroke-align) ---------------------
+  // StrokeAlign::Outside (the default) puts the full stroke width on the
+  // outer (occluded / background) side of every occlusion contour --
+  // Silhouette, ObjectId and DepthGap -- (a thin inner pad remains) so a
+  // thick line never thins the object whose contour it draws; Center
+  // restores the legacy symmetric ribbon. Per section via EdgeStyle::align;
+  // contact runs and Crease always centered.
+
+  // (20a) walkChain side bit: bit 3 of edgeFlags marks "outer side on the
+  // walk-direction left", which for a convex region must equal the geometric
+  // test "left normal points away from the region center" on every edgel.
+  {
+    Buffers b(16, 16);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x) b.set(x, y, 7, 10.0f);
+    CrackField cf = classify(b, defaults);
+    auto chains = umbreon::traceCrackChains(cf, b.viewZ.data(),
+                                            b.objectId.data());
+    bool one = chains.size() == 1 && chains[0].closed;
+    s.check("outside side bit: square traces one closed loop", one);
+    if (one) {
+      const ScreenChain& ch = chains[0];
+      bool sideOk = ch.edgeFlags.size() == ch.edgeClass.size();
+      for (std::size_t k = 0; sideOk && k < ch.edgeFlags.size(); ++k) {
+        const float dx = ch.pts[k + 1].x - ch.pts[k].x;
+        const float dy = ch.pts[k + 1].y - ch.pts[k].y;
+        const float mx = 0.5f * (ch.pts[k].x + ch.pts[k + 1].x) - 7.5f;
+        const float my = 0.5f * (ch.pts[k].y + ch.pts[k + 1].y) - 7.5f;
+        // left normal = orth(d) = (-dy, dx); outward iff it points away
+        // from the square center (7.5, 7.5).
+        const bool outLeft = (-dy) * mx + dx * my > 0.0f;
+        if (((ch.edgeFlags[k] & 8) != 0) != outLeft) sideOk = false;
+      }
+      s.check("outside side bit: bit 3 matches the outward normal on every "
+              "edgel",
+              sideOk);
+    }
+  }
+
+  // (20b) contact bit propagation: a depth-continuous cross-section contact
+  // crack carries kCrackContactBit into edgeFlags bit 2 (the alignment vote
+  // must skip these edgels -- no outer side exists at a contact).
+  {
+    Buffers b(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, x < 8 ? (1u << 2) : (2u << 2), 10.0f);
+    ScreenClassifyParams p = defaults;
+    p.contactBoundary = true;
+    CrackField cf = classify(b, p);
+    auto chains = umbreon::traceCrackChains(cf, b.viewZ.data(),
+                                            b.objectId.data());
+    bool allContact = !chains.empty();
+    for (const ScreenChain& ch : chains)
+      for (std::size_t k = 0; k < ch.edgeFlags.size(); ++k)
+        if (!(ch.edgeFlags[k] & 4)) allContact = false;
+    s.check("contact bit: every contact edgel carries edgeFlags bit 2",
+            allContact);
+    // The silhouette square from (20a) must NOT carry it.
+    Buffers b2(16, 16);
+    for (int y = 4; y < 12; ++y)
+      for (int x = 4; x < 12; ++x) b2.set(x, y, 7, 10.0f);
+    CrackField cf2 = classify(b2, defaults);
+    auto chains2 = umbreon::traceCrackChains(cf2, b2.viewZ.data(),
+                                             b2.objectId.data());
+    bool noContact = !chains2.empty();
+    for (const ScreenChain& ch : chains2)
+      for (std::size_t k = 0; k < ch.edgeFlags.size(); ++k)
+        if (ch.edgeFlags[k] & 4) noContact = false;
+    s.check("contact bit: a background silhouette carries none", noContact);
+  }
+
+  // (20c) draw stage: a nonzero StrokeChainInput::outsideSide shifts the
+  // resolved width to that side (left = +normal = raster +y for a +x chain),
+  // keeping a thin pad on the other; the round cap survives the one-sided
+  // width (the fan radius lerps outer -> pad, never zero).
+  {
+    auto renderAligned = [&](std::int8_t side, bool roundCap) {
+      umbreon::FrameResult fr;
+      fr.width = 40;
+      fr.height = 32;
+      fr.color.assign(static_cast<std::size_t>(40) * 32 * 4, 1.0f);
+      umbreon::Scene scene;
+      umbreon::RenderOptions opt;
+      opt.width = 40;
+      opt.height = 32;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.thickness = 6;  // half-width 3
+      opt.strokeEdges.roundCap = roundCap;
+      std::vector<umbreon::StrokeChainInput> chain(1);
+      chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
+                      {24.5f, 16.5f, 10.0f, 1.0f, true}};
+      chain[0].outsideSide = side;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      return fr;
+    };
+    auto lumAt = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    // Centered (side 0): band y in [13.5, 19.5].
+    const umbreon::FrameResult center = renderAligned(0, false);
+    s.check("align draw: centered inks both sides",
+            lumAt(center, 16, 14) < 0.1f && lumAt(center, 16, 19) < 0.1f);
+    s.check("align draw: centered stays inside its band",
+            lumAt(center, 16, 20) > 0.9f);
+    // Left-outside (+1): band y in [16.0, 22.0] -- the +y (left) side.
+    const umbreon::FrameResult left = renderAligned(1, false);
+    s.check("align draw: outside-left inks the +normal side",
+            lumAt(left, 16, 20) < 0.1f);
+    s.check("align draw: outside-left leaves the -normal side blank",
+            lumAt(left, 16, 14) > 0.9f);
+    // Right-outside (-1): band y in [11.0, 17.0].
+    const umbreon::FrameResult right = renderAligned(-1, false);
+    s.check("align draw: outside-right inks the -normal side",
+            lumAt(right, 16, 12) < 0.1f);
+    s.check("align draw: outside-right leaves the +normal side blank",
+            lumAt(right, 16, 20) > 0.9f);
+    // Round cap: the one-sided stroke still fans beyond the butt end.
+    const umbreon::FrameResult capped = renderAligned(1, true);
+    bool beyond = false;
+    for (int y = 10; y <= 23 && !beyond; ++y)
+      for (int x = 26; x <= 30 && !beyond; ++x)
+        if (lumAt(capped, x, y) < 0.1f) beyond = true;
+    s.check("align draw: round cap survives the one-sided width", beyond);
+    const umbreon::FrameResult butt = renderAligned(1, false);
+    bool buttBeyond = false;
+    for (int y = 10; y <= 23 && !buttBeyond; ++y)
+      for (int x = 26; x <= 30 && !buttBeyond; ++x)
+        if (lumAt(butt, x, y) < 0.1f) buttBeyond = true;
+    s.check("align draw: butt cap still ends at the endpoint", !buttBeyond);
+  }
+
+  // (20g) junction taper + fold re-centering (draw stage). A flagged end
+  // blends the offset band back to the symmetric ribbon over one stroke
+  // width, so the ribbon arrives centered where it meets other lines; a
+  // backbone that doubles back within a stroke width (a hairpin around a
+  // narrow wedge / notch) re-centers around the fold, so the one-sided
+  // band cannot spur out past the meeting lines.
+  {
+    auto render = [&](std::vector<umbreon::StrokePoint> pts, bool taperEnd) {
+      umbreon::FrameResult fr;
+      fr.width = 48;
+      fr.height = 32;
+      fr.color.assign(static_cast<std::size_t>(48) * 32 * 4, 1.0f);
+      umbreon::Scene scene;
+      umbreon::RenderOptions opt;
+      opt.width = 48;
+      opt.height = 32;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.thickness = 6;  // half 3, pad 0.5, outer 5.5
+      std::vector<umbreon::StrokeChainInput> chain(1);
+      chain[0].pts = std::move(pts);
+      chain[0].outsideSide = 1;
+      chain[0].taperEnd = taperEnd;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      return fr;
+    };
+    auto lumAt = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    // Straight chain, taperEnd: mid-chain keeps the full offset band
+    // [16.0, 22.0]; the flagged end arrives centered (~[13.5, 19.5]).
+    const std::vector<umbreon::StrokePoint> line = {
+        {8.5f, 16.5f, 10.0f, 1.0f, true}, {40.5f, 16.5f, 10.0f, 1.0f, true}};
+    const umbreon::FrameResult tap = render(line, true);
+    s.check("junction taper: mid-chain keeps the offset band",
+            lumAt(tap, 20, 20) < 0.1f && lumAt(tap, 20, 14) > 0.9f);
+    s.check("junction taper: flagged end re-centers (near side inks)",
+            lumAt(tap, 40, 14) < 0.1f);
+    s.check("junction taper: flagged end re-centers (offset side shrinks)",
+            lumAt(tap, 40, 21) > 0.9f);
+    const umbreon::FrameResult noTap = render(line, false);
+    s.check("junction taper: unflagged end keeps the offset",
+            lumAt(noTap, 40, 14) > 0.9f && lumAt(noTap, 40, 21) < 0.1f);
+    // Hairpin: east along y=10.5, back west along y=12.5. The fold at
+    // x=30.5 re-centers the band, so no spur inks east of the turn (an
+    // un-centered one-sided band would miter/spike well past it); the legs
+    // away from the fold keep their offset bands.
+    const std::vector<umbreon::StrokePoint> hairpin = {
+        {10.5f, 10.5f, 10.0f, 1.0f, true},
+        {30.5f, 10.5f, 10.0f, 1.0f, true},
+        {30.5f, 12.5f, 10.0f, 1.0f, true},
+        {10.5f, 12.5f, 10.0f, 1.0f, true}};
+    const umbreon::FrameResult fold = render(hairpin, false);
+    bool spur = false;
+    for (int y = 4; y <= 20 && !spur; ++y)
+      for (int x = 38; x <= 46 && !spur; ++x)
+        if (lumAt(fold, x, y) < 0.5f) spur = true;
+    s.check("fold re-center: no spur past the hairpin", !spur);
+    s.check("fold re-center: legs still ink away from the fold",
+            lumAt(fold, 16, 12) < 0.1f && lumAt(fold, 16, 8) < 0.1f);
+  }
+
+  // (20h) junction quality under the outside alignment: notch excision, bar
+  // continuity through a T junction, cap suppression at tapered ends, and
+  // the free-end connection probe.
+  {
+    auto lumAt = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    auto makeScene = [&](int W, int H) {
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 500.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      return scene;
+    };
+    auto makeOpt = [&](int W, int H, umbreon::StrokeAlign align) {
+      umbreon::RenderOptions opt;
+      opt.width = W;
+      opt.height = H;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.edgesOnly = true;
+      opt.strokeEdges.thickness = 6;
+      opt.strokeEdges.align = align;
+      return opt;
+    };
+
+    // (20h-1) notch excision: a 2 px wide, 4 px deep background notch in a
+    // rectangle's top rim. Outside: the sub-width detour is bridged, the
+    // rim draws straight and the notch interior stays clean; Center keeps
+    // the legacy detour (the gate holds).
+    auto renderNotch = [&](umbreon::StrokeAlign align) {
+      const int W = 32, H = 32;
+      umbreon::FrameResult frame;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 8; x < 24; ++x) {
+          if (y < 12 && x >= 15 && x < 17) continue;  // the notch (bg)
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = 1u << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+      umbreon::Scene scene = makeScene(W, H);
+      umbreon::RenderOptions opt = makeOpt(W, H, align);
+      umbreon::applyScreenVectorEdges(frame, scene, opt);
+      return frame;
+    };
+    const umbreon::FrameResult notchOut =
+        renderNotch(umbreon::StrokeAlign::Outside);
+    s.check("notch bridge: rim inks straight across the notch",
+            lumAt(notchOut, 15, 3) < 0.1f && lumAt(notchOut, 16, 3) < 0.1f);
+    s.check("notch bridge: the notch interior stays clean",
+            lumAt(notchOut, 15, 10) > 0.9f && lumAt(notchOut, 16, 10) > 0.9f);
+    const umbreon::FrameResult notchCen =
+        renderNotch(umbreon::StrokeAlign::Center);
+    s.check("notch bridge: center keeps the legacy detour",
+            lumAt(notchCen, 16, 10) < 0.5f);
+
+    // (20h-2) bar continuity: a stem T-ing into a straight rim must not
+    // kink the rim -- the two rim chains meeting at the junction corner
+    // continue each other (passThrough) and keep the full offset band.
+    // Near square over a far same-section square (strong step): rim y=23.5,
+    // stem x=15.5; outside band above the rim = [18.0, 24.0].
+    {
+      const int W = 56, H = 56;
+      umbreon::FrameResult frame;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      auto put = [&](int x, int y, float vz) {
+        const std::size_t i = static_cast<std::size_t>(y) * W + x;
+        frame.objectId[i] = 1u << 2;
+        frame.viewZ[i] = vz;
+      };
+      for (int y = 8; y < 32; ++y)
+        for (int x = 16; x < 48; ++x) put(x, y, 400.0f);  // far
+      for (int y = 24; y < 48; ++y)
+        for (int x = 8; x < 40; ++x) put(x, y, 10.0f);  // near, on top
+      umbreon::Scene scene = makeScene(W, H);
+      umbreon::RenderOptions opt =
+          makeOpt(W, H, umbreon::StrokeAlign::Outside);
+      umbreon::applyScreenVectorEdges(frame, scene, opt);
+      s.check("bar continuity: full offset band at the junction x",
+              lumAt(frame, 15, 19) < 0.1f);
+      s.check("bar continuity: no centered dip below the rim",
+              lumAt(frame, 15, 26) > 0.9f);
+      // The stem (the far square's left silhouette, band west of x=15.5)
+      // is clipped at the rim's far ink edge: nothing pokes below the rim
+      // even though the drawn stem extends into the junction.
+      s.check("stem clip: no stem ink below the rim band",
+              lumAt(frame, 12, 26) > 0.9f && lumAt(frame, 12, 28) > 0.9f);
+    }
+
+    // (20h-3) cap suppression: a round cap at a junction-tapered end would
+    // poke past the line it meets; the tapered end draws a butt instead.
+    {
+      auto renderCap = [&](bool taperEnd) {
+        umbreon::FrameResult fr;
+        fr.width = 40;
+        fr.height = 32;
+        fr.color.assign(static_cast<std::size_t>(40) * 32 * 4, 1.0f);
+        umbreon::Scene scene;
+        umbreon::RenderOptions opt;
+        opt.width = 40;
+        opt.height = 32;
+        opt.supersample = 1;
+        opt.strokeEdges.enable = true;
+        opt.strokeEdges.thickness = 6;
+        opt.strokeEdges.roundCap = true;
+        std::vector<umbreon::StrokeChainInput> chain(1);
+        chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
+                        {24.5f, 16.5f, 10.0f, 1.0f, true}};
+        chain[0].outsideSide = 1;
+        chain[0].taperEnd = taperEnd;
+        umbreon::renderStrokeChains(fr, scene, opt, chain);
+        return fr;
+      };
+      auto anyBeyond = [&](const umbreon::FrameResult& fr) {
+        for (int y = 10; y <= 23; ++y)
+          for (int x = 26; x <= 30; ++x)
+            if (lumAt(fr, x, y) < 0.5f) return true;
+        return false;
+      };
+      s.check("cap suppression: tapered end draws no cap",
+              !anyBeyond(renderCap(true)));
+      s.check("cap suppression: untapered end keeps its cap",
+              anyBeyond(renderCap(false)));
+    }
+
+    // (20h-4) free-end connection: a cross-section boundary whose top few
+    // px are depth-CONTINUOUS (below the gap threshold -> contact veto, no
+    // crack) ends FREE, short of the union's outer rim; the probe finds
+    // the rim beyond the free end and extends the drawn stem to meet it
+    // (legacy centered bands bridged this gap invisibly; an offset band
+    // would leave a white gap). Section 2 ramps smoothly (8 world/px, well
+    // under the DepthGap slope threshold) so no internal edge fires.
+    {
+      const int W = 32, H = 32;
+      umbreon::FrameResult frame;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 28; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = (x < 16 ? 1u : 2u) << 2;
+          frame.viewZ[i] =
+              x < 16 ? 50.0f : 50.0f + 8.0f * static_cast<float>(y - 9);
+        }
+      umbreon::Scene scene = makeScene(W, H);
+      umbreon::RenderOptions opt =
+          makeOpt(W, H, umbreon::StrokeAlign::Outside);
+      umbreon::applyScreenVectorEdges(frame, scene, opt);
+      // The boundary crack fires only where |vz2 - vz1| = 8*(y-9) exceeds
+      // the 12-per-px threshold, i.e. y >= 11: the stem's top end is a
+      // free corner ~3.5 px below the rim line y = 7.5. With the probe it
+      // extends up through the gap keeping its offset band (east of the
+      // backbone x=15.5); without it these rows stay white.
+      s.check("free-end connect: the stem reaches the rim",
+              lumAt(frame, 17, 9) < 0.1f && lumAt(frame, 17, 10) < 0.1f);
+    }
+  }
+
+  // (20d) end-to-end: with the default Outside alignment a thick silhouette
+  // inks only OUTSIDE the object (interior pixels a centered ribbon would
+  // cover stay clean); StrokeAlign::Center restores the symmetric band.
+  // Square x,y in [8,24) of a 32x32 frame: top rim line y = 7.5, width 6
+  // (half 3) -> Outside band [2.0, 8.0], Center band [4.5, 10.5].
+  {
+    auto renderSquare = [&](umbreon::StrokeAlign align) {
+      const int W = 32, H = 32;
+      umbreon::FrameResult frame;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 8; x < 24; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = 1u << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 100.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      umbreon::RenderOptions opt;
+      opt.width = W;
+      opt.height = H;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.edgesOnly = true;
+      opt.strokeEdges.thickness = 6;
+      opt.strokeEdges.align = align;  // empty style table -> global align
+      umbreon::applyScreenVectorEdges(frame, scene, opt);
+      return frame;
+    };
+    auto lumAt = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    const umbreon::FrameResult outside =
+        renderSquare(umbreon::StrokeAlign::Outside);
+    s.check("align e2e: outside inks the full width off the rim",
+            lumAt(outside, 16, 3) < 0.1f);
+    s.check("align e2e: outside leaves the object interior clean",
+            lumAt(outside, 16, 10) > 0.9f);
+    const umbreon::FrameResult centered =
+        renderSquare(umbreon::StrokeAlign::Center);
+    s.check("align e2e: center covers the interior half-band",
+            lumAt(centered, 16, 10) < 0.1f);
+    s.check("align e2e: center stays inside its outer half-band",
+            lumAt(centered, 16, 3) > 0.9f);
+  }
+
+  // (20f) occlusion boundaries shift to the FAR side: a near rectangle
+  // occluding a far one draws the boundary line entirely on the FAR
+  // (non-owner) side under Outside alignment -- for the same-section
+  // DepthGap step and the cross-section ObjectId step alike -- so the near
+  // surface never thins; Center keeps the legacy symmetric band. Boundary
+  // line x = 15.5, width 6 (half 3) -> Outside band [15.0, 21.0] (east,
+  // the far side), Center band [12.5, 18.5].
+  {
+    auto renderStep = [&](std::uint32_t farId, umbreon::StrokeAlign align) {
+      const int W = 32, H = 32;
+      umbreon::FrameResult frame;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 28; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = x < 16 ? (1u << 2) : farId;
+          // Near west, far east. The 390 step keeps the same-id DepthGap
+          // STRONG (raw step > stepDominanceK * px on flat sides); a weak
+          // crack would need junction support and the prune would drop the
+          // whole line.
+          frame.viewZ[i] = x < 16 ? 10.0f : 400.0f;
+        }
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 100.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      umbreon::RenderOptions opt;
+      opt.width = W;
+      opt.height = H;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.edgesOnly = true;
+      opt.strokeEdges.thickness = 6;
+      opt.strokeEdges.align = align;
+      umbreon::applyScreenVectorEdges(frame, scene, opt);
+      return frame;
+    };
+    auto lumAt = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    const std::uint32_t kSame = 1u << 2, kOther = 2u << 2;
+    // Same-section DepthGap step.
+    const umbreon::FrameResult dgOut =
+        renderStep(kSame, umbreon::StrokeAlign::Outside);
+    s.check("align DepthGap: outside inks the far side",
+            lumAt(dgOut, 20, 16) < 0.1f);
+    s.check("align DepthGap: outside leaves the near surface clean",
+            lumAt(dgOut, 13, 16) > 0.9f);
+    const umbreon::FrameResult dgCen =
+        renderStep(kSame, umbreon::StrokeAlign::Center);
+    s.check("align DepthGap: center covers the near half-band",
+            lumAt(dgCen, 13, 16) < 0.1f);
+    s.check("align DepthGap: center stays inside its far half-band",
+            lumAt(dgCen, 20, 16) > 0.9f);
+    // Cross-section ObjectId step.
+    const umbreon::FrameResult obOut =
+        renderStep(kOther, umbreon::StrokeAlign::Outside);
+    s.check("align ObjectId: outside inks the far side",
+            lumAt(obOut, 20, 16) < 0.1f);
+    s.check("align ObjectId: outside leaves the near surface clean",
+            lumAt(obOut, 13, 16) > 0.9f);
+    const umbreon::FrameResult obCen =
+        renderStep(kOther, umbreon::StrokeAlign::Center);
+    s.check("align ObjectId: center covers the near half-band",
+            lumAt(obCen, 13, 16) < 0.1f);
+    s.check("align ObjectId: center stays inside its far half-band",
+            lumAt(obCen, 20, 16) > 0.9f);
+  }
+
+  // (20e) per-section align + contact runs stay centered: two touching
+  // same-depth sections (their shared outer silhouette splits into per-group
+  // runs at the touch corners), section 1 overridden to Center, section 2 on
+  // the Outside default; the depth-continuous contact boundary between them
+  // (both Outline, contact on -> Silhouette class) must ink BOTH sides even
+  // under Outside alignment (the vote abstains on contact edgels).
+  {
+    const int W = 48, H = 32;
+    umbreon::FrameResult frame;
+    frame.width = W;
+    frame.height = H;
+    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+    for (int y = 8; y < 24; ++y)
+      for (int x = 4; x < 44; ++x) {
+        const std::size_t i = static_cast<std::size_t>(y) * W + x;
+        frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+        frame.viewZ[i] = 50.0f;
+      }
+    umbreon::Scene scene;
+    scene.camera.position = {0.0f, 0.0f, 100.0f};
+    scene.camera.direction = {0.0f, 0.0f, -1.0f};
+    scene.camera.up = {0.0f, 1.0f, 0.0f};
+    scene.camera.orthographic = true;
+    scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+    scene.background = {1.0f, 1.0f, 1.0f};
+    scene.groupEdgeStyle.assign(3, umbreon::EdgeStyle{});
+    for (int g = 1; g <= 2; ++g) {
+      umbreon::EdgeClassStyle& cs =
+          scene.groupEdgeStyle[g]
+              .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+      cs.enabled = true;
+      cs.width = 6.0f;
+      // Outline on both sides: the contact boundary inks as Silhouette and
+      // the same-section gates stay quiet.
+      scene.groupEdgeStyle[g].silhouetteMode = umbreon::SilhouetteMode::Outline;
+    }
+    scene.groupEdgeStyle[1].align = umbreon::StrokeAlign::Center;
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;
+    opt.strokeEdges.contact = true;
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+
+    auto lumAt = [&](int x, int y) {
+      return frame.color[(static_cast<std::size_t>(y) * W + x) * 4];
+    };
+    // Section 1 top rim (y = 7.5, Center): interior half-band inks, nothing
+    // 4.5 px above the rim.
+    s.check("align per-section: Center section inks its interior half-band",
+            lumAt(13, 9) < 0.1f);
+    s.check("align per-section: Center section stays inside its band",
+            lumAt(13, 3) > 0.9f);
+    // Section 2 top rim (Outside default): full width above the rim, clean
+    // interior.
+    s.check("align per-section: Outside section inks off the rim",
+            lumAt(35, 3) < 0.1f);
+    s.check("align per-section: Outside section leaves its interior clean",
+            lumAt(35, 10) > 0.9f);
+    // Contact boundary x = 23.5 (width 6): centered band [20.5, 26.5] inks
+    // both sides at mid-height.
+    s.check("align contact: contact contour inks the owner (west) side",
+            lumAt(21, 16) < 0.1f);
+    s.check("align contact: contact contour inks the far (east) side",
+            lumAt(26, 16) < 0.1f);
+  }
+
   return s.report();
 }

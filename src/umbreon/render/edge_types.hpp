@@ -55,12 +55,27 @@ enum class SilhouetteMode : uint8_t {
   Outline = 1,
 };
 
+// Stroke ribbon placement relative to the traced contour (see
+// EdgeStyle::align / StrokeEdgeOptions::align). Center splits the stroke
+// width evenly across the contour (half the ink covers the nearer object).
+// Outside puts the full width on the outer (background / occluded) side of
+// every occlusion contour -- Silhouette, ObjectId and DepthGap -- so a
+// thick line never thins the object whose contour it draws. Crease runs (a
+// surface fold, no occluded side) and contact-promoted runs
+// (depth-continuous boundaries with no defined outer side) always draw
+// centered.
+enum class StrokeAlign : uint8_t {
+  Center = 0,
+  Outside = 1,
+};
+
 // Per CueMol section (per transparency group): a bundle of the five class
 // styles. A section without an explicit override uses
 // StrokeEdgeOptions::defaultStyle.
 struct EdgeStyle {
   EdgeClassStyle cls[static_cast<int>(EdgeClass::Count)];
   SilhouetteMode silhouetteMode = SilhouetteMode::Full;
+  StrokeAlign align = StrokeAlign::Outside;
 };
 
 // --- Freestyle-style stroke edge rendering (--edges) ----------------------
@@ -205,6 +220,11 @@ struct StrokeEdgeOptions {
   // turn -- no miter spike, rounded corners. Off (miter with the Freestyle
   // spike clamp) by default; byte-identical when off.
   bool roundJoin = false;
+  // Stroke ribbon placement (--stroke-align): the GLOBAL default, used
+  // when Scene::groupEdgeStyle is empty; with a populated section table the
+  // per-section EdgeStyle::align applies instead (same two-tier rule as the
+  // stroke color/width). See the StrokeAlign enum for the exact scope.
+  StrokeAlign align = StrokeAlign::Outside;
   // VERIFICATION mode (--edges-only): draw ONLY the edge strokes over a blank
   // background (the surface color is cleared to the scene background before the
   // stroke pass; the AOVs -- and thus edge extraction / surfAlpha -- are
@@ -228,6 +248,20 @@ struct StrokeEdgeOptions {
   //   orange = pre-visible, dropped (over-hidden by the majority)
   // Off by default (no overlay, output unchanged). --edge-qi-dots on enables it.
   bool debugQiDots = false;
+
+  // DEBUG (--stroke-node-dots): draw the SOURCE geometry instead of the styled
+  // strokes -- every chain as its raw node-to-node hairline polyline in a
+  // per-chain palette color (so consecutive runs of a split contour read as a
+  // color change, not one continuous line), with a dot on every backbone node:
+  // RED for a polyline END (a chain end, a (class, group) or view-z run split,
+  // or a junction extension tip), GREEN for an interior node. Nodes are the
+  // vertices the draw stage receives -- after the source's geometry cleanup
+  // (collinear collapse / Chaikin / Douglas-Peucker), before the arc-length
+  // resample -- so they show the authored shape, not the dense resampled
+  // points. The ribbon, its shaders and the junction taper/clip are skipped in
+  // this mode: it audits node placement, not stylization. Off by default (no
+  // overlay, output unchanged).
+  bool debugNodeDots = false;
 
   // DEBUG (--edge-qi-vertex-dots): overlay the RAW per-backbone-VERTEX QI result
   // (one ray per vertex, no sub-span pooling or per-ViewEdge majority) as dots --

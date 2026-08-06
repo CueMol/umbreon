@@ -334,9 +334,12 @@ inline std::uint8_t classifyPair(const float* viewZ,
                        : ((objectId[ia] >> 2) <= (objectId[ib] >> 2)
                               ? 0
                               : kCrackOwnerBit);
+      // The contact bit marks the owner as a tie-break, not the nearer
+      // surface: no outer side is defined, so the outside stroke alignment
+      // keeps these edgels centered.
       return static_cast<std::uint8_t>(sil ? CrackClass::Silhouette
                                            : CrackClass::ObjectId) |
-             owner;
+             owner | kCrackContactBit;
     }
     const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
     return static_cast<std::uint8_t>(sameSection ? CrackClass::DepthGap

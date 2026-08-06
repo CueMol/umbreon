@@ -71,12 +71,17 @@ enum class CrackClass : std::uint8_t {
 // RIDGE bit (weak DepthGap only): the crack sits on a convex ridge crease
 // (both one-sided slopes fall away) -- a connected surface fold, not an
 // occlusion. It never promotes to strong, and the prune's strong-chain
-// hysteresis does not keep a ridge run dangling at a chain end.
+// hysteresis does not keep a ridge run dangling at a chain end. [7] the
+// CONTACT bit: the crack is a depth-CONTINUOUS contact/intersection contour
+// (the classifyPair contact branch), whose owner side is a deterministic
+// tie-break rule, not the nearer surface -- so it has no defined "outer"
+// side and the outside stroke alignment must leave it centered.
 constexpr std::uint8_t kCrackClassMask = 0x07;
 constexpr std::uint8_t kCrackOwnerBit = 0x08;
 constexpr std::uint8_t kCrackConsumedBit = 0x10;
 constexpr std::uint8_t kCrackStrongBit = 0x20;
 constexpr std::uint8_t kCrackRidgeBit = 0x40;
+constexpr std::uint8_t kCrackContactBit = 0x80;
 
 // The classified crack lattice of a W x H pixel buffer. right[y*W+x] is the
 // crack between pixels (x,y) and (x+1,y) (valid for x < W-1; the x == W-1
@@ -296,7 +301,11 @@ struct ScreenChain {
   std::vector<std::uint8_t> edgeClass;
   std::vector<std::uint16_t> edgeGroup;
   // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis),
-  // bit 1 = the crack's kCrackRidgeBit (convex ridge crease).
+  // bit 1 = the crack's kCrackRidgeBit (convex ridge crease), bit 2 = the
+  // crack's kCrackContactBit (depth-continuous contact contour; no defined
+  // outer side), bit 3 = the OUTER (non-owner) side lies on the LEFT
+  // (+normal, orth(d) = {-dy, dx}) of the walk direction of this edgel --
+  // consumed by the Stage-4 outside stroke alignment vote.
   std::vector<std::uint8_t> edgeFlags;
   // Per edgel, the owner pixel's first-hit surface alpha (1 when the tracer
   // was given no surfAlpha buffer). The per-VERTEX alpha in `pts` is a
