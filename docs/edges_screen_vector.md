@@ -60,7 +60,9 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    deterministically. **Continuity is guaranteed by construction** -- closed
    loops or junction-to-junction paths, no voting, no chaining tolerance.
    Visibility is exact and free (the AOVs are the z-buffered first hit); no
-   QI rays run.
+   QI rays run. Each edgel also records which side of the walk direction is
+   the OUTER (non-owner) side (`edgeFlags` bit 3, from the Stage-1 owner
+   bit), feeding the Stage-4 outside stroke alignment.
    **Stage 2.5** (`pruneWeakChains`): hysteresis prune + retrace. A chain
    survives with any non-DepthGap edgel or ~2 final px of strong DepthGap
    edgels; a pure-weak chain survives only when BOTH its endpoint corners
@@ -96,6 +98,115 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    slots (Silhouette -> `sil`, ObjectId -> `obj`, DepthGap -> `disc` with a
    `sil` fallback, Crease -> `crease`) and handed to the shared stroke
    renderer.
+   Under `StrokeAlign::Outside` (the `--stroke-align` default) every
+   OCCLUSION-contour run -- Silhouette, ObjectId and DepthGap alike --
+   additionally votes its outer (non-owner, i.e. occluded or background)
+   side over the per-edgel side bits (a majority absorbs owner jitter and
+   relabels; contact edgels abstain -- no outer side exists at a
+   depth-continuous contact, so an all-contact run stays centered) and the
+   draw stage shifts the resolved width to that side: the full width inks
+   on the FAR side of the contour (a <= 0.5 final px inner pad remains,
+   covering the sub-pixel halo where Chaikin/RDP pull the backbone off the
+   crack line and keeping the round-cap fan radius nonzero), so a thick
+   line never thins the object whose contour it draws -- the ink lands on
+   the background or on the occluded surface behind instead. Crease runs (a
+   surface fold, no occluded side) always draw centered.
+   JUNCTION HANDLING. The TOPOLOGY mechanisms below (notch bridge,
+   draw-span coalescing, junction weaving and re-wiring) run for EVERY
+   alignment: center and outside share one extracted line structure --
+   junction-continuous bars, stems ending on them -- and differ only in
+   band placement. Only the band machinery (the side vote, the stem
+   clip/extension and the re-centering taper) is outside-specific;
+   `--stroke-align center` draws the same polylines with the legacy
+   symmetric ribbon.
+   - NOTCH BRIDGE: where the backbone doubles back on itself within a
+     stroke width (chord/arc straightness below ~0.55 over a width window)
+     and the detour is SHALLOWER than a stroke width -- the boundary
+     looping around a few-px background notch where two surfaces almost
+     touch -- the detour is excised from the drawn backbone and bridged
+     straight. An offset band would otherwise paint the detour as a spur
+     poking out of the meeting lines; a centered one shows it as a nub.
+     A notch RETURNS to the direction it came from -- the trend before and
+     after the zone is the same line -- so a zone whose surrounding
+     directions turn by more than ~45 degrees is kept: that is a sharp
+     CUSP where two long legs of a wide background wedge meet, and cutting
+     its chord would leave a triangular gap between the line and the
+     object. Deeper folds (a real hairpin
+     around a wedge) are left in the geometry and the draw stage re-centers
+     the ribbon around them instead (AlignRecenterShader).
+   - DRAW-SPAN COALESCING: the (class, group, vz) run split is an
+     ATTRIBUTION construct; where adjacent runs resolve to the SAME drawn
+     style (e.g. a rim switching between Silhouette and the DepthGap->sil
+     fallback, or a cylinder contour turning from Silhouette into its
+     ObjectId boundary over a mesh behind), share the voted side,
+     and the boundary's depth jump could not visibly shift the fog fade
+     (fog off, or the jump is under ~15% of the fog range -- a LARGER jump
+     keeps the split and its exact per-run fog attribution), they are drawn
+     as ONE polyline. The split would otherwise smooth the halves
+     independently, leave a mid-contour node pair where nothing visibly
+     changes, and leave the outer wedge of any turn at the boundary
+     unfilled (two butt ends where a single stroke would miter). The
+     merged span paints with the highest precedence among its runs
+     (same-style ink composites identically in any order). Long straight
+     segments are subdivided before the Chaikin pass (bounding its
+     1/4-segment corner cut, which the run ends used to pin; the RDP
+     removes the collinear midpoints again), and SHARP feature corners --
+     a turn beyond ~60 degrees over a +-4 px window, e.g. a contour cusp
+     or a box edge -- are PINNED through the smoothing (Chaikin runs
+     piecewise between them): cutting them would let the line shortcut
+     the apex, and an offset band then shows a triangular gap between the
+     line and the object.
+   - JUNCTION WEAVING (Stage 3.5): the tracer splits chains at every
+     lattice corner of degree >= 3, so the BAR of a T junction arrives as
+     two chains that would smooth and offset independently -- any angular
+     mismatch at the shared corner turns the one-sided band into a lateral
+     step, and the bar visibly breaks at junctions. Before Stage 4, chain
+     ends that continue each other nearly straight (windowed directions
+     ~opposite, cos <= -0.82; best-opposite pairs per corner, two pairs at
+     an X crossing) are woven back into ONE chain (reversal flips the
+     walk-relative outer-side bits), so the bar draws as a single stroke --
+     one smoothing pass, one unbroken band -- whether or not stems attach.
+     A physical junction often lands on SEVERAL lattice corners (a stem
+     meeting a staircase bar spreads its incident ends over corners 1-2 px
+     apart, and per-corner pairing then welds the bar onto the stem);
+     corners within a 2 px Chebyshev radius are clustered (union-find) and
+     pairing runs once per cluster over all its ends. Pairs joining ends
+     on different corners keep both endpoints and insert a short bridge
+     segment carrying the previous edgel's attributes.
+     Each junction records the woven bar's local direction, band side and
+     style key (BarInfo, registered for every corner of the cluster) for
+     the stem handling below.
+     The weave also RE-WIRES junctions the tracer never split: where a
+     stem's cracks die a few px short of the junction (the depth-continuity
+     veto near a contact), the corner stays degree 2 and the other two
+     branches trace straight through as one chain even though they bound
+     the same REGION, not the same surface -- the drawn bar would hop off
+     the front object's contour and bend away, leaving a wedge gap where
+     the stem arrives. When a free end's probe lands on another chain's
+     interior and continues one of its halves clearly straighter than that
+     chain's own turn there (anchored at its sharpest nearby corner), the
+     chain is split at the junction and the stem is spliced onto the
+     continuing half; the remaining half becomes a stem. Iterated to a
+     fixed point so long chains resolve every junction.
+   - STEM CLIP: a chain end still sitting at a junction after the weaving
+     is a true stem. It keeps its offset band, is EXTENDED into the
+     junction (the met line's drawn backbone can sit a few px off its
+     lattice cracks after smoothing) and its ink is CULLED beyond the bar's
+     far ink boundary (a half-plane + influence-radius test at
+     rasterization time): the stem terminates flush against the bar with no
+     spur, no gap, and no re-centering (a taper visibly necked
+     shallow-angle junctions). A degree-1 free end left short of a line by
+     the weak-tail trims / bg-clearance kills is connected the same way:
+     the crack-field probe (a 45-degree cone, ~half-width reach) fits the
+     met line through the foreign cracks it finds, estimates its outer-band
+     side from their owner bits, extends the stem to touch it and clips
+     beyond it. A free end with nothing in reach (a genuine cusp tail)
+     keeps its crisp offset tip. Clipped ends draw no round cap.
+   - TAPER fallback: a run end whose neighbor run has a different voted
+     side, a deep fold at a run boundary, a junction with no woven bar
+     (e.g. a Y of three stems) and the closed-chain seam wrap still blend
+     the offset back to the symmetric ribbon over one stroke width
+     (AlignRecenterShader); tapered ends draw no round cap either.
 
 ## Flags
 
@@ -107,6 +218,7 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 | `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all) |
 | `--stroke-outline <on|off>` | off | outer-contour silhouette mode (`SilhouetteMode::Outline`) as the global default for every section |
 | `--stroke-contact <on|off>` | off | ink depth-continuous CROSS-section contact/intersection contours (the curve where one section plunges into another) |
+| `--stroke-align <outside\|center>` | outside | ink placement as the global default for every section: `outside` puts the full stroke width on the occluded/background side of every occlusion contour (Silhouette / ObjectId / DepthGap) so the nearer object never thins; `center` splits it across the line (legacy). Contact and Crease lines always center. Per section via `--edge ID=sil:align=...` (`EdgeStyle::align`, the OWNER section's setting governs) |
 
 The nature toggles keep their meaning under the screen source:
 `--stroke-silhouette` gates the fg/bg contour AND the same-id depth gap,
@@ -165,9 +277,20 @@ ink as `Crease` where the shading normals fold across it (the same
 fall-through Full mode has for sub-threshold pairs); crease is off by
 default.
 
+`--stroke-node-dots on` overlays the drawn polylines' backbone NODES -- the
+vertices handed to the draw stage, i.e. after the geometry cleanup
+(collinear collapse / Chaikin / Douglas-Peucker) and before the arc-length
+resample -- as dots: RED for a polyline END (a chain end, a (class, group)
+or view-z run split, or a junction extension tip), GREEN for an interior
+node. Use it to audit node placement: every interior node is a kink the
+ribbon must follow, and a red pair mid-contour marks a run split. The
+per-frame stats line below reports the total as `pts=`.
+
 `UMBREON_SCREEN_EDGE_DEBUG=1` prints one stats line per frame (raw/kept
-chains, edgels per class, strong DepthGap count, drawn chains) for tuning;
-`=2` also lists every kept chain (bbox, class mix, strong count).
+chains, edgels per class, strong DepthGap count, drawn chains, drawn nodes)
+for tuning; `=2` also lists every kept chain (bbox, class mix, strong
+count); `=3` adds one line per drawn RUN (voted side, taper/clip wiring,
+junction extensions, endpoints).
 `UMBREON_SCREEN_EDGE_DUMP=<prefix>` writes Stage-1 diagnostics: a colorized
 crack-lattice PPM (silhouette white, ObjectId orange, DepthGap strong red /
 weak blue, NMS-suppressed cyan, bg-killed yellow, near-threshold green), a
@@ -194,6 +317,12 @@ defaults, deliberately not CLI flags.
   (CueMol fadeout) fades its edge linearly in step.
 - Junctions are exact T-vertices, but the chains meeting there are smoothed
   independently (endpoints pinned), which can leave a small kink.
+- With the outside alignment, the ribbon re-centers over one stroke width
+  around junctions and folds (see "Draw" above), so the band's lateral
+  placement wobbles slightly there by design -- the legacy centered look at
+  every meeting point, the outside offset along the open contour body.
+  `UMBREON_SCREEN_EDGE_DEBUG=3` prints one line per drawn run (voted side,
+  taper flags, junction degrees) for hunting alignment artifacts.
 - Hidden lines cannot be drawn (the z-buffer only sees visible surfaces).
 
 ## History

@@ -297,6 +297,17 @@ struct Options {
   bool strokeRoundCap = false;
   // --stroke-join round: arc fans at corners instead of miters (default miter).
   bool strokeRoundJoin = false;
+  // --stroke-align: stroke ribbon placement as the global default for every
+  // section. true (outside, the default) puts the full stroke width on the
+  // outer (occluded/background) side of every occlusion contour so a thick
+  // line never thins the object whose contour it draws; false (center)
+  // splits it evenly across the contour (legacy). A per-section --edge spec
+  // can override it with align=outside|center.
+  bool strokeAlignOutside = true;
+  // DEBUG (--stroke-node-dots): draw the source polylines (per-chain palette
+  // hairlines) + their backbone nodes (red = polyline end, green = interior)
+  // instead of the styled strokes, to audit node placement.
+  bool strokeNodeDots = false;
   // DEBUG (--edge-qi-dots): overlay the PRE-majority QI class vs final decision as
   // colored dots, to visualize the per-ViewEdge majority rule on the render.
   bool strokeQiDots = false;

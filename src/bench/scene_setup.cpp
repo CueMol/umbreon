@@ -290,6 +290,7 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
     ropt.strokeEdges.smooth = opt.strokeSmooth;
     ropt.strokeEdges.roundCap = opt.strokeRoundCap;
     ropt.strokeEdges.roundJoin = opt.strokeRoundJoin;
+    ropt.strokeEdges.debugNodeDots = opt.strokeNodeDots;
     ropt.strokeEdges.debugQiDots = opt.strokeQiDots;
     ropt.strokeEdges.debugQiVertexDots = opt.strokeQiVertexDots;
     ropt.strokeEdges.debugQiVertexDelta = opt.strokeQiVertexDelta;
@@ -347,6 +348,12 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
     // the style wholesale, mode included.
     ds.silhouetteMode = opt.strokeOutline ? umbreon::SilhouetteMode::Outline
                                           : umbreon::SilhouetteMode::Full;
+    // Global silhouette stroke alignment default (--stroke-align): same
+    // three-way reach as the mode above (seeded table, defaultStyle fallback,
+    // and the empty-table global in StrokeEdgeOptions::align).
+    ds.align = opt.strokeAlignOutside ? umbreon::StrokeAlign::Outside
+                                      : umbreon::StrokeAlign::Center;
+    ropt.strokeEdges.align = ds.align;
 
     scene.groupEdgeStyle.assign(groupNames.size(), ds);
     if (!opt.sectionEdge.empty()) {

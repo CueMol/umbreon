@@ -40,6 +40,19 @@ struct StrokePoint {
   bool visible = true;
 };
 
+// Optional END CLIP for the outside alignment (set by the screen source on
+// junction stem ends): ink of THIS chain lying within `radius` of the anchor
+// (px, py) AND on the positive side of the unit normal (nx, ny) is culled at
+// rasterization time. The stem keeps its offset band and terminates flush
+// against the far edge of the met line's ink instead of poking past it or
+// re-centering (a taper visibly necks shallow-angle junctions).
+struct StrokeEndClip {
+  bool enabled = false;
+  float px = 0.0f, py = 0.0f;  // anchor, hi-res px
+  float nx = 0.0f, ny = 0.0f;  // unit normal; ink beyond it is culled
+  float radius = 0.0f;         // influence radius around the anchor
+};
+
 // One chain handed to the shared draw stage. styleSlot indexes EdgeStyle::cls[]
 // (the EdgeClass slot; the mesh source passes natureStyleSlot(nature)).
 // precedence is the overlap paint order (higher paints later == on top; the
@@ -50,6 +63,26 @@ struct StrokeChainInput {
   int styleSlot = 0;
   int precedence = 0;
   std::uint16_t group = 0;
+  // Outside stroke alignment (StrokeAlign::Outside; the screen source sets
+  // it on occlusion-contour runs): 0 = centered ribbon (legacy), +1 = the
+  // contour's OUTER (occluded / background) side is on the LEFT (+normal)
+  // of the backbone direction, -1 = on the RIGHT. A nonzero value shifts
+  // the resolved width to that side (a thin inner pad remains; the full
+  // footprint stays the resolved width).
+  std::int8_t outsideSide = 0;
+  // Junction taper for a nonzero outsideSide: blend the offset back to the
+  // symmetric ribbon over the last stroke-width of arc length at this end,
+  // so the ribbon arrives centered where it meets other lines (an offset
+  // butt end otherwise sticks its full width out sideways past the meeting
+  // line). The screen source sets these where the band does not continue on
+  // the same side (run boundaries with a side change, deep folds, junction
+  // ends with no identified met line). A tapered OR clipped end draws no
+  // round cap.
+  bool taperStart = false;
+  bool taperEnd = false;
+  // End clips (preferred over the taper at junction stem ends whose met
+  // line is known; see StrokeEndClip).
+  StrokeEndClip clipStart, clipEnd;
 };
 
 // Resolve the ribbon style for one chain by its style slot + section group:

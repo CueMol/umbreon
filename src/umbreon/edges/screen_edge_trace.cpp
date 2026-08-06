@@ -130,9 +130,20 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
     const std::uint8_t byte = crackByte(cf, e);
     markConsumed(cf, e);
     ch.edgeClass.push_back(byte & kCrackClassMask);
+    // Outer-side bit: which of the crack's two pixels lies LEFT (+normal,
+    // orth(d) = {-dy, dx}, raster y down) of this edgel's walk direction.
+    // A right-crack walked S (farCy > cy) has the FIRST (west) pixel on the
+    // left, walked N the SECOND (east); a down-crack walked E (farCx > cx)
+    // has the SECOND (south) pixel on the left, walked W the FIRST (north).
+    // The outer side is the NON-owner side (the owner bit marks the nearer
+    // foreground pixel), so outside-is-left == (leftIsSecond != ownerIsSecond).
+    const bool leftIsSecond = e.isRight ? (e.farCy < cy) : (e.farCx > cx);
+    const bool ownerIsSecond = (byte & kCrackOwnerBit) != 0;
     ch.edgeFlags.push_back(
         static_cast<std::uint8_t>(((byte & kCrackStrongBit) ? 1 : 0) |
-                                  ((byte & kCrackRidgeBit) ? 2 : 0)));
+                                  ((byte & kCrackRidgeBit) ? 2 : 0) |
+                                  ((byte & kCrackContactBit) ? 4 : 0) |
+                                  ((leftIsSecond != ownerIsSecond) ? 8 : 0)));
     const int owner = crackOwnerPixel(cf, e, byte);
     ch.edgeGroup.push_back(
         objectId ? static_cast<std::uint16_t>(objectId[owner] >> 2) : 0);
