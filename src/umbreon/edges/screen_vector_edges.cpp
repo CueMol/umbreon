@@ -819,13 +819,53 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       byCorner[cornerIdOf(c, 0)].push_back({i, 0});
       byCorner[cornerIdOf(c, 1)].push_back({i, 1});
     }
+    // CLUSTER corners within a 2 px Chebyshev radius (union-find): a
+    // junction between three surfaces is often spread over two or three
+    // adjacent lattice corners, each of degree <= 3, and pairing per
+    // EXACT corner cannot see the straight continuation whose two ends
+    // sit on different corners of the same junction -- the leftovers then
+    // pair among themselves and the bar hops onto the wrong line.
+    std::vector<long> cids;
+    cids.reserve(byCorner.size());
+    for (const auto& kv : byCorner) cids.push_back(kv.first);
+    std::unordered_map<long, std::size_t> cidIdx;
+    for (std::size_t i = 0; i < cids.size(); ++i) cidIdx[cids[i]] = i;
+    std::vector<std::size_t> ufParent(cids.size());
+    for (std::size_t i = 0; i < cids.size(); ++i) ufParent[i] = i;
+    auto findRoot = [&](std::size_t x) {
+      while (ufParent[x] != x) {
+        ufParent[x] = ufParent[ufParent[x]];
+        x = ufParent[x];
+      }
+      return x;
+    };
+    for (std::size_t i = 0; i < cids.size(); ++i) {
+      const long cy = cids[i] / cornerW, cx = cids[i] % cornerW;
+      for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx) {
+          if (dx == 0 && dy == 0) continue;
+          const auto it = cidIdx.find((cy + dy) * cornerW + (cx + dx));
+          if (it == cidIdx.end()) continue;
+          const std::size_t ra = findRoot(i), rb = findRoot(it->second);
+          if (ra != rb) ufParent[rb] = ra;
+        }
+    }
+    std::unordered_map<std::size_t, std::vector<WeaveEnd>> clusters;
+    std::unordered_map<std::size_t, std::vector<long>> clusterCorners;
+    for (std::size_t i = 0; i < cids.size(); ++i) {
+      const std::size_t r = findRoot(i);
+      const auto& srcEnds = byCorner[cids[i]];
+      auto& dst = clusters[r];
+      dst.insert(dst.end(), srcEnds.begin(), srcEnds.end());
+      clusterCorners[r].push_back(cids[i]);
+    }
 
-    // Greedy best-opposite pairing per corner; partner[chain][end].
+    // Greedy best-opposite pairing per junction CLUSTER; partner[chain][end].
     constexpr float kContinueCos = -0.82f;  // ~145 deg or straighter
     std::vector<std::array<int, 2>> partnerChain(
         traced.size(), {-1, -1});
     std::vector<std::array<int, 2>> partnerEnd(traced.size(), {-1, -1});
-    for (auto& kv : byCorner) {
+    for (auto& kv : clusters) {
       std::vector<WeaveEnd>& ends = kv.second;
       if (ends.size() < 2) continue;
       std::vector<char> used(ends.size(), 0);
@@ -853,6 +893,15 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
         used[bi] = used[bj] = 1;
         const WeaveEnd& A = ends[bi];
         const WeaveEnd& B = ends[bj];
+        if (dbgLevel >= 3) {
+          const ScreenChainVert& va = A.end == 0 ? traced[A.chain].pts.front()
+                                                 : traced[A.chain].pts.back();
+          std::fprintf(stderr,
+                       "[screen-edges]   weave pair at (%.1f,%.1f): "
+                       "ch%zu.e%d + ch%zu.e%d cos=%.3f (of %zu ends)\n",
+                       va.x, va.y, A.chain, A.end, B.chain, B.end, best,
+                       ends.size());
+        }
         partnerChain[A.chain][A.end] = static_cast<int>(B.chain);
         partnerEnd[A.chain][A.end] = B.end;
         partnerChain[B.chain][B.end] = static_cast<int>(A.chain);
@@ -886,7 +935,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
             bar.grp = ca.edgeGroup.size() == ca.edgeClass.size()
                           ? ca.edgeGroup[ei]
                           : 0;
-            barAt[kv.first] = bar;
+            for (const long cid : clusterCorners[kv.first]) barAt[cid] = bar;
           }
         }
       }
@@ -950,8 +999,27 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           merged = piece;
           first = false;
         } else {
-          // Shared corner vertex: drop the piece's first point.
-          merged.pts.insert(merged.pts.end(), piece.pts.begin() + 1,
+          // Same corner: drop the piece's duplicated first point. Cluster
+          // pairs can join ends on ADJACENT corners (1-2 px apart): keep
+          // both vertices and add a BRIDGE edgel carrying the previous
+          // edgel's attributes.
+          const float gx = piece.pts.front().x - merged.pts.back().x;
+          const float gy = piece.pts.front().y - merged.pts.back().y;
+          const bool gapJoin = gx * gx + gy * gy > 0.56f;
+          if (gapJoin && !merged.edgeClass.empty()) {
+            const std::size_t ml = merged.edgeClass.size() - 1;
+            merged.edgeClass.push_back(merged.edgeClass[ml]);
+            if (merged.edgeGroup.size() == merged.edgeClass.size() - 1)
+              merged.edgeGroup.push_back(merged.edgeGroup[ml]);
+            if (merged.edgeVz.size() == merged.edgeClass.size() - 1)
+              merged.edgeVz.push_back(merged.edgeVz[ml]);
+            if (merged.edgeAlpha.size() == merged.edgeClass.size() - 1)
+              merged.edgeAlpha.push_back(merged.edgeAlpha[ml]);
+            if (merged.edgeFlags.size() == merged.edgeClass.size() - 1)
+              merged.edgeFlags.push_back(merged.edgeFlags[ml]);
+          }
+          merged.pts.insert(merged.pts.end(),
+                            piece.pts.begin() + (gapJoin ? 0 : 1),
                             piece.pts.end());
           merged.edgeClass.insert(merged.edgeClass.end(),
                                   piece.edgeClass.begin(),
@@ -983,10 +1051,27 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
         cur = static_cast<std::size_t>(nxtChain);
         in = nxtEnd;
         if (consumed[cur]) {
-          // Cycle closed: the seam vertex is already duplicated by
-          // construction (the last piece ends on the first piece's start).
           merged.closed = true;
           break;
+        }
+      }
+      // A cycle closed across a cluster gap: restore the closed-chain
+      // convention (pts.front() == pts.back()) with a bridge segment.
+      if (merged.closed && merged.pts.size() >= 2) {
+        const float gx = merged.pts.front().x - merged.pts.back().x;
+        const float gy = merged.pts.front().y - merged.pts.back().y;
+        if (gx * gx + gy * gy > 1.0e-4f) {
+          const std::size_t ml = merged.edgeClass.size() - 1;
+          merged.edgeClass.push_back(merged.edgeClass[ml]);
+          if (merged.edgeGroup.size() == merged.edgeClass.size() - 1)
+            merged.edgeGroup.push_back(merged.edgeGroup[ml]);
+          if (merged.edgeVz.size() == merged.edgeClass.size() - 1)
+            merged.edgeVz.push_back(merged.edgeVz[ml]);
+          if (merged.edgeAlpha.size() == merged.edgeClass.size() - 1)
+            merged.edgeAlpha.push_back(merged.edgeAlpha[ml]);
+          if (merged.edgeFlags.size() == merged.edgeClass.size() - 1)
+            merged.edgeFlags.push_back(merged.edgeFlags[ml]);
+          merged.pts.push_back(merged.pts.front());
         }
       }
       woven.push_back(std::move(merged));
@@ -1127,6 +1212,28 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           depth = std::max(depth, std::sqrt(qx * qx + qy * qy));
         }
         if (depth > wMax) continue;  // deep fold: a real hairpin, keep it
+        // A NOTCH returns to the direction it came from -- the boundary
+        // steps aside and back, so the trend before and after the zone is
+        // the same line. A sharp CUSP (two long legs of a wide background
+        // wedge meeting at a point) also reads as a shallow local fold,
+        // but the trend TURNS there; excising it would let the drawn line
+        // cut the chord across the wedge tip, leaving a triangular gap
+        // between the line and the object. Keep the zone whenever the
+        // surrounding directions differ by more than ~45 degrees.
+        {
+          const std::size_t m = std::max<std::size_t>(win, 2);
+          const std::size_t ia = a > m ? a - m : 0;
+          const std::size_t ib = std::min(b + m, nV - 1);
+          const float inx = w.pts[a].x - w.pts[ia].x;
+          const float iny = w.pts[a].y - w.pts[ia].y;
+          const float outx = w.pts[ib].x - w.pts[b].x;
+          const float outy = w.pts[ib].y - w.pts[b].y;
+          const float li = std::sqrt(inx * inx + iny * iny);
+          const float lo = std::sqrt(outx * outx + outy * outy);
+          if (li > 1.0e-5f && lo > 1.0e-5f &&
+              (inx * outx + iny * outy) / (li * lo) < 0.7071f)
+            continue;  // a turn, not a notch
+        }
         w.pts.erase(w.pts.begin() + a + 1, w.pts.begin() + b);
         auto cut = [&](auto& arr) {
           if (arr.size() >= b)
@@ -1455,7 +1562,6 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
         const CrackClass ca = static_cast<CrackClass>(w.cls[w.runs[rj].e0]);
         const CrackClass cb =
             static_cast<CrackClass>(w.cls[w.runs[rj + 1].e0]);
-        if (classPrecedence(ca) != classPrecedence(cb)) break;
         const RunStyle sa = styleFor(ca, w.grp[w.runs[rj].e0]);
         const RunStyle sb = styleFor(cb, w.grp[w.runs[rj + 1].e0]);
         if (!sa.ok || !sb.ok || sa.half != sb.half ||
@@ -1483,7 +1589,15 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
 
       StrokeChainInput in;
       in.group = w.grp[e0];
+      // A span may coalesce runs of different classes (identical styles);
+      // paint with the highest precedence among them. Same-style ink
+      // composites identically in any order, so this only decides
+      // exact-depth ties against other strokes.
       in.precedence = classPrecedence(runClass);
+      for (std::size_t r = spans[si].r0 + 1; r <= spans[si].r1; ++r)
+        in.precedence = std::max(
+            in.precedence, classPrecedence(static_cast<CrackClass>(
+                               w.cls[w.runs[r].e0])));
       in.styleSlot = classStyleSlot(runClass);
       in.outsideSide = w.side[spans[si].r0];
       // DepthGap falls back to the Silhouette slot when the section never
@@ -1642,23 +1756,69 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
         }
       }
       collapseCollinear(pts, runClosed);
-      // Bound Chaikin's corner cut. The weaving and the draw-span
-      // coalescing removed the run ends that used to PIN the backbone near
-      // junctions, leaving long straight segments -- and Chaikin cuts 1/4
-      // of EACH adjacent segment at a corner, so a 30 px edge would round
-      // a true box corner by ~8 px and sag the drawn line near its
-      // junctions. Subdividing long segments first caps the cut; the
-      // inserted straight midpoints are exactly collinear and the RDP
+      // SHARP feature corners survive the smoothing. Chaikin's corner
+      // cutting is meant for staircase jaggies, but a true corner (a box
+      // edge, a contour cusp) cut by 1/4 of its adjacent segments lets the
+      // drawn line SHORTCUT the apex -- and with an offset band (only the
+      // thin inner pad on the object side) the sliver between the line and
+      // the object shows as a triangular gap. Measure the turn over a
+      // +-4 px arc window (single staircase steps average out) and PIN
+      // vertices turning more than ~60 degrees: the Chaikin pass then runs
+      // piecewise between pins, which stay exact.
+      std::vector<char> pin;
+      if (pts.size() >= 3 && se.screenSmoothIters > 0) {
+        pin.assign(pts.size(), 0);
+        const float wArc = 4.0f;
+        bool any = false;
+        for (std::size_t v = 1; v + 1 < pts.size(); ++v) {
+          std::size_t a = v;
+          float arcA = 0.0f;
+          while (a > 0 && arcA < wArc) {
+            const float dx = pts[a].x - pts[a - 1].x;
+            const float dy = pts[a].y - pts[a - 1].y;
+            arcA += std::sqrt(dx * dx + dy * dy);
+            --a;
+          }
+          std::size_t b = v;
+          float arcB = 0.0f;
+          while (b + 1 < pts.size() && arcB < wArc) {
+            const float dx = pts[b + 1].x - pts[b].x;
+            const float dy = pts[b + 1].y - pts[b].y;
+            arcB += std::sqrt(dx * dx + dy * dy);
+            ++b;
+          }
+          const float ix = pts[v].x - pts[a].x, iy = pts[v].y - pts[a].y;
+          const float ox2 = pts[b].x - pts[v].x, oy2 = pts[b].y - pts[v].y;
+          const float li = std::sqrt(ix * ix + iy * iy);
+          const float lo = std::sqrt(ox2 * ox2 + oy2 * oy2);
+          if (li <= 1.0e-5f || lo <= 1.0e-5f) continue;
+          if ((ix * ox2 + iy * oy2) / (li * lo) < 0.5f) {  // > ~60 deg
+            pin[v] = 1;
+            any = true;
+          }
+        }
+        if (!any) pin.clear();
+      }
+      // Bound Chaikin's corner cut elsewhere. The weaving and the
+      // draw-span coalescing removed the run ends that used to PIN the
+      // backbone near junctions, leaving long straight segments -- and
+      // Chaikin cuts 1/4 of EACH adjacent segment at a corner, so a 30 px
+      // edge would round a mild corner by ~8 px and sag the drawn line
+      // near its junctions. Subdividing long segments first caps the cut;
+      // the inserted straight midpoints are exactly collinear and the RDP
       // below removes them again, so the node count is unchanged.
       if (pts.size() >= 2) {
         const float maxSeg =
             std::max(4.0f, 2.0f * halfFor(runClass, in.group));
         std::vector<ScreenChainVert> sub;
+        std::vector<char> subPin;
         sub.reserve(pts.size() * 2);
+        subPin.reserve(pts.size() * 2);
         for (std::size_t k = 0; k + 1 < pts.size(); ++k) {
           const ScreenChainVert& a = pts[k];
           const ScreenChainVert& b = pts[k + 1];
           sub.push_back(a);
+          subPin.push_back(pin.empty() ? 0 : pin[k]);
           const float dx = b.x - a.x, dy = b.y - a.y;
           const float len = std::sqrt(dx * dx + dy * dy);
           const int nSeg = static_cast<int>(std::ceil(len / maxSeg));
@@ -1671,12 +1831,53 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
             m.vz = a.vz + (b.vz - a.vz) * t;
             m.alpha = a.alpha + (b.alpha - a.alpha) * t;
             sub.push_back(m);
+            subPin.push_back(0);
           }
         }
         sub.push_back(pts.back());
+        subPin.push_back(pin.empty() ? 0 : pin.back());
         pts.swap(sub);
+        if (!pin.empty()) pin.swap(subPin);
       }
-      chaikinSmooth(pts, runClosed, se.screenSmoothIters);
+      if (pin.empty()) {
+        chaikinSmooth(pts, runClosed, se.screenSmoothIters);
+      } else {
+        // Piecewise Chaikin between pinned corners (chaikinSmooth pins the
+        // endpoints of each open piece). A closed loop rotates so its seam
+        // sits ON a pinned corner first; the loop then smooths as open
+        // pieces and the RDP below still sees front == back.
+        if (runClosed && pts.size() >= 3) {
+          std::size_t p0 = 0;
+          for (std::size_t v = 1; v + 1 < pts.size(); ++v)
+            if (pin[v]) {
+              p0 = v;
+              break;
+            }
+          if (p0 > 0) {
+            pts.pop_back();
+            pin.pop_back();
+            std::rotate(pts.begin(), pts.begin() + p0, pts.end());
+            std::rotate(pin.begin(), pin.begin() + p0, pin.end());
+            pts.push_back(pts.front());
+            pin.push_back(pin.front());
+          }
+        }
+        std::vector<std::size_t> cuts;
+        cuts.push_back(0);
+        for (std::size_t v = 1; v + 1 < pts.size(); ++v)
+          if (pin[v]) cuts.push_back(v);
+        cuts.push_back(pts.size() - 1);
+        std::vector<ScreenChainVert> out;
+        out.reserve(pts.size() * 2);
+        for (std::size_t c = 0; c + 1 < cuts.size(); ++c) {
+          std::vector<ScreenChainVert> piece(pts.begin() + cuts[c],
+                                             pts.begin() + cuts[c + 1] + 1);
+          chaikinSmooth(piece, false, se.screenSmoothIters);
+          out.insert(out.end(), piece.begin() + (c == 0 ? 0 : 1),
+                     piece.end());
+        }
+        pts.swap(out);
+      }
       simplifyRdp(pts, runClosed, rdpEps);
       if (pts.size() < 2) continue;
       // Junction extension: append a vertex at the chain end's resolved

@@ -126,23 +126,36 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      touch -- the detour is excised from the drawn backbone and bridged
      straight. An offset band would otherwise paint the detour as a spur
      poking out of the meeting lines; a centered one shows it as a nub.
-     Deeper folds (a real hairpin
+     A notch RETURNS to the direction it came from -- the trend before and
+     after the zone is the same line -- so a zone whose surrounding
+     directions turn by more than ~45 degrees is kept: that is a sharp
+     CUSP where two long legs of a wide background wedge meet, and cutting
+     its chord would leave a triangular gap between the line and the
+     object. Deeper folds (a real hairpin
      around a wedge) are left in the geometry and the draw stage re-centers
      the ribbon around them instead (AlignRecenterShader).
    - DRAW-SPAN COALESCING: the (class, group, vz) run split is an
      ATTRIBUTION construct; where adjacent runs resolve to the SAME drawn
      style (e.g. a rim switching between Silhouette and the DepthGap->sil
-     fallback at a T junction), share the voted side and paint precedence,
+     fallback, or a cylinder contour turning from Silhouette into its
+     ObjectId boundary over a mesh behind), share the voted side,
      and the boundary's depth jump could not visibly shift the fog fade
      (fog off, or the jump is under ~15% of the fog range -- a LARGER jump
      keeps the split and its exact per-run fog attribution), they are drawn
      as ONE polyline. The split would otherwise smooth the halves
      independently, leave a mid-contour node pair where nothing visibly
      changes, and leave the outer wedge of any turn at the boundary
-     unfilled (two butt ends where a single stroke would miter). Long
-     straight segments are subdivided before the Chaikin pass (bounding
-     its 1/4-segment corner cut, which the run ends used to pin; the RDP
-     removes the collinear midpoints again).
+     unfilled (two butt ends where a single stroke would miter). The
+     merged span paints with the highest precedence among its runs
+     (same-style ink composites identically in any order). Long straight
+     segments are subdivided before the Chaikin pass (bounding its
+     1/4-segment corner cut, which the run ends used to pin; the RDP
+     removes the collinear midpoints again), and SHARP feature corners --
+     a turn beyond ~60 degrees over a +-4 px window, e.g. a contour cusp
+     or a box edge -- are PINNED through the smoothing (Chaikin runs
+     piecewise between them): cutting them would let the line shortcut
+     the apex, and an offset band then shows a triangular gap between the
+     line and the object.
    - JUNCTION WEAVING (Stage 3.5): the tracer splits chains at every
      lattice corner of degree >= 3, so the BAR of a T junction arrives as
      two chains that would smooth and offset independently -- any angular
@@ -153,8 +166,16 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      an X crossing) are woven back into ONE chain (reversal flips the
      walk-relative outer-side bits), so the bar draws as a single stroke --
      one smoothing pass, one unbroken band -- whether or not stems attach.
+     A physical junction often lands on SEVERAL lattice corners (a stem
+     meeting a staircase bar spreads its incident ends over corners 1-2 px
+     apart, and per-corner pairing then welds the bar onto the stem);
+     corners within a 2 px Chebyshev radius are clustered (union-find) and
+     pairing runs once per cluster over all its ends. Pairs joining ends
+     on different corners keep both endpoints and insert a short bridge
+     segment carrying the previous edgel's attributes.
      Each junction records the woven bar's local direction, band side and
-     style key (BarInfo) for the stem handling below.
+     style key (BarInfo, registered for every corner of the cluster) for
+     the stem handling below.
      The weave also RE-WIRES junctions the tracer never split: where a
      stem's cracks die a few px short of the junction (the depth-continuity
      veto near a contact), the corner stays degree 2 and the other two
