@@ -548,6 +548,19 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
   ノイズで不定なため、スタイルの帰属は決定的な規則で決まる: 片側だけ Outline mode なら
   その セクション（`sil` スロット・Silhouette class）、それ以外は group id の小さい側
   （`obj` スロット。両側 Outline なら `sil`）。既定 off では出力は従来と完全一致する。
+- **リボンの配置（方式A）**: `StrokeAlign`（`strokeEdges.align`、既定 `Outside`、CLI:
+  `--stroke-align <outside|center>`）は太い線を輪郭のどちら側に置くかを決める。
+  `Center` はストローク幅を輪郭の両側に均等に割り振る（従来通り、手前オブジェクトの
+  半分がインクで覆われる）。`Outside` は全ての遮蔽輪郭（Silhouette / ObjectId /
+  DepthGap）で幅を輪郭の**外側（背景・被遮蔽側）**にだけ置くため、線を太くしても
+  オブジェクトが痩せない。Crease（面の折れ、被遮蔽側が無い）と `contact` で有効になる
+  深度連続な接触輪郭（外側が未定義）は `Outside` 時も常に中央揃えのまま。
+  セクション単位の上書きは `EdgeStyle::align`（CLI: `--edge ID=sil:align=...` など）で
+  行う。center/outside は同一の折れ線トポロジー（junction 縫合・再配線・ノッチ橋渡し・
+  描画スパン結合）を共有し、リボンのオフセットのみが異なる。
+  `strokeEdges.debugNodeDots = true`（CLI: `--stroke-node-dots on`）は抽出された
+  折れ線のノードをそのまま可視化するデバッグモードで、端点（赤）と中間点（緑）を
+  スタイル付けせず点間の細線として描き、チェーンごとに色を変えて切れ目を確認できる。
 - **非破壊**: 方式B は内部でエッジ円柱を `Scene` に追加するが、`render()` は `const Scene&` を
   受け取り、追加は**内部の一時コピー**に対して行う。呼び出し側の `Scene` は変更されない。
 
