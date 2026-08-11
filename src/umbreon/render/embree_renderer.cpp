@@ -1286,6 +1286,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   }
   const auto tBvh1 = std::chrono::high_resolution_clock::now();
 
+  // Own the device + committed scene NOW, before anything below can throw
+  // (frame-buffer allocations, the GI pass, TBB): an exception unwinds through
+  // ~EmbreeRenderer -> releaseEmbree(), so neither handle can leak. This also
+  // keeps them alive after render() returns so the edge pass (run before the
+  // box downsample) can ray-cast against the live BVH via occluded(). They
+  // are released in the destructor / on the next render().
+  device_ = device;
+  scene_ = built.scene;
+
   const Mesh& m = scene.mesh;
 
   // --- camera basis / lights / frame buffers (cold setup helpers above) ---
@@ -1733,11 +1742,6 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
     }
   meshBaseTriCount_ = static_cast<unsigned int>(scene.mesh.triangleCount());
 
-  // Keep the device + committed scene ALIVE so the edge pass (run after this
-  // returns, before the box downsample) can ray-cast against the live BVH via
-  // occluded(). They are released in the destructor / on the next render().
-  device_ = device;
-  scene_ = built.scene;
   // Flag a cooperative cancel so renderFrame skips the post-passes and the
   // caller sees a partial frame. False (unchanged) whenever no cancel was asked.
   if (progress) res.cancelled = progress->cancelRequested();

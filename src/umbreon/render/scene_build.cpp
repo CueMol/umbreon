@@ -135,36 +135,48 @@ BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
   BuiltScene out;
   RTCScene rscene = rtcNewScene(device);
   out.scene = rscene;
-  rtcSetSceneFlags(rscene, RTC_SCENE_FLAG_ROBUST);
-  // Static offline scene: committed once, then traversed by every primary ray
-  // (and every future AO/shadow ray). A one-time HIGH-quality BVH (spatial
-  // splits) amortizes over the whole frame, so HIGH is the right default vs
-  // Embree's MEDIUM, as OSPRay builds its static scenes. Pure traversal-speed
-  // win; it cannot change which primitive a ray hits.
-  rtcSetSceneBuildQuality(rscene, RTC_BUILD_QUALITY_HIGH);
+  // Everything below can throw (the builders grow large vectors, so a
+  // bad_alloc is realistic on big scenes; the commit reports device errors).
+  // Release the partial scene on ANY failure so the only scene handle that
+  // ever escapes this function is a fully committed one. The attached
+  // geometries are already released (borrowed handles), so releasing the
+  // scene reclaims them too.
+  try {
+    rtcSetSceneFlags(rscene, RTC_SCENE_FLAG_ROBUST);
+    // Static offline scene: committed once, then traversed by every primary
+    // ray (and every future AO/shadow ray). A one-time HIGH-quality BVH
+    // (spatial splits) amortizes over the whole frame, so HIGH is the right
+    // default vs Embree's MEDIUM, as OSPRay builds its static scenes. Pure
+    // traversal-speed win; it cannot change which primitive a ray hits.
+    rtcSetSceneBuildQuality(rscene, RTC_BUILD_QUALITY_HIGH);
 
-  // Instance offsets are baked into the geometry (the .pov scenes have none;
-  // the legacy grid path replicates each primitive per offset).
-  std::vector<Vec3> bakeOffsets = scene.instanceOffsets;
-  if (bakeOffsets.empty()) bakeOffsets.push_back(Vec3{0.0f, 0.0f, 0.0f});
+    // Instance offsets are baked into the geometry (the .pov scenes have none;
+    // the legacy grid path replicates each primitive per offset).
+    std::vector<Vec3> bakeOffsets = scene.instanceOffsets;
+    if (bakeOffsets.empty()) bakeOffsets.push_back(Vec3{0.0f, 0.0f, 0.0f});
 
-  // Edge pass: mesh materialId is the per-triangle index directly (triMaterialId
-  // is uint8, so the mesh block never exceeds 256). meshMatCount is the base
-  // offset above which the sphere/cylinder global ids start.
-  if (buildEdgeTables)
-    out.meshMatCount = static_cast<uint32_t>(scene.mesh.materials.size());
+    // Edge pass: mesh materialId is the per-triangle index directly
+    // (triMaterialId is uint8, so the mesh block never exceeds 256).
+    // meshMatCount is the base offset above which the sphere/cylinder global
+    // ids start.
+    if (buildEdgeTables)
+      out.meshMatCount = static_cast<uint32_t>(scene.mesh.materials.size());
 
-  // Each builder attaches its geometry and appends its geomID record (and, for
-  // the flat outline primitives, the primID side tables the shader reads back).
-  buildTriangleMesh(device, rscene, scene.mesh, bakeOffsets, out);
-  buildSpheres(device, rscene, scene, bakeOffsets, out, buildEdgeTables);
-  buildCylinderGeometry(device, rscene, scene, bakeOffsets, out, buildEdgeTables);
+    // Each builder attaches its geometry and appends its geomID record (and,
+    // for the flat outline primitives, the primID side tables the shader
+    // reads back).
+    buildTriangleMesh(device, rscene, scene.mesh, bakeOffsets, out);
+    buildSpheres(device, rscene, scene, bakeOffsets, out, buildEdgeTables);
+    buildCylinderGeometry(device, rscene, scene, bakeOffsets, out,
+                          buildEdgeTables);
 
-  rtcCommitScene(rscene);
-  if (RTCError err = rtcGetDeviceError(device); err != RTC_ERROR_NONE) {
+    rtcCommitScene(rscene);
+    if (RTCError err = rtcGetDeviceError(device); err != RTC_ERROR_NONE)
+      throw std::runtime_error(std::string("embree scene build failed: ") +
+                               rtcErrorString(err));
+  } catch (...) {
     rtcReleaseScene(rscene);
-    throw std::runtime_error(std::string("embree scene build failed: ") +
-                             rtcErrorString(err));
+    throw;
   }
   return out;
 }
