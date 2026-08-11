@@ -444,10 +444,18 @@ std::vector<Light> buildSceneLights(const Scene& scene,
     l.color = Vec3{dl.color.x * dl.intensity, dl.color.y * dl.intensity,
                    dl.color.z * dl.intensity};
     l.highlight = dl.castsHighlight;
-    // Soft-shadow angular radius (0 = hard). pt2 honors a per-light AREA
-    // radius when the scene carries one (POV area_light via SpecLighting);
-    // pt1/cache keep the global CLI radius so their sample streams -- and
-    // therefore their byte-exact outputs -- are untouched by area scenes.
+    // Soft-shadow angular radius (0 = hard). PRECEDENCE: under pt2 a
+    // per-light scene AREA radius (POV area_light via SpecLighting), when
+    // present, wins over the global option; everything else -- pt1/cache
+    // (their sample streams, and therefore byte-exact outputs, must stay
+    // untouched by area scenes), pt2 without a scene radius, and the env
+    // dome lights (env_dome.hpp) -- uses radians(opt.lightRadius). The
+    // radius only shapes the penumbra of rays that are cast at all: with
+    // opt.shadows off neither the direct pass (shading.hpp:shadowsOn) nor
+    // the pt2 gather NEE (pt1_gather.hpp:p.shadows) casts shadow rays, so a
+    // scene-carried radius cannot keep shadow work alive against the UI
+    // switch. Note the adaptive-AA soft-shadow boost keys off
+    // opt.lightRadius alone (not l.radius), a known minor inconsistency.
     l.radius = (opt.giIntegrator == 2 && dl.angularRadius > 0.0f)
                    ? dl.angularRadius
                    : radians(opt.lightRadius);

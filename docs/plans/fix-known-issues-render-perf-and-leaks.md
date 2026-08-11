@@ -9,10 +9,11 @@
 
 ## 1. 背景(なぜこの変更か)
 
-CueMol3 の「GI レンダー後に遅くなったまま戻らない」報告の調査で、症状の最有力候補
-(QoS 固着)とは独立に実在する umbreon 側のバグ・問題点が6件見つかった(詳細は
-known-issues 文書)。本プランはその6件を修正する。QoS 対策自体はスコープ外
-(cuemol2 側/別プランで検討)。
+CueMol3 の「GI レンダー後に遅くなったまま戻らない」報告の調査で、症状本体
+(Electron renderer プロセスの darwinbg 固着と特定済み。cuemol2 側
+`docs/architecture/umbreon-render-qos-throttling.md` 参照)とは独立に実在する
+umbreon 側のバグ・問題点が6件見つかった(詳細は known-issues 文書)。本プランは
+その6件を修正する。darwinbg 対策自体はスコープ外(cuemol2 側で対応)。
 
 決定事項:
 
@@ -212,4 +213,5 @@ refactor_check 運用:
    読んでいないことの確認を依頼
 3. shadows の意味変更(C5): GI ON(pt2)時に shadow トグルが gather にも効く。
    shadow OFF のユーザは出力が変わる(明るく・速く)のでリリースノート必須
-4. QoS/darwinbg 問題は未解決のまま(本プランのスコープ外)
+4. 速度低下の症状本体(darwinbg 固着)は cuemol2 側で対応
+   (`docs/architecture/umbreon-render-qos-throttling.md`。本プランのスコープ外)

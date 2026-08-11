@@ -31,9 +31,24 @@ soft shadow を切っても・GI を切って通常の ray tracing にしても�
 以下は、その調査の過程で見つかった、**この症状とは独立に実在する** umbreon の
 バグ・問題点。
 
+**ステータス(2026-08-11)**: 6件すべて branch `fix/known-issues-render-perf-and-leaks`
+で対応済み(修正プランは [fix-known-issues-render-perf-and-leaks.md](
+fix-known-issues-render-perf-and-leaks.md))。各節冒頭に個別ステータスを付記。
+残 TODO は以下の3点(いずれも低優先):
+
+- `BuiltScene` の RAII 化(現状は所有権移譲の前倒し + try/catch で実害を閉じた。
+  型としての安全化は将来の refactoring)
+- OIDN デバイスの常駐化(oidn-max-memory.md §9 から引き続き先送り。affinity 問題は
+  `setAffinity=false` で対処済みなので、残る利得はデバイス生成コストのみ)
+- `env_dome.hpp` / adaptive-AA boost が `opt.lightRadius` を直接読む不整合(問題6参照)
+
 ---
 
 ## 1. 例外発生時に RTCDevice + BVH(RTCScene)がリークする(高)
+
+**修正済み**: `device_`/`scene_` への所有権移譲を `buildEmbreeScene()` 成功直後へ
+前倒しし(以降の例外は `~EmbreeRenderer` → `releaseEmbree()` が回収)、
+`buildEmbreeScene()` 内部も try/catch で部分 scene の解放を一本化した。
 
 `src/umbreon/render/embree_renderer.cpp`。
 
@@ -87,6 +102,15 @@ group-alpha(半透明セクションが1つでもある)経路では `device` �
 
 ## 2. GI ON のとき `shadows` / `shadowSamples` が GI gather に一切効かない(中〜高)
 
+**修正済み(pt2 限定)**: `pt1EvalVertex` が `p.shadows` を尊重するようになり、
+pt2(既定)の詰め側だけが direct pass と同じ合成条件
+(`opt.shadows || opt.envLights > 0`)を配線する。pt1/cache は凍結契約のため
+常時 shadow-correct を維持(詰め側で true を強制)。dead field の
+`shadowSamples` は削除(gather に配線すると RNG シードが三角形 ID 由来のため
+相関バンディングになる。pt2 の soft NEE は spp 平均で実現済み)。
+shadows OFF の pt2 出力は変わる(遮蔽部の間接光が明るく・gather のシャドウレイが
+消えて速くなる: 1ab0 ゲートシーンで nee_frac 0.10 → 0.00)。
+
 `RenderOptions` から詰められてはいる(`embree_renderer.cpp:615-616`,
 `:1184`)が、受け側のフィールドは pt1/pt2 のどこからも読まれていない:
 
@@ -108,7 +132,7 @@ GI ゲザー頂点の NEE は常に無条件実行される:
 `integrator/pt1/pt1_gather.hpp:196` も同様。
 
 **帰結**: GI ON の状態で UI 側の shadow/soft-shadow を OFF にしても、GI のコスト
-(レンダー時間の 71〜90%、`progress_cost_model.hpp:12-13` のコメントより)は
+(レンダー時間の 71〜90%、`embree_renderer.cpp:1696-1697` の実測コメントより)は
 ほとんど減らない。減るのはダイレクトパスのシャドウレイのみ(`shading/shading.hpp:
 107-110`)。「soft shadow を切っても遅いまま」という今回の観察の一部は、
 バグではなくこの仕様どおりの挙動である可能性が高い(GI 自体を OFF にしても遅かった
@@ -120,12 +144,22 @@ UI 側が「shadow 設定は GI に効かない」ことを知らずに露出し
 
 ## 3. GI ON 時、デバッグ用 AOV `giRecordViz` が常時確保される(中、メモリ)
 
+**修正済み**: `RenderOptions::giWriteAov`(既定 false)を新設し、`giRecordViz` と
+`giOcclusion` の確保・書き込み・ダウンサンプル・dump を全てゲートした
+(既定で約 npix*4 float、1920x1440×ss3 なら約 400MB の節約)。bench には
+`--gi-write-aov` を追加。
+
 `embree_renderer.cpp:514`(確保)、`pipeline.cpp:216-217`(ダウンサンプル)。
 `opt.gi == true` であれば常にヒートマップ用バッファ(`npix*3` float)を確保・
 処理する。可視化専用で通常のレンダリングには不要なはずだが、ゲートするフラグが
 存在しない。1920x1440 出力 × supersample 3 なら単体で約 300MB。
 
 ## 4. OIDN がデノイズ呼び出しごとに TBB ワーカーへ affinity を打つ(中、環境依存)
+
+**対処済み**: デバイス commit 前に `device.set("setAffinity", false)` を設定し、
+`PinningObserver` の生成自体を抑止した(OIDN マニュアルが「アプリ側も TBB を使う
+場合」の推奨としている構成)。出力は bit-exact(refactor_check の OIDN 経路
+ケース含む)。デバイス常駐化は引き続きスコープ外。
 
 `experimental/irradiance_cache/denoise_oidn.cpp:64-65` で毎回
 `oidn::newDevice(oidn::DeviceType::CPU)` を作り、関数末尾で破棄する。deplibs の
@@ -145,6 +179,12 @@ affinity が残留し、以後の TBB 処理全体が遅くなりうる。
 
 ## 5. エッジパスにキャンセルチェックポイントが一つもない(低〜中)
 
+**修正済み**: `const RenderProgress* progress = nullptr` を edges/ の各関数に配線し、
+classify の行チャンク・trace のコーナ行/ループ・prune の8ラウンド・junction rewire の
+ラウンド・Stage4 の両チェーンパス・stroke 描画のチェーンループとラスタ行チャンク・
+obj-edges の emit ループでポーリングするようにした。キャンセル時は部分フレーム +
+`FrameResult::cancelled`(既存契約どおり)。null なら従来どおりゼロオーバーヘッド。
+
 キャンセルチェックの全箇所(`grep -rn cancelRequested src/umbreon/`):
 `embree_renderer.cpp:1398, 1515, 1621, 1707`、`pt1_gather.hpp:553`、
 `denoise_oidn.cpp:26`、`pipeline.cpp:138, 176`(いずれもフェーズ境界のみ)。
@@ -156,6 +196,13 @@ affinity が残留し、以後の TBB 処理全体が遅くなりうる。
 エッジパス(ほぼシングルスレッド)が完走するまで両者が CPU を奪い合う。
 
 ## 6. pt2 では `angularRadius`(シーン側)が `lightRadius`(オプション側)を上書きしうる(低、現状未実害)
+
+**文書化のみで対応**: 問題2の修正により、`shadows` OFF なら direct にも pt2 gather
+NEE にもシャドウレイ自体が飛ばなくなったため、「UI で影を切ったのにシーン側の値で
+シャドウ処理が残る」経路は閉じた(radius は撃たれるレイの penumbra 形状にしか
+効かない)。優先規則は `buildSceneLights` のコメントと docs/api/libumbreon.md に
+明文化。`env_dome.hpp:61` と adaptive-AA boost(`embree_renderer.cpp:1603`)が
+`opt.lightRadius` を直接読む不整合は残 TODO(低優先)。
 
 `embree_renderer.cpp:451-453`:
 ```cpp
