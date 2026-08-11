@@ -211,7 +211,8 @@ ScreenChain walkChain(CrackField& cf, int cx, int cy, CornerEdge e0,
 
 std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
                                           const std::uint32_t* objectId,
-                                          const float* surfAlpha) {
+                                          const float* surfAlpha,
+                                          const RenderProgress* progress) {
   std::vector<ScreenChain> chains;
   const int W = cf.W, H = cf.H;
   if (W <= 0 || H <= 0) return chains;
@@ -219,8 +220,11 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
   // Pass 1: open chains, seeded at TERMINAL corners (degree 1, 3 or 4) in
   // row-major corner order, each walking its unconsumed incident cracks in the
   // fixed E, S, W, N order. Junction-to-junction chains are maximal and every
-  // crack is emitted exactly once.
+  // crack is emitted exactly once. Cancel is polled per corner row (pass 1)
+  // and per walked loop (pass 2); the partial chain set is returned and the
+  // caller bails.
   for (int cy = 0; cy <= H; ++cy) {
+    if (progress && progress->cancelRequested()) return chains;
     for (int cx = 0; cx <= W; ++cx) {
       const int deg = cornerDegree(cf, cx, cy);
       if (deg == 0 || deg == 2) continue;
@@ -248,6 +252,7 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf, const float* viewZ,
     for (std::size_t i = 0; i < plane.size(); ++i) {
       const std::uint8_t b = plane[i];
       if (!(b & kCrackClassMask) || (b & kCrackConsumedBit)) continue;
+      if (progress && progress->cancelRequested()) return chains;
       const int x = static_cast<int>(i) % W, y = static_cast<int>(i) / W;
       // Seed corner and the walk direction along this crack: a right crack
       // starts at (x+1,y) walking S; a down crack starts at (x,y+1) walking E.

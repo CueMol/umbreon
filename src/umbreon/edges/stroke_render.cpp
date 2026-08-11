@@ -1200,7 +1200,8 @@ bool resolveStrokeStyle(const Scene& scene, const StrokeEdgeOptions& se,
 // depth/precedence stable sort and the TBB row-tiled deterministic rasterize.
 void renderStrokeChains(FrameResult& frame, const Scene& scene,
                         const RenderOptions& opt,
-                        const std::vector<StrokeChainInput>& chains) {
+                        const std::vector<StrokeChainInput>& chains,
+                        const RenderProgress* progress) {
   const StrokeEdgeOptions& se = opt.strokeEdges;
   const int W = frame.width, H = frame.height;
   if (W <= 0 || H <= 0) return;
@@ -1215,6 +1216,9 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
   std::vector<NodeDot> nodeDots;    // --stroke-node-dots overlay (else empty)
   std::vector<DebugPoly> debugPolys;
   for (std::size_t ci = 0; ci < chains.size(); ++ci) {
+    // Cooperative cancel: nothing has touched frame.color yet (rasterization
+    // happens after this loop), so bailing here leaves the frame line-free.
+    if (progress && progress->cancelRequested()) return;
     const StrokeChainInput& in = chains[ci];
     float halfThick = 0.0f, col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
     if (!resolveStrokeStyle(scene, se, ssScale, in.styleSlot, in.group,
@@ -1394,6 +1398,9 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
   tbb::parallel_for(
       tbb::blocked_range<int>(0, H),
       [&](const tbb::blocked_range<int>& rows) {
+        // Cooperative cancel: drop this row chunk (partial strokes remain;
+        // the caller reports the frame as cancelled).
+        if (progress && progress->cancelRequested()) return;
         const int rb = rows.begin(), re = rows.end();
         for (const StyledStrip& ss : strips)
           rasterizeStrip(frame.color, W, rb, re, ss);

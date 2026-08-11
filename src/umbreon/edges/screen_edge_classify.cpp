@@ -540,7 +540,8 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
                           const ScreenProj& sp,
                           const ScreenClassifyParams& params,
                           ScreenCrackDebug* dbg, const OcclusionQuery* probe,
-                          const ScreenClipAovs* clip) {
+                          const ScreenClipAovs* clip,
+                          const RenderProgress* progress) {
   CrackField cf;
   cf.W = W;
   cf.H = H;
@@ -569,6 +570,9 @@ CrackField classifyCracks(int W, int H, const float* viewZ,
   tbb::parallel_for(
       tbb::blocked_range<int>(0, H),
       [&](const tbb::blocked_range<int>& rows) {
+        // Cooperative cancel: drop this chunk whole; the caller bails on the
+        // partial field (same idiom as the renderer's primary row loop).
+        if (progress && progress->cancelRequested()) return;
         for (int y = rows.begin(); y != rows.end(); ++y) {
           const int row = y * W;
           for (int x = 0; x < W; ++x) {

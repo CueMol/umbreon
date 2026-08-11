@@ -22,6 +22,7 @@
 // this ordering on a private scene copy).
 #pragma once
 
+#include "render/render_progress.hpp"
 #include "render/render_types.hpp"  // ObjectSpaceEdgeOptions
 
 namespace umbreon {
@@ -34,7 +35,10 @@ struct Scene;
 // never themselves silhouetted). Primitives tagged fromEdgeMacro (baked POV
 // outlines) are skipped as sources. Reads scene.spheres, scene.cylinders,
 // scene.mesh and scene.camera; appends Cylinder edges to scene.cylinders. No-op
-// when opt.enable is false.
-void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt);
+// when opt.enable is false. `progress`, when non-null, is polled for
+// cancellation between the emit loops (per clipped segment): a cancelled call
+// appends nothing and the caller's render bails at its first row check.
+void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt,
+                              const RenderProgress* progress = nullptr);
 
 }  // namespace umbreon

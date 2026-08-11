@@ -169,8 +169,12 @@ void clipAndEmit(const RawSeg& seg, const ObjectSpaceEdgeOptions& opt, const Sce
 
 }  // namespace
 
-void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt) {
+void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt,
+                              const RenderProgress* progress) {
   if (!opt.enable) return;  // byte-identical default: no edges appended
+  const auto cancelled = [progress] {
+    return progress && progress->cancelRequested();
+  };
 
   // SNAPSHOT the original primitive counts so the edges we append below are not
   // themselves silhouetted (and the clip tests only against the originals).
@@ -195,11 +199,14 @@ void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt) {
   std::vector<Cylinder> edges;
   edges.reserve(raw.size());
   if (opt.clip) {
-    for (const RawSeg& s : raw)
+    for (const RawSeg& s : raw) {
+      if (cancelled()) return;  // nothing appended yet; render bails next
       clipAndEmit(s, opt, scene, sphereCount, cylinderCount, edges);
+    }
   } else {
     for (const RawSeg& s : raw) edges.push_back(makeEdge(s.a, s.b, opt, s.group));
   }
+  if (cancelled()) return;
 
   // 3) Triangle-mesh edges (silhouette/crease/border). Detection is factored to
   //    the shared extractor (render/mesh_feature_edges.cpp); each topology-tagged
@@ -236,6 +243,7 @@ void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt) {
     const float step = opt.width > 0.0f ? 0.5f * opt.width : 0.0f;
     std::vector<int> excl;
     for (const FeatureSeg& s : fm.segs) {
+      if (cancelled()) return;
       excl.clear();
       if (s.face0 >= 0) excl.push_back(s.face0);
       if (s.face1 >= 0) excl.push_back(s.face1);

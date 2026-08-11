@@ -262,13 +262,16 @@ struct ScreenClassifyParams {
 // ::probeWindowFrac); null/empty keeps the pre-probe rescue behavior.
 // `clip`, when non-null, supplies the clip-cut G-buffer planes: cracks along
 // boundaries the view-clip planes cut classify as nothing (kClipVeto).
+// `progress`, when non-null, is polled for cancellation at row granularity;
+// cancelled rows leave their cracks unclassified (partial field, caller bails).
 CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
                           const ScreenProj& sp,
                           const ScreenClassifyParams& params,
                           ScreenCrackDebug* dbg = nullptr,
                           const OcclusionQuery* probe = nullptr,
-                          const ScreenClipAovs* clip = nullptr);
+                          const ScreenClipAovs* clip = nullptr,
+                          const RenderProgress* progress = nullptr);
 
 // One traced chain vertex, in STROKE pixel coordinates: the pixel-corner
 // lattice node (cx,cy), cx in [0..W], cy in [0..H], maps to (cx-0.5, cy-0.5)
@@ -343,7 +346,9 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf,
                                           const float* viewZ = nullptr,
                                           const std::uint32_t* objectId =
                                               nullptr,
-                                          const float* surfAlpha = nullptr);
+                                          const float* surfAlpha = nullptr,
+                                          const RenderProgress* progress =
+                                              nullptr);
 
 // Stage 2.5 self-support predicate: true when the chain contains any
 // non-DepthGap edgel or at least `minStrong` STRONG DepthGap edgels (a lone
@@ -398,7 +403,9 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
                                          const float* viewZ,
                                          const std::uint32_t* objectId,
                                          int minStrong = 1,
-                                         const float* surfAlpha = nullptr);
+                                         const float* surfAlpha = nullptr,
+                                         const RenderProgress* progress =
+                                             nullptr);
 
 // ---------------------------------------------------------------------------
 // Stage 3: geometry cleanup. These operate on a bare vertex polyline (the
@@ -452,6 +459,7 @@ void mergeShortClassRuns(std::vector<std::uint8_t>& cls,
 // (one segment ray per strongNdelta-rescue candidate, see classifyCracks).
 void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                             const RenderOptions& opt,
-                            const OcclusionQuery& occluded = OcclusionQuery{});
+                            const OcclusionQuery& occluded = OcclusionQuery{},
+                            const RenderProgress* progress = nullptr);
 
 }  // namespace umbreon

@@ -36,7 +36,7 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   const Scene* scenePtr = &sceneIn;
   if (opt.objectSpaceEdges.enable) {
     objEdgeScene = sceneIn;
-    generateObjectSpaceEdges(objEdgeScene, opt.objectSpaceEdges);
+    generateObjectSpaceEdges(objEdgeScene, opt.objectSpaceEdges, progress);
     scenePtr = &objEdgeScene;
   }
   const Scene& scene = *scenePtr;
@@ -161,12 +161,15 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     // The renderer's live BVH backs the extractor's fold probe (a segment
     // occlusion test per strongNdelta-rescue candidate crack); the plain
     // any-hit path is used (no exclude faces / filters).
+    // The edge pass polls `progress` for cancellation at its stage / loop
+    // boundaries; a cancelled pass returns early with a partial line set and
+    // the Postprocess boundary check below flags frame.cancelled.
     applyStrokeEdges(frame, scene, opt,
                      [&renderer](const Vec3& p, const Vec3& q,
                                  const int* excludeFaces, int nExclude) {
                        return renderer.occluded(p, q, excludeFaces, nExclude);
                      },
-                     OcclusionQuery{});
+                     OcclusionQuery{}, progress);
   }
 
   // Fog / downsample / denoise / gamma: the finishing pass. One last cancel

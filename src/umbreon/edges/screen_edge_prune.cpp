@@ -67,11 +67,15 @@ std::vector<ScreenChain> pruneWeakChains(CrackField& cf,
                                          const float* viewZ,
                                          const std::uint32_t* objectId,
                                          int minStrong,
-                                         const float* surfAlpha) {
+                                         const float* surfAlpha,
+                                         const RenderProgress* progress) {
   // Outer loop: prune, retrace, re-evaluate. Bounded: every round erases at
   // least one chain's cracks for good; the cap only bounds the cost of
   // pathological peeling cascades (leftovers are then kept, not lost).
+  // Cancel is polled per round: the current chain set is returned as-is and
+  // the caller bails.
   for (int round = 0; round < 8; ++round) {
+    if (progress && progress->cancelRequested()) break;
     const std::size_t n = traced.size();
     std::vector<char> kept(n, 0), interior(n, 0);
     for (std::size_t i = 0; i < n; ++i) {
