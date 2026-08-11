@@ -315,7 +315,7 @@ client が `Scene`/`RenderOptions` を直接作る際に、**ライブラリが�
 | **client 固有（毎回計算/設定）** | `width`, `height`, `aoDistance`（AO 時）, `scene.ambientColor`（GI 時）, `scene.assumedGamma` |
 | **スタイル/任意** | `specularScale`, `pt1SkyMode`, `pt1SkyRadiance`, `giEnvIntensity`, `giIntensity`, `transparency`, `transparentBackground`, `envLights` 系 |
 | **既定固定（UI 不要）** | `giMaxDistance`(auto), `pt1Seed`, `maxTransparentLayers`, `pt1HalfRes`, `pt1EdgePatchThresh`, `pt1Upsample*`, `pt1Clamp`, `denoiser`/`denoise*`/`oidn*`, cache 専用（`giSamples`, `giAccuracy`, `giRecordSpacing`, `giGradients`, `giOutlierReject`, `giAdaptive`, `giNormalReject`, `giComponentReject`, `giSeedPerVertex`） |
-| **デバッグ（AOV/検証）** | `aaDebug`, `aoResDebug`, `aoWriteAov`, `pt1Stats` |
+| **デバッグ（AOV/検証）** | `aaDebug`, `aoResDebug`, `aoWriteAov`, `giWriteAov`, `pt1Stats` |
 
 > **CLI 側の追随（任意の後続作業）**: 現行 `--quality` は `draft/high/ultra` の 3 段だが、段ごとに
 > `giBounces` を 1/2/3 と変えており **品質軸と見た目軸が混ざっている**（段を上げると明るさ・

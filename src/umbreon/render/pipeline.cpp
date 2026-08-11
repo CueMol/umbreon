@@ -205,19 +205,24 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
       frame.bentNormal =
           boxDownsample(frame.bentNormal, frame.width, frame.height, 3, ss);
     }
-    // GI cache AOVs (continuous): downsample to the output resolution like the
+    // GI AOVs (continuous): downsample to the output resolution like the
     // other guide channels. position is world-space, so the box average is a
-    // mild edge blend, acceptable for a debug/guide buffer.
+    // mild edge blend, acceptable for a debug/guide buffer. Each buffer is
+    // gated on its own presence: the debug pair (giRecordViz/giOcclusion) is
+    // only allocated under giWriteAov, and boxDownsample reads its source
+    // unconditionally, so a shared gate would walk empty vectors.
     if (!frame.indirect.empty()) {
       frame.position =
           boxDownsample(frame.position, frame.width, frame.height, 3, ss);
       frame.indirect =
           boxDownsample(frame.indirect, frame.width, frame.height, 3, ss);
+    }
+    if (!frame.giRecordViz.empty())
       frame.giRecordViz =
           boxDownsample(frame.giRecordViz, frame.width, frame.height, 3, ss);
+    if (!frame.giOcclusion.empty())
       frame.giOcclusion =
           boxDownsample(frame.giOcclusion, frame.width, frame.height, 1, ss);
-    }
     frame.width = finalW;
     frame.height = finalH;
   }

@@ -435,6 +435,7 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `aoLowDiscrepancy` | false | true で Hammersley + per-pixel Cranley-Patterson（同サンプル数で AO 分散↓） |
 | `aoDiffuseFactor` | 0.0 | 0 = ambient のみ。> 0 で凹部の直接 diffuse も減光（粗い間接遮蔽近似） |
 | `aoWriteAov` | false | true で AO/G-buffer AOV（albedo/normal/contact/shape/bent/avgHitDist）を `FrameResult` へ出力。色は不変 |
+| `giWriteAov` | false | true で GI デバッグ AOV（giRecordViz/giOcclusion）を `FrameResult` へ出力。false（既定）では空のまま（npix*4 float 節約）。色は不変 |
 | `shadows` | false | ライトからの影を落とす。false = OFF |
 | `shadowSamples` | 1 | ライトあたりの影レイ数（> 1 でソフト＝エリアライト） |
 | `lightRadius` | 0.0 | ライトの角半径（度）。> 0 でソフト影（penumbra） |
@@ -474,6 +475,9 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `contactAo` / `shapeAo` | `vector<float>` | AO の接触/形状成分（未ブレンド）。**`aoWriteAov` 有効時のみ充填** |
 | `bentNormal` | `vector<float>` | `width*height*3` 平均非遮蔽方向。**`aoWriteAov` 有効時のみ充填** |
 | `avgHitDist` | `vector<float>` | 平均オクルーダ距離（world）。暗さ要因の切り分け用。**`aoWriteAov` 有効時のみ充填** |
+| `position` / `indirect` | `vector<float>` | `width*height*3` world 空間 first-hit 位置 / 合成済み間接照度。**`gi` 有効時のみ充填**。それ以外は空 |
+| `giRecordViz` | `vector<float>` | `width*height*3` cache レコード半径のデバッグヒートマップ（cache integrator のみ書き込み）。**`gi` かつ `giWriteAov` 有効時のみ充填** |
+| `giOcclusion` | `vector<float>` | `width*height` gather 遮蔽率（AO 的）。**`gi` かつ `giWriteAov` 有効時のみ充填** |
 | `renderSeconds` | `double` | レンダ時間 |
 | `effectiveTriangles` | `size_t` | 実効三角形数（instance 込み） |
 | `denoiserUsed` | `int` | 実際に走った**最終カラー**デノイザ（0=None, 1=AtrousBilateral, 2=OIDN）。2 は OIDN が実処理したときのみ。1 は明示 a-trous **および全 OIDN フォールバック**（非搭載ビルド／OIDN ランタイムエラー）を含む |

@@ -258,12 +258,13 @@ inline RenderCostEstimate renderCostEstimate(const Scene& scene,
 
   // Box-downsample every live AOV channel at hi-res, then denoise and gamma at
   // the final resolution. Channel counts mirror the buffers renderFrame
-  // actually downsamples (color 4; GI adds normal + position/indirect/
-  // giRecordViz/giOcclusion, except that stroke edges keep normal at hi-res).
+  // actually downsamples (color 4; GI adds normal + position/indirect, except
+  // that stroke edges keep normal at hi-res; the giRecordViz/giOcclusion debug
+  // pair exists only under giWriteAov).
   double post = kGammaPerPixel * nFinal;
   if (ssc > 1) {
     int chans = 4;
-    if (giRuns) chans += hi.strokeEdges.enable ? 10 : 13;
+    if (giRuns) chans += (hi.strokeEdges.enable ? 6 : 9) + (hi.giWriteAov ? 4 : 0);
     if (hi.aoSamples > 0) chans += 6;
     post += kDownsamplePerPixelChannel * nHi * chans;
   }

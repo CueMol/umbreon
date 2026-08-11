@@ -297,6 +297,7 @@ int main() {
     o.pt1Spp = 16;
     o.pt1HalfRes = false;
     o.pt1Denoise = false;
+    o.giWriteAov = true;  // this test reads the giOcclusion debug AOV
     const umbreon::FrameResult f = umbreon::render(sc2, o);
     // Center pixel: the sphere's front pole (head-on hit, |P| ~ 1, t ~ 199).
     const std::size_t cpix = static_cast<std::size_t>(16) * f.width + 16;
@@ -346,6 +347,40 @@ int main() {
     s.check("pt1DenoiserUsed == 1 (a-trous fallback, OIDN not built)",
             umbreon::render(sc, o).pt1DenoiserUsed == 1);
 #endif
+  }
+
+  // --- giWriteAov gating: the giRecordViz/giOcclusion debug AOVs exist only
+  // when explicitly requested, and the gate changes no color bytes.
+  {
+    umbreon::RenderOptions o = makeGiOptions(2, 1.0f);  // pt2, the default path
+    const umbreon::FrameResult off = umbreon::render(sc, o);
+    s.check("giWriteAov off: giRecordViz stays empty", off.giRecordViz.empty());
+    s.check("giWriteAov off: giOcclusion stays empty", off.giOcclusion.empty());
+    o.giWriteAov = true;
+    const umbreon::FrameResult on = umbreon::render(sc, o);
+    const std::size_t np = static_cast<std::size_t>(on.width) * on.height;
+    s.check("giWriteAov on: giOcclusion sized", on.giOcclusion.size() == np);
+    s.check("giWriteAov on: giRecordViz sized",
+            on.giRecordViz.size() == np * 3);
+    s.check("giWriteAov gate changes no color bytes", on.color == off.color);
+  }
+
+  // --- supersample + GI with the debug AOVs off: regression for the AOV
+  // downsample gates (a shared gate would walk the now-empty debug buffers
+  // out of bounds). The cache integrator exercises its own writer guards.
+  {
+    umbreon::RenderOptions o = makeGiOptions(2, 1.0f);
+    o.supersample = 2;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("ss=2 + pt2 gi renders with debug AOVs off",
+            f.width == o.width && f.height == o.height &&
+                f.giOcclusion.empty());
+    umbreon::RenderOptions oc = makeGiOptions(0, 1.0f);
+    oc.supersample = 2;
+    const umbreon::FrameResult fc = umbreon::render(sc, oc);
+    s.check("ss=2 + cache gi renders with debug AOVs off",
+            fc.width == oc.width && fc.height == oc.height &&
+                fc.giRecordViz.empty());
   }
 
   return s.report();

@@ -241,6 +241,7 @@ area light、emissive GI、traced reflection、principled の traced specular)�
 | `--sky-radiance r,g,b` | 1,1,1 | GI: sky のティント(ambient エネルギーに乗算) |
 | `--seed <int>` | 0 | GI: 決定論的 per-pixel RNG シード |
 | `--gi-max-dist <world>` | 0 | gather レイの最大距離。cache: auto=0.1×対角 / pt1・pt2: auto=∞(意図的な差) |
+| `--gi-write-aov <on\|off>` | off | GI デバッグ AOV(giRecordViz/giOcclusion)を `FrameResult` に出力(`--dump-aov` の giRecords/giOpenness もこれが前提)。off では空のまま(高解像 × supersample で数百 MB 節約)。色は不変 |
 | `--pt1-upsample-normal-pow <f>` | 32 | upsample の法線 edge-stop 指数 |
 | `--pt1-upsample-depth-scale <f>` | 0.02 | upsample の深度 edge-stop スケール |
 

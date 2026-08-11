@@ -76,12 +76,16 @@ struct FrameResult {
   std::vector<float> shapeAo;     // width*height   mid+large-radius openness
   std::vector<float> bentNormal;  // width*height*3 average unoccluded direction
   std::vector<float> avgHitDist;  // width*height   mean occluder distance (world)
-  // Surface-irradiance-cache AOVs: sized and written ONLY when RenderOptions::gi
-  // is on (else empty, keeping the default path byte-identical). `position` is the
-  // world-space first hit (cache spatial key / denoise guide); `indirect` is the
-  // interpolated indirect irradiance E_cached (debug / denoise demodulation);
-  // `giRecordViz` is a debug false-color of the nearest cache record's effective
-  // radius R_i (bright = small radius = dense records, e.g. in concavities).
+  // GI AOVs: `position` / `indirect` are sized and written ONLY when
+  // RenderOptions::gi is on (else empty, keeping the default path
+  // byte-identical). `position` is the world-space first hit (gather spatial
+  // key / denoise guide); `indirect` is the composited indirect irradiance
+  // (debug / denoise demodulation). The debug pair additionally requires
+  // RenderOptions::giWriteAov: `giRecordViz` is a false-color of the nearest
+  // cache record's effective radius R_i (bright = small radius = dense
+  // records, e.g. in concavities; cache integrator only) and `giOcclusion`
+  // the gather occlusion fraction. Both stay empty by default -- together
+  // they cost npix*4 floats, hundreds of MB at production supersampled sizes.
   std::vector<float> position;    // width*height*3 world-space first-hit position
   std::vector<float> indirect;    // width*height*3 interpolated E_cached
   std::vector<float> giRecordViz; // width*height*3 record-radius (log R_i) heatmap
