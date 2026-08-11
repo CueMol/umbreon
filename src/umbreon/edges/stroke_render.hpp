@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "render/render_progress.hpp"
 #include "render/render_types.hpp"
 #include "scene.hpp"
 
@@ -103,9 +104,13 @@ bool resolveStrokeStyle(const Scene& scene, const StrokeEdgeOptions& se,
 // (smooth/taper per opt.strokeEdges), split at hidden runs into miter-joined
 // ribbon strips, then stable-sort all strips (farther view-z first, precedence
 // tie-break) and rasterize row-tiled with TBB (deterministic). Chains that
-// resolve to a disabled style are skipped.
+// resolve to a disabled style are skipped. `progress`, when non-null, is
+// polled for cancellation per chain (before rasterizing anything lands on the
+// frame) and per raster row chunk; a cancelled call may leave the strokes
+// partially composited.
 void renderStrokeChains(FrameResult& frame, const Scene& scene,
                         const RenderOptions& opt,
-                        const std::vector<StrokeChainInput>& chains);
+                        const std::vector<StrokeChainInput>& chains,
+                        const RenderProgress* progress = nullptr);
 
 }  // namespace umbreon

@@ -297,6 +297,12 @@ Options parseCli(int argc, char** argv) {
       if (o.ok && !parseBool(v, o.gi)) fail("--gi expects on/off");
       continue;
     }
+    if (a == "--gi-write-aov") {
+      std::string v = value("--gi-write-aov");
+      if (o.ok && !parseBool(v, o.giWriteAov))
+        fail("--gi-write-aov expects on/off");
+      continue;
+    }
     if (a == "--gi-samples") {
       o.giSamples = std::atoi(value("--gi-samples").c_str());
       continue;
@@ -1241,6 +1247,7 @@ void printUsage(const char* prog) {
       "  --gi-bounces <int>       indirect bounces (1 = one-bounce)     [1]\n"
       "  --gi-gradients <on|off>  Ward-Heckbert gradient interpolation [off]\n"
       "  --gi-outlier-reject <on|off> lift isolated dark cache records  [on]\n"
+      "  --gi-write-aov <on|off>  emit GI debug AOVs (with --dump-aov) [off]\n"
       "  --denoiser <none|atrous|oidn> GI denoise backend  [atrous when --gi]\n"
       "  --denoise-iters <int>    a-trous wavelet iterations            [5]\n"
       "  --denoise-sigma-z <f>    depth edge-stop sigma                 [1]\n"

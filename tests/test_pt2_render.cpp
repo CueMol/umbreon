@@ -510,5 +510,38 @@ int main() {
             bitEqual(t1.color, f1.color));
   }
 
+  // --- The render's shadow switch gates the pt2 gather NEE. pt1 is the
+  // frozen anchor: its gather stays always-shadowed, so toggling shadows must
+  // not move its indirect output by a single bit (permanent freeze guard).
+  {
+    const umbreon::Scene sc = makeScene(false, 0.0f);
+    umbreon::RenderOptions p1off = makeOpts(1);
+    umbreon::RenderOptions p1on = makeOpts(1);
+    p1on.shadows = true;
+    const umbreon::FrameResult a = umbreon::render(sc, p1off);
+    const umbreon::FrameResult b = umbreon::render(sc, p1on);
+    s.check("pt1 gather ignores the shadow switch (indirect bit-equal)",
+            bitEqual(a.indirect, b.indirect));
+
+    umbreon::RenderOptions p2off = makeOpts(2);  // shadows default off
+    umbreon::RenderOptions p2on = makeOpts(2);
+    p2on.shadows = true;
+    const umbreon::FrameResult c = umbreon::render(sc, p2off);
+    const umbreon::FrameResult c2 = umbreon::render(sc, p2off);
+    s.check("pt2 shadows-off render is run-to-run deterministic",
+            bitEqual(c.color, c2.color) && bitEqual(c.indirect, c2.indirect));
+    const umbreon::FrameResult d = umbreon::render(sc, p2on);
+    s.check("pt2 gather honors the shadow switch (indirect differs)",
+            !bitEqual(c.indirect, d.indirect));
+    auto meanInd = [](const umbreon::FrameResult& f) {
+      double t = 0.0;
+      for (float v : f.indirect) t += v;
+      return f.indirect.empty() ? 0.0
+                                : t / static_cast<double>(f.indirect.size());
+    };
+    s.check("pt2 unshadowed gather is not darker than the shadowed one",
+            meanInd(c) >= meanInd(d));
+  }
+
   return s.report();
 }

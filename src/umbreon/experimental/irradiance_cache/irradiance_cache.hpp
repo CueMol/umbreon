@@ -83,8 +83,13 @@ struct IrradianceCacheParams {
   float accuracy = 0.15f;              // interpolation accuracy a
   float normalReject = 0.85f;          // min dot(n_x, n_rec)
   bool componentReject = true;         // reject cross-section records
-  bool shadows = false;                // include direct shadows in the gather
-  int shadowSamples = 1;
+  // Shadow-test the gather vertices' NEE against the distant/dome lights.
+  // Only the pt2 fill site honors the render's shadow switch here; the pt1
+  // and cache fill sites force true so their frozen outputs never move
+  // (see runPt1GiPass / runIrradianceCacheGiPass in embree_renderer.cpp).
+  // The cache's own evaluator (oneBounceRadiance below) ignores the flag and
+  // stays always-shadowed -- it is frozen with the rest of the cache path.
+  bool shadows = true;
 };
 
 // Uniform-grid spatial index over the records, keyed by world voxel. Each record
@@ -232,11 +237,13 @@ inline Vec3 oneBounceRadiance(const IrradianceCacheParams& p, const RTCRayHit& r
   const float eps = selfIntersectEps(Py, wi, rh.ray.tfar);
 
   // Direct irradiance at y (no albedo, no 1/pi): sum of lit lights' N.L * color,
-  // each shadow-tested. The bounce-source visibility is NOT optional: a wall deep
-  // in a cavity is in shadow, so it must bounce no light -- otherwise enclosed
-  // regions get filled by phantom-lit walls and never darken. (This is decoupled
-  // from the primary render's `shadows` flag: the GI gather is always physically
-  // shadow-correct even when the direct pass draws no hard shadows.) Diffuse
+  // each shadow-tested. The bounce-source visibility matters physically: a wall
+  // deep in a cavity is in shadow, so it must bounce no light -- otherwise
+  // enclosed regions get filled by phantom-lit walls and never darken. This
+  // cache evaluator is FROZEN always-shadowed regardless of p.shadows (the
+  // experimental cache path never moves); the pt1/pt2 gather core
+  // (pt1_gather.hpp:pt1EvalVertex) is where p.shadows is honored, and only
+  // the pt2 fill site wires the render's shadow switch into it. Diffuse
   // reflectance mat.diffuse * Cy then multiplies.
   Vec3 E{0.0f, 0.0f, 0.0f};
   uint32_t s0 = hashU32(rh.hit.primID), s1 = hashU32(rh.hit.geomID + 0x9E3779B9u);

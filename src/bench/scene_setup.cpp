@@ -505,6 +505,7 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.giSeedPerVertex = opt.giSeedPerVertex;
   ropt.giGradients = opt.giGradients;
   ropt.giOutlierReject = opt.giOutlierReject;
+  ropt.giWriteAov = opt.giWriteAov;
   // Path-traced integrator selection + knobs. pt2 is the default and pt1 the
   // frozen anchor; both read the pt1* fields. giIntegrator == 0 selects the
   // experimental irradiance cache instead, which never reads them.

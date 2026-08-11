@@ -312,5 +312,43 @@ int main() {
     }
   }
 
+  // 12) Cancel from inside the Edges phase. The stroke edge pass polls the
+  //     cancel flag at its stage / loop boundaries (classify rows, trace,
+  //     prune rounds, junction rewire, chain passes, rasterize rows), so a
+  //     cancel observed during Edges must return a flagged partial frame
+  //     instead of running the pass to completion.
+  {
+    const umbreon::Scene scene = makeScene();
+    umbreon::RenderOptions opt = makeOpts();
+    opt.width = 384;
+    opt.height = 384;
+    opt.strokeEdges.enable = true;
+
+    umbreon::RenderProgress prog;
+    std::atomic<bool> running{true};
+    std::atomic<bool> sawEdges{false};
+    std::thread poller([&] {
+      while (running.load(std::memory_order_relaxed)) {
+        if (prog.phase() == umbreon::RenderPhase::Edges) {
+          sawEdges.store(true, std::memory_order_relaxed);
+          prog.requestCancel();
+          return;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+      }
+    });
+    const umbreon::FrameResult f = umbreon::render(scene, opt, prog);
+    running.store(false, std::memory_order_relaxed);
+    poller.join();
+
+    // Timing-dependent phase: only assert when Edges was actually observed
+    // (same pattern as the GI cancel case above).
+    if (sawEdges.load(std::memory_order_relaxed)) {
+      s.check("cancel during Edges returns a flagged frame", f.cancelled);
+      s.check("cancelled Edges render is not marked Done",
+              prog.phase() != umbreon::RenderPhase::Done);
+    }
+  }
+
   return s.report();
 }

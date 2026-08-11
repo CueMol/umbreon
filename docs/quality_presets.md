@@ -216,6 +216,10 @@ CLI（品質段を明示フラグで・バウンスは固定）:
 - `lightRadius > 0` でエリアライト＝ソフト影（penumbra）。度指定でシーン非依存。大きいほど
   penumbra が広くノイジーになるので `shadowSamples` を増やす。
 - コスト ≈ `supersample² × ライト数 × shadowSamples` の二次レイ。
+- **GI（pt2）併用時**: `shadows` は gather 内 NEE のシャドウレイも制御する（off なら GI 側の
+  シャドウレイが消えて速くなる代わりに遮蔽部の間接光が明るくなる）。ソフト影の GI 側コストは
+  ゼロ（pt2 は spp 平均で penumbra を作るため `shadowSamples` は gather に影響しない）。
+  pt1/cache の gather は凍結のため常時 shadow-correct。
 
 CLI: `--shadows on --shadow-samples N --light-radius <deg>`。
 
@@ -315,7 +319,7 @@ client が `Scene`/`RenderOptions` を直接作る際に、**ライブラリが�
 | **client 固有（毎回計算/設定）** | `width`, `height`, `aoDistance`（AO 時）, `scene.ambientColor`（GI 時）, `scene.assumedGamma` |
 | **スタイル/任意** | `specularScale`, `pt1SkyMode`, `pt1SkyRadiance`, `giEnvIntensity`, `giIntensity`, `transparency`, `transparentBackground`, `envLights` 系 |
 | **既定固定（UI 不要）** | `giMaxDistance`(auto), `pt1Seed`, `maxTransparentLayers`, `pt1HalfRes`, `pt1EdgePatchThresh`, `pt1Upsample*`, `pt1Clamp`, `denoiser`/`denoise*`/`oidn*`, cache 専用（`giSamples`, `giAccuracy`, `giRecordSpacing`, `giGradients`, `giOutlierReject`, `giAdaptive`, `giNormalReject`, `giComponentReject`, `giSeedPerVertex`） |
-| **デバッグ（AOV/検証）** | `aaDebug`, `aoResDebug`, `aoWriteAov`, `pt1Stats` |
+| **デバッグ（AOV/検証）** | `aaDebug`, `aoResDebug`, `aoWriteAov`, `giWriteAov`, `pt1Stats` |
 
 > **CLI 側の追随（任意の後続作業）**: 現行 `--quality` は `draft/high/ultra` の 3 段だが、段ごとに
 > `giBounces` を 1/2/3 と変えており **品質軸と見た目軸が混ざっている**（段を上げると明るさ・

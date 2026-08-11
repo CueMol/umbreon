@@ -444,10 +444,18 @@ std::vector<Light> buildSceneLights(const Scene& scene,
     l.color = Vec3{dl.color.x * dl.intensity, dl.color.y * dl.intensity,
                    dl.color.z * dl.intensity};
     l.highlight = dl.castsHighlight;
-    // Soft-shadow angular radius (0 = hard). pt2 honors a per-light AREA
-    // radius when the scene carries one (POV area_light via SpecLighting);
-    // pt1/cache keep the global CLI radius so their sample streams -- and
-    // therefore their byte-exact outputs -- are untouched by area scenes.
+    // Soft-shadow angular radius (0 = hard). PRECEDENCE: under pt2 a
+    // per-light scene AREA radius (POV area_light via SpecLighting), when
+    // present, wins over the global option; everything else -- pt1/cache
+    // (their sample streams, and therefore byte-exact outputs, must stay
+    // untouched by area scenes), pt2 without a scene radius, and the env
+    // dome lights (env_dome.hpp) -- uses radians(opt.lightRadius). The
+    // radius only shapes the penumbra of rays that are cast at all: with
+    // opt.shadows off neither the direct pass (shading.hpp:shadowsOn) nor
+    // the pt2 gather NEE (pt1_gather.hpp:p.shadows) casts shadow rays, so a
+    // scene-carried radius cannot keep shadow work alive against the UI
+    // switch. Note the adaptive-AA soft-shadow boost keys off
+    // opt.lightRadius alone (not l.radius), a known minor inconsistency.
     l.radius = (opt.giIntegrator == 2 && dl.angularRadius > 0.0f)
                    ? dl.angularRadius
                    : radians(opt.lightRadius);
@@ -503,16 +511,21 @@ void allocateFrameBuffers(const Scene& scene, const RenderOptions& opt, int W,
       res.shapeAo.assign(npix, 1.0f);
       res.avgHitDist.assign(npix, 0.0f);
     }
-    // GI cache AOVs: world-space first-hit position (cache seed key), the
-    // interpolated indirect (debug E_cached) and the record-density debug viz.
-    // The normal AOV is also needed as the cache seed normal, so allocate it for
-    // the GI path too (harmless: written from the same N, no color change).
+    // GI working buffers: world-space first-hit position (gather seed key) and
+    // the interpolated indirect (E, also the denoise target). The normal AOV is
+    // also needed as the gather seed normal, so allocate it for the GI path too
+    // (harmless: written from the same N, no color change). The record-density
+    // viz and the gather-occlusion map are debug-only AOVs (never read by the
+    // render itself), so they ride the explicit giWriteAov gate: at production
+    // resolutions they alone cost hundreds of MB.
     if (opt.gi) {
       if (res.normal.empty()) res.normal.assign(npix * 3, 0.0f);
       res.position.assign(npix * 3, 0.0f);
       res.indirect.assign(npix * 3, 0.0f);
-      res.giRecordViz.assign(npix * 3, 0.0f);
-      res.giOcclusion.assign(npix, 0.0f);
+      if (opt.giWriteAov) {
+        res.giRecordViz.assign(npix * 3, 0.0f);
+        res.giOcclusion.assign(npix, 0.0f);
+      }
     }
   }
   res.effectiveTriangles = scene.effectiveTriangles();
@@ -612,8 +625,12 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                          ? opt.giMaxDistance
                          : std::numeric_limits<float>::infinity();
     gp.spacing = diag * 0.007f;  // unused by the per-pixel gather; keep valid
-    gp.shadows = opt.shadows;
-    gp.shadowSamples = opt.shadowSamples;
+    // Gather NEE shadow rays: only pt2 honors the direct pass's composite
+    // shadow switch (hit_shader.hpp:shadowsActive -- env dome lights imply
+    // shadows). pt1 is the FROZEN anchor: its gather stays always-shadowed
+    // regardless of opt.shadows so its output never moves.
+    gp.shadows =
+        (opt.giIntegrator == 2) ? (opt.shadows || opt.envLights > 0) : true;
 
     const int spp = std::max(1, opt.pt1Spp);
     detail::Pt1RayStats rayStats;
@@ -909,6 +926,7 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
     // (mat.diffuse * pigment) * E. The constant ambient was already dropped in
     // the shade (gi path); occlusion lives inside E, counted exactly once.
     const float gI = opt.giIntensity;
+    const bool writeOcc = !res.giOcclusion.empty();  // giWriteAov gate
     tbb::parallel_for(tbb::blocked_range<int>(0, H),
                       [&](const tbb::blocked_range<int>& rows) {
       for (int py = rows.begin(); py != rows.end(); ++py) {
@@ -924,7 +942,7 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
           res.indirect[pix * 3 + 0] = ind.x;
           res.indirect[pix * 3 + 1] = ind.y;
           res.indirect[pix * 3 + 2] = ind.z;
-          res.giOcclusion[pix] = occBuf[pix];
+          if (writeOcc) res.giOcclusion[pix] = occBuf[pix];
         }
       }
       budget.composite.addWork(
@@ -1180,8 +1198,9 @@ void runIrradianceCacheGiPass(const Scene& scene, const RenderOptions& opt,
     gp.accuracy = opt.giAccuracy;
     gp.normalReject = opt.giNormalReject;
     gp.componentReject = opt.giComponentReject;
-    gp.shadows = opt.shadows;
-    gp.shadowSamples = opt.shadowSamples;
+    // The cache evaluator ignores this flag (frozen always-shadowed); keep it
+    // pinned true so nothing can drift if that ever changes.
+    gp.shadows = true;
 
     detail::IrradianceCache cache = detail::buildIrradianceCache(
         gp, W, H, res.position.data(), res.normal.data(), giGroup.data(),
@@ -1198,6 +1217,8 @@ void runIrradianceCacheGiPass(const Scene& scene, const RenderOptions& opt,
         std::fmax(std::log(std::fmax(gp.maxDistance, densRmin)) - densLogLo, 1.0e-6f);
 
     // [D] per-pixel interpolation into the debug AOVs (parallel, read-only).
+    const bool writeOcc = !res.giOcclusion.empty();   // giWriteAov gate
+    const bool writeViz = !res.giRecordViz.empty();   // giWriteAov gate
     tbb::parallel_for(tbb::blocked_range<int>(0, H),
                       [&](const tbb::blocked_range<int>& rows) {
       for (int py = rows.begin(); py != rows.end(); ++py) {
@@ -1230,14 +1251,15 @@ void runIrradianceCacheGiPass(const Scene& scene, const RenderOptions& opt,
           res.indirect[pix * 3 + 0] = ind.x;
           res.indirect[pix * 3 + 1] = ind.y;
           res.indirect[pix * 3 + 2] = ind.z;
-          res.giOcclusion[pix] = occ;  // AO-like concavity map (env-independent)
+          // AO-like concavity map (env-independent).
+          if (writeOcc) res.giOcclusion[pix] = occ;
           // Trust-radius heatmap: the interpolated (smooth) record radius R_i.
           // R_i is the harmonic-mean distance to surrounding geometry, so it is
           // SMALL where the surface folds in on itself (a record there only
           // covers a tight area => that is where adaptive seeding would add more
           // records) and LARGE on open surfaces. log-mapped: dark = small R_i =
           // tight concavity / contact, bright = large R_i = open.
-          if (rad > 0.0f) {
+          if (writeViz && rad > 0.0f) {
             float h = (std::log(rad) - densLogLo) / densLogSpan;
             if (h < 0.0f) h = 0.0f;
             if (h > 1.0f) h = 1.0f;
@@ -1285,6 +1307,15 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
     throw;
   }
   const auto tBvh1 = std::chrono::high_resolution_clock::now();
+
+  // Own the device + committed scene NOW, before anything below can throw
+  // (frame-buffer allocations, the GI pass, TBB): an exception unwinds through
+  // ~EmbreeRenderer -> releaseEmbree(), so neither handle can leak. This also
+  // keeps them alive after render() returns so the edge pass (run before the
+  // box downsample) can ray-cast against the live BVH via occluded(). They
+  // are released in the destructor / on the next render().
+  device_ = device;
+  scene_ = built.scene;
 
   const Mesh& m = scene.mesh;
 
@@ -1733,11 +1764,6 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
     }
   meshBaseTriCount_ = static_cast<unsigned int>(scene.mesh.triangleCount());
 
-  // Keep the device + committed scene ALIVE so the edge pass (run after this
-  // returns, before the box downsample) can ray-cast against the live BVH via
-  // occluded(). They are released in the destructor / on the next render().
-  device_ = device;
-  scene_ = built.scene;
   // Flag a cooperative cancel so renderFrame skips the post-passes and the
   // caller sees a partial frame. False (unchanged) whenever no cancel was asked.
   if (progress) res.cancelled = progress->cancelRequested();

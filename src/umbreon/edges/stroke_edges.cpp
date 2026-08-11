@@ -21,11 +21,12 @@ namespace umbreon {
 // occludedRaw is unused and kept only for signature stability.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
-                      const OcclusionQuery& occludedRaw) {
+                      const OcclusionQuery& occludedRaw,
+                      const RenderProgress* progress) {
   (void)occludedRaw;
   const StrokeEdgeOptions& se = opt.strokeEdges;
   if (!se.enable) return;
-  applyScreenVectorEdges(frame, scene, opt, occluded);
+  applyScreenVectorEdges(frame, scene, opt, occluded, progress);
 }
 
 

@@ -15,6 +15,7 @@
 
 #include <functional>
 
+#include "render/render_progress.hpp"
 #include "render/render_types.hpp"
 #include "scene.hpp"
 
@@ -40,9 +41,13 @@ using OcclusionQuery =
 // `occluded`, when non-empty, feeds the extractor's fold probe (one segment ray
 // per strongNdelta-rescue candidate crack -- an edge-of-visible-surface test,
 // not per-vertex QI; visibility stays exact from the z-buffer). `occludedRaw`
-// is accepted for API compatibility but ignored.
+// is accepted for API compatibility but ignored. `progress`, when non-null, is
+// polled for cancellation at stage and loop boundaries (the pt1 idiom): on
+// cancel the pass returns early with a partial (or missing) line set, which
+// the caller reports via FrameResult::cancelled. Null = zero-overhead.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
-                      const OcclusionQuery& occludedRaw = OcclusionQuery{});
+                      const OcclusionQuery& occludedRaw = OcclusionQuery{},
+                      const RenderProgress* progress = nullptr);
 
 }  // namespace umbreon

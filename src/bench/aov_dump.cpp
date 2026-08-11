@@ -202,24 +202,34 @@ void dumpDebugImages(const Options& opt, const RenderOptions& ropt,
                           ind.data(), 3);
       umbreon::writeImage(opt.dumpAovPrefix + "_indirectRaw.png", aw, ah,
                           raw.data(), 3);
-      umbreon::writeImage(opt.dumpAovPrefix + "_giRecords.png", aw, ah,
-                          frame.giRecordViz.data(), 3);
-      // Openness map (1 - gather occlusion fraction): env- and bounce-
-      // independent, so it shows concavity darkening cleanly even when a bright
-      // white environment fills the E_cached pits back in. White = open convex,
-      // dark = occluded concavity. Background / non-mesh stays white (open).
-      std::vector<float> opn(np * 3);
-      for (std::size_t i = 0; i < np; ++i) {
-        const float open = 1.0f - frame.giOcclusion[i];
-        opn[i * 3 + 0] = opn[i * 3 + 1] = opn[i * 3 + 2] = open;
+      // The debug pair below is only populated under --gi-write-aov (the
+      // renderer keeps the buffers empty otherwise to save memory).
+      if (!frame.giRecordViz.empty())
+        umbreon::writeImage(opt.dumpAovPrefix + "_giRecords.png", aw, ah,
+                            frame.giRecordViz.data(), 3);
+      if (!frame.giOcclusion.empty()) {
+        // Openness map (1 - gather occlusion fraction): env- and bounce-
+        // independent, so it shows concavity darkening cleanly even when a
+        // bright white environment fills the E_cached pits back in. White =
+        // open convex, dark = occluded concavity. Background / non-mesh stays
+        // white (open).
+        std::vector<float> opn(np * 3);
+        for (std::size_t i = 0; i < np; ++i) {
+          const float open = 1.0f - frame.giOcclusion[i];
+          opn[i * 3 + 0] = opn[i * 3 + 1] = opn[i * 3 + 2] = open;
+        }
+        umbreon::writeImage(opt.dumpAovPrefix + "_giOpenness.png", aw, ah,
+                            opn.data(), 3);
       }
-      umbreon::writeImage(opt.dumpAovPrefix + "_giOpenness.png", aw, ah,
-                          opn.data(), 3);
       std::printf(
-          "  dumped GI AOVs: %s_{indirect,indirectRaw,giRecords,giOpenness}"
-          ".png (%dx%d)\n"
+          "  dumped GI AOVs: %s_{indirect,indirectRaw%s}.png (%dx%d)\n"
           "    indirect luminance: min %.4g  max %.4g  stretch [%.4g, %.4g]\n",
-          opt.dumpAovPrefix.c_str(), aw, ah, emin, emax, lo, hi);
+          opt.dumpAovPrefix.c_str(),
+          frame.giOcclusion.empty() ? "" : ",giRecords,giOpenness", aw, ah,
+          emin, emax, lo, hi);
+      if (frame.giOcclusion.empty())
+        std::printf(
+            "  (giRecords/giOpenness skipped: pass --gi-write-aov on)\n");
       dumpedAny = true;
     }
     if (!dumpedAny)

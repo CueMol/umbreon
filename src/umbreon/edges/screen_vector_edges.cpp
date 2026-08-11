@@ -306,11 +306,19 @@ void mergeShortClassRuns(std::vector<std::uint8_t>& cls,
 
 void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                             const RenderOptions& opt,
-                            const OcclusionQuery& occluded) {
+                            const OcclusionQuery& occluded,
+                            const RenderProgress* progress) {
   const StrokeEdgeOptions& se = opt.strokeEdges;
   const int W = frame.width, H = frame.height;
   if (W <= 0 || H <= 0) return;
   if (frame.viewZ.empty() || frame.objectId.empty()) return;
+  // Cooperative cancel: polled between stages and at the coarse loop
+  // boundaries below. On cancel the pass returns with whatever was already
+  // composited (a partial or missing line set); the caller flags
+  // FrameResult::cancelled at the next phase boundary.
+  const auto cancelled = [progress] {
+    return progress && progress->cancelRequested();
+  };
 
   const ScreenProj sp = makeScreenProj(scene.camera, W, H);
   const float ssScale = static_cast<float>(std::max(1, opt.supersample));
@@ -383,7 +391,8 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                                  frame.objectId.data(), normalPtr, sp, cp,
                                  dumpPrefix ? &dbg : nullptr,
                                  occluded ? &occluded : nullptr,
-                                 hasClip ? &clipAovs : nullptr);
+                                 hasClip ? &clipAovs : nullptr, progress);
+  if (cancelled()) return;
   if (dumpPrefix) {
     writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
                    frame.objectId.data(), normalPtr, sp, cp);
@@ -413,14 +422,17 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       frame.surfAlpha.empty() ? nullptr : frame.surfAlpha.data();
   std::vector<ScreenChain> traced =
       traceCrackChains(cf, frame.viewZ.data(), frame.objectId.data(),
-                       surfAlphaPtr);
+                       surfAlphaPtr, progress);
+  if (cancelled()) return;
   const std::size_t tracedRaw = traced.size();
   // Self-support needs ~2 FINAL px of strong evidence so a lone borderline
   // crack cannot resurrect an isolated sliver as a dash.
   const int minStrong = std::max(1, static_cast<int>(std::lround(
                                         2.0f * ssScale)));
   traced = pruneWeakChains(cf, std::move(traced), frame.viewZ.data(),
-                           frame.objectId.data(), minStrong, surfAlphaPtr);
+                           frame.objectId.data(), minStrong, surfAlphaPtr,
+                           progress);
+  if (cancelled()) return;
 
   // Debug level 3+: one line per drawn run (side / taper / clip wiring);
   // level 4+ additionally dumps every drawn polyline's node coordinates.
@@ -568,6 +580,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     // chain per round (the splice invalidates the indices), iterated to a
     // fixed point so a long chain with several junctions handles them all.
     for (int rewireRound = 0; rewireRound < 4; ++rewireRound) {
+      if (cancelled()) break;
       // Crack cell -> (chain, edgel) over all traced chains (unit steps).
       const long planeStride = static_cast<long>(cf.W) * cf.H;
       std::unordered_map<long, std::pair<std::uint32_t, std::uint32_t>>
@@ -1111,6 +1124,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   std::vector<ChainWork> works;
   works.reserve(traced.size());
   for (std::size_t chIdx = 0; chIdx < traced.size(); ++chIdx) {
+    if (cancelled()) return;
     const ScreenChain& ch = traced[chIdx];
     if (ch.pts.size() < 2 || ch.edgeClass.empty()) continue;
     // Speck filter on the RAW chain: every edgel is one hi-res px long, so the
@@ -1507,6 +1521,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   // ---- PASS 2: build the draw chains -------------------------------------
   std::vector<StrokeChainInput> drawChains;
   for (std::size_t wi = 0; wi < works.size(); ++wi) {
+    if (cancelled()) return;
     const ChainWork& w = works[wi];
     const ScreenChain& ch = traced[w.chIdx];
     const bool hasVzArr = w.vz.size() == w.cls.size();
@@ -1967,7 +1982,8 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                  clsCount[3], clsCount[4], nStrong, drawChains.size(), nPts);
   }
 
-  renderStrokeChains(frame, scene, opt, drawChains);
+  if (cancelled()) return;
+  renderStrokeChains(frame, scene, opt, drawChains, progress);
 }
 
 }  // namespace umbreon

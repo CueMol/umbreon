@@ -28,3 +28,12 @@
 - [fog-opengl-linear.md](fog-opengl-linear.md) — fog を POV 指数近似 → CueMol の OpenGL 線形 fog
   （`fog_inc.glsl`）相当へ置換し、画面表示と一致させる。POV `distance` と `_distance` から `fogStart/fogEnd`
   を復元。透過背景時は fog 色を焼き込まず alpha フェード（後段の背景差し替えが破綻しない）。**提案・未着手**。
+- [known-issues-render-perf-and-leaks.md](known-issues-render-perf-and-leaks.md) — GI レンダー後の
+  速度低下報告の調査で見つかった問題点の記録（プランではない。速度低下自体は Electron renderer の
+  darwinbg 固着と特定済み・cuemol2 側文書参照）: 例外時の RTCDevice/BVH リーク、GI と shadow 設定の
+  不整合、デバッグ AOV の常時確保、OIDN の TBB affinity、エッジパスのキャンセル欠如、angularRadius の
+  優先規則。6件すべて対応済み（各節にステータス付記）。
+- [fix-known-issues-render-perf-and-leaks.md](fix-known-issues-render-perf-and-leaks.md) — 上記6件の
+  修正プラン。リーク修正の所有権移譲前倒し、OIDN `setAffinity=false`、`giWriteAov` ゲート、エッジパスの
+  キャンセル配線、pt2 gather NEE の shadows ゲート（pt1/cache は凍結維持）、angularRadius の文書化。
+  **実装完了**（branch `fix/known-issues-render-perf-and-leaks`）。

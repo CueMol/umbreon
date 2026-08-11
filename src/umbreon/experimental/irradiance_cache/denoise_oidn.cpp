@@ -62,6 +62,11 @@ bool denoiseOidn(FrameResult& frame, const RenderOptions& opt,
   using clock = std::chrono::high_resolution_clock;
   const auto tDev0 = clock::now();
   oidn::DeviceRef device = oidn::newDevice(oidn::DeviceType::CPU);
+  // The process shares one TBB pool with the renderer; OIDN's default thread
+  // pinning (PinningObserver) would affinitize those shared workers, and a
+  // missed restore leaves the whole pool pinned after the denoise. Per the
+  // OIDN manual, disable affinitization when the application itself uses TBB.
+  device.set("setAffinity", false);
   device.commit();
   const auto tDev1 = clock::now();
   if (device.getError() != oidn::Error::None) {
