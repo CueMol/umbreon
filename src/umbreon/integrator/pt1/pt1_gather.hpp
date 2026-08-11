@@ -169,6 +169,14 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
 
   // Shadow-tested direct irradiance at the vertex (NEE; no emission -- the
   // direct pass owns source-to-receiver light), then the diffuse reflectance.
+  // p.shadows == false skips the occlusion test entirely (unshadowed NEE):
+  // that is the pt2 path honoring the render's composite shadow switch
+  // (hit_shader.hpp:shadowsActive) -- shadows off means no shadow rays, in
+  // the gather as in the direct pass. The pt1 and cache fill sites force
+  // p.shadows = true, so the frozen integrators keep their always-shadowed
+  // gather bit-for-bit. Note the emissive-NEE transport (pt2_emissive.hpp)
+  // is NOT gated by this: its visibility test is part of sampling geometry
+  // lights correctly, not a shadow-toggle effect.
   Vec3 E{0.0f, 0.0f, 0.0f};
   uint32_t s0 = hashU32(rh.hit.primID),
            s1 = hashU32(rh.hit.geomID + 0x9E3779B9u);
@@ -176,7 +184,9 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
     const float ndl = dot(Ny, l.L);
     if (ndl <= 0.0f) continue;
     float sh;
-    if (softRng0 && softRng1 && l.radius > 0.0f) {
+    if (!p.shadows) {
+      sh = 1.0f;  // unshadowed NEE: no shadow ray cast (and none counted)
+    } else if (softRng0 && softRng1 && l.radius > 0.0f) {
       // pt2 area-light NEE: one cone-jittered shadow ray per path (the spp
       // average softens it). computeShadow's multi-sample branch needs
       // shadowSamples > 1, so draw the direction here and trace directly.
@@ -195,7 +205,9 @@ inline bool pt1EvalVertex(const IrradianceCacheParams& p, const RTCRayHit& rh,
     } else {
       sh = computeShadow(p.scene, Py, NgShadow, Ny, eps, l, 1, s0, s1);
     }
-    if (stats) {
+    // Count only rays actually cast, so the nee_frac log reflects the real
+    // shadow-ray load (and its disappearance under shadows off).
+    if (stats && p.shadows) {
       ++stats->neeRays;
       if (sh == 0.0f) ++stats->neeOccluded;
     }

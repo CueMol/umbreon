@@ -617,8 +617,12 @@ void runPt1GiPass(const Scene& scene, const RenderOptions& opt,
                          ? opt.giMaxDistance
                          : std::numeric_limits<float>::infinity();
     gp.spacing = diag * 0.007f;  // unused by the per-pixel gather; keep valid
-    gp.shadows = opt.shadows;
-    gp.shadowSamples = opt.shadowSamples;
+    // Gather NEE shadow rays: only pt2 honors the direct pass's composite
+    // shadow switch (hit_shader.hpp:shadowsActive -- env dome lights imply
+    // shadows). pt1 is the FROZEN anchor: its gather stays always-shadowed
+    // regardless of opt.shadows so its output never moves.
+    gp.shadows =
+        (opt.giIntegrator == 2) ? (opt.shadows || opt.envLights > 0) : true;
 
     const int spp = std::max(1, opt.pt1Spp);
     detail::Pt1RayStats rayStats;
@@ -1186,8 +1190,9 @@ void runIrradianceCacheGiPass(const Scene& scene, const RenderOptions& opt,
     gp.accuracy = opt.giAccuracy;
     gp.normalReject = opt.giNormalReject;
     gp.componentReject = opt.giComponentReject;
-    gp.shadows = opt.shadows;
-    gp.shadowSamples = opt.shadowSamples;
+    // The cache evaluator ignores this flag (frozen always-shadowed); keep it
+    // pinned true so nothing can drift if that ever changes.
+    gp.shadows = true;
 
     detail::IrradianceCache cache = detail::buildIrradianceCache(
         gp, W, H, res.position.data(), res.normal.data(), giGroup.data(),

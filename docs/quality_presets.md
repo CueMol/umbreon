@@ -216,6 +216,10 @@ CLI（品質段を明示フラグで・バウンスは固定）:
 - `lightRadius > 0` でエリアライト＝ソフト影（penumbra）。度指定でシーン非依存。大きいほど
   penumbra が広くノイジーになるので `shadowSamples` を増やす。
 - コスト ≈ `supersample² × ライト数 × shadowSamples` の二次レイ。
+- **GI（pt2）併用時**: `shadows` は gather 内 NEE のシャドウレイも制御する（off なら GI 側の
+  シャドウレイが消えて速くなる代わりに遮蔽部の間接光が明るくなる）。ソフト影の GI 側コストは
+  ゼロ（pt2 は spp 平均で penumbra を作るため `shadowSamples` は gather に影響しない）。
+  pt1/cache の gather は凍結のため常時 shadow-correct。
 
 CLI: `--shadows on --shadow-samples N --light-radius <deg>`。
 
