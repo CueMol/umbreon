@@ -72,6 +72,8 @@ enum : std::uint32_t {
   kHatchStreamDashPress = 10, // per-stroke pressure (width + darkness)
   kHatchStreamDashAngle = 11, // per-stroke angle scatter
   kHatchStreamField = 12,     // coherent direction-drift field
+  kHatchStreamDashTaper = 13, // per-stroke asymmetric entry/tail lengths
+  kHatchStreamBelly = 14,     // along-stroke width swell
 };
 
 // Per-mark seed: pure function of (user seed, layer, lattice index, stream).
@@ -290,8 +292,11 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   // per-stroke angle scatter (half the longest stroke).
   const float dashReach = r.angleJitterTan * 0.5f * r.strokeLen *
                           (1.0f + 0.5f * r.strokeLenJitter);
-  r.padLine = r.halfWidth * (1.0f + r.widthJitter) + r.wobbleAmp +
-              r.jitterAmp + dashReach + r.halfAA;
+  // Width can exceed halfWidth by the per-line modulation AND the belly
+  // swell (both bounded by widthJitter fractions).
+  const float wMax = r.halfWidth * (1.0f + r.widthJitter) *
+                     (1.0f + 0.6f * r.widthJitter);
+  r.padLine = wMax + r.wobbleAmp + r.jitterAmp + dashReach + r.halfAA;
   const float stretch =
       std::pow(2.0f, std::max(0.0f, 0.5f - 1.0f / r.pExp)) * aspectInflate;
   const float rReach =
@@ -415,9 +420,35 @@ inline float hatchLineInk(const HatchLayerRt& L, float x, float y,
         amt = std::min(1.0f, std::max(-1.0f, amt));
         c0 += L.angleJitterTan * amt * (ph - 0.5f * len);
       }
-      const float taperLen = std::max(0.5f, 0.5f * L.strokeTaper * len);
-      const float endDist = std::min(ph, len - ph);
-      w *= std::min(1.0f, endDist / taperLen);
+      // Praun-style stroke body (TAM, Fig. 2): an ASYMMETRIC envelope -- a
+      // short rounded entry and a long release tail, flipped at random per
+      // stroke -- times a mid-wavelength belly swell, so each stroke
+      // thickens and thins along its length instead of being a constant
+      // bar with symmetric cone ends. strokeTaper scales both end lengths.
+      const float s01 = ph / len;
+      const std::uint32_t hTaper = hatchMarkSeed(L.seed, L.layerId, j, k,
+                                                 kHatchStreamDashTaper);
+      float a0 = L.strokeTaper * (0.35f + 0.35f * hatchU01(hTaper));
+      float a1 = L.strokeTaper *
+                 (0.9f + 1.1f * hatchU01(hatchLowbias32(hTaper)));
+      a0 = std::min(0.45f, std::max(0.02f, a0));
+      a1 = std::min(0.60f, std::max(0.05f, a1));
+      if (hTaper & 1u) {  // which end is the fat one flips per stroke
+        const float tmp = a0;
+        a0 = a1;
+        a1 = tmp;
+      }
+      const float head = std::min(1.0f, s01 / a0);
+      const float tail = std::min(1.0f, (1.0f - s01) / a1);
+      w *= head * (2.0f - head) * tail * (2.0f - tail);  // rounded ends
+      if (L.widthJitter > 0.0f) {
+        const float bellyWave = std::max(8.0f, len * 0.4f);
+        w *= 1.0f + 0.6f * L.widthJitter *
+                        hatchValueNoise1(
+                            hatchMarkSeed(L.seed, L.layerId, j, k,
+                                          kHatchStreamBelly),
+                            ph / bellyWave);
+      }
     }
     if (w <= 0.0f) continue;
     const float d = std::fabs(u - c0);
