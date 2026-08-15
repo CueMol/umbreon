@@ -228,6 +228,11 @@ struct Options {
   std::string hatchBase = "paper";
   // HatchInk: "fixed" or "albedo" (FromAlbedo). --hatch-ink.
   std::string hatchInk = "fixed";
+  // Global overrides applied to every preset layer (0 = keep the preset
+  // value): base lattice pitch and full line width, FINAL px.
+  // --hatch-spacing / --hatch-width.
+  float hatchSpacing = 0.0f;
+  float hatchWidth = 0.0f;
 
   // --- analytic OBJECT-SPACE silhouette edges (spheres/cylinders) ---
   // Master switch (--obj-edges on|off, default off => byte-identical default).

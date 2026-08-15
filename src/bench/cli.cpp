@@ -1130,6 +1130,20 @@ Options parseCli(int argc, char** argv) {
         fail("--hatch-ink expects fixed/albedo");
       continue;
     }
+    if (a == "--hatch-spacing") {
+      o.hatchSpacing =
+          static_cast<float>(std::atof(value("--hatch-spacing").c_str()));
+      if (o.ok && o.hatchSpacing <= 0.0f)
+        fail("--hatch-spacing expects a positive pixel pitch");
+      continue;
+    }
+    if (a == "--hatch-width") {
+      o.hatchWidth =
+          static_cast<float>(std::atof(value("--hatch-width").c_str()));
+      if (o.ok && o.hatchWidth <= 0.0f)
+        fail("--hatch-width expects a positive pixel width");
+      continue;
+    }
     if (a == "--transparent-bg") {
       std::string v = value("--transparent-bg");
       if (o.ok && !parseBool(v, o.transparentBackground))
@@ -1271,6 +1285,8 @@ void printUsage(const char* prog) {
       "  --hatch-paper-color <#RRGGBB> paper color, display-encoded [#ffffff]\n"
       "  --hatch-base <paper|albedo>   ink-mode base under the hatch [paper]\n"
       "  --hatch-ink <fixed|albedo>    ink color source              [fixed]\n"
+      "  --hatch-spacing <px>     base line pitch override, all layers [preset]\n"
+      "  --hatch-width <px>       line width override, all layers    [preset]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"

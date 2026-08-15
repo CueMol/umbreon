@@ -513,6 +513,11 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
                    opt.hatchPreset.c_str());
       applyHatchPreset(ropt.hatch, "pen-cross");
     }
+    // Global preset overrides: density (lattice pitch) and stroke width.
+    for (umbreon::HatchLayer& l : ropt.hatch.layers) {
+      if (opt.hatchSpacing > 0.0f) l.spacingPx = opt.hatchSpacing;
+      if (opt.hatchWidth > 0.0f) l.widthPx = opt.hatchWidth;
+    }
     // NPR AO defaults: the coarse output-resolution AO gather acts as the
     // tone denoiser and the low-discrepancy sampler halves its variance for
     // free -- both only when AO is on and the user did not choose otherwise.
