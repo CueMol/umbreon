@@ -37,3 +37,9 @@
   修正プラン。リーク修正の所有権移譲前倒し、OIDN `setAffinity=false`、`giWriteAov` ゲート、エッジパスの
   キャンセル配線、pt2 gather NEE の shadows ゲート（pt1/cache は凍結維持）、angularRadius の文書化。
   **実装完了**（branch `fix/known-issues-render-perf-and-leaks`）。
+- [npr-tone-hatching.md](npr-tone-hatching.md) — `--hatch` で陰影を線の密度（クロスハッチ／網点／
+  スティップル）で表す NPR モード。手続き的 Tonal Art Map（`firstLevel` のビット演算で線の出現レベルを
+  決め、一度現れた線は消えない・動かない）、トーン生成は hit_shader・インク消費は gamma 後の
+  `applyHatch`（hi-res でトーン生成 → downsample → 最終解像度で二値化）。格子/マーク形状/摂動の 3 層
+  分離、Lp 面積補正つき網点 + 被覆半径起動の 50% 反転、コントラスト保証、名前付きプリセット 6 種。
+  既定 OFF で byte-identical。**設計確定・Phase 1 実装中**（branch `feat/npr-tone-hatching`）。
