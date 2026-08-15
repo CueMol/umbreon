@@ -125,6 +125,13 @@ struct GroupHatchStyle {
   float inkColor[3] = {0.0f, 0.0f, 0.0f};  // display-encoded
   int layerMask = 0x7;    // which HatchOptions::layers apply to this section
   float toneScale = 1.0f; // per-section tone lift/drop
+  // Mark density of this section relative to the global layers: every
+  // layer's lattice pitch is DIVIDED by it, so 2 means twice as many lines
+  // / dots. Small sections (ligands, sticks) need a finer grain than a
+  // ribbon to carry any tone at all -- with the global pitch a thin stick
+  // may catch only one or two marks and read as flat.
+  float density = 1.0f;
+  float widthScale = 1.0f;  // and their mark width (thinner marks when < 1)
 };
 
 // Master options for the tone-hatching pass (--hatch).

@@ -655,6 +655,8 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
         if (sp.colorSet)
           for (int i = 0; i < 3; ++i) st.inkColor[i] = sp.color[i];
         st.toneScale = sp.toneScale;
+        st.density = sp.density;
+        st.widthScale = sp.widthScale;
         if (sp.layerMask >= 0) st.layerMask = sp.layerMask;
         scene.groupHatchStyle[static_cast<std::size_t>(it->second)] = st;
         std::printf("  hatch override: section %s (group %d)\n",

@@ -252,6 +252,8 @@ struct Options {
     float color[3] = {0.0f, 0.0f, 0.0f};
     float toneScale = 1.0f;
     int layerMask = -1;      // <0 = all layers
+    float density = 1.0f;    // mark-density multiplier for this section
+    float widthScale = 1.0f; // mark-width multiplier
   };
   std::map<std::string, HatchSectionSpec> sectionHatch;
   // Tone recipe overrides (--hatch-tone key=val,...): only applied when set.

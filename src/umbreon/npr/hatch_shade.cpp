@@ -232,6 +232,35 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
     layers.push_back(
         detail::hatchNormalizeLayer(L, static_cast<std::uint32_t>(li)));
   }
+  // Sections that rescale the mark density / width need their own
+  // normalized layer set (the pitch feeds the min-feature clamp and every
+  // search window, so it cannot be applied at evaluation time). Sections at
+  // the neutral scales share the global set.
+  std::vector<std::vector<detail::HatchLayerRt>> sectionLayers;
+  if (perSection) {
+    sectionLayers.resize(styleCount);
+    for (std::size_t si = 0; si < styleCount; ++si) {
+      const GroupHatchStyle& g = styles[si];
+      const float dens = std::max(0.1f, std::min(8.0f, g.density));
+      const float wsc = std::max(0.1f, std::min(8.0f, g.widthScale));
+      if (dens == 1.0f && wsc == 1.0f) continue;  // reuse the global set
+      sectionLayers[si].reserve(opt.layers.size());
+      for (std::size_t li = 0; li < opt.layers.size(); ++li) {
+        HatchLayer L = opt.layers[li];
+        if (L.opacity <= 0.0f) continue;
+        L.spacingPx /= dens;
+        L.widthPx *= wsc;
+        // Perturbation amplitudes are pitch-relative in spirit; scale the
+        // absolute-pixel ones with the pitch so a denser section keeps the
+        // same look instead of turning into noise.
+        L.mark.wobbleAmpPx /= dens;
+        L.mark.strokeLenPx /= dens;
+        L.mark.strokeGapPx /= dens;
+        sectionLayers[si].push_back(
+            detail::hatchNormalizeLayer(L, static_cast<std::uint32_t>(li)));
+      }
+    }
+  }
 
   const ToneRecipe& tr = opt.tone;
   const float wpRange = std::max(1.0e-4f, tr.whitePoint - tr.blackPoint);
@@ -251,13 +280,17 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             // Per-section style: sample the hi-res id buffer at the cell
             // center. A disabled section keeps its frame color untouched.
             const GroupHatchStyle* st = nullptr;
+            const std::vector<detail::HatchLayerRt>* lay = &layers;
             if (perSection) {
               const std::size_t gp =
                   (static_cast<std::size_t>(y) * gss + gss / 2) * gW +
                   static_cast<std::size_t>(x) * gss + gss / 2;
               const std::uint16_t g = groups[gp];
-              if (g != 0xFFFFu && g < styleCount) st = &styles[g];
-              if (st != nullptr && !st->enable) continue;
+              if (g != 0xFFFFu && g < styleCount) {
+                st = &styles[g];
+                if (!st->enable) continue;
+                if (!sectionLayers[g].empty()) lay = &sectionLayers[g];
+              }
             }
 
             // Tone shaping: per-section scale -> linear black/white remap ->
@@ -325,7 +358,7 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             float f[3] = {1.0f, 1.0f, 1.0f};
             const float xc = static_cast<float>(x) + 0.5f;
             const float yc = static_cast<float>(y) + 0.5f;
-            for (const detail::HatchLayerRt& L : layers) {
+            for (const detail::HatchLayerRt& L : *lay) {
               if (st != nullptr && L.layerId < 31u &&
                   ((st->layerMask >> L.layerId) & 1) == 0)
                 continue;  // layer disabled for this section

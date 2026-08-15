@@ -224,7 +224,12 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   const float a = L.angleDeg * 0.017453292519943295f;
   r.cosA = std::cos(a);
   r.sinA = std::sin(a);
-  const float spacing = std::max(4.0f, L.spacingPx);  // degenerate-lattice guard
+  // Min-feature guard: the ink is laid at FINAL resolution, so the finest
+  // lattice pitch must stay >= 2 px (below that the marks alias against the
+  // pixel grid and supersampling cannot help -- unlike the tone, which IS
+  // box-downsampled). Clamp the base pitch to that floor, then cap the
+  // subdivision so spacing / 2^K still clears it.
+  const float spacing = std::max(2.0f, L.spacingPx);
   int K = std::max(0, L.subdiv);
   const int kMax = std::max(
       0, static_cast<int>(std::floor(std::log2(spacing / 2.0f))));

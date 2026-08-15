@@ -1185,6 +1185,12 @@ Options parseCli(int argc, char** argv) {
           spec.toneScale = static_cast<float>(std::atof(v.c_str()));
         } else if (k == "layers") {
           spec.layerMask = std::atoi(v.c_str());
+        } else if (k == "density") {
+          spec.density = static_cast<float>(std::atof(v.c_str()));
+          ok = ok && spec.density > 0.0f;
+        } else if (k == "width") {
+          spec.widthScale = static_cast<float>(std::atof(v.c_str()));
+          ok = ok && spec.widthScale > 0.0f;
         } else {
           ok = false;
           break;
@@ -1193,7 +1199,7 @@ Options parseCli(int argc, char** argv) {
       if (!ok)
         fail("--hatch-style: bad spec '" + kv.substr(eq + 1) +
              "' (entries off, base=paper|albedo, ink=fixed|albedo, "
-             "color=#RRGGBB, tone=F, layers=MASK)");
+             "color=#RRGGBB, tone=F, layers=MASK, density=F, width=F)");
       else
         o.sectionHatch[id] = spec;
       continue;
@@ -1416,7 +1422,7 @@ void printUsage(const char* prog) {
       "                           _34_35=base=albedo:color=#202020:tone=0.8\n"
       "                           (entries off, base=paper|albedo,\n"
       "                           ink=fixed|albedo, color=#RRGGBB, tone=F,\n"
-      "                           layers=MASK)\n"
+      "                           layers=MASK, density=F, width=F)\n"
       "  --hatch-tone <k=v,..>    tone recipe (diffuse ambient contact shape\n"
       "                           black white gamma speccut levels)\n"
       "  --hatch-min-contrast <f> min display-luma gap base vs ink   [0.25]\n"
