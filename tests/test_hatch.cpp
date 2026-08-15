@@ -236,5 +236,51 @@ int main() {
             f.albedo.size() == 32u * 32u * 3u);
   }
 
+  // --- 9. Stroke edges survive the Ink composite: the flat base is painted
+  // BEFORE the edge pass, so an interior (surface-over-surface) silhouette
+  // line must still be inked after the hatch. Two same-group spheres with a
+  // depth gap; the tone recipe is pinned to paper (ambient 1) so the ONLY
+  // dark pixels are stroke-edge ink -- this is the regression that caught
+  // the base-replacement erasing every interior line (outline-only look).
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {1.0f, 1.0f, 1.0f};
+    umbreon::Sphere front;
+    front.center = {-0.5f, 0.0f, 0.5f};
+    front.radius = 1.0f;
+    front.color = {1.0f, 1.0f, 1.0f, 1.0f};
+    umbreon::Sphere back = front;
+    back.center = {0.5f, 0.0f, -1.5f};
+    sc.spheres.push_back(front);
+    sc.spheres.push_back(back);
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.supersample = 2;
+    o.strokeEdges.enable = true;
+    o.hatch.enable = true;
+    o.hatch.tone.ambient = 1.0f;  // paper everywhere: no hatch ink at all
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto minR = [&f](int cx, int cy, int r) {
+      float m = 1.0f;
+      for (int y = cy - r; y <= cy + r; ++y)
+        for (int x = cx - r; x <= cx + r; ++x)
+          m = std::min(m,
+                       f.color[(static_cast<std::size_t>(y) * 64 + x) * 4]);
+      return m;
+    };
+    // Front sphere's right silhouette over the back sphere: world (0.5, 0)
+    // maps to pixel (40, 32) under the height-4 ortho frame.
+    s.check("edges survive ink: interior depth-gap line inked",
+            minR(40, 32, 3) < 0.5f);
+    // Outer rim against the background: world (-1.5, 0) -> pixel (8, 32).
+    s.check("edges survive ink: outer rim inked", minR(8, 32, 3) < 0.5f);
+    // And the paper between the lines stayed clean (tone pinned to 1).
+    s.check("edges survive ink: paper clean away from lines",
+            minR(24, 20, 2) > 0.95f);
+  }
+
   return s.report();
 }

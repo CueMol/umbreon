@@ -136,8 +136,13 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
 
             float* px4 = rgba + p * 4;
 
-            // Ink color (display space), then the contrast guarantee
-            // against the base this pixel will show.
+            // Contrast-guarantee reference base: what this pixel shows
+            // between the marks. In Ink mode the pipeline already painted
+            // the flat base (paper / albedo) into rgba BEFORE the stroke
+            // edge pass, so the composite below only multiplies ink in and
+            // the contour ink survives; B here is recomputed from the
+            // options purely as the contrast reference (the actual pixel
+            // may carry edge ink or fog).
             float B[3];
             if (opt.mode == HatchMode::Over) {
               // The shaded frame is the base. Under a transparent
@@ -182,18 +187,12 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
               for (int k = 0; k < 3; ++k) f[k] *= 1.0f - c * (1.0f - I[k]);
             }
 
-            // Write-back with silhouette-coverage AA (mask) and the
-            // premultiplied transparent-background rule.
-            if (opt.mode == HatchMode::Over) {
-              // lerp(1, f, m) as a multiplier keeps premultiplied pixels
-              // premultiplied and leaves rims partially inked.
-              for (int k = 0; k < 3; ++k)
-                px4[k] *= (1.0f - m) + m * f[k];
-            } else {
-              const float s = opt.transparentBackground ? px4[3] : 1.0f;
-              for (int k = 0; k < 3; ++k)
-                px4[k] = px4[k] * (1.0f - m) + B[k] * f[k] * m * s;
-            }
+            // Write-back with silhouette-coverage AA (mask): multiply-only
+            // in BOTH modes, so the ink can only darken -- stroke-edge ink
+            // already in the frame is preserved, and premultiplied pixels
+            // stay premultiplied (the multiply commutes with the alpha).
+            for (int k = 0; k < 3; ++k)
+              px4[k] *= (1.0f - m) + m * f[k];
           }
         }
       });

@@ -25,14 +25,19 @@ namespace umbreon {
 bool applyHatchPreset(HatchOptions& opt, const std::string& name);
 
 // Composite procedural hatching over rgba (w*h*4, DISPLAY-ENCODED, in
-// place; run AFTER the gamma encode). tone/mask are the w*h hatch AOVs at
-// the same (final) resolution: tone is the linear shading tone (1 = lit),
-// mask the surface coverage in [0,1] (0 = background pixel, left untouched;
-// fractional silhouette pixels blend the ink by the coverage). albedo
-// (w*h*3, linear; nullable) feeds HatchBase::Albedo / HatchInk::FromAlbedo.
-// No-op when opt.enable is false. Deterministic: every output value is a
-// pure function of its coordinates and the inputs (TBB tiling does not
-// change results).
+// place; run AFTER the gamma encode). rgba is the BASE CANVAS the ink
+// multiplies into -- the composite only ever darkens, so contour ink
+// already present survives. In the renderer's Ink mode the pipeline paints
+// the flat paper/albedo base into the frame BEFORE fog and the stroke edge
+// pass (a standalone caller supplies its own base image); Over mode
+// multiplies into the shaded frame as-is. tone/mask are the w*h hatch AOVs
+// at the same (final) resolution: tone is the linear shading tone
+// (1 = lit), mask the surface coverage in [0,1] (0 = background pixel,
+// left untouched; fractional silhouette pixels blend the ink by the
+// coverage). albedo (w*h*3, linear; nullable) feeds the FromAlbedo ink and
+// the Albedo contrast reference. No-op when opt.enable is false.
+// Deterministic: every output value is a pure function of its coordinates
+// and the inputs (TBB tiling does not change results).
 void applyHatch(int w, int h, float* rgba, const float* tone,
                 const float* mask, const float* albedo,
                 const HatchOptions& opt);

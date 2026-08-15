@@ -19,8 +19,11 @@
 namespace umbreon {
 
 // What the hatch pass does with the shaded frame color.
-// Ink: pure ink drawing -- the shaded color is discarded and rebuilt from
-//      paper/albedo + ink (GI/denoiser are normalized off by renderFrame).
+// Ink: pure ink drawing -- renderFrame paints the UNSHADED flat base
+//      (paper / first-hit albedo) over every surface pixel before fog and
+//      the stroke edge pass, so contour ink lands on the flat base and the
+//      final hatch composite only multiplies its ink in (GI/denoiser are
+//      normalized off; tone is carried by hatch density alone).
 // Over: the hatch is composited over the shaded (display-encoded) frame,
 //      which stays visible between the marks (toon-like styles).
 enum class HatchMode : std::uint8_t { Ink = 0, Over = 1 };

@@ -287,6 +287,20 @@ if (!frame.hatchMask.empty())
 シルエット境界の被覆率 AA をそのまま与える。cost model
 （`progress_cost_model.hpp:266-268`）に `if (hi.hatch.enable) chans += 2;` を追加。
 
+### 4.2.5 Ink モードの下地塗り（Phase 1 実装時の設計修正）
+
+当初設計では `applyHatch` が最終段でサーフェス画素を「下地×インク」で**置き換え**ていたが、
+これでは downsample 前に hi-res 合成済みのストロークエッジのうち、サーフェス上に乗る
+**内部 silhouette 線がすべて消える**（背景側に描かれる外周輪郭だけが残り、実質 Outline モードに
+見える）ことが Phase 1 の実機確認で判明した。修正: `--edges-only` のブランク処理
+（`pipeline.cpp:148-160`）と同じパターンで、**Ink モードの下地（紙白／albedo ベタ、
+`albedoQuantize` 込み）を fog・エッジパスの前に hi-res・リニア空間で塗り込む**。paperColor は
+表示値なので `pow(d, 1/assumedGamma)` でリニア化して塗る（gamma で往復）。最終段の
+`applyHatch` は両モードとも**インクの乗算のみ**（`px *= (1-m) + m·f`）となり、エッジインクは
+構造的に生き残る。副次効果として「ベタ塗り下地は無陰影」（陰影はハッチ密度のみが担う）も
+この段階で構造的に保証される。回帰テスト: `tests/test_hatch.cpp` の
+「edges survive ink」（深度ギャップ線がハッチ合成後も残ることを、トーンを紙白に固定して検証）。
+
 ### 4.3 `applyHatch` の呼び出し（`pipeline.cpp:262` の `applyAssumedGamma` の直後）
 
 ```cpp

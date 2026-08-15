@@ -142,6 +142,57 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // return what we have (frame.cancelled is already set).
   if (frame.cancelled) return frame;
 
+  // Tone hatching, Ink mode: paint the flat base (paper / first-hit albedo)
+  // over every surface pixel NOW -- before fog and the stroke edge pass --
+  // in LINEAR hi-res space, the same pattern as the --edges-only blanking.
+  // The contour ink then composites over the flat base and survives the
+  // final hatch composite (which only multiplies ink in); replacing the base
+  // at the end of the pipeline instead would erase every silhouette line
+  // drawn over a surface, leaving only the outer contour. This is also what
+  // keeps the flat base UNSHADED: the shaded color is discarded here and the
+  // hatch density alone carries the tone.
+  if (hi.hatch.enable && hi.hatch.mode == HatchMode::Ink &&
+      !frame.hatchMask.empty()) {
+    // Paper color is display-encoded; applyAssumedGamma later applies
+    // pow(v, g), so paint pow(d, 1/g) for a round trip (g ~ 1 paints d).
+    const float g = scene.assumedGamma;
+    const bool gammaOn = std::fabs(g - 1.0f) > 1e-4f;
+    float paperLin[3];
+    for (int k = 0; k < 3; ++k) {
+      const float d =
+          std::min(1.0f, std::max(0.0f, hi.hatch.paperColor[k]));
+      paperLin[k] = (gammaOn && d > 0.0f) ? std::pow(d, 1.0f / g) : d;
+    }
+    const bool albedoBase =
+        hi.hatch.base == HatchBase::Albedo && !frame.albedo.empty();
+    const std::size_t npix =
+        static_cast<std::size_t>(frame.width) * frame.height;
+    for (std::size_t p = 0; p < npix; ++p) {
+      if (frame.hatchMask[p] <= 0.5f) continue;  // background: untouched
+      float b[3];
+      if (albedoBase) {
+        for (int k = 0; k < 3; ++k) {
+          b[k] = frame.albedo[p * 3 + k];
+          if (hi.hatch.albedoQuantize > 1) {
+            const float n = static_cast<float>(hi.hatch.albedoQuantize);
+            b[k] = std::round(b[k] * n) / n;
+          }
+        }
+      } else {
+        b[0] = paperLin[0];
+        b[1] = paperLin[1];
+        b[2] = paperLin[2];
+      }
+      // Keep the premultiplied convention: coverage stays in alpha, the
+      // painted base carries it in RGB (opaque background => alpha 1).
+      const float a = frame.color[p * 4 + 3];
+      const float s = hi.transparentBackground ? a : 1.0f;
+      frame.color[p * 4 + 0] = b[0] * s;
+      frame.color[p * 4 + 1] = b[1] * s;
+      frame.color[p * 4 + 2] = b[2] * s;
+    }
+  }
+
   // OpenGL linear fog at full (supersampled) resolution, before downsampling, so
   // the box-average mirrors antialiased, fogged samples. Uses the plane eye-z
   // AOV (viewZ); transparent backgrounds fade coverage instead of baking fog.
