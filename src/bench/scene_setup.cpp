@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 
@@ -22,6 +23,92 @@ std::string resolveRelative(const std::string& base, const std::string& rel) {
   std::size_t slash = base.find_last_of('/');
   std::string dir = (slash == std::string::npos) ? "." : base.substr(0, slash);
   return dir + "/" + rel;
+}
+
+// Apply one --hatch-layer "idx:key=val,..." spec onto the preset layers.
+// Unknown indices / keys / values warn and are skipped (the render still
+// runs), mirroring the --edge warn-on-miss behavior.
+void applyHatchLayerSpec(umbreon::HatchOptions& h, const std::string& spec) {
+  const std::size_t colon = spec.find(':');
+  const int idx = std::atoi(spec.substr(0, colon).c_str());
+  if (idx < 0 || static_cast<std::size_t>(idx) >= h.layers.size()) {
+    std::fprintf(stderr,
+                 "warning: --hatch-layer index %d out of range (preset has "
+                 "%zu layers)\n",
+                 idx, h.layers.size());
+    return;
+  }
+  umbreon::HatchLayer& l = h.layers[static_cast<std::size_t>(idx)];
+  std::string rest = spec.substr(colon + 1);
+  std::size_t pos = 0;
+  while (pos <= rest.size()) {
+    std::size_t comma = rest.find(',', pos);
+    if (comma == std::string::npos) comma = rest.size();
+    const std::string kv = rest.substr(pos, comma - pos);
+    pos = comma + 1;
+    if (kv.empty()) continue;
+    const std::size_t eq = kv.find('=');
+    if (eq == std::string::npos) {
+      std::fprintf(stderr, "warning: --hatch-layer entry '%s' is not key=val\n",
+                   kv.c_str());
+      continue;
+    }
+    const std::string k = kv.substr(0, eq);
+    const std::string v = kv.substr(eq + 1);
+    const float f = static_cast<float>(std::atof(v.c_str()));
+    const bool on = (v == "on" || v == "1" || v == "true");
+    if (k == "kind")
+      l.kind = (v == "dot") ? umbreon::LayerKind::Dot : umbreon::LayerKind::Line;
+    else if (k == "angle")
+      l.angleDeg = f;
+    else if (k == "spacing")
+      l.spacingPx = f;
+    else if (k == "subdiv")
+      l.subdiv = std::atoi(v.c_str());
+    else if (k == "width")
+      l.widthPx = f;
+    else if (k == "tonehi")
+      l.toneHi = f;
+    else if (k == "tonelo")
+      l.toneLo = f;
+    else if (k == "fade")
+      l.fadeInv = f;
+    else if (k == "opacity")
+      l.opacity = f;
+    else if (k == "soft")
+      l.mark.edgeSoftness = f;
+    else if (k == "seed")
+      l.mark.seed = static_cast<unsigned>(std::atoi(v.c_str()));
+    else if (k == "shape")
+      l.mark.shapeExponent = f;
+    else if (k == "aspect")
+      l.mark.dotAspect = f;
+    else if (k == "dotangle")
+      l.mark.dotAngleDeg = f;
+    else if (k == "jitter")
+      l.mark.jitter = f;
+    else if (k == "invert")
+      l.mark.invertAbove50 = on;
+    else if (k == "wobble")
+      l.mark.wobbleAmpPx = f;
+    else if (k == "wobwave")
+      l.mark.wobbleWavePx = f;
+    else if (k == "wjitter")
+      l.mark.widthJitter = f;
+    else if (k == "slen")
+      l.mark.strokeLenPx = f;
+    else if (k == "sgap")
+      l.mark.strokeGapPx = f;
+    else if (k == "taper")
+      l.mark.strokeTaper = f;
+    else if (k == "tooth")
+      l.mark.toothAmp = f;
+    else if (k == "toothscale")
+      l.mark.toothScalePx = f;
+    else
+      std::fprintf(stderr, "warning: --hatch-layer unknown key '%s'\n",
+                   k.c_str());
+  }
 }
 
 }  // namespace
@@ -508,16 +595,20 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
     }
     if (!applyHatchPreset(ropt.hatch, opt.hatchPreset)) {
       std::fprintf(stderr,
-                   "warning: unknown --hatch-preset '%s' (Phase 1 ships "
-                   "pen-cross only); using pen-cross\n",
+                   "warning: unknown --hatch-preset '%s' (pen-cross/pencil/"
+                   "engraving/stipple/screentone-60/manga-square); using "
+                   "pen-cross\n",
                    opt.hatchPreset.c_str());
       applyHatchPreset(ropt.hatch, "pen-cross");
     }
-    // Global preset overrides: density (lattice pitch) and stroke width.
+    // Global preset overrides: density (lattice pitch) and stroke width,
+    // then the per-layer --hatch-layer specs on top.
     for (umbreon::HatchLayer& l : ropt.hatch.layers) {
       if (opt.hatchSpacing > 0.0f) l.spacingPx = opt.hatchSpacing;
       if (opt.hatchWidth > 0.0f) l.widthPx = opt.hatchWidth;
     }
+    for (const std::string& spec : opt.hatchLayerSpecs)
+      applyHatchLayerSpec(ropt.hatch, spec);
     // NPR AO defaults: the coarse output-resolution AO gather acts as the
     // tone denoiser and the low-discrepancy sampler halves its variance for
     // free -- both only when AO is on and the user did not choose otherwise.

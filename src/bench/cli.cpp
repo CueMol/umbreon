@@ -1144,6 +1144,18 @@ Options parseCli(int argc, char** argv) {
         fail("--hatch-width expects a positive pixel width");
       continue;
     }
+    if (a == "--hatch-layer") {
+      // --hatch-layer idx:key=val,... : per-layer override on top of the
+      // preset (repeatable). Only the shape is validated here; the keys are
+      // resolved against the actual layer list in scene_setup (warn-on-miss).
+      std::string spec = value("--hatch-layer");
+      std::size_t colon = spec.find(':');
+      if (colon == std::string::npos || colon == 0)
+        fail("--hatch-layer expects idx:key=val,... (e.g. 0:angle=30,width=1.5)");
+      else
+        o.hatchLayerSpecs.push_back(spec);
+      continue;
+    }
     if (a == "--transparent-bg") {
       std::string v = value("--transparent-bg");
       if (o.ok && !parseBool(v, o.transparentBackground))
@@ -1287,6 +1299,12 @@ void printUsage(const char* prog) {
       "  --hatch-ink <fixed|albedo>    ink color source              [fixed]\n"
       "  --hatch-spacing <px>     base line pitch override, all layers [preset]\n"
       "  --hatch-width <px>       line width override, all layers    [preset]\n"
+      "  --hatch-layer <i:k=v,..> per-layer override (repeatable), keys:\n"
+      "                           kind=line|dot angle spacing subdiv width\n"
+      "                           tonehi tonelo fade opacity soft seed\n"
+      "                           shape aspect dotangle jitter invert=on|off\n"
+      "                           wobble wobwave wjitter slen sgap taper\n"
+      "                           tooth toothscale\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"

@@ -233,6 +233,11 @@ struct Options {
   // --hatch-spacing / --hatch-width.
   float hatchSpacing = 0.0f;
   float hatchWidth = 0.0f;
+  // Per-layer overrides (--hatch-layer <idx:key=val,...>, repeatable), kept
+  // as raw specs and resolved against the preset layers in scene_setup
+  // (warn-on-miss like --edge; the layer list only exists after the preset
+  // is applied).
+  std::vector<std::string> hatchLayerSpecs;
 
   // --- analytic OBJECT-SPACE silhouette edges (spheres/cylinders) ---
   // Master switch (--obj-edges on|off, default off => byte-identical default).

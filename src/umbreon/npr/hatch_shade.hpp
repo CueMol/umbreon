@@ -16,12 +16,16 @@
 namespace umbreon {
 
 // Replace opt.layers (and the per-layer mark styles) with a named preset.
-// Returns false and leaves opt untouched for an unknown name. Presets:
+// Returns false and leaves opt untouched for an unknown name. Presets
+// (concrete values: docs/plans/npr-tone-hatching.md section 6.5):
 //   pen-cross      3 hard crosshatch Line layers (45/-45/0 deg), no
 //                  perturbation -- the default for a bare --hatch on.
-//   pencil, engraving, stipple, screentone-60, manga-square
-//                  land with Phase 2 of the plan (Dot marks / perturbations)
-//                  and return false until then.
+//   pencil         2 soft graphite Line layers: wobble, width modulation,
+//                  finite tapered strokes, paper tooth.
+//   engraving      1 deeply subdivided Line direction (copperplate).
+//   stipple        jittered nested Dot lattice (scientific stippling).
+//   screentone-60  classic AM halftone dot screen at 45 deg (K = 0).
+//   manga-square   square-element (L-inf) screen at 45 deg.
 bool applyHatchPreset(HatchOptions& opt, const std::string& name);
 
 // Composite procedural hatching over rgba (w*h*4, DISPLAY-ENCODED, in

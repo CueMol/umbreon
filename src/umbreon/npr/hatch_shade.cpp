@@ -82,8 +82,122 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name) {
     opt.layers.push_back(l);
     return true;
   }
-  // pencil / engraving / stipple / screentone-60 / manga-square need the
-  // Phase-2 mark styles (Dot lattice, perturbations); unknown for now.
+  if (name == "pencil") {
+    // Two soft graphite layers: wobble + width modulation + finite strokes
+    // with tapered ends + paper tooth. Seed-stable but hand-drawn looking.
+    opt.layers.clear();
+    HatchLayer l;
+    l.kind = LayerKind::Line;
+    l.spacingPx = 12.0f;
+    l.subdiv = 2;
+    l.widthPx = 1.8f;
+    l.fadeInv = 10.0f;
+    l.opacity = 0.85f;
+    l.mark = MarkStyle{};
+    l.mark.edgeSoftness = 1.2f;
+    l.mark.toothAmp = 0.25f;
+    l.mark.toothScalePx = 3.0f;
+    l.mark.wobbleAmpPx = 1.2f;
+    l.mark.wobbleWavePx = 36.0f;
+    l.mark.widthJitter = 0.35f;
+    l.mark.strokeLenPx = 26.0f;
+    l.mark.strokeGapPx = 6.0f;
+    l.mark.strokeTaper = 0.3f;
+    l.angleDeg = 55.0f;
+    l.toneHi = 0.92f;
+    l.toneLo = 0.50f;
+    opt.layers.push_back(l);
+    l.angleDeg = -35.0f;
+    l.toneHi = 0.55f;
+    l.toneLo = 0.22f;
+    opt.layers.push_back(l);
+    return true;
+  }
+  if (name == "engraving") {
+    // One direction, deep subdivision: tone is carried by line insertion
+    // and width modulation alone (copperplate look).
+    opt.layers.clear();
+    HatchLayer l;
+    l.kind = LayerKind::Line;
+    l.angleDeg = 0.0f;
+    l.spacingPx = 16.0f;
+    l.subdiv = 3;
+    l.widthPx = 2.4f;
+    l.toneHi = 0.97f;
+    l.toneLo = 0.12f;
+    l.fadeInv = 8.0f;
+    l.opacity = 1.0f;
+    l.mark = MarkStyle{};
+    l.mark.edgeSoftness = 0.5f;
+    l.mark.widthJitter = 0.5f;
+    l.mark.wobbleAmpPx = 0.5f;
+    l.mark.wobbleWavePx = 64.0f;
+    opt.layers.push_back(l);
+    return true;
+  }
+  if (name == "stipple") {
+    // Jittered nested dot lattice: scientific-illustration stippling. The
+    // lattice keeps the TAM nesting exact under the jitter.
+    opt.layers.clear();
+    HatchLayer l;
+    l.kind = LayerKind::Dot;
+    l.angleDeg = 0.0f;
+    l.spacingPx = 10.0f;
+    l.subdiv = 2;
+    l.toneHi = 0.96f;
+    l.toneLo = 0.35f;
+    l.fadeInv = 12.0f;
+    l.opacity = 1.0f;
+    l.mark = MarkStyle{};
+    l.mark.edgeSoftness = 0.6f;
+    l.mark.shapeExponent = 2.0f;
+    l.mark.jitter = 0.4f;
+    l.mark.invertAbove50 = true;
+    opt.layers.push_back(l);
+    return true;
+  }
+  if (name == "screentone-60") {
+    // Classic AM halftone screen at 45 deg (K = 0: every dot present, the
+    // radius alone carries the tone; ~60 lpi at a 300 dpi print figure).
+    opt.layers.clear();
+    HatchLayer l;
+    l.kind = LayerKind::Dot;
+    l.angleDeg = 45.0f;
+    l.spacingPx = 5.0f;
+    l.subdiv = 0;
+    l.toneHi = 1.0f;
+    l.toneLo = 1.0f;
+    l.fadeInv = 32.0f;
+    l.opacity = 1.0f;
+    l.mark = MarkStyle{};
+    l.mark.edgeSoftness = 0.5f;
+    l.mark.shapeExponent = 2.0f;
+    l.mark.jitter = 0.0f;
+    l.mark.invertAbove50 = true;
+    opt.layers.push_back(l);
+    return true;
+  }
+  if (name == "manga-square") {
+    // Square-element screen (L-inf marks) at 45 deg, coarse enough to read
+    // at full zoom.
+    opt.layers.clear();
+    HatchLayer l;
+    l.kind = LayerKind::Dot;
+    l.angleDeg = 45.0f;
+    l.spacingPx = 6.0f;
+    l.subdiv = 0;
+    l.toneHi = 1.0f;
+    l.toneLo = 1.0f;
+    l.fadeInv = 32.0f;
+    l.opacity = 1.0f;
+    l.mark = MarkStyle{};
+    l.mark.edgeSoftness = 0.5f;
+    l.mark.shapeExponent = 16.0f;
+    l.mark.jitter = 0.0f;
+    l.mark.invertAbove50 = true;
+    opt.layers.push_back(l);
+    return true;
+  }
   return false;
 }
 
@@ -94,14 +208,16 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
       tone == nullptr || mask == nullptr)
     return;
 
-  // Normalize the layers once (min-feature clamp etc.); Dot layers are
-  // Phase 2 and are skipped by hatchLayerInk anyway, so drop them here.
+  // Normalize the layers once (min-feature and perturbation clamps, Lp
+  // area constants, search windows). The layer index keys the hash streams,
+  // so two otherwise-identical layers still decorrelate.
   std::vector<detail::HatchLayerRt> layers;
   layers.reserve(opt.layers.size());
-  for (const HatchLayer& L : opt.layers) {
-    if (L.kind != LayerKind::Line) continue;
+  for (std::size_t li = 0; li < opt.layers.size(); ++li) {
+    const HatchLayer& L = opt.layers[li];
     if (L.opacity <= 0.0f) continue;
-    layers.push_back(detail::hatchNormalizeLayer(L));
+    layers.push_back(
+        detail::hatchNormalizeLayer(L, static_cast<std::uint32_t>(li)));
   }
 
   const ToneRecipe& tr = opt.tone;

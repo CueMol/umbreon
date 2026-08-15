@@ -13,6 +13,7 @@
 #include "umbreon.hpp"
 #include "npr/hatch_ink.hpp"
 #include "npr/hatch_shade.hpp"
+#include "postprocess/image_ops.hpp"
 
 namespace {
 
@@ -43,6 +44,49 @@ float darkFraction(const std::vector<float>& rgba, int w, int h) {
   for (std::size_t p = 0; p < npix; ++p)
     if (rgba[p * 4 + 0] < 0.5f) ++n;
   return static_cast<float>(n) / static_cast<float>(npix);
+}
+
+// Mean ink fraction (1 - red channel) over the whole canvas.
+float meanInk(const std::vector<float>& rgba) {
+  double s = 0.0;
+  const std::size_t npix = rgba.size() / 4;
+  for (std::size_t p = 0; p < npix; ++p) s += 1.0 - rgba[p * 4 + 0];
+  return static_cast<float>(s / static_cast<double>(npix));
+}
+
+// One-Dot-layer options: K=0 AM screen at the given Lp exponent.
+umbreon::HatchOptions makeDotOpt(float shapeExp, bool invert) {
+  umbreon::HatchOptions opt;
+  opt.enable = true;
+  umbreon::HatchLayer l;
+  l.kind = umbreon::LayerKind::Dot;
+  l.angleDeg = 0.0f;
+  l.spacingPx = 8.0f;
+  l.subdiv = 0;
+  l.toneHi = 1.0f;
+  l.toneLo = 1.0f;
+  l.fadeInv = 32.0f;
+  l.mark.shapeExponent = shapeExp;
+  l.mark.jitter = 0.0f;
+  l.mark.invertAbove50 = invert;
+  opt.layers.push_back(l);
+  return opt;
+}
+
+// Per-pixel monotonicity sweep: darkening the tone can only add ink.
+bool sweepMonotone(const umbreon::HatchOptions& opt, int W, int H, int steps,
+                   float eps) {
+  std::vector<float> prev;
+  for (int i = 0; i <= steps; ++i) {
+    const float tone = 1.0f - static_cast<float>(i) / steps;
+    std::vector<float> cur = hatchUniform(W, H, tone, opt);
+    if (!prev.empty()) {
+      for (std::size_t p = 0; p < cur.size() / 4; ++p)
+        if (cur[p * 4 + 0] > prev[p * 4 + 0] + eps) return false;
+    }
+    prev = std::move(cur);
+  }
+  return true;
 }
 
 umbreon::Scene makeQuadScene() {
@@ -280,6 +324,111 @@ int main() {
     // And the paper between the lines stayed clean (tone pinned to 1).
     s.check("edges survive ink: paper clean away from lines",
             minR(24, 20, 2) > 0.95f);
+  }
+
+  // --- 10. All six presets resolve.
+  {
+    const char* names[] = {"pen-cross",     "pencil",       "engraving",
+                           "stipple",       "screentone-60", "manga-square"};
+    bool all = true;
+    for (const char* n : names) {
+      umbreon::HatchOptions o;
+      if (!umbreon::applyHatchPreset(o, n)) all = false;
+    }
+    umbreon::HatchOptions bad;
+    s.check("presets: all six names resolve", all);
+    s.check("presets: unknown name rejected",
+            !umbreon::applyHatchPreset(bad, "no-such-preset"));
+  }
+
+  // --- 11. Lp area normalization: at the same tone, the mean coverage of a
+  // K=0 dot screen is shape-independent (1/sqrt(A_p) radius scaling) and
+  // tracks 1 - displayTone in the non-overlap regime.
+  {
+    const int W = 192, H = 192;
+    // Input tone is LINEAR; applyHatch display-encodes it, so pick the
+    // linear value whose display tone is 0.7 (target coverage 0.3).
+    const float toneLin = umbreon::srgbDecodeF(0.7f);
+    const float ref = meanInk(hatchUniform(W, H, toneLin, makeDotOpt(2.0f, false)));
+    s.check("Lp area: circle coverage ~ 1 - tone",
+            std::fabs(ref - 0.3f) < 0.05f);
+    bool uniform = true;
+    for (float p : {1.0f, 4.0f, 16.0f}) {
+      const float c = meanInk(hatchUniform(W, H, toneLin, makeDotOpt(p, false)));
+      if (std::fabs(c - ref) > 0.025f) uniform = false;
+    }
+    s.check("Lp area: diamond/round-square/square match the circle", uniform);
+  }
+
+  // --- 12. 50% inversion: coverage reaches 1.0 at tone 0, stays per-pixel
+  // monotone through the dot->hole switch, and the mean has no pop at the
+  // switch (covering-radius activation).
+  {
+    const int W = 128, H = 128;
+    const umbreon::HatchOptions opt = makeDotOpt(2.0f, true);
+    const std::vector<float> black = hatchUniform(W, H, 0.0f, opt);
+    float maxR = 0.0f;
+    for (std::size_t p = 0; p < black.size() / 4; ++p)
+      maxR = std::max(maxR, black[p * 4 + 0]);
+    s.check("inversion: full black reached at tone 0", maxR < 0.01f);
+    s.check("inversion: per-pixel monotone through the switch",
+            sweepMonotone(opt, W, H, 40, 2.0e-3f));
+    // Sweep uniformly in the DISPLAY domain (the thresholds live there; a
+    // linear sweep would take a huge display step near black and read as a
+    // jump that is only the sRGB toe).
+    float maxJump = 0.0f;
+    float prevMean = 0.0f;
+    for (int i = 0; i <= 40; ++i) {
+      const float toneLin =
+          umbreon::srgbDecodeF(1.0f - static_cast<float>(i) / 40);
+      const float m = meanInk(hatchUniform(W, H, toneLin, opt));
+      if (i > 0) maxJump = std::max(maxJump, m - prevMean);
+      prevMean = m;
+    }
+    s.check("inversion: no coverage pop at the switch", maxJump < 0.1f);
+  }
+
+  // --- 13. Perturbations never break the nesting: jittered stipple and the
+  // fully perturbed pencil (wobble/width/stroke/tooth) stay monotone --
+  // every perturbation is a pure function of the lattice hash and the
+  // along-mark coordinate, never of the tone.
+  {
+    umbreon::HatchOptions stip;
+    stip.enable = true;
+    umbreon::applyHatchPreset(stip, "stipple");
+    s.check("perturbation: stipple (jitter) monotone",
+            sweepMonotone(stip, 96, 96, 20, 2.0e-3f));
+    umbreon::HatchOptions pen;
+    pen.enable = true;
+    umbreon::applyHatchPreset(pen, "pencil");
+    s.check("perturbation: pencil (wobble/stroke/tooth) monotone",
+            sweepMonotone(pen, 96, 96, 20, 2.0e-3f));
+  }
+
+  // --- 14. Seed determinism: the same seed reproduces bit-exactly, a
+  // different seed changes the stipple pattern.
+  {
+    umbreon::HatchOptions a;
+    a.enable = true;
+    umbreon::applyHatchPreset(a, "stipple");
+    const float toneLin = umbreon::srgbDecodeF(0.6f);
+    const std::vector<float> r1 = hatchUniform(96, 96, toneLin, a);
+    const std::vector<float> r2 = hatchUniform(96, 96, toneLin, a);
+    s.check("seed: same seed is bit-exact", r1 == r2);
+    for (auto& l : a.layers) l.mark.seed = 7;
+    const std::vector<float> r3 = hatchUniform(96, 96, toneLin, a);
+    s.check("seed: different seed changes the pattern", r1 != r3);
+  }
+
+  // --- 15. screentone-60 mid-gray: display tone 0.5 covers ~50%.
+  {
+    umbreon::HatchOptions o;
+    o.enable = true;
+    umbreon::applyHatchPreset(o, "screentone-60");
+    const float c =
+        meanInk(hatchUniform(160, 160, umbreon::srgbDecodeF(0.5f), o));
+    s.check("screentone-60: mid gray covers ~50%",
+            std::fabs(c - 0.5f) < 0.08f);
   }
 
   return s.report();
