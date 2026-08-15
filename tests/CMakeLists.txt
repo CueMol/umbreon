@@ -94,6 +94,10 @@ if(TARGET umbreon)
   target_link_libraries(test_render_edges PRIVATE umbreon)
   add_test(NAME render_edges COMMAND test_render_edges)
 
+  add_executable(test_hatch test_hatch.cpp)
+  target_link_libraries(test_hatch PRIVATE umbreon)
+  add_test(NAME hatch COMMAND test_hatch)
+
   add_executable(test_render_ao test_render_ao.cpp)
   target_link_libraries(test_render_ao PRIVATE umbreon)
   add_test(NAME render_ao COMMAND test_render_ao)

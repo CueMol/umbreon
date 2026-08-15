@@ -235,6 +235,13 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
   // (aoResDiv > 1 with aoResDebug on).
   if (!res.aoPatchMask.empty())
     res.aoPatchMask[pix] = static_cast<float>(pr.aoPatched);
+  // Tone-hatching AOVs: first-hit tone + coverage mask, written whenever
+  // allocated (hatch.enable). Shading channels, so the adaptive-AA replicated
+  // path carries them exactly like the AO AOVs above.
+  if (!res.hatchTone.empty()) {
+    res.hatchTone[pix] = pr.hatchTone;
+    res.hatchMask[pix] = static_cast<float>(pr.hatchHit);
+  }
 }
 
 void storeGBufChannels(FrameResult& res, const RenderOptions& opt,
@@ -500,16 +507,25 @@ void allocateFrameBuffers(const Scene& scene, const RenderOptions& opt, int W,
       res.normal.assign(npix * 3, 0.0f);
     // Albedo is the denoiser's demodulation guide as well as an AO AOV, so it is
     // allocated whenever the GI denoise pass will demodulate by it (not only on an
-    // explicit AOV dump).
+    // explicit AOV dump). The hatch pass also reads it when its base or ink
+    // derives from the first-hit albedo.
     const bool wantAlbedoGuide =
         opt.aoWriteAov ||
-        (opt.gi && opt.denoiser != 0 && opt.denoiseDemodulateAlbedo);
+        (opt.gi && opt.denoiser != 0 && opt.denoiseDemodulateAlbedo) ||
+        (opt.hatch.enable && opt.hatch.needsAlbedo());
     if (wantAlbedoGuide) res.albedo.assign(npix * 3, 0.0f);
     if (opt.aoWriteAov) {
       res.bentNormal.assign(npix * 3, 0.0f);
       res.contactAo.assign(npix, 1.0f);
       res.shapeAo.assign(npix, 1.0f);
       res.avgHitDist.assign(npix, 0.0f);
+    }
+    // Tone-hatching AOVs (--hatch): first-hit shading tone + coverage mask,
+    // consumed by applyHatch after the downsample. Tone init 1.0 = paper side
+    // (background pixels are masked out anyway), mask init 0.0 = background.
+    if (opt.hatch.enable) {
+      res.hatchTone.assign(npix, 1.0f);
+      res.hatchMask.assign(npix, 0.0f);
     }
     // GI working buffers: world-space first-hit position (gather seed key) and
     // the interpolated indirect (E, also the denoise target). The normal AOV is

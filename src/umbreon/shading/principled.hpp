@@ -144,7 +144,8 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
                             RTCScene rscene, bool shadowsOn, int shadowSamples,
                             uint32_t px, uint32_t py,
                             bool traceReflection = false,
-                            const Vec3* tangent = nullptr) {
+                            const Vec3* tangent = nullptr,
+                            ToneAccum* toneAcc = nullptr) {
   // Identical init expression to shadeLocal (shared ambient/emission
   // semantics; Route A zeroes ambLight for GI-eligible hits).
   Vec3 out{mat.emission * C.x + aoFactor.x * mat.ambient * C.x * ambLight.x,
@@ -194,6 +195,8 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
       out.x += dk * C.x * Lc.x;
       out.y += dk * C.y * Lc.y;
       out.z += dk * C.z * Lc.z;
+      // NPR hatch tone tap (see ToneAccum): shadowed N.L shape only.
+      if (toneAcc != nullptr) toneAcc->diffuse += ndl * toneLuma(Lc);
       if (!l.highlight) continue;  // fill lights: diffuse only (POV rule)
       if (f0max > 0.0f) {
         const Vec3 H =
@@ -218,6 +221,9 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
           out.x += sW * F.x * Lc.x;
           out.y += sW * F.y * Lc.y;
           out.z += sW * F.z * Lc.z;
+          if (toneAcc != nullptr)
+            toneAcc->specular += sW * toneLuma(Vec3{F.x * Lc.x, F.y * Lc.y,
+                                                    F.z * Lc.z});
         }
       }
     } else {
@@ -270,6 +276,14 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
       out.x += inv * accS.x * l.color.x;
       out.y += inv * accS.y * l.color.y;
       out.z += inv * accS.z * l.color.z;
+      // NPR hatch tone tap, area path: visibility is folded into accD/accS
+      // per sample, so tap the averaged sums (see ToneAccum).
+      if (toneAcc != nullptr) {
+        toneAcc->diffuse += inv * accD * toneLuma(l.color);
+        toneAcc->specular +=
+            inv * toneLuma(Vec3{accS.x * l.color.x, accS.y * l.color.y,
+                                accS.z * l.color.z});
+      }
     }
   }
 

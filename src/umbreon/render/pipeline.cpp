@@ -9,6 +9,7 @@
 
 #include "edges/object_space_edges.hpp"
 #include "edges/stroke_edges.hpp"
+#include "npr/hatch_shade.hpp"
 #include "postprocess/fog.hpp"
 #include "postprocess/image_ops.hpp"
 #include "experimental/irradiance_cache/denoise.hpp"
@@ -76,6 +77,27 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
                  "--ao-res out is not supported with --gi yet; "
                  "falling back to full-resolution AO");
     hi.aoResDiv = 0;
+  }
+  // Tone hatching (--hatch): Ink mode discards the shaded color entirely, so
+  // GI would be wasted work, and the binarizing ink composite breaks the
+  // color denoisers' smooth-illumination assumptions -- force both off
+  // (Over mode keeps the color visible, so an explicit --gi is respected
+  // there). Normalizing HERE keeps the group-alpha multipass consistent and
+  // precedes the cost model, so the progress phase plan stays honest. An
+  // empty layer list resolves to the pen-cross preset for the same reason
+  // (every pass must see the same layers).
+  if (hi.hatch.enable) {
+    if (hi.hatch.mode == HatchMode::Ink) {
+      if (hi.gi) {
+        umbreon::logMessage(umbreon::LogLevel::Warning,
+                     "--hatch ink does not use GI; disabling --gi");
+        hi.gi = false;
+      }
+      hi.denoiser = static_cast<int>(DenoiserBackend::None);
+      hi.pt1Denoise = false;
+    }
+    if (hi.hatch.layers.empty()) applyHatchPreset(hi.hatch, "pen-cross");
+    hi.hatch.transparentBackground = hi.transparentBackground;
   }
 
   // Declare where this render's time will actually go, so fraction() weights the
@@ -226,6 +248,16 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     if (!frame.giOcclusion.empty())
       frame.giOcclusion =
           boxDownsample(frame.giOcclusion, frame.width, frame.height, 1, ss);
+    // Hatch AOVs (continuous): the tone box-average IS the tone
+    // antialiasing (raise ss and the tone smooths while the ink, laid at
+    // final resolution below, keeps its pixel-exact width), and the mask
+    // average gives the silhouette-coverage AA of the ink composite.
+    if (!frame.hatchTone.empty())
+      frame.hatchTone =
+          boxDownsample(frame.hatchTone, frame.width, frame.height, 1, ss);
+    if (!frame.hatchMask.empty())
+      frame.hatchMask =
+          boxDownsample(frame.hatchMask, frame.width, frame.height, 1, ss);
     frame.width = finalW;
     frame.height = finalH;
   }
@@ -260,6 +292,15 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   }
 
   applyAssumedGamma(frame, scene.assumedGamma);
+  // Tone-hatching ink composite (--hatch): AFTER the gamma encode, because
+  // ink/paper colors are display-encoded values composited in display space
+  // (the same rule as the group-alpha blendpng-equivalent blend). The tone
+  // was generated hi-res in the hit shader and box-downsampled above, so the
+  // binarization here happens once, at the final resolution.
+  if (hi.hatch.enable && !frame.hatchTone.empty())
+    applyHatch(frame.width, frame.height, frame.color.data(),
+               frame.hatchTone.data(), frame.hatchMask.data(),
+               frame.albedo.empty() ? nullptr : frame.albedo.data(), hi.hatch);
   return frame;
 }
 

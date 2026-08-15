@@ -216,6 +216,7 @@ Options parseCli(int argc, char** argv) {
         o.aoResDiv = -1;  // resolved to the supersample factor
       else
         fail("--ao-res expects full/out");
+      o.aoResSet = true;  // explicit: --hatch must not override it
       continue;
     }
     if (a == "--ao-res-debug") {
@@ -279,6 +280,7 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--ao-ld");
       if (o.ok && !parseBool(v, o.aoLowDiscrepancy))
         fail("--ao-ld expects on/off");
+      o.aoLdSet = true;  // explicit: --hatch must not override it
       continue;
     }
     if (a == "--ao-diffuse") {
@@ -1083,6 +1085,51 @@ Options parseCli(int argc, char** argv) {
         fail("--keep-baked-edges expects on/off");
       continue;
     }
+    if (a == "--hatch") {
+      std::string v = value("--hatch");
+      if (o.ok && !parseBool(v, o.hatch)) fail("--hatch expects on/off");
+      continue;
+    }
+    if (a == "--hatch-mode") {
+      std::string v = value("--hatch-mode");
+      if (v == "ink" || v == "over")
+        o.hatchMode = v;
+      else
+        fail("--hatch-mode expects ink/over");
+      continue;
+    }
+    if (a == "--hatch-preset") {
+      o.hatchPreset = value("--hatch-preset");
+      continue;
+    }
+    if (a == "--hatch-ink-color") {
+      std::string v = value("--hatch-ink-color");
+      if (o.ok && !parseHexColor(v, o.hatchInkColor))
+        fail("--hatch-ink-color expects #RRGGBB");
+      continue;
+    }
+    if (a == "--hatch-paper-color") {
+      std::string v = value("--hatch-paper-color");
+      if (o.ok && !parseHexColor(v, o.hatchPaperColor))
+        fail("--hatch-paper-color expects #RRGGBB");
+      continue;
+    }
+    if (a == "--hatch-base") {
+      std::string v = value("--hatch-base");
+      if (v == "paper" || v == "albedo")
+        o.hatchBase = v;
+      else
+        fail("--hatch-base expects paper/albedo");
+      continue;
+    }
+    if (a == "--hatch-ink") {
+      std::string v = value("--hatch-ink");
+      if (v == "fixed" || v == "albedo")
+        o.hatchInk = v;
+      else
+        fail("--hatch-ink expects fixed/albedo");
+      continue;
+    }
     if (a == "--transparent-bg") {
       std::string v = value("--transparent-bg");
       if (o.ok && !parseBool(v, o.transparentBackground))
@@ -1217,6 +1264,13 @@ void printUsage(const char* prog) {
       "  --stroke-screen-minlen <float> screen: drop chains shorter than, px [4]\n"
       "  --dump-aov <prefix>      dump AOV images (--edges and/or --ao-write-aov)\n"
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
+      "  --hatch <on|off>         tone hatching NPR shading (procedural TAM) [off]\n"
+      "  --hatch-mode <ink|over>  ink: pure ink drawing / over: hatch over color [ink]\n"
+      "  --hatch-preset <name>    mark-style preset for the layers [pen-cross]\n"
+      "  --hatch-ink-color <#RRGGBB>   ink color, display-encoded  [#000000]\n"
+      "  --hatch-paper-color <#RRGGBB> paper color, display-encoded [#ffffff]\n"
+      "  --hatch-base <paper|albedo>   ink-mode base under the hatch [paper]\n"
+      "  --hatch-ink <fixed|albedo>    ink color source              [fixed]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"

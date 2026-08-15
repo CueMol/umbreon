@@ -102,9 +102,10 @@ include しません**: 公開APIは `<umbreon/render/render_types.hpp>` のオ�
 
 #### 公開API面（SSOT — Single Source of Truth）
 
-libumbreon が **公開（install 対象）** とするヘッダは、以下の **8つだけ**です。これ以外の
+libumbreon が **公開（install 対象）** とするヘッダは、以下の **11個だけ**です。これ以外の
 `src/umbreon/` 配下のヘッダ（`render/embree_renderer.hpp`、`render/pipeline.hpp`、`shading/*`、
-`postprocess/fog.hpp`、**`edges/*.hpp`（エッジ抽出・可視性・ラスタライズの実装）** など）は
+`postprocess/fog.hpp`、**`edges/*.hpp`（エッジ抽出・可視性・ラスタライズの実装）**、
+`npr/hatch_ink.hpp`（ハッチングのインク数学） など）は
 すべて **INTERNAL** であり、install されず、API/ABI 安定性の保証対象外です（予告なく変更されます。
 downstream から直接 include しないでください）。
 
@@ -113,12 +114,14 @@ downstream から直接 include しないでください）。
 | `<umbreon/umbreon.hpp>` | エントリポイント `render()`、`UMBREON_VERSION_*` |
 | `<umbreon/scene.hpp>` | `Scene` / `Mesh` / `Material` / `Sphere` / `Cylinder` / `Camera` / `DistantLight` / `Fog` / `Vec3` 等 |
 | `<umbreon/log.hpp>` | `LogLevel` / `LogSink` / `setLogSink()`（診断メッセージの受け取り先。未設定なら従来どおり stderr） |
-| `<umbreon/render/render_types.hpp>` | 下記3ヘッダを取り込むアンブレラ（歴史的な単一 include を維持） |
+| `<umbreon/render/render_types.hpp>` | 下記サブヘッダを取り込むアンブレラ（歴史的な単一 include を維持） |
 | `<umbreon/render/edge_types.hpp>` | `EdgeClass` / `EdgeStyle` / `SilhouetteMode` / **`StrokeEdgeOptions`** / **`ObjectSpaceEdgeOptions`** |
+| `<umbreon/render/hatch_types.hpp>` | `HatchOptions` / `HatchLayer` / `MarkStyle` / `ToneRecipe` / `GroupHatchStyle`（`--hatch` トーンハッチング） |
 | `<umbreon/render/render_options.hpp>` | `RenderOptions` |
 | `<umbreon/render/frame_result.hpp>` | `FrameResult` / `Pt1Timing` / `Pt1RayCounts` |
 | `<umbreon/render/render_progress.hpp>` | `RenderPhase` / `RenderProgress`（進捗・キャンセルチャネル） |
 | `<umbreon/postprocess/image_ops.hpp>` | `srgbEncode8` / `applyAssumedGamma` / `boxDownsample` |
+| `<umbreon/npr/hatch_shade.hpp>` | `applyHatch`（プレーンポインタ引数のハッチ合成 image op）/ `applyHatchPreset` |
 
 `render_types.hpp` は互換用アンブレラで、従来どおりこれ1つを include すれば全型が揃います。
 新規コードは関心ごとのサブヘッダを直接 include しても構いません（どちらも install されます）。
@@ -135,7 +138,7 @@ downstream から直接 include しないでください）。
 3. 各ヘッダ先頭の可視性マーカー — 公開ヘッダは
    `// libumbreon PUBLIC API header (installed). ...`、
    内部ヘッダは `// libumbreon INTERNAL header -- not installed, ...` を先頭に持ちます。
-   公開面の照合は `grep -rl 'libumbreon PUBLIC API header' src/umbreon` で行えます（8つ返るのが正）。
+   公開面の照合は `grep -rl 'libumbreon PUBLIC API header' src/umbreon` で行えます（11個返るのが正）。
 
 バージョンは `UMBREON_VERSION_MAJOR` / `_MINOR` / `_PATCH` マクロで参照できます。
 

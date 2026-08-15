@@ -9,6 +9,7 @@
 #include "edges/object_space_edges.hpp"
 #include "geom/mesh2_reader.hpp"
 #include "material_convert.hpp"
+#include "npr/hatch_shade.hpp"
 #include "pov/pov_scene_reader.hpp"
 
 namespace umbreon {
@@ -489,6 +490,37 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.envIntensity = opt.envIntensity;
   ropt.envKeyScale = opt.envKeyScale;
   ropt.envAngle = opt.envAngle;
+
+  // Tone hatching NPR shading (--hatch). Layers come from the named preset;
+  // unknown names (the Phase-2 presets included) warn and fall back to
+  // pen-cross rather than failing the render.
+  if (opt.hatch) {
+    ropt.hatch.enable = true;
+    ropt.hatch.mode =
+        (opt.hatchMode == "over") ? HatchMode::Over : HatchMode::Ink;
+    ropt.hatch.base =
+        (opt.hatchBase == "albedo") ? HatchBase::Albedo : HatchBase::Paper;
+    ropt.hatch.ink =
+        (opt.hatchInk == "albedo") ? HatchInk::FromAlbedo : HatchInk::Fixed;
+    for (int i = 0; i < 3; ++i) {
+      ropt.hatch.inkColor[i] = opt.hatchInkColor[i];
+      ropt.hatch.paperColor[i] = opt.hatchPaperColor[i];
+    }
+    if (!applyHatchPreset(ropt.hatch, opt.hatchPreset)) {
+      std::fprintf(stderr,
+                   "warning: unknown --hatch-preset '%s' (Phase 1 ships "
+                   "pen-cross only); using pen-cross\n",
+                   opt.hatchPreset.c_str());
+      applyHatchPreset(ropt.hatch, "pen-cross");
+    }
+    // NPR AO defaults: the coarse output-resolution AO gather acts as the
+    // tone denoiser and the low-discrepancy sampler halves its variance for
+    // free -- both only when AO is on and the user did not choose otherwise.
+    if (ropt.aoSamples > 0) {
+      if (!opt.aoResSet) ropt.aoResDiv = -1;
+      if (!opt.aoLdSet) ropt.aoLowDiscrepancy = true;
+    }
+  }
 
   // Diffuse GI: surface irradiance cache (steps 1-3: cache build + fill +
   // debug AOVs; the final composite is not wired yet, so color is unchanged).

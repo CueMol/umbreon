@@ -42,4 +42,5 @@
   決め、一度現れた線は消えない・動かない）、トーン生成は hit_shader・インク消費は gamma 後の
   `applyHatch`（hi-res でトーン生成 → downsample → 最終解像度で二値化）。格子/マーク形状/摂動の 3 層
   分離、Lp 面積補正つき網点 + 被覆半径起動の 50% 反転、コントラスト保証、名前付きプリセット 6 種。
-  既定 OFF で byte-identical。**設計確定・Phase 1 実装中**（branch `feat/npr-tone-hatching`）。
+  既定 OFF で byte-identical。**Phase 1 実装済み**（Line ハッチ・pen-cross・Ink/Over・CLI、
+  branch `feat/npr-tone-hatching`）。Phase 2（Dot/摂動/残プリセット）・Phase 3（セクション別）は未着手。

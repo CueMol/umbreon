@@ -90,6 +90,16 @@ struct FrameResult {
   std::vector<float> indirect;    // width*height*3 interpolated E_cached
   std::vector<float> giRecordViz; // width*height*3 record-radius (log R_i) heatmap
   std::vector<float> giOcclusion; // width*height   gather occlusion fraction (AO-like)
+  // Tone-hatching AOVs (--hatch): sized and written ONLY when
+  // RenderOptions::hatch.enable is on (else empty, keeping the default path
+  // byte-identical). hatchTone is the first-hit shading tone (linear,
+  // 1 = fully lit / paper side) built by the ToneRecipe inside the hit
+  // shader; hatchMask is the first-hit coverage (1 = surface, 0 =
+  // background). Both are box-downsampled with the frame (1 channel each):
+  // the tone average IS the tone antialiasing, and the mask average gives
+  // the silhouette-coverage AA the final-resolution ink composite needs.
+  std::vector<float> hatchTone;  // width*height   first-hit shading tone
+  std::vector<float> hatchMask;  // width*height   first-hit coverage 1/0
   // Adaptive-AA refinement mask debug AOV: sized (width/ss)*(height/ss) -- one
   // value per OUTPUT pixel, 1 = refined, 0 = replicated -- and written ONLY when
   // aaMode == 1 and aaDebug is on (else empty). Never downsampled.

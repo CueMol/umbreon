@@ -87,6 +87,11 @@ struct PixelResult {
   uint8_t clipCut = 0;
   float clipNearVz = 0.0f;
   float clipFarVz = 0.0f;
+  // First-hit NPR hatch tone + hit flag (only meaningful with
+  // RenderOptions::hatch.enable; the neutral defaults on escape keep the
+  // background un-inked). Color is unaffected.
+  float hatchTone = 1.0f;
+  uint8_t hatchHit = 0;
 };
 
 // First-hit edge G-buffer of one primary ray, WITHOUT shading: what the
@@ -349,6 +354,8 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   uint8_t firstClipCut = 0;
   float clipNearVzOut = 0.0f;
   float clipFarVzOut = 0.0f;
+  float firstHatchTone = 1.0f;
+  uint8_t firstHatchHit = 0;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -415,6 +422,8 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       firstGiEligible = hs.giEligible;
       firstOpacity = hs.opacity;
       firstAoPatched = hs.aoPatched;
+      firstHatchTone = hs.hatchTone;
+      firstHatchHit = 1;
       firstReflectivity = hs.reflectivity;
       firstReflAlpha = hs.reflAlpha;
       firstReflF0 = hs.reflF0;
@@ -518,7 +527,9 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                      firstReflAspect,
                      firstClipCut,
                      clipNearVzOut,
-                     clipFarVzOut};
+                     clipFarVzOut,
+                     firstHatchTone,
+                     firstHatchHit};
 }
 
 }  // namespace detail

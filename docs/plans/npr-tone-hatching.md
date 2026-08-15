@@ -1,7 +1,8 @@
 # Tone Hatching / スクリーントーン NPR モード（--hatch）実装プラン
 
 *Plan location:* `docs/plans/npr-tone-hatching.md`
-*Status:* 設計確定。Phase 1 を `feat/npr-tone-hatching` ブランチで実装中。
+*Status:* Phase 1 実装済み（`feat/npr-tone-hatching`）。Phase 2（Dot・摂動・残プリセット）/
+Phase 3（セクション別ほか）は未着手。
 *Brief:* `docs/plans/npr-tone-hatching-INSTRUCTIONS.md`（外部設計議論の合意事項）
 
 > 検証ノート: 本文書の `file:line` はすべて作業ツリー（`main` @ `ce89a25`、クリーン）に対して

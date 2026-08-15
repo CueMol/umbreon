@@ -30,6 +30,23 @@ struct Light {
   float radius = 0.0f;    // angular radius (radians) for soft shadows; 0 = hard
 };
 
+// Optional per-hit lighting-scalar accumulator for the NPR hatch tone
+// (RenderOptions::hatch). The local shaders add, per light, the shadowed
+// diffuse shape d * luma(Lc) (NO pigment, NO material diffuse weight, NO
+// diffuseAo -- the tone must track the lighting, not the surface color) and
+// the luminance of every specular contribution (for ToneRecipe::specularCut).
+// Passed as a nullable pointer; the default nullptr adds no work and keeps
+// the hatch-less render byte-identical.
+struct ToneAccum {
+  float diffuse = 0.0f;
+  float specular = 0.0f;
+};
+
+// Rec.709 luminance of a linear radiance triple (tone accumulation only).
+inline float toneLuma(const Vec3& c) {
+  return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+}
+
 // Scale-adaptive self-intersection epsilon (OSPRay calcEpsilon port): the
 // distance to push a secondary-ray origin off the surface so it does not re-hit
 // the surface it left. Scales with the hit-point magnitude and ray length, so it

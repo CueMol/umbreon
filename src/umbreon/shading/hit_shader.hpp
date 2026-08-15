@@ -10,6 +10,7 @@
 // loop exactly as if it were still a local lambda (no LTO needed).
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -58,6 +59,10 @@ struct HitShade {
   // Coarse-AO debug: 1 = this hit's bilateral lookup was rejected and the AO
   // gathered inline (only ever set when ShadeContext::coarseAo is active).
   uint8_t aoPatched = 0;
+  // NPR hatch shading tone (ToneRecipe applied to the lighting scalars and
+  // the AO split), computed ONLY when RenderOptions::hatch.enable is on.
+  // 1 = fully lit (paper side). Never feeds the color.
+  float hatchTone = 1.0f;
   // Material::reflection of this hit, recorded ONLY when pt2's traced
   // reflection owns the term (giIntegrator == 2 && pt2Reflect): the local
   // shade then skips its fake reflection*background and the GI post-pass
@@ -268,13 +273,32 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
           hs.reflAlpha = pt2GgxAlphaFromRoughness(triMat.roughness);
       }
     }
+    ToneAccum toneAcc;
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, shadowsActive,
                           c.opt.shadowSamples * c.shadowSampleMul, px, py,
-                          traceRefl);
+                          traceRefl, nullptr,
+                          c.opt.hatch.enable ? &toneAcc : nullptr);
     hs.opacity = cbuf[3];
     hs.group = c.mesh.groupForTri(rh.hit.primID);
+    // NPR hatch tone (ToneRecipe): lighting-only scalar from the shadowed
+    // per-light diffuse sum plus the AO split. Uses the quality gather's
+    // contact/shape when it ran (aoEnhanced/aoWriteAov), else the raw
+    // openness for both. The albedo AOV feeds the Albedo base / FromAlbedo
+    // ink of the hatch composite.
+    if (c.opt.hatch.enable) {
+      const ToneRecipe& tr = c.opt.hatch.tone;
+      const bool aoQuality = c.opt.aoEnhanced() || c.opt.aoWriteAov;
+      const float cAo = aoQuality ? aoAov.contact : ao.openness;
+      const float sAo = aoQuality ? aoAov.shape : ao.openness;
+      float t = tr.ambient + tr.diffuseWeight * toneAcc.diffuse;
+      t *= std::pow(cAo, tr.contactAoPow) * std::pow(sAo, tr.shapeAoPow);
+      if (tr.specularCut > 0.0f && toneAcc.specular > tr.specularCut)
+        t = 1.0f;
+      hs.hatchTone = t;
+      if (c.opt.hatch.needsAlbedo()) hs.albedo = C;
+    }
     // Edge G-buffer (only when the stroke edge pass is on; otherwise the
     // material-index side-tables are empty and these reads must not happen).
     if (c.opt.strokeEdges.enable) {
@@ -342,12 +366,21 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     Vec3 aoFactor{1.0f, 1.0f, 1.0f};
     Vec3 ambLight = c.ambLight;
     float diffuseAo = 1.0f;
+    // Hatch-tone AO inputs, hoisted out of the !fromEdge scope (baked NPR
+    // outline decoration gets no AO, so its tone keeps the open defaults).
+    float toneContact = 1.0f;
+    float toneShape = 1.0f;
     if (!fromEdge) {
       AoShade ao = aoShadeForHit(c, rscene, P, Ng, N, C, secEps, rh.ray.tfar,
                                  px, py, &hs.aoPatched);
       aoFactor = ao.aoFactor;
       ambLight = ao.ambLight;
       diffuseAo = ao.diffuseAo;
+      if (c.opt.hatch.enable) {
+        const bool aoQuality = c.opt.aoEnhanced() || c.opt.aoWriteAov;
+        toneContact = aoQuality ? ao.aov.contact : ao.openness;
+        toneShape = aoQuality ? ao.aov.shape : ao.openness;
+      }
       // pt1/pt2 only (giIntegrator >= 1): a REAL CSG primitive receives
       // gathered indirect exactly like the mesh -- drop its constant ambient
       // and record the reflectance for the post-pass composite. Gated on the
@@ -448,12 +481,26 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
           hs.reflAlpha = pt2GgxAlphaFromRoughness(pm.roughness);
       }
     }
+    ToneAccum toneAcc;
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, primShadows,
                           c.opt.shadowSamples * c.shadowSampleMul, px, py,
-                          traceReflP, tanValid ? &anisoT : nullptr);
+                          traceReflP, tanValid ? &anisoT : nullptr,
+                          c.opt.hatch.enable ? &toneAcc : nullptr);
     hs.opacity = fc.w;
+    // NPR hatch tone: same recipe as the mesh branch (see there); the AO
+    // split values were hoisted above so fromEdge decoration stays neutral.
+    if (c.opt.hatch.enable) {
+      const ToneRecipe& tr = c.opt.hatch.tone;
+      float t = tr.ambient + tr.diffuseWeight * toneAcc.diffuse;
+      t *= std::pow(toneContact, tr.contactAoPow) *
+           std::pow(toneShape, tr.shapeAoPow);
+      if (tr.specularCut > 0.0f && toneAcc.specular > tr.specularCut)
+        t = 1.0f;
+      hs.hatchTone = t;
+      if (c.opt.hatch.needsAlbedo()) hs.albedo = C;
+    }
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]
                           : c.built.cylGroup[rh.hit.primID];

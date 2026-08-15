@@ -5,6 +5,7 @@
 #pragma once
 
 #include "render/edge_types.hpp"
+#include "render/hatch_types.hpp"
 
 namespace umbreon {
 
@@ -328,6 +329,13 @@ struct RenderOptions {
   // internally (on a private scene copy) before tracing. Mutually exclusive with
   // strokeEdges -- enabling both throws std::runtime_error (they double-draw).
   ObjectSpaceEdgeOptions objectSpaceEdges;
+
+  // --- Tone hatching NPR shading (--hatch) --- defaulted OFF (enable ==
+  // false). When off, no hatch AOV is allocated, the hit shader computes no
+  // tone and applyHatch is never invoked, so output is byte-identical to the
+  // hatch-less path. Composable with strokeEdges / objectSpaceEdges (hatch
+  // carries the tone, edges carry the contours); see HatchOptions.
+  HatchOptions hatch;
 };
 
 }  // namespace umbreon

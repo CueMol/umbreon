@@ -32,6 +32,10 @@ struct AoShade {
   Vec3 ambLight;
   float diffuseAo = 1.0f;
   AOResult aov;  // captured for the G-buffer AOVs (default = fully open)
+  // Raw gathered openness (1 = fully open). The NPR hatch tone reads it as
+  // the contact/shape fallback when the quality gather did not run (the
+  // legacy binary estimator fills only this). Never feeds the color.
+  float openness = 1.0f;
 };
 
 // Raw AO gather for one shading point: estimator selection (legacy binary vs
@@ -83,6 +87,7 @@ inline AoShade aoApplyFactors(const RenderOptions& opt, const Vec3& ambLight,
   AoShade r;
   r.ambLight = ambLight;
   r.aov = aov;
+  r.openness = openness;
   // Directional ambient: a 2-color sky/ground hemisphere gradient sampled along
   // the bent normal (the average unoccluded direction). White sky == ground
   // collapses to the plain scene ambient (neutral). aoBentNormal implies

@@ -156,6 +156,10 @@ struct Options {
   // exact inline fallback at silhouettes/transparency). ~1/ss^2 the AO rays.
   int aoResDiv = 0;           // 0 = full (inline), -1 = out (resolved to ss)
   bool aoResDebug = false;    // dump the fallback (patch) mask AOV
+  // Explicit-flag markers: --hatch defaults aoResDiv/aoLowDiscrepancy to the
+  // NPR-friendly values UNLESS the user set them (scene_setup.cpp).
+  bool aoResSet = false;      // --ao-res was given explicitly
+  bool aoLdSet = false;       // --ao-ld was given explicitly
   // Specular control: multiplies the per-material POV finish specular weight.
   // Defaults to 1.0 (the finish highlight is rendered at full strength); pass
   // --specular-scale 0 for a matte look with no highlight.
@@ -205,6 +209,26 @@ struct Options {
   // screen-space outlines can be A/B-compared side by side. No effect when
   // --edges is off (nothing is filtered in either case).
   bool keepBakedEdges = false;
+
+  // --- Tone hatching NPR shading (--hatch) ---
+  // Master switch for the tone hatching pass (off => byte-identical default,
+  // no hatch AOVs allocated). --hatch on|off.
+  bool hatch = false;
+  // HatchMode: "ink" (pure ink drawing, GI/denoiser normalized off) or
+  // "over" (hatch composited over the shaded color). --hatch-mode.
+  std::string hatchMode = "ink";
+  // Named mark-style preset filling HatchOptions::layers (--hatch-preset).
+  // Phase 1 ships pen-cross; the others land with the Dot/perturbation phase.
+  std::string hatchPreset = "pen-cross";
+  // Ink / paper colors, DISPLAY-encoded #RRGGBB (the hatch composites after
+  // the gamma encode; see render/hatch_types.hpp).
+  float hatchInkColor[3] = {0.0f, 0.0f, 0.0f};
+  float hatchPaperColor[3] = {1.0f, 1.0f, 1.0f};
+  // HatchBase for Ink mode: "paper" or "albedo". --hatch-base.
+  std::string hatchBase = "paper";
+  // HatchInk: "fixed" or "albedo" (FromAlbedo). --hatch-ink.
+  std::string hatchInk = "fixed";
+
   // --- analytic OBJECT-SPACE silhouette edges (spheres/cylinders) ---
   // Master switch (--obj-edges on|off, default off => byte-identical default).
   // When on, each analytic primitive's n.v==0 silhouette contour is emitted in
