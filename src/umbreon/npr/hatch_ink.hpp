@@ -68,6 +68,10 @@ enum : std::uint32_t {
   kHatchStreamTooth = 6,
   kHatchStreamHoleX = 7,
   kHatchStreamHoleY = 8,
+  kHatchStreamDashLen = 9,    // per-stroke length scatter
+  kHatchStreamDashPress = 10, // per-stroke pressure (width + darkness)
+  kHatchStreamDashAngle = 11, // per-stroke angle scatter
+  kHatchStreamField = 12,     // coherent direction-drift field
 };
 
 // Per-mark seed: pure function of (user seed, layer, lattice index, stream).
@@ -169,6 +173,8 @@ struct HatchLayerRt {
   float strokeLen = 0.0f;
   float strokeGap = 0.0f;
   float strokeTaper = 0.3f;
+  float angleJitterTan = 0.0f;   // tan of the per-stroke angle scatter
+  float strokeLenJitter = 0.0f;  // relative per-stroke length scatter
   // Paper tooth (both kinds; 0 = off).
   float toothAmp = 0.0f;
   float toothScale = 3.0f;
@@ -239,6 +245,10 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   if (r.strokeLen > 0.0f) r.strokeLen = std::max(2.0f, r.strokeLen);
   r.strokeGap = std::max(0.0f, L.mark.strokeGapPx);
   r.strokeTaper = std::min(0.9f, std::max(0.0f, L.mark.strokeTaper));
+  const float angleJit =
+      std::min(15.0f, std::max(0.0f, L.mark.angleJitterDeg));
+  r.angleJitterTan = std::tan(angleJit * 0.017453292519943295f);
+  r.strokeLenJitter = std::min(0.9f, std::max(0.0f, L.mark.strokeLenJitter));
   r.toothAmp = hatchClamp01(L.mark.toothAmp);
   r.toothScale = std::max(0.5f, L.mark.toothScalePx);
 
@@ -275,9 +285,13 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   r.R0 = std::pow(2.0f, 1.0f / r.pExp) * (0.5f + jitter) * aspectInflate;
 
   // Search windows: widen by every perturbation so displaced marks are not
-  // clipped (the brief's fixed window would tear wobbled lines).
-  r.padLine =
-      r.halfWidth * (1.0f + r.widthJitter) + r.wobbleAmp + r.halfAA;
+  // clipped (the brief's fixed window would tear wobbled lines). Lines add
+  // the per-line position scatter and the worst-case pivot reach of the
+  // per-stroke angle scatter (half the longest stroke).
+  const float dashReach = r.angleJitterTan * 0.5f * r.strokeLen *
+                          (1.0f + 0.5f * r.strokeLenJitter);
+  r.padLine = r.halfWidth * (1.0f + r.widthJitter) + r.wobbleAmp +
+              r.jitterAmp + dashReach + r.halfAA;
   const float stretch =
       std::pow(2.0f, std::max(0.0f, 0.5f - 1.0f / r.pExp)) * aspectInflate;
   const float rReach =
@@ -335,7 +349,13 @@ inline float hatchLineInk(const HatchLayerRt& L, float x, float y,
     if (tone >= t) continue;  // not yet appeared at this tone
     const float fade = std::min(1.0f, (t - tone) * L.fadeInv);
     float w = L.halfWidth * fade;
+    float markScale = 1.0f;  // per-stroke darkness (pressure)
     float c0 = static_cast<float>(j) * L.step;
+    if (L.jitterAmp > 0.0f)
+      c0 += (hatchU01(hatchMarkSeed(L.seed, L.layerId, 0, j,
+                                    kHatchStreamJitX)) -
+             0.5f) *
+            2.0f * L.jitterAmp;
     if (L.wobbleAmp > 0.0f)
       c0 += L.wobbleAmp *
             hatchValueNoise1(
@@ -348,21 +368,61 @@ inline float hatchLineInk(const HatchLayerRt& L, float x, float y,
                                        v / L.wobbleWave);
     if (L.strokeLen > 0.0f) {
       // Finite strokes: a per-line random phase shifts the duty cycle so
-      // gaps do not align across lines; ends taper to a point.
+      // gaps do not align across lines, and every stroke (dash index k)
+      // gets its own length, pressure (width + darkness) and angle from
+      // the (j, k) hash -- individual pen movements, not a dashed ruler
+      // line. All of it is tone-independent, so the nesting stays exact.
       const float period = L.strokeLen + L.strokeGap;
-      float ph = v + period * hatchU01(hatchMarkSeed(L.seed, L.layerId, 0, j,
-                                                     kHatchStreamStroke));
-      ph -= std::floor(ph / period) * period;  // [0, period)
-      if (ph >= L.strokeLen) continue;         // in the gap
-      const float taperLen =
-          std::max(0.5f, 0.5f * L.strokeTaper * L.strokeLen);
-      const float endDist = std::min(ph, L.strokeLen - ph);
+      const float vp =
+          v + period * hatchU01(hatchMarkSeed(L.seed, L.layerId, 0, j,
+                                              kHatchStreamStroke));
+      const float slot = std::floor(vp / period);
+      const int k = static_cast<int>(slot);
+      float ph = vp - slot * period;  // [0, period)
+      float len = L.strokeLen;
+      if (L.strokeLenJitter > 0.0f) {
+        len *= 1.0f + L.strokeLenJitter *
+                          (hatchU01(hatchMarkSeed(L.seed, L.layerId, j, k,
+                                                  kHatchStreamDashLen)) -
+                           0.5f);
+        len = std::min(std::max(2.0f, len), period);
+      }
+      if (ph >= len) continue;  // in the gap
+      if (L.widthJitter > 0.0f) {
+        // Pressure: lighter strokes are both thinner and paler.
+        const float press =
+            1.0f - L.widthJitter *
+                       hatchU01(hatchMarkSeed(L.seed, L.layerId, j, k,
+                                              kHatchStreamDashPress));
+        w *= press;
+        markScale = 0.6f + 0.4f * press;
+      }
+      if (L.angleJitterTan > 0.0f) {
+        // Each stroke pivots around its own center. The angle is a
+        // COHERENT direction-drift field sampled at the stroke center
+        // (nearby strokes lean together, distant patches drift apart --
+        // the arm repositioning of hand hatching) plus a small
+        // independent per-stroke scatter. Both are tone-free.
+        const float vC = v + ((slot + 0.5f) * period - vp);
+        const float fieldScale = std::max(60.0f, 2.5f * L.strokeLen);
+        const float field = hatchValueNoise2(
+            hatchMarkSeed(L.seed, L.layerId, 0, 0, kHatchStreamField),
+            static_cast<float>(j) * L.step / fieldScale, vC / fieldScale);
+        float amt = 1.2f * field +
+                    0.45f * hatchSFloat(hatchMarkSeed(
+                                L.seed, L.layerId, j, k,
+                                kHatchStreamDashAngle));
+        amt = std::min(1.0f, std::max(-1.0f, amt));
+        c0 += L.angleJitterTan * amt * (ph - 0.5f * len);
+      }
+      const float taperLen = std::max(0.5f, 0.5f * L.strokeTaper * len);
+      const float endDist = std::min(ph, len - ph);
       w *= std::min(1.0f, endDist / taperLen);
     }
     if (w <= 0.0f) continue;
     const float d = std::fabs(u - c0);
     float c = (std::min(d + h, w) - std::max(d - h, -w)) / (2.0f * h);
-    c = hatchClamp01(c);
+    c = hatchClamp01(c) * markScale;
     if (c > cov) cov = c;
   }
   return cov * hatchTooth(L, x, y);

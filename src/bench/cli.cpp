@@ -1304,7 +1304,7 @@ void printUsage(const char* prog) {
       "                           tonehi tonelo fade opacity soft seed\n"
       "                           shape aspect dotangle jitter invert=on|off\n"
       "                           wobble wobwave wjitter slen sgap taper\n"
-      "                           tooth toothscale\n"
+      "                           anglejitter lenjitter tooth toothscale\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"

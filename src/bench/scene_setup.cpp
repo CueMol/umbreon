@@ -101,6 +101,10 @@ void applyHatchLayerSpec(umbreon::HatchOptions& h, const std::string& spec) {
       l.mark.strokeGapPx = f;
     else if (k == "taper")
       l.mark.strokeTaper = f;
+    else if (k == "anglejitter")
+      l.mark.angleJitterDeg = f;
+    else if (k == "lenjitter")
+      l.mark.strokeLenJitter = f;
     else if (k == "tooth")
       l.mark.toothAmp = f;
     else if (k == "toothscale")

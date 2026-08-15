@@ -51,19 +51,31 @@ struct MarkStyle {
   float toothAmp = 0.0f;      // paper-tooth noise amplitude on the coverage
   float toothScalePx = 3.0f;  // paper-tooth spatial scale
   unsigned seed = 0;          // explicit seed for the deterministic hashes
+  // --- Dot / Line shared ---
+  // Lattice-position scatter in units of the lattice pitch (max 0.5).
+  // Dots: 2D center jitter (0 = halftone screen, ~0.4 = stipple).
+  // Lines: per-line offset from the exact lattice (breaks the metronomic
+  // spacing of hand hatching).
+  float jitter = 0.0f;
   // --- Dot ---
   float shapeExponent = 2.0f;  // Lp exponent: 1=diamond, 2=circle, >=16=square
   float dotAspect = 1.0f;      // ellipse stretch
   float dotAngleDeg = 0.0f;    // rotation of non-circular marks
-  float jitter = 0.0f;         // 0=halftone screen .. ~0.4=stipple (max 0.5)
   bool invertAbove50 = true;   // grow white holes past ~50% coverage
   // --- Line ---
   float wobbleAmpPx = 0.0f;   // along-line 1D-noise displacement amplitude
   float wobbleWavePx = 40.0f; // its wavelength
-  float widthJitter = 0.0f;   // relative width modulation (max 1)
+  // Relative width modulation (max 1). With finite strokes it also drives
+  // the per-stroke pressure scatter (each stroke's width and darkness).
+  float widthJitter = 0.0f;
   float strokeLenPx = 0.0f;   // finite stroke length; 0 = continuous line
   float strokeGapPx = 0.0f;   // gap between strokes
   float strokeTaper = 0.3f;   // taper fraction at stroke ends
+  // Per-stroke individuality (finite strokes only): angle scatter in
+  // degrees (each stroke pivots around its own center; max 15) and
+  // relative stroke-length variation (max 0.9).
+  float angleJitterDeg = 0.0f;
+  float strokeLenJitter = 0.0f;
 };
 
 // One procedural Tonal Art Map layer. Marks sit on a lattice of pitch

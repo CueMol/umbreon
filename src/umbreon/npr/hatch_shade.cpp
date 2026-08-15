@@ -83,26 +83,32 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name) {
     return true;
   }
   if (name == "pencil") {
-    // Two soft graphite layers: wobble + width modulation + finite strokes
-    // with tapered ends + paper tooth. Seed-stable but hand-drawn looking.
+    // Two soft graphite layers built from INDIVIDUAL strokes: per-line
+    // position scatter off the lattice, per-stroke length / pressure /
+    // angle scatter, wobble, tapered ends and paper tooth. Seed-stable but
+    // hand-drawn looking (a dashed-ruler look is exactly what the
+    // per-stroke scatter exists to avoid).
     opt.layers.clear();
     HatchLayer l;
     l.kind = LayerKind::Line;
-    l.spacingPx = 12.0f;
+    l.spacingPx = 9.0f;
     l.subdiv = 2;
-    l.widthPx = 1.8f;
+    l.widthPx = 2.4f;
     l.fadeInv = 10.0f;
     l.opacity = 0.85f;
     l.mark = MarkStyle{};
     l.mark.edgeSoftness = 1.2f;
-    l.mark.toothAmp = 0.25f;
+    l.mark.toothAmp = 0.22f;
     l.mark.toothScalePx = 3.0f;
+    l.mark.jitter = 0.22f;         // per-line position scatter
     l.mark.wobbleAmpPx = 1.2f;
-    l.mark.wobbleWavePx = 36.0f;
-    l.mark.widthJitter = 0.35f;
-    l.mark.strokeLenPx = 26.0f;
-    l.mark.strokeGapPx = 6.0f;
-    l.mark.strokeTaper = 0.3f;
+    l.mark.wobbleWavePx = 60.0f;
+    l.mark.widthJitter = 0.45f;    // + per-stroke pressure scatter
+    l.mark.strokeLenPx = 44.0f;
+    l.mark.strokeGapPx = 5.0f;
+    l.mark.strokeTaper = 0.25f;
+    l.mark.angleJitterDeg = 5.0f;  // coherent drift + per-stroke scatter
+    l.mark.strokeLenJitter = 0.5f;
     l.angleDeg = 55.0f;
     l.toneHi = 0.92f;
     l.toneLo = 0.50f;
@@ -110,6 +116,7 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name) {
     l.angleDeg = -35.0f;
     l.toneHi = 0.55f;
     l.toneLo = 0.22f;
+    l.mark.seed = 1;               // decorrelate the two layers' strokes
     opt.layers.push_back(l);
     return true;
   }
