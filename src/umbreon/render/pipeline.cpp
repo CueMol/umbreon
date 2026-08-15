@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <stdexcept>
 
@@ -98,6 +99,12 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     }
     if (hi.hatch.layers.empty()) applyHatchPreset(hi.hatch, "pen-cross");
     hi.hatch.transparentBackground = hi.transparentBackground;
+    // Per-section styles may need the albedo AOV even when the global
+    // base/ink do not (Scene::groupHatchStyle overrides them per group).
+    for (const GroupHatchStyle& g : scene.groupHatchStyle)
+      if (g.enable && (g.base == HatchBase::Albedo ||
+                       g.ink == HatchInk::FromAlbedo))
+        hi.hatch.sectionNeedsAlbedo = true;
   }
 
   // Declare where this render's time will actually go, so fraction() weights the
@@ -163,20 +170,35 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
           std::min(1.0f, std::max(0.0f, hi.hatch.paperColor[k]));
       paperLin[k] = (gammaOn && d > 0.0f) ? std::pow(d, 1.0f / g) : d;
     }
-    const bool albedoBase =
-        hi.hatch.base == HatchBase::Albedo && !frame.albedo.empty();
+    // Per-section styling: the hi-res section-id buffer selects each
+    // pixel's style (base choice, or "leave this section shaded").
+    const bool perSection =
+        !scene.groupHatchStyle.empty() && !frame.hatchGroup.empty();
     const std::size_t npix =
         static_cast<std::size_t>(frame.width) * frame.height;
     for (std::size_t p = 0; p < npix; ++p) {
       if (frame.hatchMask[p] <= 0.5f) continue;  // background: untouched
+      const GroupHatchStyle* st = nullptr;
+      if (perSection) {
+        const std::uint16_t g = frame.hatchGroup[p];
+        if (g != 0xFFFFu && g < scene.groupHatchStyle.size())
+          st = &scene.groupHatchStyle[g];
+        if (st != nullptr && !st->enable) continue;  // keeps its shading
+      }
+      const HatchBase baseSel = st != nullptr ? st->base : hi.hatch.base;
       float b[3];
-      if (albedoBase) {
+      if (baseSel == HatchBase::Albedo && !frame.albedo.empty()) {
+        // The DISPLAY value of the flat base is srgbEncodeF(albedo) -- the
+        // same formula applyHatch uses as its contrast reference -- so
+        // paint its gamma pre-image (the round trip through
+        // applyAssumedGamma lands exactly on the reference).
         for (int k = 0; k < 3; ++k) {
-          b[k] = frame.albedo[p * 3 + k];
+          float d = srgbEncodeF(frame.albedo[p * 3 + k]);
           if (hi.hatch.albedoQuantize > 1) {
             const float n = static_cast<float>(hi.hatch.albedoQuantize);
-            b[k] = std::round(b[k] * n) / n;
+            d = std::round(d * n) / n;
           }
+          b[k] = (gammaOn && d > 0.0f) ? std::pow(d, 1.0f / g) : d;
         }
       } else {
         b[0] = paperLin[0];
@@ -351,7 +373,12 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   if (hi.hatch.enable && !frame.hatchTone.empty())
     applyHatch(frame.width, frame.height, frame.color.data(),
                frame.hatchTone.data(), frame.hatchMask.data(),
-               frame.albedo.empty() ? nullptr : frame.albedo.data(), hi.hatch);
+               frame.albedo.empty() ? nullptr : frame.albedo.data(), hi.hatch,
+               frame.hatchGroup.empty() ? nullptr : frame.hatchGroup.data(),
+               ss,
+               scene.groupHatchStyle.empty() ? nullptr
+                                             : scene.groupHatchStyle.data(),
+               scene.groupHatchStyle.size());
   return frame;
 }
 

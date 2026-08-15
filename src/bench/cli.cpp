@@ -1144,6 +1144,113 @@ Options parseCli(int argc, char** argv) {
         fail("--hatch-width expects a positive pixel width");
       continue;
     }
+    if (a == "--hatch-style") {
+      // --hatch-style ID=spec : per-section hatch override (repeatable),
+      // mirroring --edge. spec := entry (":" entry)*, entry := off |
+      // base=paper|albedo | ink=fixed|albedo | color=#RRGGBB | tone=F |
+      // layers=MASK.
+      std::string kv = value("--hatch-style");
+      std::size_t eq = kv.find('=');
+      if (eq == std::string::npos) {
+        fail("--hatch-style expects ID=spec (e.g. _34_35=base=albedo:tone=0.8)");
+        continue;
+      }
+      std::string id = kv.substr(0, eq);
+      if (id.rfind("_show", 0) == 0) id = id.substr(5);
+      Options::HatchSectionSpec spec;
+      bool ok = true;
+      for (const std::string& ent : split(kv.substr(eq + 1), ':')) {
+        if (ent.empty()) continue;
+        if (ent == "off") {
+          spec.off = true;
+          continue;
+        }
+        std::size_t e2 = ent.find('=');
+        if (e2 == std::string::npos) {
+          ok = false;
+          break;
+        }
+        const std::string k = ent.substr(0, e2);
+        const std::string v = ent.substr(e2 + 1);
+        if (k == "base" && (v == "paper" || v == "albedo")) {
+          spec.baseSet = true;
+          spec.baseAlbedo = (v == "albedo");
+        } else if (k == "ink" && (v == "fixed" || v == "albedo")) {
+          spec.inkSet = true;
+          spec.inkAlbedo = (v == "albedo");
+        } else if (k == "color") {
+          spec.colorSet = parseHexColor(v, spec.color);
+          ok = ok && spec.colorSet;
+        } else if (k == "tone") {
+          spec.toneScale = static_cast<float>(std::atof(v.c_str()));
+        } else if (k == "layers") {
+          spec.layerMask = std::atoi(v.c_str());
+        } else {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok)
+        fail("--hatch-style: bad spec '" + kv.substr(eq + 1) +
+             "' (entries off, base=paper|albedo, ink=fixed|albedo, "
+             "color=#RRGGBB, tone=F, layers=MASK)");
+      else
+        o.sectionHatch[id] = spec;
+      continue;
+    }
+    if (a == "--hatch-tone") {
+      // --hatch-tone key=val,... : ToneRecipe overrides.
+      bool ok = true;
+      for (const std::string& ent : split(value("--hatch-tone"), ',')) {
+        if (ent.empty()) continue;
+        std::size_t e2 = ent.find('=');
+        if (e2 == std::string::npos) {
+          ok = false;
+          break;
+        }
+        const std::string k = ent.substr(0, e2);
+        const float f = static_cast<float>(std::atof(ent.substr(e2 + 1).c_str()));
+        if (k == "diffuse")
+          o.hatchTone.diffuseWeight = f;
+        else if (k == "ambient")
+          o.hatchTone.ambient = f;
+        else if (k == "contact")
+          o.hatchTone.contactAoPow = f;
+        else if (k == "shape")
+          o.hatchTone.shapeAoPow = f;
+        else if (k == "black")
+          o.hatchTone.blackPoint = f;
+        else if (k == "white")
+          o.hatchTone.whitePoint = f;
+        else if (k == "gamma")
+          o.hatchTone.gamma = f;
+        else if (k == "speccut")
+          o.hatchTone.specularCut = f;
+        else if (k == "levels")
+          o.hatchToneLevels = static_cast<int>(f);
+        else {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok)
+        fail("--hatch-tone expects key=val,... (keys diffuse ambient contact "
+             "shape black white gamma speccut levels)");
+      else
+        o.hatchToneSet = true;
+      continue;
+    }
+    if (a == "--hatch-min-contrast") {
+      o.hatchMinContrast =
+          static_cast<float>(std::atof(value("--hatch-min-contrast").c_str()));
+      continue;
+    }
+    if (a == "--ao-res-fallback-mul") {
+      o.aoResFallbackMul = std::atoi(value("--ao-res-fallback-mul").c_str());
+      if (o.ok && o.aoResFallbackMul < 1)
+        fail("--ao-res-fallback-mul expects an integer >= 1");
+      continue;
+    }
     if (a == "--hatch-layer") {
       // --hatch-layer idx:key=val,... : per-layer override on top of the
       // preset (repeatable). Only the shape is validated here; the keys are
@@ -1305,11 +1412,20 @@ void printUsage(const char* prog) {
       "                           shape aspect dotangle jitter invert=on|off\n"
       "                           wobble wobwave wjitter slen sgap taper\n"
       "                           anglejitter lenjitter tooth toothscale\n"
+      "  --hatch-style <ID=spec>  per-section hatch override (repeatable), e.g.\n"
+      "                           _34_35=base=albedo:color=#202020:tone=0.8\n"
+      "                           (entries off, base=paper|albedo,\n"
+      "                           ink=fixed|albedo, color=#RRGGBB, tone=F,\n"
+      "                           layers=MASK)\n"
+      "  --hatch-tone <k=v,..>    tone recipe (diffuse ambient contact shape\n"
+      "                           black white gamma speccut levels)\n"
+      "  --hatch-min-contrast <f> min display-luma gap base vs ink   [0.25]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"
       "  --ao-res <full|out>      AO gather grid: per-hit / per-output-px [full]\n"
       "  --ao-res-debug <on|off>  dump the coarse-AO fallback mask AOV   [off]\n"
+      "  --ao-res-fallback-mul <n> AO sample mul on coarse-AO fallback px  [4]\n"
       "  --ao-distance <float>    AO occluder radius   [auto from scene]\n"
       "  --ao-intensity <float>   AO strength multiplier        [1.0]\n"
       "  --ao-falloff <power>     AO distance falloff exponent  [0 = binary]\n"

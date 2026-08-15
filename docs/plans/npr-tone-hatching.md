@@ -1,9 +1,13 @@
 # Tone Hatching / スクリーントーン NPR モード（--hatch）実装プラン
 
 *Plan location:* `docs/plans/npr-tone-hatching.md`
-*Status:* Phase 1-2 実装済み（`feat/npr-tone-hatching`）: Line/Dot 全マーク・摂動・
-プリセット 6 種・`--hatch-layer`。Phase 3（セクション別スタイル、FromAlbedo の 4 通り完成、
-`aoResFallbackSppMul`、ToneRecipe CLI）は未着手。
+*Status:* Phase 1-3 実装済み（`feat/npr-tone-hatching`）: Line/Dot 全マーク・摂動・
+プリセット 6 種・`--hatch-layer`・セクション別スタイル（`hatchGroup` AOV +
+`Scene::groupHatchStyle` + `--hatch-style ID=spec`）・base/ink 4 通り・
+`--hatch-tone` / `--hatch-min-contrast`・`aoResFallbackSppMul`。
+実装時の逸脱: `aoResFallbackSppMul` のライブラリ既定は **1**（指示書案の 4 だと既存の
+coarse AO 出力が変わり `test_ao_coarse` の許容を破るため byte-identical を優先）。
+4 は CLI の NPR 既定（`--hatch` 時、明示指定なし）として適用する。
 *Brief:* `docs/plans/npr-tone-hatching-INSTRUCTIONS.md`（外部設計議論の合意事項）
 
 > 検証ノート: 本文書の `file:line` はすべて作業ツリー（`main` @ `ce89a25`、クリーン）に対して

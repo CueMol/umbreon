@@ -154,10 +154,16 @@ struct HatchOptions {
   // TAM layers, multiply-composited. Empty (the default) is normalized by
   // renderFrame to the "pen-cross" preset (applyHatchPreset).
   std::vector<HatchLayer> layers;
+  // Set by renderFrame's normalization when any per-section style
+  // (Scene::groupHatchStyle) derives its base or ink from the albedo, so
+  // the albedo AOV is captured even though the GLOBAL base/ink do not need
+  // it. Library callers can leave it false.
+  bool sectionNeedsAlbedo = false;
 
   // True when the pass reads the albedo AOV (base or ink derives from it).
   bool needsAlbedo() const {
-    return base == HatchBase::Albedo || ink == HatchInk::FromAlbedo;
+    return base == HatchBase::Albedo || ink == HatchInk::FromAlbedo ||
+           sectionNeedsAlbedo;
   }
 };
 

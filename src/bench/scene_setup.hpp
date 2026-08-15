@@ -29,10 +29,12 @@ bool buildSceneFromPov(Options& opt, Scene& scene, RenderOptions& ropt,
 void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
                       const std::vector<std::string>& groupNames);
 
-// Transparency / AO / GI / denoiser / supersample / adaptive-AA wiring from
-// the parsed CLI options, with the configuration summary prints.
-void applyShadingOptions(const Options& opt, const Scene& scene,
-                         RenderOptions& ropt);
+// Transparency / AO / GI / denoiser / supersample / adaptive-AA / tone-hatch
+// wiring from the parsed CLI options, with the configuration summary prints.
+// `scene` is mutable for the per-section hatch styles (--hatch-style, resolved
+// against `groupNames` into Scene::groupHatchStyle like the --edge pattern).
+void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
+                         const std::vector<std::string>& groupNames);
 
 // Analytic OBJECT-SPACE edges (--obj-edges): baked-edge removal + options,
 // including the --obj-edge-only verification path (which mutates the scene).

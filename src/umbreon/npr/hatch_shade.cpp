@@ -210,10 +210,16 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name) {
 
 void applyHatch(int w, int h, float* rgba, const float* tone,
                 const float* mask, const float* albedo,
-                const HatchOptions& opt) {
+                const HatchOptions& opt, const std::uint16_t* groups,
+                int groupSs, const GroupHatchStyle* styles,
+                std::size_t styleCount) {
   if (!opt.enable || w <= 0 || h <= 0 || rgba == nullptr ||
       tone == nullptr || mask == nullptr)
     return;
+  const bool perSection =
+      groups != nullptr && styles != nullptr && styleCount > 0;
+  const int gss = groupSs < 1 ? 1 : groupSs;
+  const std::size_t gW = static_cast<std::size_t>(w) * gss;
 
   // Normalize the layers once (min-feature and perturbation clamps, Lp
   // area constants, search windows). The layer index keys the hash streams,
@@ -229,10 +235,6 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
 
   const ToneRecipe& tr = opt.tone;
   const float wpRange = std::max(1.0e-4f, tr.whitePoint - tr.blackPoint);
-  const bool useAlbedoBase =
-      opt.base == HatchBase::Albedo && albedo != nullptr;
-  const bool useAlbedoInk =
-      opt.ink == HatchInk::FromAlbedo && albedo != nullptr;
 
   // Row-parallel: every pixel is a pure function of (x, y) and the input
   // buffers, so the tiling is bit-exact at any thread count.
@@ -246,10 +248,25 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             const float m = mask[p];
             if (m <= 0.0f) continue;  // background: never painted
 
-            // Tone shaping: linear black/white remap -> artistic gamma
-            // (linear domain) -> display encode -> optional quantization.
-            // Every stage maps 1 -> 1, so fully lit stays exactly ink-free.
-            float t = detail::hatchClamp01((tone[p] - tr.blackPoint) / wpRange);
+            // Per-section style: sample the hi-res id buffer at the cell
+            // center. A disabled section keeps its frame color untouched.
+            const GroupHatchStyle* st = nullptr;
+            if (perSection) {
+              const std::size_t gp =
+                  (static_cast<std::size_t>(y) * gss + gss / 2) * gW +
+                  static_cast<std::size_t>(x) * gss + gss / 2;
+              const std::uint16_t g = groups[gp];
+              if (g != 0xFFFFu && g < styleCount) st = &styles[g];
+              if (st != nullptr && !st->enable) continue;
+            }
+
+            // Tone shaping: per-section scale -> linear black/white remap ->
+            // artistic gamma (linear domain) -> display encode -> optional
+            // quantization. Every stage maps 1 -> 1 (toneScale >= 1 lifts
+            // toward paper and is clamped), so fully lit stays ink-free.
+            float tLin = tone[p];
+            if (st != nullptr) tLin *= st->toneScale;
+            float t = detail::hatchClamp01((tLin - tr.blackPoint) / wpRange);
             if (tr.gamma != 1.0f) t = std::pow(t, tr.gamma);
             t = srgbEncodeF(t);
             if (opt.toneLevels > 1) {
@@ -266,6 +283,10 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             // the contour ink survives; B here is recomputed from the
             // options purely as the contrast reference (the actual pixel
             // may carry edge ink or fog).
+            const HatchBase baseSel = st != nullptr ? st->base : opt.base;
+            const HatchInk inkSel = st != nullptr ? st->ink : opt.ink;
+            const float* inkFixed =
+                st != nullptr ? st->inkColor : opt.inkColor;
             float B[3];
             if (opt.mode == HatchMode::Over) {
               // The shaded frame is the base. Under a transparent
@@ -275,7 +296,7 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
               B[0] = px4[0];
               B[1] = px4[1];
               B[2] = px4[2];
-            } else if (useAlbedoBase) {
+            } else if (baseSel == HatchBase::Albedo && albedo != nullptr) {
               for (int k = 0; k < 3; ++k) {
                 float b = srgbEncodeF(albedo[p * 3 + k]);
                 if (opt.albedoQuantize > 1) {
@@ -289,12 +310,12 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
                 B[k] = detail::hatchClamp01(opt.paperColor[k]);
             }
             float I[3];
-            if (useAlbedoInk) {
+            if (inkSel == HatchInk::FromAlbedo && albedo != nullptr) {
               for (int k = 0; k < 3; ++k)
                 I[k] = srgbEncodeF(albedo[p * 3 + k]);
             } else {
               for (int k = 0; k < 3; ++k)
-                I[k] = detail::hatchClamp01(opt.inkColor[k]);
+                I[k] = detail::hatchClamp01(inkFixed[k]);
             }
             ensureInkContrast(I, B, opt.inkMinContrast);
 
@@ -305,6 +326,9 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             const float xc = static_cast<float>(x) + 0.5f;
             const float yc = static_cast<float>(y) + 0.5f;
             for (const detail::HatchLayerRt& L : layers) {
+              if (st != nullptr && L.layerId < 31u &&
+                  ((st->layerMask >> L.layerId) & 1) == 0)
+                continue;  // layer disabled for this section
               const float c = detail::hatchLayerInk(L, xc, yc, t) * L.opacity;
               if (c <= 0.0f) continue;
               for (int k = 0; k < 3; ++k) f[k] *= 1.0f - c * (1.0f - I[k]);

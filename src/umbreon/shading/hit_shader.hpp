@@ -10,6 +10,7 @@
 // loop exactly as if it were still a local lambda (no LTO needed).
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -140,6 +141,15 @@ inline AoShade aoShadeForHit(const ShadeContext& c, RTCScene rscene,
                        aov))
       return aoApplyFactors(c.opt, c.ambLight, c.aoUp, openness, aov, C);
     if (patched != nullptr) *patched = 1;
+    // Fallback pixels skip the grid's structural smoothing, so they carry
+    // raw gather variance; oversample just them (aoResFallbackSppMul, a few
+    // percent of the frame). The coordinate-based seeding is untouched, so
+    // determinism is preserved; mul 1 is the previous output bitwise.
+    return computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C,
+                          secEps, px, py,
+                          c.aoSampleMul *
+                              std::max(1, c.opt.aoResFallbackSppMul),
+                          c.seedW ? c.seedW : c.opt.width);
   }
   return computeAoShade(rscene, c.opt, c.ambLight, c.aoUp, P, Ng, N, C, secEps,
                         px, py, c.aoSampleMul,

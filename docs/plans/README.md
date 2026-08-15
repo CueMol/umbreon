@@ -41,6 +41,6 @@
   スティップル）で表す NPR モード。手続き的 Tonal Art Map（`firstLevel` のビット演算で線の出現レベルを
   決め、一度現れた線は消えない・動かない）、トーン生成は hit_shader・インク消費は gamma 後の
   `applyHatch`（hi-res でトーン生成 → downsample → 最終解像度で二値化）。格子/マーク形状/摂動の 3 層
-  分離、Lp 面積補正つき網点 + 被覆半径起動の 50% 反転、コントラスト保証、名前付きプリセット 6 種。
-  既定 OFF で byte-identical。**Phase 1-2 実装済み**（Line/Dot 全マーク・摂動・プリセット 6 種・
-  `--hatch-layer`、branch `feat/npr-tone-hatching`）。Phase 3（セクション別スタイル）は未着手。
+  分離、Lp 面積補正つき網点 + 被覆半径起動の 50% 反転、コントラスト保証、名前付きプリセット 6 種、
+  セクション別スタイル（`--hatch-style ID=spec`）。既定 OFF で byte-identical。
+  **Phase 1-3 実装完了**（branch `feat/npr-tone-hatching`）。

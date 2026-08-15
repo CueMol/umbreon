@@ -74,6 +74,16 @@ struct RenderOptions {
   // falls back with a warning).
   int aoResDiv = 0;
   bool aoResDebug = false;  // fill FrameResult::aoPatchMask (fallback pixels)
+  // Sample multiplier for the coarse-AO FALLBACK pixels (the bilateral
+  // lookup rejected: silhouette rims, transparency layers -- a few percent
+  // of the frame). Those pixels skip the coarse grid's structural smoothing
+  // and carry raw per-pixel gather variance, which the hatch binarization
+  // turns into salt-and-pepper flecks along rims -- oversampling just them
+  // is nearly free (the pt1EdgePatchSppMul pattern). Only consulted when
+  // aoResDiv > 1. Default 1 keeps existing coarse-AO renders byte-identical
+  // (the design brief proposed 4; the bench CLI applies 4 as its NPR
+  // default when --hatch is on instead, so the library stays compatible).
+  int aoResFallbackSppMul = 1;
 
   // True when any AO enhancement is requested. Drives the hit shader's
   // enhanced-vs-legacy branch: false => bit-exact legacy computeAO path.

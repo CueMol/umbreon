@@ -241,6 +241,11 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
   if (!res.hatchTone.empty()) {
     res.hatchTone[pix] = pr.hatchTone;
     res.hatchMask[pix] = static_cast<float>(pr.hatchHit);
+    if (!res.hatchGroup.empty())
+      res.hatchGroup[pix] =
+          (pr.firstGroup >= 0 && pr.firstGroup < 0xFFFF)
+              ? static_cast<std::uint16_t>(pr.firstGroup)
+              : 0xFFFFu;
   }
 }
 
@@ -523,9 +528,13 @@ void allocateFrameBuffers(const Scene& scene, const RenderOptions& opt, int W,
     // Tone-hatching AOVs (--hatch): first-hit shading tone + coverage mask,
     // consumed by applyHatch after the downsample. Tone init 1.0 = paper side
     // (background pixels are masked out anyway), mask init 0.0 = background.
+    // The per-section style id buffer only exists when a per-section table
+    // was configured (hi-res, never downsampled; 0xFFFF = background).
     if (opt.hatch.enable) {
       res.hatchTone.assign(npix, 1.0f);
       res.hatchMask.assign(npix, 0.0f);
+      if (!scene.groupHatchStyle.empty())
+        res.hatchGroup.assign(npix, 0xFFFFu);
     }
     // GI working buffers: world-space first-hit position (gather seed key) and
     // the interpolated indirect (E, also the denoise target). The normal AOV is

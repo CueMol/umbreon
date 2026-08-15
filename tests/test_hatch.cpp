@@ -3,6 +3,7 @@
 // ss-invariant line width and thread-count determinism.
 // Design record: docs/plans/npr-tone-hatching.md section 8.
 #include <cmath>
+#include <cstdio>
 #include <cstddef>
 #include <vector>
 
@@ -418,6 +419,76 @@ int main() {
     for (auto& l : a.layers) l.mark.seed = 7;
     const std::vector<float> r3 = hatchUniform(96, 96, toneLin, a);
     s.check("seed: different seed changes the pattern", r1 != r3);
+  }
+
+  // --- 16. All four base/ink combinations leave visible ink (the contrast
+  // guarantee: even same-color ink over its own base is forced apart).
+  {
+    umbreon::Scene sc = makeQuadScene();
+    for (auto& c : sc.mesh.colors) c = {0.2f, 0.3f, 0.9f, 1.0f};
+    const umbreon::HatchBase bases[2] = {umbreon::HatchBase::Paper,
+                                         umbreon::HatchBase::Albedo};
+    const umbreon::HatchInk inks[2] = {umbreon::HatchInk::Fixed,
+                                       umbreon::HatchInk::FromAlbedo};
+    bool allVisible = true;
+    for (auto b : bases) {
+      for (auto i : inks) {
+        umbreon::RenderOptions o;
+        o.width = 48;
+        o.height = 48;
+        o.hatch.enable = true;
+        o.hatch.base = b;
+        o.hatch.ink = i;
+        const umbreon::FrameResult f = umbreon::render(sc, o);
+        float lo = 1.0f, hi = 0.0f;
+        for (std::size_t p = 0; p < f.color.size() / 4; ++p) {
+          const float l = 0.2126f * f.color[p * 4 + 0] +
+                          0.7152f * f.color[p * 4 + 1] +
+                          0.0722f * f.color[p * 4 + 2];
+          lo = std::min(lo, l);
+          hi = std::max(hi, l);
+        }
+        if (hi - lo < 0.1f) allVisible = false;
+      }
+    }
+    s.check("base/ink: all four combinations show visible ink", allVisible);
+  }
+
+  // --- 17. Per-section styles: a section with enable=false keeps its
+  // shaded color while the styled section gets the paper base.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {0.0f, 0.0f, 0.0f};
+    umbreon::Sphere a;
+    a.center = {-1.0f, 0.0f, 0.0f};
+    a.radius = 0.8f;
+    // Mid-gray so the shaded color (~0.5) is distinguishable from the
+    // painted paper (1.0) -- a fully lit WHITE sphere shades to exactly 1.
+    a.color = {0.5f, 0.5f, 0.5f, 1.0f};
+    a.group = 0;
+    umbreon::Sphere b = a;
+    b.center = {1.0f, 0.0f, 0.0f};
+    b.group = 1;
+    sc.spheres.push_back(a);
+    sc.spheres.push_back(b);
+    sc.groupHatchStyle.assign(2, umbreon::GroupHatchStyle{});
+    sc.groupHatchStyle[1].enable = false;  // section 1 stays shaded
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.hatch.enable = true;
+    o.hatch.tone.ambient = 1.0f;  // paper everywhere: isolate the base paint
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    const float va = f.color[(32 * 64 + 16) * 4 + 0];  // sphere A center
+    const float vb = f.color[(32 * 64 + 48) * 4 + 0];  // sphere B center
+    s.check("per-section: styled section painted to paper",
+            std::fabs(va - 1.0f) < 0.01f);
+    s.check("per-section: disabled section keeps its shading",
+            vb > 0.3f && vb < 0.9f);
+    s.check("per-section: hatchGroup AOV allocated",
+            f.hatchGroup.size() == 64u * 64u);
   }
 
   // --- 15. screentone-60 mid-gray: display tone 0.5 covers ~50%.

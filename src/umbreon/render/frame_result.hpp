@@ -100,6 +100,12 @@ struct FrameResult {
   // the silhouette-coverage AA the final-resolution ink composite needs.
   std::vector<float> hatchTone;  // width*height   first-hit shading tone
   std::vector<float> hatchMask;  // width*height   first-hit coverage 1/0
+  // Per-section hatch styling id buffer: the first-hit CueMol section
+  // (transparency group) per HI-RES pixel, 0xFFFF = background. Sized and
+  // written ONLY when hatch.enable is on AND Scene::groupHatchStyle is
+  // non-empty. Never downsampled (integer ids); the final-resolution ink
+  // composite samples the cell-center hi-res id instead.
+  std::vector<std::uint16_t> hatchGroup;
   // Adaptive-AA refinement mask debug AOV: sized (width/ss)*(height/ss) -- one
   // value per OUTPUT pixel, 1 = refined, 0 = replicated -- and written ONLY when
   // aaMode == 1 and aaDebug is on (else empty). Never downsampled.

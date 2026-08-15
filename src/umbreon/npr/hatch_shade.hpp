@@ -9,6 +9,8 @@
 // Design record: docs/plans/npr-tone-hatching.md.
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include "render/hatch_types.hpp"
@@ -42,8 +44,19 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name);
 // the Albedo contrast reference. No-op when opt.enable is false.
 // Deterministic: every output value is a pure function of its coordinates
 // and the inputs (TBB tiling does not change results).
+//
+// Per-section styling (all optional; pass nullptr/0 for the global path):
+// groups is the HI-RES section-id buffer (w*groupSs x h*groupSs, 0xFFFF =
+// background; FrameResult::hatchGroup) sampled at each output pixel's cell
+// center, and styles/styleCount the per-section table
+// (Scene::groupHatchStyle). A section with enable == false keeps its frame
+// color untouched; otherwise its base/ink/layerMask/toneScale override the
+// global options.
 void applyHatch(int w, int h, float* rgba, const float* tone,
                 const float* mask, const float* albedo,
-                const HatchOptions& opt);
+                const HatchOptions& opt,
+                const std::uint16_t* groups = nullptr, int groupSs = 1,
+                const GroupHatchStyle* styles = nullptr,
+                std::size_t styleCount = 0);
 
 }  // namespace umbreon

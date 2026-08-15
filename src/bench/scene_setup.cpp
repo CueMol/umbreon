@@ -525,8 +525,8 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
   }
 }
 
-void applyShadingOptions(const Options& opt, const Scene& scene,
-                         RenderOptions& ropt) {
+void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
+                         const std::vector<std::string>& groupNames) {
   // Single-layer transparency controls.
   ropt.transparency = opt.transparency;
   ropt.transparentBackground = opt.transparentBackground;
@@ -554,6 +554,8 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   // (and gi-checked) inside renderFrame.
   ropt.aoResDiv = opt.aoResDiv;
   ropt.aoResDebug = opt.aoResDebug;
+  if (opt.aoResFallbackMul >= 1)
+    ropt.aoResFallbackSppMul = opt.aoResFallbackMul;
   ropt.shadows = opt.shadows;
   ropt.shadowSamples = opt.shadowSamples;
   ropt.lightRadius = opt.lightRadius;
@@ -613,12 +615,61 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
     }
     for (const std::string& spec : opt.hatchLayerSpecs)
       applyHatchLayerSpec(ropt.hatch, spec);
+    // Tone recipe / contrast overrides.
+    if (opt.hatchToneSet) {
+      ropt.hatch.tone = opt.hatchTone;
+      ropt.hatch.toneLevels = opt.hatchToneLevels;
+    }
+    if (opt.hatchMinContrast >= 0.0f)
+      ropt.hatch.inkMinContrast = opt.hatchMinContrast;
+    // Per-section styles (--hatch-style ID=spec): size the table to the
+    // group list, seed every section from the GLOBAL options, then apply
+    // the overrides -- the same name->index resolution as --edge.
+    if (!opt.sectionHatch.empty()) {
+      GroupHatchStyle def;
+      def.enable = true;
+      def.base = ropt.hatch.base;
+      def.ink = ropt.hatch.ink;
+      for (int i = 0; i < 3; ++i) def.inkColor[i] = ropt.hatch.inkColor[i];
+      def.layerMask = 0x7fffffff;  // all layers
+      def.toneScale = 1.0f;
+      scene.groupHatchStyle.assign(groupNames.size(), def);
+      std::map<std::string, int> gidx;
+      for (std::size_t i = 0; i < groupNames.size(); ++i)
+        gidx[groupNames[i]] = static_cast<int>(i);
+      for (const auto& kv : opt.sectionHatch) {
+        auto it = gidx.find(kv.first);
+        if (it == gidx.end()) {
+          std::fprintf(stderr,
+                       "warning: section '%s' not found (try --list-groups)\n",
+                       kv.first.c_str());
+          continue;
+        }
+        GroupHatchStyle st = def;
+        const Options::HatchSectionSpec& sp = kv.second;
+        if (sp.off) st.enable = false;
+        if (sp.baseSet)
+          st.base = sp.baseAlbedo ? HatchBase::Albedo : HatchBase::Paper;
+        if (sp.inkSet)
+          st.ink = sp.inkAlbedo ? HatchInk::FromAlbedo : HatchInk::Fixed;
+        if (sp.colorSet)
+          for (int i = 0; i < 3; ++i) st.inkColor[i] = sp.color[i];
+        st.toneScale = sp.toneScale;
+        if (sp.layerMask >= 0) st.layerMask = sp.layerMask;
+        scene.groupHatchStyle[static_cast<std::size_t>(it->second)] = st;
+        std::printf("  hatch override: section %s (group %d)\n",
+                    kv.first.c_str(), it->second);
+      }
+    }
     // NPR AO defaults: the coarse output-resolution AO gather acts as the
-    // tone denoiser and the low-discrepancy sampler halves its variance for
-    // free -- both only when AO is on and the user did not choose otherwise.
+    // tone denoiser, the low-discrepancy sampler halves its variance for
+    // free, and the fallback rim pixels (which skip the grid smoothing)
+    // get oversampled so the binarization does not fleck -- each only when
+    // AO is on and the user did not choose otherwise.
     if (ropt.aoSamples > 0) {
       if (!opt.aoResSet) ropt.aoResDiv = -1;
       if (!opt.aoLdSet) ropt.aoLowDiscrepancy = true;
+      if (opt.aoResFallbackMul < 1) ropt.aoResFallbackSppMul = 4;
     }
   }
 

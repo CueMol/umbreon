@@ -482,6 +482,8 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `position` / `indirect` | `vector<float>` | `width*height*3` world 空間 first-hit 位置 / 合成済み間接照度。**`gi` 有効時のみ充填**。それ以外は空 |
 | `giRecordViz` | `vector<float>` | `width*height*3` cache レコード半径のデバッグヒートマップ（cache integrator のみ書き込み）。**`gi` かつ `giWriteAov` 有効時のみ充填** |
 | `giOcclusion` | `vector<float>` | `width*height` gather 遮蔽率（AO 的）。**`gi` かつ `giWriteAov` 有効時のみ充填** |
+| `hatchTone` / `hatchMask` | `vector<float>` | `width*height` トーンハッチング用 first-hit 陰影トーン（1=紙白側）/ ヒット被覆率（1=サーフェス、0=背景）。**`hatch.enable` 有効時のみ充填**、downsample 対象 |
+| `hatchGroup` | `vector<uint16_t>` | first-hit セクション id（0xFFFF=背景）。**`hatch.enable` かつ `Scene::groupHatchStyle` 非空のときのみ充填**。hi-res のまま（downsample されない） |
 | `renderSeconds` | `double` | レンダ時間 |
 | `effectiveTriangles` | `size_t` | 実効三角形数（instance 込み） |
 | `denoiserUsed` | `int` | 実際に走った**最終カラー**デノイザ（0=None, 1=AtrousBilateral, 2=OIDN）。2 は OIDN が実処理したときのみ。1 は明示 a-trous **および全 OIDN フォールバック**（非搭載ビルド／OIDN ランタイムエラー）を含む |

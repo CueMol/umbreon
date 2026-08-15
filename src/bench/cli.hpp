@@ -238,6 +238,30 @@ struct Options {
   // (warn-on-miss like --edge; the layer list only exists after the preset
   // is applied).
   std::vector<std::string> hatchLayerSpecs;
+  // Per-section hatch style override (--hatch-style ID=spec, repeatable),
+  // mirroring --edge: key is the section id with "_show" stripped, value the
+  // parsed override. Resolved against geo.groupNames into
+  // Scene::groupHatchStyle in scene_setup, warn-on-miss.
+  struct HatchSectionSpec {
+    bool off = false;        // "off": leave this section fully shaded
+    bool baseSet = false;
+    bool baseAlbedo = false;
+    bool inkSet = false;
+    bool inkAlbedo = false;
+    bool colorSet = false;
+    float color[3] = {0.0f, 0.0f, 0.0f};
+    float toneScale = 1.0f;
+    int layerMask = -1;      // <0 = all layers
+  };
+  std::map<std::string, HatchSectionSpec> sectionHatch;
+  // Tone recipe overrides (--hatch-tone key=val,...): only applied when set.
+  ToneRecipe hatchTone;
+  bool hatchToneSet = false;
+  int hatchToneLevels = 0;         // levels= key (posterize; 0 = continuous)
+  float hatchMinContrast = -1.0f;  // --hatch-min-contrast; <0 = default
+  // Coarse-AO fallback-pixel sample multiplier (--ao-res-fallback-mul);
+  // <0 keeps the RenderOptions default.
+  int aoResFallbackMul = -1;
 
   // --- analytic OBJECT-SPACE silhouette edges (spheres/cylinders) ---
   // Master switch (--obj-edges on|off, default off => byte-identical default).
