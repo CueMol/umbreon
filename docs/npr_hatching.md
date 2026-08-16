@@ -156,6 +156,13 @@ rounded square, >= 16 = square. Radii are area-normalized by `1/sqrt(A_p)`, so
 tested). Past ~50% coverage the dots freeze and white holes grow on the dual
 lattice, so full black is reachable with a continuous, monotone transition.
 
+Dot screens benefit from the default `--hatch-res hi` twice over: the box
+downsample antialiases each dot's rim (at `out` the same dot quantizes into a
+hard blocky cell), and the screen can go finer than one output pixel simply by
+asking for it. A 300 dpi figure at `--supersample 4` takes
+`--hatch-spacing 1.5` (or lower) without breaking up -- the dot count is a
+parameter, not a resolution limit.
+
 ---
 
 ## 4. Options
