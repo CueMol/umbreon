@@ -35,9 +35,16 @@ dark blue helix black and a yellow one white at identical illumination. The
 tone is built from lighting only:
 
 ```
-tone = ambient + diffuseWeight * SUM_lights[ saturate(N.L)^brilliance * shadow * luma(light) ]
-tone *= contactAo^contactAoPow * shapeAo^shapeAoPow
+tone  = ambient + diffuseWeight * SUM_lights[ wrap(N.L)^brilliance * shadow * luma(light) ]
+tone *= contactAo^contactAoPow * shapeAo^shapeAoPow      # AO, when enabled
+tone *= 1 - rimDarken * edge * (1 - rimLightBias * tone) # contour shading
 ```
+
+`wrap()` and the contour term are the **drawing lighting model** (see 4): a
+raytraced `N.L` alone paints physically exact shadows a draftsman would not
+draw, and saturates flat under the frontal light figures are usually drawn
+under. At consumption the tone is remapped again (black/white points, gamma,
+the highlight knee) before the marks are thresholded against it.
 
 The tone is generated at the supersampled resolution and box-downsampled with
 the frame -- that average **is** the tone antialiasing.
@@ -72,6 +79,11 @@ minimum stroke pitch:
 |---|---|---|
 | `hi` (default) | 2 / ss output px (ss=4 -> 0.5 px) | fine grain; sub-pixel strokes merge into an exact coverage tone |
 | `out` | 2 output px | crisp, individually resolvable strokes |
+
+Because the pitch floor scales with `ss`, the supersample factor is what
+decides how fine a drawing can get: the `richardson` look asks for a 0.5 px
+pitch, which needs `--supersample 4` (at ss3 it is clamped to 0.67 px). Raise
+`ss` before reaching for a coarser pitch.
 
 A minimum feature size exists because the ink is a raster: below ~2 px per
 lattice step the marks alias against the pixel grid. `subdiv` is clamped so
@@ -310,10 +322,16 @@ speckle).
 ## 5. Recipes
 
 ```sh
-# Richardson-style colored pencil (the reference recipe)
-umbreon_cli scene.pov -W 1600 -H 1250 --supersample 3 --shadows on \
-  --declare _light_inten=1.3 --declare _flash_frac=0.15 --declare _amb_frac=0 \
+# Richardson-style colored pencil (the reference recipe). The look needs no
+# light rebalance: its contour term shades by the form, so a scene's own
+# frontal-dominant CueMol lighting works as-is.
+umbreon_cli scene.pov -W 1600 -H 1250 --supersample 4 --shadows on \
   --hatch on --hatch-look richardson --edges on
+
+# a bumpy molecular SURFACE needs the tone loosened (its many
+# away-facing facets otherwise sink the whole picture into dark strokes)
+umbreon_cli surface.pov --hatch on --hatch-look richardson --edges on \
+  --hatch-tone "ambient=0.10,gamma=1.6" 
 
 # monochrome pen figure
 umbreon_cli scene.pov --hatch on --hatch-look ink-cross --edges on
