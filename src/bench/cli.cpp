@@ -1250,6 +1250,10 @@ Options parseCli(int argc, char** argv) {
           o.hatchTone.blackPoint = f;
         else if (k == "white")
           o.hatchTone.whitePoint = f;
+        else if (k == "hl")
+          o.hatchTone.highlightAt = f;
+        else if (k == "hlsoft")
+          o.hatchTone.highlightSoft = f;
         else if (k == "gamma")
           o.hatchTone.gamma = f;
         else if (k == "speccut")
@@ -1263,7 +1267,7 @@ Options parseCli(int argc, char** argv) {
       }
       if (!ok)
         fail("--hatch-tone expects key=val,... (keys diffuse ambient contact "
-             "wrap rim rimpow rimbias shape black white gamma speccut levels)");
+             "wrap rim rimpow rimbias shape black white hl hlsoft gamma speccut levels)");
       else
         o.hatchToneSet = true;
       continue;
@@ -1472,7 +1476,8 @@ void printUsage(const char* prog) {
       "                           layers=MASK, density=F, width=F)\n"
       "  --hatch-tone <k=v,..>    tone recipe (diffuse ambient wrap rim rimpow\n"
       "                           rimbias\n"
-      "                           contact shape black white gamma speccut levels)\n"
+      "                           contact shape black white hl hlsoft gamma\n"
+      "                           speccut levels)\n"
       "  --hatch-min-contrast <f> min display-luma gap base vs ink   [0.25]\n"
       "  --hatch-ink-shade <f>    darken ink toward f at deep tone (pencil\n"
       "                           pressure; 1 = constant ink)          [1]\n"

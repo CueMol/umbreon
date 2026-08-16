@@ -139,6 +139,20 @@ struct ToneRecipe {
   float shapeAoPow = 0.6f;     // shape AO exponent (domain-scale relief)
   float blackPoint = 0.0f;     // applied at consumption, linear domain
   float whitePoint = 1.0f;
+  // Highlight knee: tones at or above `highlightAt` are pushed to exactly
+  // 1 (bare paper), with `highlightSoft` as the width of the ramp below it:
+  //
+  //   t >= at            -> 1
+  //   at-soft < t < at   -> smoothstep up to 1
+  //
+  // This separates the two things whitePoint conflates. whitePoint scales
+  // the WHOLE range, so lowering it to force a clean white also lifts every
+  // mid tone and the highlight spreads; the knee lifts only the top of the
+  // range, so the paper-white area stays exactly as large as `at` says
+  // while still being a true 1.0 hole rather than a sparse-stroke area.
+  // at >= 1 disables it (the default).
+  float highlightAt = 1.0f;
+  float highlightSoft = 0.06f;
   float gamma = 1.0f;          // artistic curve, linear domain
   float specularCut = 0.0f;    // >0: blow out to paper where spec exceeds it
 };

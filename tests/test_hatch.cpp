@@ -616,6 +616,29 @@ int main() {
             fWrap.hatchTone[rPix] > fNo.hatchTone[rPix] + 0.02f);
   }
 
+  // --- 20. Highlight knee: tones above the knee reach EXACT paper white
+  // (a true hole, not sparse strokes), while tones below it -- and so the
+  // size of the white area -- are left alone.
+  {
+    const int W = 64, H = 64;
+    umbreon::HatchOptions opt;
+    opt.enable = true;
+    umbreon::applyHatchPreset(opt, "pen-cross");
+    opt.tone.highlightAt = 1.0f;  // off
+    const float toneHi = umbreon::srgbDecodeF(0.93f);  // above a 0.9 knee
+    const float toneMid = umbreon::srgbDecodeF(0.70f); // below it
+    const float offHi = meanInk(hatchUniform(W, H, toneHi, opt));
+    const float offMid = meanInk(hatchUniform(W, H, toneMid, opt));
+    opt.tone.highlightAt = 0.9f;
+    opt.tone.highlightSoft = 0.05f;
+    const float onHi = meanInk(hatchUniform(W, H, toneHi, opt));
+    const float onMid = meanInk(hatchUniform(W, H, toneMid, opt));
+    s.check("highlight knee: above the knee is exactly ink-free",
+            offHi > 0.0f && onHi == 0.0f);
+    s.check("highlight knee: below the knee is untouched",
+            std::fabs(onMid - offMid) < 1.0e-6f);
+  }
+
   // --- 15. screentone-60 mid-gray: display tone 0.5 covers ~50%.
   {
     umbreon::HatchOptions o;

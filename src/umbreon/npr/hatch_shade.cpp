@@ -249,14 +249,28 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     opt.tone.rimLightBias = 0.35f;  // biased to each form's shaded side
     opt.tone.contactAoPow = 1.0f;
     opt.tone.shapeAoPow = 0.6f;
-    opt.tone.whitePoint = 0.97f;
-    opt.tone.gamma = 2.2f;
-    opt.tone.specularCut = 0.1f;
+    // Do NOT clip the lit end: whitePoint below 1 turns every gently lit
+    // face into bare paper, so the highlights spread into large white
+    // holes. Opening it past 1 keeps the light side as sparse strokes and
+    // leaves the paper for the true highlights only; the higher gamma
+    // restores the dark end that the wider range would otherwise lift.
+    opt.tone.whitePoint = 1.2f;
+    opt.tone.gamma = 2.4f;
+    // The specular blow-out is off by default for the same reason: on a
+    // broad-lobe finish it paints a large white patch rather than a
+    // highlight. Raise it per scene if a crisp glint is wanted.
+    opt.tone.specularCut = 0.0f;
+    // Highlights: a narrow band at the top of the range goes to EXACT
+    // paper white. The knee sets where that band starts, so the white is
+    // clean without the highlight spreading (which is what lowering
+    // whitePoint would do).
+    opt.tone.highlightAt = 0.86f;
+    opt.tone.highlightSoft = 0.05f;
     // Fine strokes: with the default supersampled ink these are OUTPUT
     // pixels, so ss decides how far below one pixel they actually land.
     for (HatchLayer& l : opt.layers) {
-      l.spacingPx = 1.0f;   // dense drawing grain (OUTPUT px; see hatch-res)
-      l.widthPx = 0.9f;
+      l.spacingPx = 0.5f;   // dense drawing grain (OUTPUT px; see hatch-res)
+      l.widthPx = 0.45f;
       l.mark.edgeSoftness = 0.55f;
       l.opacity = 1.0f;
     }
@@ -391,6 +405,16 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             float t = detail::hatchClamp01((tLin - tr.blackPoint) / wpRange);
             if (tr.gamma != 1.0f) t = std::pow(t, tr.gamma);
             t = srgbEncodeF(t);
+            // Highlight knee: lift only the top of the range to exact
+            // paper white, leaving the mid tones (and so the highlight's
+            // AREA) where the curve above put them.
+            if (tr.highlightAt < 1.0f) {
+              const float lo =
+                  std::max(0.0f, tr.highlightAt - std::max(1.0e-4f,
+                                                           tr.highlightSoft));
+              const float k = detail::hatchSmoothstep(lo, tr.highlightAt, t);
+              t = t + (1.0f - t) * k;
+            }
             if (opt.toneLevels > 1) {
               const float n = static_cast<float>(opt.toneLevels - 1);
               t = std::round(t * n) / n;

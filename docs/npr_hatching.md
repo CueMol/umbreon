@@ -93,7 +93,7 @@ umbreon_cli scene.pov --hatch on --hatch-look richardson --edges on
 
 | Look | Paper / ink | Marks | Use |
 |---|---|---|---|
-| `richardson` | paper base, ink from each section's own color, 3 pencils of one hue, pressure `inkShadeDark 0.4`, tone fog on | `pencil`, pitch 2 px, width 1.8 px | Jane-Richardson-style colored-pencil ribbon drawings |
+| `richardson` | paper base, ink from each section's own color, 3 pencils of one hue, pressure `inkShadeDark 0.28`, tone fog on | `pencil`, pitch 0.5 px, width 0.45 px | Jane-Richardson-style colored-pencil ribbon drawings |
 | `ink-cross` | white paper, fixed black ink | `pen-cross` | plain pen-and-ink monochrome figures |
 | `manga` | flat albedo fill (posterized to 4 steps), fixed black ink | `screentone-60` | comic-style flat fill under a halftone screen |
 
@@ -109,10 +109,11 @@ darks are denser strokes of a *darker pencil of the same hue*. Its settings:
 | `paperColor` | `#F0ECDD` | warm drawing paper |
 | layers | `pencil` x3, `inkScale` 1.0 / 0.62 / 0.38 | three pencils: light wash, darker cross, darkest shadow core |
 | `inkShadeDark` | 0.28 | pencil pressure: the same stick darkens in shadow |
-| `spacing` / `width` | 1.0 / 0.9 output px | dense drawing grain; `--supersample` decides how far below a pixel the strokes land |
-| `tone.whitePoint` | 0.97 | opens the lit side up to bare paper |
-| `tone.gamma` | 2.2 | pushes midtones into the stroke range |
-| `tone.specularCut` | 0.1 | punches the highlight through as pure paper |
+| `spacing` / `width` | 0.5 / 0.45 output px | dense drawing grain; `--supersample` decides how far below a pixel the strokes land |
+| `tone.whitePoint` | 1.2 | does NOT clip the lit end (clipping spreads the highlight) |
+| `tone.gamma` | 2.4 | restores the dark end the wider range would lift |
+| `tone.highlightAt` / `highlightSoft` | 0.86 / 0.05 | a narrow top band goes to exact paper white, without enlarging it |
+| `tone.specularCut` | 0 (off) | on a broad lobe it paints a patch, not a highlight |
 | `tone.wrap` / `rim` / `rimpow` / `rimbias` | 0.5 / 1.0 / 1.4 / 0.35 | the drawing lighting model (see 4) -- shading follows the form, so the look works under a scene's own frontal lighting |
 | `toneFog` | on | the far side fades into the paper |
 
@@ -216,10 +217,25 @@ base would break the color coding.
 | `--hatch-tone-fog <on\|off>` | on | fade the tone toward paper with the scene fog |
 
 `--hatch-tone` keys: `diffuse` (weight of the summed per-light diffuse),
-`ambient` (floor; 0 crushes shadows to solid ink), `wrap` / `rim` / `rimpow`
-(the drawing lighting model, below), `contact` / `shape` (AO exponents),
-`black` / `white` (level remap), `gamma` (artistic curve), `speccut` (blow the
-specular highlight out to paper), `levels` (posterize the tone to N bands).
+`ambient` (floor; 0 crushes shadows to solid ink), `wrap` / `rim` / `rimpow` /
+`rimbias` (the drawing lighting model, below), `contact` / `shape` (AO
+exponents), `black` / `white` (level remap), `hl` / `hlsoft` (highlight knee,
+below), `gamma` (artistic curve), `speccut` (blow the specular highlight out
+to paper), `levels` (posterize the tone to N bands).
+
+#### Highlights (`hl`, `hlsoft`)
+
+Getting a clean paper-white highlight by lowering `white` does not work: that
+scales the whole range, so every gently lit face lifts too and the highlight
+spreads into a big white hole. The knee separates the two concerns -- tones at
+or above `hl` are pushed to exactly 1 (bare paper), with `hlsoft` as the width
+of the ramp below it, and everything under the knee is left untouched. So `hl`
+alone decides how LARGE the white area is, while the result is always a true
+1.0 hole rather than a sparse-stroke area. `hl >= 1` disables it.
+
+`speccut` is the other route (blow out where the specular exceeds a value),
+but on a broad-lobe finish it paints a large patch rather than a highlight;
+the `richardson` look leaves it off and uses `hl 0.86, hlsoft 0.05`.
 
 #### The drawing lighting model (`wrap`, `rim`)
 
