@@ -34,6 +34,10 @@ links), **`src/bench/`** is the CLI harness. The dependency is one-way —
     (`stroke_edges`) and object-space silhouettes (`object_space_edges`), over
     the shared extractors (`mesh_feature_edges`, `analytic_silhouette`,
     `mesh_weld`). The first three headers are public.
+  - `src/umbreon/npr/` — tone hatching (`--hatch`): procedural Tonal Art Map
+    crosshatching / halftone screens / colored-pencil shading
+    (`hatch_shade`, public; `hatch_ink` internal). Guide:
+    [docs/npr_hatching.md](docs/npr_hatching.md).
   - `src/umbreon/postprocess/` — the `fog` depth post-process and `image_ops`
     (box-downsample / assumed-gamma / sRGB encode); `image_ops.hpp` is public.
 - **`bench_core`** (static library, pure C++17, `src/bench/`) — the `.pov`/`.inc`

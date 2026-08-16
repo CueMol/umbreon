@@ -591,23 +591,42 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
   // pen-cross rather than failing the render.
   if (opt.hatch) {
     ropt.hatch.enable = true;
-    ropt.hatch.mode =
-        (opt.hatchMode == "over") ? HatchMode::Over : HatchMode::Ink;
-    ropt.hatch.base =
-        (opt.hatchBase == "albedo") ? HatchBase::Albedo : HatchBase::Paper;
-    ropt.hatch.ink =
-        (opt.hatchInk == "albedo") ? HatchInk::FromAlbedo : HatchInk::Fixed;
-    for (int i = 0; i < 3; ++i) {
-      ropt.hatch.inkColor[i] = opt.hatchInkColor[i];
-      ropt.hatch.paperColor[i] = opt.hatchPaperColor[i];
-    }
-    if (!applyHatchPreset(ropt.hatch, opt.hatchPreset)) {
+    // Layered configuration, least to most specific: a complete look
+    // (--hatch-look) sets paper/ink + tone + layers together; a mark preset
+    // (--hatch-preset) then replaces just the layers; explicit flags win
+    // over both (hence the *Set markers).
+    if (!opt.hatchLook.empty() &&
+        !applyHatchLook(ropt.hatch, opt.hatchLook)) {
       std::fprintf(stderr,
-                   "warning: unknown --hatch-preset '%s' (pen-cross/pencil/"
-                   "engraving/stipple/screentone-60/manga-square); using "
-                   "pen-cross\n",
-                   opt.hatchPreset.c_str());
-      applyHatchPreset(ropt.hatch, "pen-cross");
+                   "warning: unknown --hatch-look '%s' (richardson/ink-cross/"
+                   "manga); ignored\n",
+                   opt.hatchLook.c_str());
+    }
+    if (!opt.hatchPreset.empty()) {
+      if (!applyHatchPreset(ropt.hatch, opt.hatchPreset)) {
+        std::fprintf(stderr,
+                     "warning: unknown --hatch-preset '%s' (pen-cross/pencil/"
+                     "engraving/stipple/screentone-60/manga-square); using "
+                     "pen-cross\n",
+                     opt.hatchPreset.c_str());
+        applyHatchPreset(ropt.hatch, "pen-cross");
+      }
+    } else if (ropt.hatch.layers.empty()) {
+      applyHatchPreset(ropt.hatch, "pen-cross");  // no look, no preset
+    }
+    if (opt.hatchModeSet)
+      ropt.hatch.mode =
+          (opt.hatchMode == "over") ? HatchMode::Over : HatchMode::Ink;
+    if (opt.hatchBaseSet)
+      ropt.hatch.base =
+          (opt.hatchBase == "albedo") ? HatchBase::Albedo : HatchBase::Paper;
+    if (opt.hatchInkSet)
+      ropt.hatch.ink =
+          (opt.hatchInk == "albedo") ? HatchInk::FromAlbedo : HatchInk::Fixed;
+    for (int i = 0; i < 3; ++i) {
+      if (opt.hatchInkColorSet) ropt.hatch.inkColor[i] = opt.hatchInkColor[i];
+      if (opt.hatchPaperColorSet)
+        ropt.hatch.paperColor[i] = opt.hatchPaperColor[i];
     }
     // Global preset overrides: density (lattice pitch) and stroke width,
     // then the per-layer --hatch-layer specs on top.

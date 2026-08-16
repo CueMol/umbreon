@@ -1092,8 +1092,10 @@ Options parseCli(int argc, char** argv) {
     }
     if (a == "--hatch-mode") {
       std::string v = value("--hatch-mode");
-      if (v == "ink" || v == "over")
+      if (v == "ink" || v == "over") {
         o.hatchMode = v;
+        o.hatchModeSet = true;
+      }
       else
         fail("--hatch-mode expects ink/over");
       continue;
@@ -1102,30 +1104,42 @@ Options parseCli(int argc, char** argv) {
       o.hatchPreset = value("--hatch-preset");
       continue;
     }
+    if (a == "--hatch-look") {
+      o.hatchLook = value("--hatch-look");
+      continue;
+    }
     if (a == "--hatch-ink-color") {
       std::string v = value("--hatch-ink-color");
       if (o.ok && !parseHexColor(v, o.hatchInkColor))
         fail("--hatch-ink-color expects #RRGGBB");
+      else
+        o.hatchInkColorSet = true;
       continue;
     }
     if (a == "--hatch-paper-color") {
       std::string v = value("--hatch-paper-color");
       if (o.ok && !parseHexColor(v, o.hatchPaperColor))
         fail("--hatch-paper-color expects #RRGGBB");
+      else
+        o.hatchPaperColorSet = true;
       continue;
     }
     if (a == "--hatch-base") {
       std::string v = value("--hatch-base");
-      if (v == "paper" || v == "albedo")
+      if (v == "paper" || v == "albedo") {
         o.hatchBase = v;
+        o.hatchBaseSet = true;
+      }
       else
         fail("--hatch-base expects paper/albedo");
       continue;
     }
     if (a == "--hatch-ink") {
       std::string v = value("--hatch-ink");
-      if (v == "fixed" || v == "albedo")
+      if (v == "fixed" || v == "albedo") {
         o.hatchInk = v;
+        o.hatchInkSet = true;
+      }
       else
         fail("--hatch-ink expects fixed/albedo");
       continue;
@@ -1426,7 +1440,11 @@ void printUsage(const char* prog) {
       "  --keep-baked-edges <on|off> keep baked POV edges with --edges on (A/B) [off]\n"
       "  --hatch <on|off>         tone hatching NPR shading (procedural TAM) [off]\n"
       "  --hatch-mode <ink|over>  ink: pure ink drawing / over: hatch over color [ink]\n"
+      "  --hatch-look <name>      complete look (paper/ink + tone + layers):\n"
+      "                           richardson | ink-cross | manga\n"
       "  --hatch-preset <name>    mark-style preset for the layers [pen-cross]\n"
+      "                           pen-cross|pencil|engraving|stipple|\n"
+      "                           screentone-60|manga-square\n"
       "  --hatch-ink-color <#RRGGBB>   ink color, display-encoded  [#000000]\n"
       "  --hatch-paper-color <#RRGGBB> paper color, display-encoded [#ffffff]\n"
       "  --hatch-base <paper|albedo>   ink-mode base under the hatch [paper]\n"

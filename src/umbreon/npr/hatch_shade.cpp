@@ -217,6 +217,77 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name) {
   return false;
 }
 
+bool applyHatchLook(HatchOptions& opt, const std::string& name) {
+  if (name == "richardson") {
+    // Jane-Richardson-style colored-pencil ribbon drawing: NO flat fill --
+    // the paper carries the highlights, the midtones are stroke density
+    // and the darks are denser strokes of a darker pencil of the same hue
+    // (the object's own color). Tuned against the published TIM drawings.
+    applyHatchPreset(opt, "pencil");
+    opt.mode = HatchMode::Ink;
+    opt.base = HatchBase::Paper;     // no flat fill: bare paper between marks
+    opt.ink = HatchInk::FromAlbedo;  // each section draws in its own color
+    opt.paperColor[0] = 0.941f;      // warm drawing paper
+    opt.paperColor[1] = 0.925f;
+    opt.paperColor[2] = 0.867f;
+    opt.inkMinContrast = 0.15f;
+    opt.inkShadeDark = 0.4f;   // pencil pressure: shadows darken the stick
+    opt.toneFog = true;        // far side fades into the paper
+    // Lighting-only tone: a low ambient floor keeps the shadows readable,
+    // the compressed white point opens the lit side up to bare paper, and
+    // the specular cut punches the highlight through as pure paper.
+    opt.tone.diffuseWeight = 0.85f;
+    opt.tone.ambient = 0.05f;
+    opt.tone.contactAoPow = 1.0f;
+    opt.tone.shapeAoPow = 0.6f;
+    opt.tone.whitePoint = 0.97f;
+    opt.tone.gamma = 2.2f;
+    opt.tone.specularCut = 0.1f;
+    // Fine strokes: with the default supersampled ink these are OUTPUT
+    // pixels, so ss decides how far below one pixel they actually land.
+    for (HatchLayer& l : opt.layers) {
+      l.spacingPx = 2.0f;
+      l.widthPx = 1.8f;
+      l.mark.edgeSoftness = 0.55f;
+      l.opacity = 1.0f;
+    }
+    return true;
+  }
+  if (name == "ink-cross") {
+    // The plain pen-and-ink look: white paper, black crosshatch.
+    applyHatchPreset(opt, "pen-cross");
+    opt.mode = HatchMode::Ink;
+    opt.base = HatchBase::Paper;
+    opt.ink = HatchInk::Fixed;
+    for (int k = 0; k < 3; ++k) {
+      opt.inkColor[k] = 0.0f;
+      opt.paperColor[k] = 1.0f;
+    }
+    opt.inkMinContrast = 0.25f;
+    opt.inkShadeDark = 1.0f;
+    opt.tone = ToneRecipe{};
+    return true;
+  }
+  if (name == "manga") {
+    // Flat section fill under a halftone screen, hard black ink.
+    applyHatchPreset(opt, "screentone-60");
+    opt.mode = HatchMode::Ink;
+    opt.base = HatchBase::Albedo;  // flat fill, unshaded
+    opt.ink = HatchInk::Fixed;
+    for (int k = 0; k < 3; ++k) {
+      opt.inkColor[k] = 0.0f;
+      opt.paperColor[k] = 1.0f;
+    }
+    opt.albedoQuantize = 4;
+    opt.inkMinContrast = 0.35f;
+    opt.inkShadeDark = 1.0f;
+    opt.tone = ToneRecipe{};
+    opt.tone.ambient = 0.10f;
+    return true;
+  }
+  return false;
+}
+
 void applyHatch(int w, int h, float* rgba, const float* tone,
                 const float* mask, const float* albedo,
                 const HatchOptions& opt, const std::uint16_t* groups,

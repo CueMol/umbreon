@@ -30,6 +30,21 @@ namespace umbreon {
 //   manga-square   square-element (L-inf) screen at 45 deg.
 bool applyHatchPreset(HatchOptions& opt, const std::string& name);
 
+// Replace the WHOLE hatch configuration with a named look: paper / ink
+// model, tone recipe, pencil pressure and the mark layers together. Mark
+// presets (applyHatchPreset) only choose the layers; a look additionally
+// fixes how the tone is built and how the ink is colored, which is what a
+// recognizable drawing style actually is. Returns false for an unknown
+// name, leaving opt untouched. Looks:
+//   richardson   Jane-Richardson-style colored-pencil ribbon drawing:
+//                paper base + per-object-color ink (no flat fill), three
+//                pencils of one hue, highlights left as bare paper,
+//                lighting-only tone with a compressed white point.
+//   ink-cross    the plain pen-and-ink default: white paper, black
+//                crosshatch, neutral tone recipe.
+//   manga        flat section fill + screentone dots and a hard ink line.
+bool applyHatchLook(HatchOptions& opt, const std::string& name);
+
 // Composite procedural hatching over rgba (w*h*4, DISPLAY-ENCODED, in
 // place; run AFTER the gamma encode). rgba is the BASE CANVAS the ink
 // multiplies into -- the composite only ever darkens, so contour ink

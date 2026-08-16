@@ -244,7 +244,9 @@ CLI: `--shadows on --shadow-samples N --light-radius <deg>`。
 （ハッチが階調、エッジが輪郭）。品質段階ではなくスタイルなので `--quality` には含めない。
 Ink モードは GI・カラーデノイザを自動で無効化し、AO が有効なら `--ao-res out` /
 `--ao-ld on` / `--ao-res-fallback-mul 4` を NPR 既定として適用する（明示指定が優先）。
-設計は [plans/npr-tone-hatching.md](plans/npr-tone-hatching.md)。
+スタイルは `--hatch-look`（richardson / ink-cross / manga）で一括指定できる。
+マニュアルは [npr_hatching.md](npr_hatching.md)、設計は
+[plans/npr-tone-hatching.md](plans/npr-tone-hatching.md)。
 
 ---
 

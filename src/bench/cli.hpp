@@ -216,10 +216,21 @@ struct Options {
   bool hatch = false;
   // HatchMode: "ink" (pure ink drawing, GI/denoiser normalized off) or
   // "over" (hatch composited over the shaded color). --hatch-mode.
+  // The *Set flags mark an EXPLICIT flag, so a --hatch-look choice is only
+  // overridden by options the user actually passed.
   std::string hatchMode = "ink";
+  bool hatchModeSet = false;
+  bool hatchBaseSet = false;
+  bool hatchInkSet = false;
+  bool hatchInkColorSet = false;
+  bool hatchPaperColorSet = false;
   // Named mark-style preset filling HatchOptions::layers (--hatch-preset).
-  // Phase 1 ships pen-cross; the others land with the Dot/perturbation phase.
-  std::string hatchPreset = "pen-cross";
+  // Empty = leave whatever the look chose (see hatchLook).
+  std::string hatchPreset;
+  // Named complete look (--hatch-look): paper/ink model + tone recipe +
+  // pencils + layers. Applied BEFORE --hatch-preset and the individual
+  // flags, so those override it. Empty = the plain defaults.
+  std::string hatchLook;
   // Ink / paper colors, DISPLAY-encoded #RRGGBB (the hatch composites after
   // the gamma encode; see render/hatch_types.hpp).
   float hatchInkColor[3] = {0.0f, 0.0f, 0.0f};

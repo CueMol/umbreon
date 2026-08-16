@@ -342,6 +342,26 @@ int main() {
             !umbreon::applyHatchPreset(bad, "no-such-preset"));
   }
 
+  // --- 10b. Looks configure the WHOLE style (paper/ink model + tone +
+  // layers), not just the layers, and reject unknown names.
+  {
+    umbreon::HatchOptions r;
+    s.check("looks: richardson resolves", umbreon::applyHatchLook(r, "richardson"));
+    s.check("looks: richardson draws on paper in the object color",
+            r.base == umbreon::HatchBase::Paper &&
+                r.ink == umbreon::HatchInk::FromAlbedo);
+    s.check("looks: richardson uses pencil pressure and layers",
+            r.inkShadeDark < 1.0f && r.layers.size() == 3u);
+    umbreon::HatchOptions m;
+    s.check("looks: manga resolves", umbreon::applyHatchLook(m, "manga"));
+    s.check("looks: manga flat-fills with a dot screen",
+            m.base == umbreon::HatchBase::Albedo && !m.layers.empty() &&
+                m.layers[0].kind == umbreon::LayerKind::Dot);
+    umbreon::HatchOptions bad;
+    s.check("looks: unknown name rejected",
+            !umbreon::applyHatchLook(bad, "no-such-look"));
+  }
+
   // --- 11. Lp area normalization: at the same tone, the mean coverage of a
   // K=0 dot screen is shape-independent (1/sqrt(A_p) radius scaling) and
   // tracks 1 - displayTone in the non-overlap regime.
