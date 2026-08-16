@@ -231,7 +231,7 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     opt.paperColor[1] = 0.925f;
     opt.paperColor[2] = 0.867f;
     opt.inkMinContrast = 0.15f;
-    opt.inkShadeDark = 0.28f;  // pencil pressure: shadows darken the stick
+    opt.inkShadeDark = 0.40f;  // pencil pressure: shadows darken the stick
     opt.toneFog = true;        // far side fades into the paper
     // Lighting-only tone: a low ambient floor keeps the shadows readable,
     // the compressed white point opens the lit side up to bare paper, and
@@ -244,8 +244,14 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     // supplies the shading that follows the FORM (darkening toward each
     // silhouette) rather than one light direction.
     opt.tone.wrap = 0.5f;
+    // The contour darkening must stay a BAND at the silhouette: a low
+    // rimPower reaches deep into the interior (at 60 deg off-axis it
+    // already cuts the tone by a quarter), dropping most of a rounded
+    // form under the darker-pencil thresholds and blackening the whole
+    // object. The high exponent keeps faces within ~30 deg of grazing
+    // dark and leaves everything else at the object's own tone.
     opt.tone.rimDarken = 1.0f;      // strong contour shading
-    opt.tone.rimPower = 1.4f;       // reaching in from the silhouette
+    opt.tone.rimPower = 3.5f;       // confined to the silhouette band
     opt.tone.rimLightBias = 0.35f;  // biased to each form's shaded side
     opt.tone.contactAoPow = 1.0f;
     opt.tone.shapeAoPow = 0.6f;
@@ -274,6 +280,11 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
       l.mark.edgeSoftness = 0.55f;
       l.opacity = 1.0f;
     }
+    // Colored pencils read darker than graphite at the same inkScale (the
+    // composite multiplies in linear light), so the midtone stick is
+    // lighter here than in the base pencil preset; the shadow stick keeps
+    // its depth for the silhouette band.
+    if (opt.layers.size() >= 2) opt.layers[1].inkScale = 0.74f;
     return true;
   }
   if (name == "ink-cross") {

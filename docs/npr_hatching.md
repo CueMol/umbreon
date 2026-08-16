@@ -105,7 +105,7 @@ umbreon_cli scene.pov --hatch on --hatch-look richardson --edges on
 
 | Look | Paper / ink | Marks | Use |
 |---|---|---|---|
-| `richardson` | paper base, ink from each section's own color, 3 pencils of one hue, pressure `inkShadeDark 0.28`, tone fog on | `pencil`, pitch 0.5 px, width 0.45 px | Jane-Richardson-style colored-pencil ribbon drawings |
+| `richardson` | paper base, ink from each section's own color, 3 pencils of one hue, pressure `inkShadeDark 0.40`, tone fog on | `pencil`, pitch 0.5 px, width 0.45 px | Jane-Richardson-style colored-pencil ribbon drawings |
 | `ink-cross` | white paper, fixed black ink | `pen-cross` | plain pen-and-ink monochrome figures |
 | `manga` | flat albedo fill (posterized to 4 steps), fixed black ink | `screentone-60` | comic-style flat fill under a halftone screen |
 
@@ -119,17 +119,23 @@ darks are denser strokes of a *darker pencil of the same hue*. Its settings:
 |---|---|---|
 | `base` / `ink` | Paper / FromAlbedo | every section draws in its own color on bare paper |
 | `paperColor` | `#F0ECDD` | warm drawing paper |
-| layers | `pencil` x3, `inkScale` 1.0 / 0.62 / 0.38 | three pencils: light wash, darker cross, darkest shadow core |
-| `inkShadeDark` | 0.28 | pencil pressure: the same stick darkens in shadow |
+| layers | `pencil` x3, `inkScale` 1.0 / 0.74 / 0.38 | three pencils: light wash, darker cross, darkest shadow core (colored pencils read darker than graphite, so the midtone stick is lighter than in the `pencil` preset) |
+| `inkShadeDark` | 0.40 | pencil pressure: the same stick darkens in shadow |
 | `spacing` / `width` | 0.5 / 0.45 output px | dense drawing grain; `--supersample` decides how far below a pixel the strokes land |
 | `tone.whitePoint` | 1.2 | does NOT clip the lit end (clipping spreads the highlight) |
 | `tone.gamma` | 2.4 | restores the dark end the wider range would lift |
 | `tone.highlightAt` / `highlightSoft` | 0.86 / 0.05 | a narrow top band goes to exact paper white, without enlarging it |
 | `tone.specularCut` | 0 (off) | on a broad lobe it paints a patch, not a highlight |
-| `tone.wrap` / `rim` / `rimpow` / `rimbias` | 0.5 / 1.0 / 1.4 / 0.35 | the drawing lighting model (see 4) -- shading follows the form, so the look works under a scene's own frontal lighting |
+| `tone.wrap` / `rim` / `rimpow` / `rimbias` | 0.5 / 1.0 / 3.5 / 0.35 | the drawing lighting model (see 4) -- shading follows the form, so the look works under a scene's own frontal lighting; the high `rimpow` keeps the contour darkening a *band* at the silhouette instead of blackening the whole form |
 | `toneFog` | on | the far side fades into the paper |
 
-`--shadows on` is worth adding, but keep AO **off**: the tone should follow
+Keep `--shadows` **off** (the default) and AO **off**. CueMol exports its
+lights as POV `shadowless`, so a plain raytrace of the scene casts no shadows
+-- but umbreon's `--shadows on` is a global override that ignores the
+per-light `shadowless` attribute, so under NPR it would paint hard,
+physically exact cast shadows that a draftsman would never draw (and that the
+raytraced figure does not have either). The wrap/rim tone model carries the
+shading instead. AO is off for the same reason: the tone should follow
 surface orientation, and AO darkening in the crevices muddies it.
 
 A CueMol export is dominated by its camera-mounted flash light. Thanks to the
@@ -276,7 +282,7 @@ untouched:
   whole picture turns into a mass of rings), while at 1 only the contour on a
   form's *shaded* side darkens, so the figure still reads as lit.
 
-The `richardson` look sets `wrap 0.5, rim 1.0, rimpow 1.4, rimbias 0.35`, which is why it
+The `richardson` look sets `wrap 0.5, rim 1.0, rimpow 3.5, rimbias 0.35`, which is why it
 no longer needs the light rebalance that earlier recipes used: it renders
 correctly under a scene's own frontal-dominant CueMol lighting.
 
@@ -354,7 +360,7 @@ speckle).
 # Richardson-style colored pencil (the reference recipe). The look needs no
 # light rebalance: its contour term shades by the form, so a scene's own
 # frontal-dominant CueMol lighting works as-is.
-umbreon_cli scene.pov -W 1600 -H 1250 --supersample 4 --shadows on \
+umbreon_cli scene.pov -W 1600 -H 1250 --supersample 4 \
   --hatch on --hatch-look richardson --edges on
 
 # a bumpy molecular SURFACE needs the tone loosened (its many
