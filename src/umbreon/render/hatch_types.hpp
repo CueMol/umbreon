@@ -96,6 +96,11 @@ struct HatchLayer {
   float toneLo = 0.55f;     // level-K appearance threshold (<= toneHi)
   float fadeInv = 16.0f;    // mark grow-in speed below its threshold
   float opacity = 1.0f;     // layer ink opacity multiplier
+  // Ink darkness of THIS layer relative to the resolved ink color: layers
+  // are pencils, and a hand drawing reaches its dark tones by switching to
+  // a DARKER pencil for the later (shadow) layers, not only by pressing
+  // harder. 1 = the shared ink; ~0.5 = a distinctly darker pencil.
+  float inkScale = 1.0f;
   MarkStyle mark;
 };
 

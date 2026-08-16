@@ -83,11 +83,12 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name) {
     return true;
   }
   if (name == "pencil") {
-    // Two soft graphite layers built from INDIVIDUAL strokes: per-line
-    // position scatter off the lattice, per-stroke length / pressure /
-    // angle scatter, wobble, tapered ends and paper tooth. Seed-stable but
-    // hand-drawn looking (a dashed-ruler look is exactly what the
-    // per-stroke scatter exists to avoid).
+    // Three PENCILS (layers) of the same hue, each darker than the last,
+    // built from INDIVIDUAL strokes: per-line position scatter off the
+    // lattice, per-stroke length / pressure / angle scatter, wobble,
+    // tapered ends and paper tooth. The light stick lays the midtone wash,
+    // the darker sticks cross in as the tone deepens -- hand shading
+    // reaches its darks by SWITCHING pencils, not only by pressing harder.
     opt.layers.clear();
     HatchLayer l;
     l.kind = LayerKind::Line;
@@ -109,14 +110,22 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name) {
     l.mark.strokeTaper = 0.35f;    // asymmetric entry/tail scale
     l.mark.angleJitterDeg = 5.0f;  // coherent drift + per-stroke scatter
     l.mark.strokeLenJitter = 0.5f;
-    l.angleDeg = 55.0f;
+    l.angleDeg = 55.0f;            // light stick: midtone wash
     l.toneHi = 0.92f;
-    l.toneLo = 0.50f;
+    l.toneLo = 0.55f;
+    l.inkScale = 1.0f;
     opt.layers.push_back(l);
-    l.angleDeg = -35.0f;
-    l.toneHi = 0.55f;
-    l.toneLo = 0.22f;
-    l.mark.seed = 1;               // decorrelate the two layers' strokes
+    l.angleDeg = -35.0f;           // darker stick crosses in
+    l.toneHi = 0.62f;
+    l.toneLo = 0.30f;
+    l.inkScale = 0.62f;
+    l.mark.seed = 1;               // decorrelate the layers' strokes
+    opt.layers.push_back(l);
+    l.angleDeg = 80.0f;            // darkest stick: shadow cores
+    l.toneHi = 0.34f;
+    l.toneLo = 0.12f;
+    l.inkScale = 0.38f;
+    l.mark.seed = 2;
     opt.layers.push_back(l);
     return true;
   }
@@ -371,7 +380,12 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
                 continue;  // layer disabled for this section
               const float c = detail::hatchLayerInk(L, xc, yc, t) * L.opacity;
               if (c <= 0.0f) continue;
-              for (int k = 0; k < 3; ++k) f[k] *= 1.0f - c * (1.0f - I[k]);
+              // Each layer is a pencil: later (shadow) layers may draw with
+              // a darker stick of the same hue (HatchLayer::inkScale).
+              for (int k = 0; k < 3; ++k) {
+                const float ik = I[k] * L.inkScale;
+                f[k] *= 1.0f - c * (1.0f - ik);
+              }
             }
 
             // Write-back with silhouette-coverage AA (mask): multiply-only

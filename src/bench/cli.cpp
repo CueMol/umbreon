@@ -1427,7 +1427,7 @@ void printUsage(const char* prog) {
       "  --hatch-width <px>       line width override, all layers    [preset]\n"
       "  --hatch-layer <i:k=v,..> per-layer override (repeatable), keys:\n"
       "                           kind=line|dot angle spacing subdiv width\n"
-      "                           tonehi tonelo fade opacity soft seed\n"
+      "                           tonehi tonelo fade opacity inkscale soft seed\n"
       "                           shape aspect dotangle jitter invert=on|off\n"
       "                           wobble wobwave wjitter slen sgap taper\n"
       "                           anglejitter lenjitter tooth toothscale\n"

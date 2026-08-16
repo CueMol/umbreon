@@ -75,6 +75,8 @@ void applyHatchLayerSpec(umbreon::HatchOptions& h, const std::string& spec) {
       l.fadeInv = f;
     else if (k == "opacity")
       l.opacity = f;
+    else if (k == "inkscale")
+      l.inkScale = f;
     else if (k == "soft")
       l.mark.edgeSoftness = f;
     else if (k == "seed")

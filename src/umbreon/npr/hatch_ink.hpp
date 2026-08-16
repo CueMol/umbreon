@@ -166,6 +166,7 @@ struct HatchLayerRt {
   float toneLo = 0.55f;
   float fadeInv = 16.0f;
   float opacity = 1.0f;
+  float inkScale = 1.0f;           // per-layer pencil darkness
   std::uint32_t seed = 0;          // MarkStyle::seed
   std::uint32_t layerId = 0;       // index in the layer list (hash stream)
   // Line perturbations (0 = off).
@@ -243,6 +244,7 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   r.toneLo = std::min(r.toneHi, hatchClamp01(L.toneLo));
   r.fadeInv = std::max(1.0e-3f, L.fadeInv);
   r.opacity = hatchClamp01(L.opacity);
+  r.inkScale = hatchClamp01(L.inkScale);
 
   // Line perturbations, clamped (the pad formulas below rely on these).
   r.wobbleAmp = std::min(std::max(0.0f, L.mark.wobbleAmpPx), r.step);
