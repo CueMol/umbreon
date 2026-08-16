@@ -221,6 +221,20 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   if (scene.fog.enabled && !frame.viewZ.empty()) {
     applyFog(scene.fog, frame.width, frame.height, 4, frame.color.data(),
              frame.viewZ.data(), opt.transparentBackground);
+    // Hatch tone fog: fade the tone toward paper with the SAME fog factor,
+    // so distant marks thin out and (via inkShadeDark) lighten -- the ink
+    // analogue of the fogged silhouette stroke color. Hi-res, before the
+    // downsample, like the color fog above.
+    if (hi.hatch.enable && hi.hatch.toneFog && !frame.hatchTone.empty()) {
+      const std::size_t npix =
+          static_cast<std::size_t>(frame.width) * frame.height;
+      for (std::size_t p = 0; p < npix; ++p) {
+        const float vz = frame.viewZ[p];
+        if (vz <= 0.0f) continue;  // background sentinel
+        const float f = fogFactor(scene.fog, vz);
+        frame.hatchTone[p] = 1.0f - (1.0f - frame.hatchTone[p]) * f;
+      }
+    }
   }
 
   // Freestyle-style stroke edges (--edges): vectorize per-pixel edge AOVs via

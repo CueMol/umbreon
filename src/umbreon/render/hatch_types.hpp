@@ -150,6 +150,19 @@ struct HatchOptions {
   // on a base darker than the contrast itself the ink is instead LIFTED to
   // base + contrast (bright hatching on dark ground, woodcut-like).
   float inkMinContrast = 0.25f;
+  // Tone-driven ink darkening (colored-pencil pressure): the ink color is
+  // scaled by mix(inkShadeDark, 1, displayTone), so strokes in lit areas
+  // keep the light tint while shadow strokes darken toward
+  // ink * inkShadeDark -- like pressing harder with the same pencil. 1
+  // (default) = constant ink. Mark GEOMETRY never depends on tone, so the
+  // TAM nesting guarantee is untouched, and the per-pixel ink stays
+  // monotone (darker tone => more coverage AND darker ink).
+  float inkShadeDark = 1.0f;
+  // Fade the TONE toward paper with the scene fog factor (renderFrame,
+  // before the downsample): distant strokes thin out and -- via
+  // inkShadeDark -- lighten, matching the fogged silhouette ink, the way a
+  // drawn figure fades its far side. Only active when the scene has fog.
+  bool toneFog = true;
   int toneLevels = 0;      // >1: quantize the encoded tone to N levels
   int albedoQuantize = 0;  // >1: posterize the Albedo base to N steps
   // Copied from RenderOptions::transparentBackground by renderFrame so the

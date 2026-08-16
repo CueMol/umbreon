@@ -350,6 +350,13 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
               for (int k = 0; k < 3; ++k)
                 I[k] = detail::hatchClamp01(inkFixed[k]);
             }
+            // Colored-pencil pressure: darken the ink with the tone (the
+            // mark geometry stays tone-free; see HatchOptions::inkShadeDark).
+            if (opt.inkShadeDark < 1.0f) {
+              const float sh =
+                  opt.inkShadeDark + (1.0f - opt.inkShadeDark) * t;
+              for (int k = 0; k < 3; ++k) I[k] *= sh;
+            }
             ensureInkContrast(I, B, opt.inkMinContrast);
 
             // Multiply-composite the layers: f *= 1 - c*(1 - I). Black ink

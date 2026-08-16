@@ -1251,6 +1251,19 @@ Options parseCli(int argc, char** argv) {
           static_cast<float>(std::atof(value("--hatch-min-contrast").c_str()));
       continue;
     }
+    if (a == "--hatch-ink-shade") {
+      o.hatchInkShade =
+          static_cast<float>(std::atof(value("--hatch-ink-shade").c_str()));
+      if (o.ok && (o.hatchInkShade < 0.0f || o.hatchInkShade > 1.0f))
+        fail("--hatch-ink-shade expects a factor in [0, 1]");
+      continue;
+    }
+    if (a == "--hatch-tone-fog") {
+      std::string v = value("--hatch-tone-fog");
+      if (o.ok && !parseBool(v, o.hatchToneFog))
+        fail("--hatch-tone-fog expects on/off");
+      continue;
+    }
     if (a == "--ao-res-fallback-mul") {
       o.aoResFallbackMul = std::atoi(value("--ao-res-fallback-mul").c_str());
       if (o.ok && o.aoResFallbackMul < 1)
@@ -1426,6 +1439,9 @@ void printUsage(const char* prog) {
       "  --hatch-tone <k=v,..>    tone recipe (diffuse ambient contact shape\n"
       "                           black white gamma speccut levels)\n"
       "  --hatch-min-contrast <f> min display-luma gap base vs ink   [0.25]\n"
+      "  --hatch-ink-shade <f>    darken ink toward f at deep tone (pencil\n"
+      "                           pressure; 1 = constant ink)          [1]\n"
+      "  --hatch-tone-fog <on|off> fade the tone toward paper with scene fog [on]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"

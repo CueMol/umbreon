@@ -261,6 +261,12 @@ struct Options {
   bool hatchToneSet = false;
   int hatchToneLevels = 0;         // levels= key (posterize; 0 = continuous)
   float hatchMinContrast = -1.0f;  // --hatch-min-contrast; <0 = default
+  // Tone-driven ink darkening (--hatch-ink-shade, colored-pencil pressure);
+  // <0 keeps the HatchOptions default (1 = constant ink).
+  float hatchInkShade = -1.0f;
+  // Fade the hatch tone toward paper with the scene fog
+  // (--hatch-tone-fog); on by default when the scene has fog.
+  bool hatchToneFog = true;
   // Coarse-AO fallback-pixel sample multiplier (--ao-res-fallback-mul);
   // <0 keeps the RenderOptions default.
   int aoResFallbackMul = -1;

@@ -622,6 +622,9 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
     }
     if (opt.hatchMinContrast >= 0.0f)
       ropt.hatch.inkMinContrast = opt.hatchMinContrast;
+    if (opt.hatchInkShade >= 0.0f)
+      ropt.hatch.inkShadeDark = opt.hatchInkShade;
+    ropt.hatch.toneFog = opt.hatchToneFog;
     // Per-section styles (--hatch-style ID=spec): size the table to the
     // group list, seed every section from the GLOBAL options, then apply
     // the overrides -- the same name->index resolution as --edge.

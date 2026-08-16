@@ -404,6 +404,38 @@ int main() {
     umbreon::applyHatchPreset(pen, "pencil");
     s.check("perturbation: pencil (wobble/stroke/tooth) monotone",
             sweepMonotone(pen, 96, 96, 20, 2.0e-3f));
+    // Tone-driven ink darkening (pencil pressure) darkens BOTH by density
+    // and by ink color, so it must keep the per-pixel monotonicity.
+    pen.inkShadeDark = 0.3f;
+    s.check("perturbation: ink shade ramp stays monotone",
+            sweepMonotone(pen, 96, 96, 20, 2.0e-3f));
+  }
+
+  // --- 13b. Tone fog: with scene fog on, the hatch tone of distant surfaces
+  // fades toward paper (fewer marks), and toneFog=false restores the
+  // unfaded density.
+  {
+    umbreon::Scene sc = makeQuadScene();
+    sc.background = {0.0f, 0.0f, 0.0f};
+    sc.fog.enabled = true;
+    sc.fog.color = {0.0f, 0.0f, 0.0f};
+    // Quad sits at viewZ 10 (ortho cam at +10 looking down -z); put it
+    // halfway into the fog slab so the tone fade is substantial.
+    sc.fog.start = 5.0f;
+    sc.fog.end = 15.0f;
+    umbreon::RenderOptions o;
+    o.width = 48;
+    o.height = 48;
+    o.hatch.enable = true;
+    const umbreon::FrameResult fFog = umbreon::render(sc, o);
+    o.hatch.toneFog = false;
+    const umbreon::FrameResult fNo = umbreon::render(sc, o);
+    double tFog = 0.0, tNo = 0.0;
+    for (std::size_t p = 0; p < fFog.hatchTone.size(); ++p) {
+      tFog += fFog.hatchTone[p];
+      tNo += fNo.hatchTone[p];
+    }
+    s.check("tone fog: fogged tone is lifted toward paper", tFog > tNo + 1.0);
   }
 
   // --- 14. Seed determinism: the same seed reproduces bit-exactly, a
