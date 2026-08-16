@@ -523,6 +523,29 @@ int main() {
             f.hatchGroup.size() == 64u * 64u);
   }
 
+  // --- 18. Hi-res ink (--hatch-res hi): strokes laid at the supersampled
+  // resolution then box-averaged -- output differs from the pixel-exact
+  // default, and the hatch AOVs stay at their hi-res size (edge-G-buffer
+  // precedent). Deterministic like everything else.
+  {
+    const umbreon::Scene sc = makeQuadScene();
+    umbreon::RenderOptions o;
+    o.width = 32;
+    o.height = 32;
+    o.supersample = 2;
+    o.hatch.enable = true;
+    const umbreon::FrameResult fOut = umbreon::render(sc, o);
+    o.hatch.inkHiRes = true;
+    const umbreon::FrameResult fHi = umbreon::render(sc, o);
+    s.check("ink-res: hi differs from out", !framesEqual(fOut, fHi));
+    s.check("ink-res: out AOVs at output size",
+            fOut.hatchTone.size() == 32u * 32u);
+    s.check("ink-res: hi AOVs stay hi-res",
+            fHi.hatchTone.size() == 64u * 64u);
+    const umbreon::FrameResult fHi2 = umbreon::render(sc, o);
+    s.check("ink-res: hi is deterministic", framesEqual(fHi, fHi2));
+  }
+
   // --- 15. screentone-60 mid-gray: display tone 0.5 covers ~50%.
   {
     umbreon::HatchOptions o;

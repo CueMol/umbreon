@@ -100,6 +100,12 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     if (hi.hatch.layers.empty()) applyHatchPreset(hi.hatch, "pen-cross");
     hi.hatch.transparentBackground = hi.transparentBackground;
     hi.hatch.displayGamma = scene.assumedGamma;
+    // Hi-res ink (--hatch-res hi) display-encodes the frame BEFORE the
+    // downsample, so the linear-domain color denoisers cannot run after it.
+    if (hi.hatch.inkHiRes) {
+      hi.denoiser = static_cast<int>(DenoiserBackend::None);
+      hi.pt1Denoise = false;
+    }
     // Per-section styles may need the albedo AOV even when the global
     // base/ink do not (Scene::groupHatchStyle overrides them per group).
     for (const GroupHatchStyle& g : scene.groupHatchStyle)
@@ -291,6 +297,27 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     }
   }
 
+  // Hi-res ink (--hatch-res hi): display-encode and lay the strokes at the
+  // SUPERSAMPLED resolution, then let the box downsample average them. The
+  // stroke pitch escapes the 2-output-px floor (its effective floor becomes
+  // 2/ss output px) at the cost of crispness: sub-pixel strokes partially
+  // merge into an accurate coverage tone, a finer, softer grain -- like
+  // viewing a larger drawing from farther away. The default path (ink at
+  // output resolution, below) is untouched.
+  bool inkDone = false;
+  if (hi.hatch.enable && hi.hatch.inkHiRes && !frame.hatchTone.empty()) {
+    applyAssumedGamma(frame, scene.assumedGamma);
+    applyHatch(frame.width, frame.height, frame.color.data(),
+               frame.hatchTone.data(), frame.hatchMask.data(),
+               frame.albedo.empty() ? nullptr : frame.albedo.data(), hi.hatch,
+               frame.hatchGroup.empty() ? nullptr : frame.hatchGroup.data(),
+               /*groupSs=*/1,
+               scene.groupHatchStyle.empty() ? nullptr
+                                             : scene.groupHatchStyle.data(),
+               scene.groupHatchStyle.size());
+    inkDone = true;
+  }
+
   if (ss > 1) {
     frame.color = boxDownsample(frame.color, frame.width, frame.height, 4, ss);
     if (!frame.albedo.empty())
@@ -338,11 +365,13 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     // Hatch AOVs (continuous): the tone box-average IS the tone
     // antialiasing (raise ss and the tone smooths while the ink, laid at
     // final resolution below, keeps its pixel-exact width), and the mask
-    // average gives the silhouette-coverage AA of the ink composite.
-    if (!frame.hatchTone.empty())
+    // average gives the silhouette-coverage AA of the ink composite. With
+    // hi-res ink (--hatch-res hi) the ink was already composited above, so
+    // like the edge G-buffer these AOVs stay at their hi-res size.
+    if (!inkDone && !frame.hatchTone.empty())
       frame.hatchTone =
           boxDownsample(frame.hatchTone, frame.width, frame.height, 1, ss);
-    if (!frame.hatchMask.empty())
+    if (!inkDone && !frame.hatchMask.empty())
       frame.hatchMask =
           boxDownsample(frame.hatchMask, frame.width, frame.height, 1, ss);
     frame.width = finalW;
@@ -378,13 +407,14 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
   }
 
-  applyAssumedGamma(frame, scene.assumedGamma);
-  // Tone-hatching ink composite (--hatch): AFTER the gamma encode, because
-  // ink/paper colors are display-encoded values composited in display space
-  // (the same rule as the group-alpha blendpng-equivalent blend). The tone
-  // was generated hi-res in the hit shader and box-downsampled above, so the
-  // binarization here happens once, at the final resolution.
-  if (hi.hatch.enable && !frame.hatchTone.empty())
+  if (!inkDone) applyAssumedGamma(frame, scene.assumedGamma);
+  // Tone-hatching ink composite (--hatch, default --hatch-res out): AFTER
+  // the gamma encode, because ink/paper colors are display-encoded values
+  // composited in display space (the same rule as the group-alpha
+  // blendpng-equivalent blend). The tone was generated hi-res in the hit
+  // shader and box-downsampled above, so the binarization here happens
+  // once, at the final resolution (pixel-exact stroke widths).
+  if (hi.hatch.enable && !inkDone && !frame.hatchTone.empty())
     applyHatch(frame.width, frame.height, frame.color.data(),
                frame.hatchTone.data(), frame.hatchMask.data(),
                frame.albedo.empty() ? nullptr : frame.albedo.data(), hi.hatch,

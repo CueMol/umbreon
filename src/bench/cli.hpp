@@ -267,6 +267,10 @@ struct Options {
   // Fade the hatch tone toward paper with the scene fog
   // (--hatch-tone-fog); on by default when the scene has fog.
   bool hatchToneFog = true;
+  // Ink resolution (--hatch-res): "out" (default, pixel-exact strokes at
+  // the output resolution) or "hi" (strokes at the supersampled resolution,
+  // box-averaged down: finer, softer grain).
+  std::string hatchRes = "out";
   // Coarse-AO fallback-pixel sample multiplier (--ao-res-fallback-mul);
   // <0 keeps the RenderOptions default.
   int aoResFallbackMul = -1;

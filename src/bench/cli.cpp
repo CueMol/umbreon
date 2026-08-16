@@ -1264,6 +1264,14 @@ Options parseCli(int argc, char** argv) {
         fail("--hatch-tone-fog expects on/off");
       continue;
     }
+    if (a == "--hatch-res") {
+      std::string v = value("--hatch-res");
+      if (v == "out" || v == "hi")
+        o.hatchRes = v;
+      else
+        fail("--hatch-res expects out/hi");
+      continue;
+    }
     if (a == "--ao-res-fallback-mul") {
       o.aoResFallbackMul = std::atoi(value("--ao-res-fallback-mul").c_str());
       if (o.ok && o.aoResFallbackMul < 1)
@@ -1442,6 +1450,8 @@ void printUsage(const char* prog) {
       "  --hatch-ink-shade <f>    darken ink toward f at deep tone (pencil\n"
       "                           pressure; 1 = constant ink)          [1]\n"
       "  --hatch-tone-fog <on|off> fade the tone toward paper with scene fog [on]\n"
+      "  --hatch-res <out|hi>     ink at output res (crisp, pitch >= 2px) or\n"
+      "                           supersampled res (finer, softer grain) [out]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"
       "  --transparency <on|off>  single-layer transparency walk        [on]\n"
       "  --ao-samples <int>       ambient occlusion rays/hit  [0 = off]\n"

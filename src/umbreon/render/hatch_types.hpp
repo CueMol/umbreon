@@ -168,6 +168,15 @@ struct HatchOptions {
   // inkShadeDark -- lighten, matching the fogged silhouette ink, the way a
   // drawn figure fades its far side. Only active when the scene has fog.
   bool toneFog = true;
+  // Lay the ink at the SUPERSAMPLED resolution instead of the output
+  // resolution (--hatch-res hi). The box downsample then averages the
+  // strokes: their pitch effectively drops below the 2-output-px floor
+  // (2/ss px), trading stroke crispness for a finer, softer grain --
+  // individual lines partially merge into an accurate coverage tone, like
+  // viewing a large drawing from farther away. The default (false) keeps
+  // pixel-exact output-resolution strokes; prefer rendering LARGER with the
+  // default when the fine strokes themselves should stay resolvable.
+  bool inkHiRes = false;
   int toneLevels = 0;      // >1: quantize the encoded tone to N levels
   int albedoQuantize = 0;  // >1: posterize the Albedo base to N steps
   // Copied from RenderOptions::transparentBackground by renderFrame so the
