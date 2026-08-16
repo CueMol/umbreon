@@ -297,19 +297,34 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     }
   }
 
-  // Hi-res ink (--hatch-res hi): display-encode and lay the strokes at the
-  // SUPERSAMPLED resolution, then let the box downsample average them. The
-  // stroke pitch escapes the 2-output-px floor (its effective floor becomes
-  // 2/ss output px) at the cost of crispness: sub-pixel strokes partially
-  // merge into an accurate coverage tone, a finer, softer grain -- like
-  // viewing a larger drawing from farther away. The default path (ink at
-  // output resolution, below) is untouched.
+  // Hi-res ink (--hatch-res hi, the default): display-encode and lay the
+  // strokes at the SUPERSAMPLED resolution, then let the box downsample
+  // average them into a fine drawing-like grain. The layer parameters stay
+  // in FINAL-resolution pixel units -- they are converted to the hi-res
+  // grid HERE, so the look is invariant under the supersample factor and
+  // the effective pitch floor is 2/ss output px (the 2 px min-feature
+  // clamp applies on the hi-res grid). The AA filter width (edgeSoftness)
+  // is NOT converted: it is a device-pixel quantity, and the downsample
+  // already supplies the output-space filtering.
   bool inkDone = false;
   if (hi.hatch.enable && hi.hatch.inkHiRes && !frame.hatchTone.empty()) {
     applyAssumedGamma(frame, scene.assumedGamma);
+    HatchOptions inkOpt = hi.hatch;
+    if (ss > 1) {
+      const float s = static_cast<float>(ss);
+      for (HatchLayer& l : inkOpt.layers) {
+        l.spacingPx *= s;
+        l.widthPx *= s;
+        l.mark.wobbleAmpPx *= s;
+        l.mark.wobbleWavePx *= s;
+        l.mark.strokeLenPx *= s;
+        l.mark.strokeGapPx *= s;
+        l.mark.toothScalePx *= s;
+      }
+    }
     applyHatch(frame.width, frame.height, frame.color.data(),
                frame.hatchTone.data(), frame.hatchMask.data(),
-               frame.albedo.empty() ? nullptr : frame.albedo.data(), hi.hatch,
+               frame.albedo.empty() ? nullptr : frame.albedo.data(), inkOpt,
                frame.hatchGroup.empty() ? nullptr : frame.hatchGroup.data(),
                /*groupSs=*/1,
                scene.groupHatchStyle.empty() ? nullptr

@@ -534,8 +534,9 @@ int main() {
     o.height = 32;
     o.supersample = 2;
     o.hatch.enable = true;
+    o.hatch.inkHiRes = false;
     const umbreon::FrameResult fOut = umbreon::render(sc, o);
-    o.hatch.inkHiRes = true;
+    o.hatch.inkHiRes = true;  // the default
     const umbreon::FrameResult fHi = umbreon::render(sc, o);
     s.check("ink-res: hi differs from out", !framesEqual(fOut, fHi));
     s.check("ink-res: out AOVs at output size",

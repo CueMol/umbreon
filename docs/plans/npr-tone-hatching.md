@@ -306,6 +306,20 @@ if (!frame.hatchMask.empty())
 この段階で構造的に保証される。回帰テスト: `tests/test_hatch.cpp` の
 「edges survive ink」（深度ギャップ線がハッチ合成後も残ることを、トーンを紙白に固定して検証）。
 
+### 4.2.6 インク解像度（実運用からの設計改訂: `--hatch-res hi` を既定に）
+
+当初設計は「インクは最終解像度で 1 回だけ二値化」（§2.1 の順序）だったが、実運用で
+「線を 1 本ずつ解像する必要はなく、線描らしいテクスチャが出れば良い。出力解像度による
+最小ピッチ 2px の制限の方が問題」という結論に至った。改訂: **既定を supersample 解像度での
+インク合成（`HatchOptions::inkHiRes = true`, `--hatch-res hi`）とする**。gamma を hi-res で
+先に適用してインクを表示空間で合成し、box downsample が表示空間でストロークを平均する
+（サブピクセル線は正確な被覆トーンの細粒に溶ける）。**px 単位のレイヤパラメータは
+出力ピクセル単位のまま**で、`renderFrame` が hi-res 格子へ変換（×ss。edgeSoftness は
+デバイスピクセル量なので変換しない）するため、同じ指定値で ss を変えても見た目は不変、
+実効ピッチ下限は 2/ss 出力 px になる。`--hatch-res out` で従来のピクセル精度ストローク
+（下限 2px）も選択可。hi モードでは表示エンコード後になるためカラーデノイザは正規化オフ、
+hatch AOV はエッジ G-buffer と同様 hi-res のまま保持される。
+
 ### 4.3 `applyHatch` の呼び出し（`pipeline.cpp:262` の `applyAssumedGamma` の直後）
 
 ```cpp
