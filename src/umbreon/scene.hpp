@@ -472,6 +472,13 @@ struct Scene {
   // RenderOptions::strokeEdges.enable is set.
   std::vector<EdgeStyle> groupEdgeStyle;
 
+  // Per-section tone-hatching style override (--hatch-style ID=spec), indexed
+  // by group id like groupEdgeStyle. Empty (the default) means every section
+  // uses the global HatchOptions. Declared with the Phase-1 data model; only
+  // consulted once the per-section hatch phase lands (Phase 3 of
+  // docs/plans/npr-tone-hatching.md).
+  std::vector<GroupHatchStyle> groupHatchStyle;
+
   std::size_t instanceCount() const { return instanceOffsets.size(); }
   std::size_t effectiveTriangles() const {
     return mesh.triangleCount() * (instanceOffsets.empty() ? 1 : instanceOffsets.size());

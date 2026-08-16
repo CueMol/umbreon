@@ -266,6 +266,7 @@ inline RenderCostEstimate renderCostEstimate(const Scene& scene,
     int chans = 4;
     if (giRuns) chans += (hi.strokeEdges.enable ? 6 : 9) + (hi.giWriteAov ? 4 : 0);
     if (hi.aoSamples > 0) chans += 6;
+    if (hi.hatch.enable) chans += 2;  // hatchTone + hatchMask
     post += kDownsamplePerPixelChannel * nHi * chans;
   }
   // DenoiserBackend: 0 = None, 1 = AtrousBilateral, 2 = OIDN.

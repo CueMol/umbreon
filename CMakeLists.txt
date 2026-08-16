@@ -137,6 +137,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/edges/object_space_edges.cpp
     src/umbreon/edges/edge_mesh_bvh.cpp
     src/umbreon/edges/analytic_silhouette.cpp
+    src/umbreon/npr/hatch_shade.cpp
     src/umbreon/umbreon.cpp
     src/umbreon/log.cpp
   )
@@ -216,10 +217,10 @@ endif()
 # Public-surface SSOT: keep the install(FILES) list below in sync with the
 # table in docs/api/libumbreon.md and the per-header visibility markers
 # ("libumbreon PUBLIC API header" vs "... INTERNAL header"). All three must
-# list the same 9 public headers (umbreon.hpp, scene.hpp, log.hpp,
-# render/render_types.hpp and its four sub-headers edge_types.hpp /
-# render_options.hpp / frame_result.hpp / render_progress.hpp,
-# postprocess/image_ops.hpp).
+# list the same 11 public headers (umbreon.hpp, scene.hpp, log.hpp,
+# render/render_types.hpp and its five sub-headers edge_types.hpp /
+# hatch_types.hpp / render_options.hpp / frame_result.hpp /
+# render_progress.hpp, postprocess/image_ops.hpp, npr/hatch_shade.hpp).
 # --------------------------------------------------------------------------
 if(TARGET umbreon)
   install(TARGETS umbreon EXPORT umbreonTargets
@@ -229,10 +230,11 @@ if(TARGET umbreon)
   install(FILES src/umbreon/umbreon.hpp src/umbreon/scene.hpp
     src/umbreon/log.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon)
-  # render_types.hpp is an umbrella over the three sub-headers; all four ship
-  # so both the historical single include and per-concern includes resolve.
+  # render_types.hpp is an umbrella over its sub-headers; all ship so both
+  # the historical single include and per-concern includes resolve.
   install(FILES src/umbreon/render/render_types.hpp
     src/umbreon/render/edge_types.hpp
+    src/umbreon/render/hatch_types.hpp
     src/umbreon/render/render_options.hpp
     src/umbreon/render/frame_result.hpp
     src/umbreon/render/render_progress.hpp
@@ -241,8 +243,14 @@ if(TARGET umbreon)
   # ObjectSpaceEdgeOptions / EdgeStyle in render/render_types.hpp) driven via
   # RenderOptions + render(). The edges/*.hpp extraction/visibility/rasterizer
   # headers are INTERNAL (not installed) -- see their INTERNAL markers.
+  # Tone hatching additionally exports its image op (npr/hatch_shade.hpp):
+  # applyHatch is deliberately a plain-pointer API so a host can hatch a
+  # hand-painted tone (docs/plans/npr-tone-hatching.md section 2.13); the
+  # ink math (npr/hatch_ink.hpp) stays INTERNAL.
   install(FILES src/umbreon/postprocess/image_ops.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/postprocess)
+  install(FILES src/umbreon/npr/hatch_shade.hpp
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/umbreon/npr)
 
   # The exported target records its PUBLIC link to Embree/TBB. That only round-
   # trips when they were found as CONFIG packages (imported targets the generated

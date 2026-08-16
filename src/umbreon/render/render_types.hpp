@@ -4,12 +4,13 @@
 // (Embree) renderer and the bench harness. Pure C++17, no
 // rendering-library dependency.
 //
-// Umbrella header: the types live in three sub-headers, split by concern.
+// Umbrella header: the types live in sub-headers, split by concern.
 // Including this header keeps the whole historical surface available;
-// consumers may also include a sub-header directly (all three are installed).
+// consumers may also include a sub-header directly (all are installed).
 #pragma once
 
 #include "render/edge_types.hpp"       // EdgeClass/EdgeStyle, Stroke/ObjectSpaceEdgeOptions
 #include "render/frame_result.hpp"     // FrameResult, Pt1Timing, Pt1RayCounts
+#include "render/hatch_types.hpp"      // HatchOptions/HatchLayer/MarkStyle/ToneRecipe
 #include "render/render_options.hpp"   // RenderOptions
 #include "render/render_progress.hpp"  // RenderPhase, RenderProgress

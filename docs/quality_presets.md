@@ -239,6 +239,15 @@ CLI: `--shadows on --shadow-samples N --light-radius <deg>`。
 スタイル（色・幅・クラス別 on/off、セクション別上書き）は `EdgeStyle` / `Scene::groupEdgeStyle` で
 指定。詳細は [libumbreon.md §4.9](api/libumbreon.md) と [edges_screen_vector.md](edges_screen_vector.md)。
 
+同じスタイル軸に **トーンハッチング（`--hatch`、`RenderOptions::hatch`）** がある。陰影を線密度
+（クロスハッチ／網点／スティップル）で描く NPR シェーディングで、エッジ 2 方式とは独立に併用可
+（ハッチが階調、エッジが輪郭）。品質段階ではなくスタイルなので `--quality` には含めない。
+Ink モードは GI・カラーデノイザを自動で無効化し、AO が有効なら `--ao-res out` /
+`--ao-ld on` / `--ao-res-fallback-mul 4` を NPR 既定として適用する（明示指定が優先）。
+スタイルは `--hatch-look`（richardson / ink-cross / manga）で一括指定できる。
+マニュアルは [npr_hatching.md](npr_hatching.md)、設計は
+[plans/npr-tone-hatching.md](plans/npr-tone-hatching.md)。
+
 ---
 
 ## 5. その他の設定候補（その他の軸）

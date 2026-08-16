@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <stdexcept>
 
 #include "edges/object_space_edges.hpp"
 #include "edges/stroke_edges.hpp"
+#include "npr/hatch_shade.hpp"
 #include "postprocess/fog.hpp"
 #include "postprocess/image_ops.hpp"
 #include "experimental/irradiance_cache/denoise.hpp"
@@ -77,6 +79,40 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
                  "falling back to full-resolution AO");
     hi.aoResDiv = 0;
   }
+  // Tone hatching (--hatch): Ink mode discards the shaded color entirely, so
+  // GI would be wasted work, and the binarizing ink composite breaks the
+  // color denoisers' smooth-illumination assumptions -- force both off
+  // (Over mode keeps the color visible, so an explicit --gi is respected
+  // there). Normalizing HERE keeps the group-alpha multipass consistent and
+  // precedes the cost model, so the progress phase plan stays honest. An
+  // empty layer list resolves to the pen-cross preset for the same reason
+  // (every pass must see the same layers).
+  if (hi.hatch.enable) {
+    if (hi.hatch.mode == HatchMode::Ink) {
+      if (hi.gi) {
+        umbreon::logMessage(umbreon::LogLevel::Warning,
+                     "--hatch ink does not use GI; disabling --gi");
+        hi.gi = false;
+      }
+      hi.denoiser = static_cast<int>(DenoiserBackend::None);
+      hi.pt1Denoise = false;
+    }
+    if (hi.hatch.layers.empty()) applyHatchPreset(hi.hatch, "pen-cross");
+    hi.hatch.transparentBackground = hi.transparentBackground;
+    hi.hatch.displayGamma = scene.assumedGamma;
+    // Hi-res ink (--hatch-res hi) display-encodes the frame BEFORE the
+    // downsample, so the linear-domain color denoisers cannot run after it.
+    if (hi.hatch.inkHiRes) {
+      hi.denoiser = static_cast<int>(DenoiserBackend::None);
+      hi.pt1Denoise = false;
+    }
+    // Per-section styles may need the albedo AOV even when the global
+    // base/ink do not (Scene::groupHatchStyle overrides them per group).
+    for (const GroupHatchStyle& g : scene.groupHatchStyle)
+      if (g.enable && (g.base == HatchBase::Albedo ||
+                       g.ink == HatchInk::FromAlbedo))
+        hi.hatch.sectionNeedsAlbedo = true;
+  }
 
   // Declare where this render's time will actually go, so fraction() weights the
   // bar by the real cost profile instead of a fixed table: with GI on the GI
@@ -120,12 +156,91 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // return what we have (frame.cancelled is already set).
   if (frame.cancelled) return frame;
 
+  // Tone hatching, Ink mode: paint the flat base (paper / first-hit albedo)
+  // over every surface pixel NOW -- before fog and the stroke edge pass --
+  // in LINEAR hi-res space, the same pattern as the --edges-only blanking.
+  // The contour ink then composites over the flat base and survives the
+  // final hatch composite (which only multiplies ink in); replacing the base
+  // at the end of the pipeline instead would erase every silhouette line
+  // drawn over a surface, leaving only the outer contour. This is also what
+  // keeps the flat base UNSHADED: the shaded color is discarded here and the
+  // hatch density alone carries the tone.
+  if (hi.hatch.enable && hi.hatch.mode == HatchMode::Ink &&
+      !frame.hatchMask.empty()) {
+    // Paper color is display-encoded; applyAssumedGamma later applies
+    // pow(v, g), so paint pow(d, 1/g) for a round trip (g ~ 1 paints d).
+    const float g = scene.assumedGamma;
+    const bool gammaOn = std::fabs(g - 1.0f) > 1e-4f;
+    float paperLin[3];
+    for (int k = 0; k < 3; ++k) {
+      const float d =
+          std::min(1.0f, std::max(0.0f, hi.hatch.paperColor[k]));
+      paperLin[k] = (gammaOn && d > 0.0f) ? std::pow(d, 1.0f / g) : d;
+    }
+    // Per-section styling: the hi-res section-id buffer selects each
+    // pixel's style (base choice, or "leave this section shaded").
+    const bool perSection =
+        !scene.groupHatchStyle.empty() && !frame.hatchGroup.empty();
+    const std::size_t npix =
+        static_cast<std::size_t>(frame.width) * frame.height;
+    for (std::size_t p = 0; p < npix; ++p) {
+      if (frame.hatchMask[p] <= 0.5f) continue;  // background: untouched
+      const GroupHatchStyle* st = nullptr;
+      if (perSection) {
+        const std::uint16_t g = frame.hatchGroup[p];
+        if (g != 0xFFFFu && g < scene.groupHatchStyle.size())
+          st = &scene.groupHatchStyle[g];
+        if (st != nullptr && !st->enable) continue;  // keeps its shading
+      }
+      const HatchBase baseSel = st != nullptr ? st->base : hi.hatch.base;
+      float b[3];
+      if (baseSel == HatchBase::Albedo && !frame.albedo.empty()) {
+        // Paint the LINEAR albedo: applyAssumedGamma below then displays it
+        // exactly like every other surface color, i.e. the flat base is the
+        // pigment as this pipeline shows it (fully lit, unshaded). Encoding
+        // it here with a different curve would desaturate the fill.
+        for (int k = 0; k < 3; ++k) {
+          b[k] = frame.albedo[p * 3 + k];
+          if (hi.hatch.albedoQuantize > 1) {
+            const float n = static_cast<float>(hi.hatch.albedoQuantize);
+            b[k] = std::round(b[k] * n) / n;
+          }
+        }
+      } else {
+        b[0] = paperLin[0];
+        b[1] = paperLin[1];
+        b[2] = paperLin[2];
+      }
+      // Keep the premultiplied convention: coverage stays in alpha, the
+      // painted base carries it in RGB (opaque background => alpha 1).
+      const float a = frame.color[p * 4 + 3];
+      const float s = hi.transparentBackground ? a : 1.0f;
+      frame.color[p * 4 + 0] = b[0] * s;
+      frame.color[p * 4 + 1] = b[1] * s;
+      frame.color[p * 4 + 2] = b[2] * s;
+    }
+  }
+
   // OpenGL linear fog at full (supersampled) resolution, before downsampling, so
   // the box-average mirrors antialiased, fogged samples. Uses the plane eye-z
   // AOV (viewZ); transparent backgrounds fade coverage instead of baking fog.
   if (scene.fog.enabled && !frame.viewZ.empty()) {
     applyFog(scene.fog, frame.width, frame.height, 4, frame.color.data(),
              frame.viewZ.data(), opt.transparentBackground);
+    // Hatch tone fog: fade the tone toward paper with the SAME fog factor,
+    // so distant marks thin out and (via inkShadeDark) lighten -- the ink
+    // analogue of the fogged silhouette stroke color. Hi-res, before the
+    // downsample, like the color fog above.
+    if (hi.hatch.enable && hi.hatch.toneFog && !frame.hatchTone.empty()) {
+      const std::size_t npix =
+          static_cast<std::size_t>(frame.width) * frame.height;
+      for (std::size_t p = 0; p < npix; ++p) {
+        const float vz = frame.viewZ[p];
+        if (vz <= 0.0f) continue;  // background sentinel
+        const float f = fogFactor(scene.fog, vz);
+        frame.hatchTone[p] = 1.0f - (1.0f - frame.hatchTone[p]) * f;
+      }
+    }
   }
 
   // Freestyle-style stroke edges (--edges): vectorize per-pixel edge AOVs via
@@ -182,6 +297,42 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     }
   }
 
+  // Hi-res ink (--hatch-res hi, the default): display-encode and lay the
+  // strokes at the SUPERSAMPLED resolution, then let the box downsample
+  // average them into a fine drawing-like grain. The layer parameters stay
+  // in FINAL-resolution pixel units -- they are converted to the hi-res
+  // grid HERE, so the look is invariant under the supersample factor and
+  // the effective pitch floor is 2/ss output px (the 2 px min-feature
+  // clamp applies on the hi-res grid). The AA filter width (edgeSoftness)
+  // is NOT converted: it is a device-pixel quantity, and the downsample
+  // already supplies the output-space filtering.
+  bool inkDone = false;
+  if (hi.hatch.enable && hi.hatch.inkHiRes && !frame.hatchTone.empty()) {
+    applyAssumedGamma(frame, scene.assumedGamma);
+    HatchOptions inkOpt = hi.hatch;
+    if (ss > 1) {
+      const float s = static_cast<float>(ss);
+      for (HatchLayer& l : inkOpt.layers) {
+        l.spacingPx *= s;
+        l.widthPx *= s;
+        l.mark.wobbleAmpPx *= s;
+        l.mark.wobbleWavePx *= s;
+        l.mark.strokeLenPx *= s;
+        l.mark.strokeGapPx *= s;
+        l.mark.toothScalePx *= s;
+      }
+    }
+    applyHatch(frame.width, frame.height, frame.color.data(),
+               frame.hatchTone.data(), frame.hatchMask.data(),
+               frame.albedo.empty() ? nullptr : frame.albedo.data(), inkOpt,
+               frame.hatchGroup.empty() ? nullptr : frame.hatchGroup.data(),
+               /*groupSs=*/1,
+               scene.groupHatchStyle.empty() ? nullptr
+                                             : scene.groupHatchStyle.data(),
+               scene.groupHatchStyle.size());
+    inkDone = true;
+  }
+
   if (ss > 1) {
     frame.color = boxDownsample(frame.color, frame.width, frame.height, 4, ss);
     if (!frame.albedo.empty())
@@ -226,6 +377,18 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     if (!frame.giOcclusion.empty())
       frame.giOcclusion =
           boxDownsample(frame.giOcclusion, frame.width, frame.height, 1, ss);
+    // Hatch AOVs (continuous): the tone box-average IS the tone
+    // antialiasing (raise ss and the tone smooths while the ink, laid at
+    // final resolution below, keeps its pixel-exact width), and the mask
+    // average gives the silhouette-coverage AA of the ink composite. With
+    // hi-res ink (--hatch-res hi) the ink was already composited above, so
+    // like the edge G-buffer these AOVs stay at their hi-res size.
+    if (!inkDone && !frame.hatchTone.empty())
+      frame.hatchTone =
+          boxDownsample(frame.hatchTone, frame.width, frame.height, 1, ss);
+    if (!inkDone && !frame.hatchMask.empty())
+      frame.hatchMask =
+          boxDownsample(frame.hatchMask, frame.width, frame.height, 1, ss);
     frame.width = finalW;
     frame.height = finalH;
   }
@@ -259,7 +422,22 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     frame.denoiserUsed = static_cast<int>(DenoiserBackend::AtrousBilateral);
   }
 
-  applyAssumedGamma(frame, scene.assumedGamma);
+  if (!inkDone) applyAssumedGamma(frame, scene.assumedGamma);
+  // Tone-hatching ink composite (--hatch, default --hatch-res out): AFTER
+  // the gamma encode, because ink/paper colors are display-encoded values
+  // composited in display space (the same rule as the group-alpha
+  // blendpng-equivalent blend). The tone was generated hi-res in the hit
+  // shader and box-downsampled above, so the binarization here happens
+  // once, at the final resolution (pixel-exact stroke widths).
+  if (hi.hatch.enable && !inkDone && !frame.hatchTone.empty())
+    applyHatch(frame.width, frame.height, frame.color.data(),
+               frame.hatchTone.data(), frame.hatchMask.data(),
+               frame.albedo.empty() ? nullptr : frame.albedo.data(), hi.hatch,
+               frame.hatchGroup.empty() ? nullptr : frame.hatchGroup.data(),
+               ss,
+               scene.groupHatchStyle.empty() ? nullptr
+                                             : scene.groupHatchStyle.data(),
+               scene.groupHatchStyle.size());
   return frame;
 }
 

@@ -102,9 +102,10 @@ include しません**: 公開APIは `<umbreon/render/render_types.hpp>` のオ�
 
 #### 公開API面（SSOT — Single Source of Truth）
 
-libumbreon が **公開（install 対象）** とするヘッダは、以下の **8つだけ**です。これ以外の
+libumbreon が **公開（install 対象）** とするヘッダは、以下の **11個だけ**です。これ以外の
 `src/umbreon/` 配下のヘッダ（`render/embree_renderer.hpp`、`render/pipeline.hpp`、`shading/*`、
-`postprocess/fog.hpp`、**`edges/*.hpp`（エッジ抽出・可視性・ラスタライズの実装）** など）は
+`postprocess/fog.hpp`、**`edges/*.hpp`（エッジ抽出・可視性・ラスタライズの実装）**、
+`npr/hatch_ink.hpp`（ハッチングのインク数学） など）は
 すべて **INTERNAL** であり、install されず、API/ABI 安定性の保証対象外です（予告なく変更されます。
 downstream から直接 include しないでください）。
 
@@ -113,12 +114,14 @@ downstream から直接 include しないでください）。
 | `<umbreon/umbreon.hpp>` | エントリポイント `render()`、`UMBREON_VERSION_*` |
 | `<umbreon/scene.hpp>` | `Scene` / `Mesh` / `Material` / `Sphere` / `Cylinder` / `Camera` / `DistantLight` / `Fog` / `Vec3` 等 |
 | `<umbreon/log.hpp>` | `LogLevel` / `LogSink` / `setLogSink()`（診断メッセージの受け取り先。未設定なら従来どおり stderr） |
-| `<umbreon/render/render_types.hpp>` | 下記3ヘッダを取り込むアンブレラ（歴史的な単一 include を維持） |
+| `<umbreon/render/render_types.hpp>` | 下記サブヘッダを取り込むアンブレラ（歴史的な単一 include を維持） |
 | `<umbreon/render/edge_types.hpp>` | `EdgeClass` / `EdgeStyle` / `SilhouetteMode` / **`StrokeEdgeOptions`** / **`ObjectSpaceEdgeOptions`** |
+| `<umbreon/render/hatch_types.hpp>` | `HatchOptions` / `HatchLayer` / `MarkStyle` / `ToneRecipe` / `GroupHatchStyle`（`--hatch` トーンハッチング） |
 | `<umbreon/render/render_options.hpp>` | `RenderOptions` |
 | `<umbreon/render/frame_result.hpp>` | `FrameResult` / `Pt1Timing` / `Pt1RayCounts` |
 | `<umbreon/render/render_progress.hpp>` | `RenderPhase` / `RenderProgress`（進捗・キャンセルチャネル） |
 | `<umbreon/postprocess/image_ops.hpp>` | `srgbEncode8` / `applyAssumedGamma` / `boxDownsample` |
+| `<umbreon/npr/hatch_shade.hpp>` | `applyHatch`（プレーンポインタ引数のハッチ合成 image op）/ `applyHatchPreset` |
 
 `render_types.hpp` は互換用アンブレラで、従来どおりこれ1つを include すれば全型が揃います。
 新規コードは関心ごとのサブヘッダを直接 include しても構いません（どちらも install されます）。
@@ -135,7 +138,7 @@ downstream から直接 include しないでください）。
 3. 各ヘッダ先頭の可視性マーカー — 公開ヘッダは
    `// libumbreon PUBLIC API header (installed). ...`、
    内部ヘッダは `// libumbreon INTERNAL header -- not installed, ...` を先頭に持ちます。
-   公開面の照合は `grep -rl 'libumbreon PUBLIC API header' src/umbreon` で行えます（8つ返るのが正）。
+   公開面の照合は `grep -rl 'libumbreon PUBLIC API header' src/umbreon` で行えます（11個返るのが正）。
 
 バージョンは `UMBREON_VERSION_MAJOR` / `_MINOR` / `_PATCH` マクロで参照できます。
 
@@ -479,6 +482,8 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `position` / `indirect` | `vector<float>` | `width*height*3` world 空間 first-hit 位置 / 合成済み間接照度。**`gi` 有効時のみ充填**。それ以外は空 |
 | `giRecordViz` | `vector<float>` | `width*height*3` cache レコード半径のデバッグヒートマップ（cache integrator のみ書き込み）。**`gi` かつ `giWriteAov` 有効時のみ充填** |
 | `giOcclusion` | `vector<float>` | `width*height` gather 遮蔽率（AO 的）。**`gi` かつ `giWriteAov` 有効時のみ充填** |
+| `hatchTone` / `hatchMask` | `vector<float>` | `width*height` トーンハッチング用 first-hit 陰影トーン（1=紙白側）/ ヒット被覆率（1=サーフェス、0=背景）。**`hatch.enable` 有効時のみ充填**、downsample 対象 |
+| `hatchGroup` | `vector<uint16_t>` | first-hit セクション id（0xFFFF=背景）。**`hatch.enable` かつ `Scene::groupHatchStyle` 非空のときのみ充填**。hi-res のまま（downsample されない） |
 | `renderSeconds` | `double` | レンダ時間 |
 | `effectiveTriangles` | `size_t` | 実効三角形数（instance 込み） |
 | `denoiserUsed` | `int` | 実際に走った**最終カラー**デノイザ（0=None, 1=AtrousBilateral, 2=OIDN）。2 は OIDN が実処理したときのみ。1 は明示 a-trous **および全 OIDN フォールバック**（非搭載ビルド／OIDN ランタイムエラー）を含む |

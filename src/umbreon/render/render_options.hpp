@@ -5,6 +5,7 @@
 #pragma once
 
 #include "render/edge_types.hpp"
+#include "render/hatch_types.hpp"
 
 namespace umbreon {
 
@@ -73,6 +74,16 @@ struct RenderOptions {
   // falls back with a warning).
   int aoResDiv = 0;
   bool aoResDebug = false;  // fill FrameResult::aoPatchMask (fallback pixels)
+  // Sample multiplier for the coarse-AO FALLBACK pixels (the bilateral
+  // lookup rejected: silhouette rims, transparency layers -- a few percent
+  // of the frame). Those pixels skip the coarse grid's structural smoothing
+  // and carry raw per-pixel gather variance, which the hatch binarization
+  // turns into salt-and-pepper flecks along rims -- oversampling just them
+  // is nearly free (the pt1EdgePatchSppMul pattern). Only consulted when
+  // aoResDiv > 1. Default 1 keeps existing coarse-AO renders byte-identical
+  // (the design brief proposed 4; the bench CLI applies 4 as its NPR
+  // default when --hatch is on instead, so the library stays compatible).
+  int aoResFallbackSppMul = 1;
 
   // True when any AO enhancement is requested. Drives the hit shader's
   // enhanced-vs-legacy branch: false => bit-exact legacy computeAO path.
@@ -328,6 +339,13 @@ struct RenderOptions {
   // internally (on a private scene copy) before tracing. Mutually exclusive with
   // strokeEdges -- enabling both throws std::runtime_error (they double-draw).
   ObjectSpaceEdgeOptions objectSpaceEdges;
+
+  // --- Tone hatching NPR shading (--hatch) --- defaulted OFF (enable ==
+  // false). When off, no hatch AOV is allocated, the hit shader computes no
+  // tone and applyHatch is never invoked, so output is byte-identical to the
+  // hatch-less path. Composable with strokeEdges / objectSpaceEdges (hatch
+  // carries the tone, edges carry the contours); see HatchOptions.
+  HatchOptions hatch;
 };
 
 }  // namespace umbreon

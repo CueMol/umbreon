@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     // --list-groups printed its report.
     if (!umbreon::buildSceneFromPov(opt, scene, ropt, groupNames)) return 0;
     umbreon::applyEdgeOptions(opt, scene, ropt, groupNames);
-    umbreon::applyShadingOptions(opt, scene, ropt);
+    umbreon::applyShadingOptions(opt, scene, ropt, groupNames);
 
     // Optional TBB parallelism cap for a no-rebuild speed comparison:
     // --threads 1 runs the row-parallel render serially, --threads N caps at N,

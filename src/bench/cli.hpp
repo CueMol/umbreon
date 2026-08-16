@@ -156,6 +156,10 @@ struct Options {
   // exact inline fallback at silhouettes/transparency). ~1/ss^2 the AO rays.
   int aoResDiv = 0;           // 0 = full (inline), -1 = out (resolved to ss)
   bool aoResDebug = false;    // dump the fallback (patch) mask AOV
+  // Explicit-flag markers: --hatch defaults aoResDiv/aoLowDiscrepancy to the
+  // NPR-friendly values UNLESS the user set them (scene_setup.cpp).
+  bool aoResSet = false;      // --ao-res was given explicitly
+  bool aoLdSet = false;       // --ao-ld was given explicitly
   // Specular control: multiplies the per-material POV finish specular weight.
   // Defaults to 1.0 (the finish highlight is rendered at full strength); pass
   // --specular-scale 0 for a matte look with no highlight.
@@ -205,6 +209,85 @@ struct Options {
   // screen-space outlines can be A/B-compared side by side. No effect when
   // --edges is off (nothing is filtered in either case).
   bool keepBakedEdges = false;
+
+  // --- Tone hatching NPR shading (--hatch) ---
+  // Master switch for the tone hatching pass (off => byte-identical default,
+  // no hatch AOVs allocated). --hatch on|off.
+  bool hatch = false;
+  // HatchMode: "ink" (pure ink drawing, GI/denoiser normalized off) or
+  // "over" (hatch composited over the shaded color). --hatch-mode.
+  // The *Set flags mark an EXPLICIT flag, so a --hatch-look choice is only
+  // overridden by options the user actually passed.
+  std::string hatchMode = "ink";
+  bool hatchModeSet = false;
+  bool hatchBaseSet = false;
+  bool hatchInkSet = false;
+  bool hatchInkColorSet = false;
+  bool hatchPaperColorSet = false;
+  // Named mark-style preset filling HatchOptions::layers (--hatch-preset).
+  // Empty = leave whatever the look chose (see hatchLook).
+  std::string hatchPreset;
+  // Named complete look (--hatch-look): paper/ink model + tone recipe +
+  // pencils + layers. Applied BEFORE --hatch-preset and the individual
+  // flags, so those override it. Empty = the plain defaults.
+  std::string hatchLook;
+  // Ink / paper colors, DISPLAY-encoded #RRGGBB (the hatch composites after
+  // the gamma encode; see render/hatch_types.hpp).
+  float hatchInkColor[3] = {0.0f, 0.0f, 0.0f};
+  float hatchPaperColor[3] = {1.0f, 1.0f, 1.0f};
+  // HatchBase for Ink mode: "paper" or "albedo". --hatch-base.
+  std::string hatchBase = "paper";
+  // HatchInk: "fixed" or "albedo" (FromAlbedo). --hatch-ink.
+  std::string hatchInk = "fixed";
+  // Global overrides applied to every preset layer (0 = keep the preset
+  // value): base lattice pitch and full line width, FINAL px.
+  // --hatch-spacing / --hatch-width.
+  float hatchSpacing = 0.0f;
+  float hatchWidth = 0.0f;
+  // Per-layer overrides (--hatch-layer <idx:key=val,...>, repeatable), kept
+  // as raw specs and resolved against the preset layers in scene_setup
+  // (warn-on-miss like --edge; the layer list only exists after the preset
+  // is applied).
+  std::vector<std::string> hatchLayerSpecs;
+  // Per-section hatch style override (--hatch-style ID=spec, repeatable),
+  // mirroring --edge: key is the section id with "_show" stripped, value the
+  // parsed override. Resolved against geo.groupNames into
+  // Scene::groupHatchStyle in scene_setup, warn-on-miss.
+  struct HatchSectionSpec {
+    bool off = false;        // "off": leave this section fully shaded
+    bool baseSet = false;
+    bool baseAlbedo = false;
+    bool inkSet = false;
+    bool inkAlbedo = false;
+    bool colorSet = false;
+    float color[3] = {0.0f, 0.0f, 0.0f};
+    float toneScale = 1.0f;
+    int layerMask = -1;      // <0 = all layers
+    float density = 1.0f;    // mark-density multiplier for this section
+    float widthScale = 1.0f; // mark-width multiplier
+  };
+  std::map<std::string, HatchSectionSpec> sectionHatch;
+  // Tone recipe overrides (--hatch-tone key=val,...): only applied when set.
+  ToneRecipe hatchTone;
+  bool hatchToneSet = false;
+  int hatchToneLevels = 0;         // levels= key (posterize; 0 = continuous)
+  float hatchMinContrast = -1.0f;  // --hatch-min-contrast; <0 = default
+  // Tone-driven ink darkening (--hatch-ink-shade, colored-pencil pressure);
+  // <0 keeps the HatchOptions default (1 = constant ink).
+  float hatchInkShade = -1.0f;
+  // Fade the hatch tone toward paper with the scene fog
+  // (--hatch-tone-fog); on by default when the scene has fog.
+  bool hatchToneFog = true;
+  // Ink resolution (--hatch-res): "hi" (default; strokes at the
+  // supersampled resolution, box-averaged into a fine grain, pitch floor
+  // 2/ss output px) or "out" (pixel-exact strokes at the output
+  // resolution, pitch floor 2 px). Pixel parameters mean OUTPUT pixels in
+  // both modes.
+  std::string hatchRes = "hi";
+  // Coarse-AO fallback-pixel sample multiplier (--ao-res-fallback-mul);
+  // <0 keeps the RenderOptions default.
+  int aoResFallbackMul = -1;
+
   // --- analytic OBJECT-SPACE silhouette edges (spheres/cylinders) ---
   // Master switch (--obj-edges on|off, default off => byte-identical default).
   // When on, each analytic primitive's n.v==0 silhouette contour is emitted in

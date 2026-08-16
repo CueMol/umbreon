@@ -80,7 +80,8 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
                        const Vec3& Ng, float eps, RTCScene rscene, bool shadowsOn,
                        int shadowSamples, uint32_t px, uint32_t py,
                        bool traceReflection = false,
-                       const Vec3* tangent = nullptr) {
+                       const Vec3* tangent = nullptr,
+                       ToneAccum* toneAcc = nullptr) {
   // Principled materials take their own evaluator; the POV body below stays
   // untouched (structural byte-identity for every existing scene). The
   // optional tangent (anisotropy frame, sphere/cylinder hits) only ever
@@ -88,7 +89,8 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
   if (mat.model == ShadingModel::Principled)
     return shadePrincipled(mat, C, N, V, lights, ambLight, bg, aoFactor,
                            diffuseAo, P, Ng, eps, rscene, shadowsOn,
-                           shadowSamples, px, py, traceReflection, tangent);
+                           shadowSamples, px, py, traceReflection, tangent,
+                           toneAcc);
   Vec3 out{mat.emission * C.x + aoFactor.x * mat.ambient * C.x * ambLight.x,
            mat.emission * C.y + aoFactor.y * mat.ambient * C.y * ambLight.y,
            mat.emission * C.z + aoFactor.z * mat.ambient * C.z * ambLight.z};
@@ -125,6 +127,9 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
     out.x += dk * C.x * Lc.x;
     out.y += dk * C.y * Lc.y;
     out.z += dk * C.z * Lc.z;
+    // NPR hatch tone tap: shadowed diffuse shape only (no pigment, no
+    // material diffuse weight, no diffuseAo -- see ToneAccum).
+    if (toneAcc != nullptr) toneAcc->diffuse += d * toneLuma(Lc);
 
     // POV fill (shadowless) lights contribute diffuse only -- no specular/phong
     // (trace.cpp gates highlights on Light_Type != FILL_LIGHT_SOURCE).
@@ -175,6 +180,8 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
       out.x += s * hl.x;
       out.y += s * hl.y;
       out.z += s * hl.z;
+      if (toneAcc != nullptr)
+        toneAcc->specular += s * toneLuma(hl);  // for ToneRecipe::specularCut
     }
   }
 

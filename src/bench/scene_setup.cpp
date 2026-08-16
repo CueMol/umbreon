@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 
 #include "edges/object_space_edges.hpp"
 #include "geom/mesh2_reader.hpp"
 #include "material_convert.hpp"
+#include "npr/hatch_shade.hpp"
 #include "pov/pov_scene_reader.hpp"
 
 namespace umbreon {
@@ -21,6 +23,98 @@ std::string resolveRelative(const std::string& base, const std::string& rel) {
   std::size_t slash = base.find_last_of('/');
   std::string dir = (slash == std::string::npos) ? "." : base.substr(0, slash);
   return dir + "/" + rel;
+}
+
+// Apply one --hatch-layer "idx:key=val,..." spec onto the preset layers.
+// Unknown indices / keys / values warn and are skipped (the render still
+// runs), mirroring the --edge warn-on-miss behavior.
+void applyHatchLayerSpec(umbreon::HatchOptions& h, const std::string& spec) {
+  const std::size_t colon = spec.find(':');
+  const int idx = std::atoi(spec.substr(0, colon).c_str());
+  if (idx < 0 || static_cast<std::size_t>(idx) >= h.layers.size()) {
+    std::fprintf(stderr,
+                 "warning: --hatch-layer index %d out of range (preset has "
+                 "%zu layers)\n",
+                 idx, h.layers.size());
+    return;
+  }
+  umbreon::HatchLayer& l = h.layers[static_cast<std::size_t>(idx)];
+  std::string rest = spec.substr(colon + 1);
+  std::size_t pos = 0;
+  while (pos <= rest.size()) {
+    std::size_t comma = rest.find(',', pos);
+    if (comma == std::string::npos) comma = rest.size();
+    const std::string kv = rest.substr(pos, comma - pos);
+    pos = comma + 1;
+    if (kv.empty()) continue;
+    const std::size_t eq = kv.find('=');
+    if (eq == std::string::npos) {
+      std::fprintf(stderr, "warning: --hatch-layer entry '%s' is not key=val\n",
+                   kv.c_str());
+      continue;
+    }
+    const std::string k = kv.substr(0, eq);
+    const std::string v = kv.substr(eq + 1);
+    const float f = static_cast<float>(std::atof(v.c_str()));
+    const bool on = (v == "on" || v == "1" || v == "true");
+    if (k == "kind")
+      l.kind = (v == "dot") ? umbreon::LayerKind::Dot : umbreon::LayerKind::Line;
+    else if (k == "angle")
+      l.angleDeg = f;
+    else if (k == "spacing")
+      l.spacingPx = f;
+    else if (k == "subdiv")
+      l.subdiv = std::atoi(v.c_str());
+    else if (k == "width")
+      l.widthPx = f;
+    else if (k == "tonehi")
+      l.toneHi = f;
+    else if (k == "tonelo")
+      l.toneLo = f;
+    else if (k == "fade")
+      l.fadeInv = f;
+    else if (k == "opacity")
+      l.opacity = f;
+    else if (k == "inkscale")
+      l.inkScale = f;
+    else if (k == "soft")
+      l.mark.edgeSoftness = f;
+    else if (k == "seed")
+      l.mark.seed = static_cast<unsigned>(std::atoi(v.c_str()));
+    else if (k == "shape")
+      l.mark.shapeExponent = f;
+    else if (k == "aspect")
+      l.mark.dotAspect = f;
+    else if (k == "dotangle")
+      l.mark.dotAngleDeg = f;
+    else if (k == "jitter")
+      l.mark.jitter = f;
+    else if (k == "invert")
+      l.mark.invertAbove50 = on;
+    else if (k == "wobble")
+      l.mark.wobbleAmpPx = f;
+    else if (k == "wobwave")
+      l.mark.wobbleWavePx = f;
+    else if (k == "wjitter")
+      l.mark.widthJitter = f;
+    else if (k == "slen")
+      l.mark.strokeLenPx = f;
+    else if (k == "sgap")
+      l.mark.strokeGapPx = f;
+    else if (k == "taper")
+      l.mark.strokeTaper = f;
+    else if (k == "anglejitter")
+      l.mark.angleJitterDeg = f;
+    else if (k == "lenjitter")
+      l.mark.strokeLenJitter = f;
+    else if (k == "tooth")
+      l.mark.toothAmp = f;
+    else if (k == "toothscale")
+      l.mark.toothScalePx = f;
+    else
+      std::fprintf(stderr, "warning: --hatch-layer unknown key '%s'\n",
+                   k.c_str());
+  }
 }
 
 }  // namespace
@@ -433,8 +527,8 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
   }
 }
 
-void applyShadingOptions(const Options& opt, const Scene& scene,
-                         RenderOptions& ropt) {
+void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
+                         const std::vector<std::string>& groupNames) {
   // Single-layer transparency controls.
   ropt.transparency = opt.transparency;
   ropt.transparentBackground = opt.transparentBackground;
@@ -462,6 +556,8 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   // (and gi-checked) inside renderFrame.
   ropt.aoResDiv = opt.aoResDiv;
   ropt.aoResDebug = opt.aoResDebug;
+  if (opt.aoResFallbackMul >= 1)
+    ropt.aoResFallbackSppMul = opt.aoResFallbackMul;
   ropt.shadows = opt.shadows;
   ropt.shadowSamples = opt.shadowSamples;
   ropt.lightRadius = opt.lightRadius;
@@ -489,6 +585,120 @@ void applyShadingOptions(const Options& opt, const Scene& scene,
   ropt.envIntensity = opt.envIntensity;
   ropt.envKeyScale = opt.envKeyScale;
   ropt.envAngle = opt.envAngle;
+
+  // Tone hatching NPR shading (--hatch). Layers come from the named preset;
+  // unknown names (the Phase-2 presets included) warn and fall back to
+  // pen-cross rather than failing the render.
+  if (opt.hatch) {
+    ropt.hatch.enable = true;
+    // Layered configuration, least to most specific: a complete look
+    // (--hatch-look) sets paper/ink + tone + layers together; a mark preset
+    // (--hatch-preset) then replaces just the layers; explicit flags win
+    // over both (hence the *Set markers).
+    if (!opt.hatchLook.empty() &&
+        !applyHatchLook(ropt.hatch, opt.hatchLook)) {
+      std::fprintf(stderr,
+                   "warning: unknown --hatch-look '%s' (richardson/ink-cross/"
+                   "manga); ignored\n",
+                   opt.hatchLook.c_str());
+    }
+    if (!opt.hatchPreset.empty()) {
+      if (!applyHatchPreset(ropt.hatch, opt.hatchPreset)) {
+        std::fprintf(stderr,
+                     "warning: unknown --hatch-preset '%s' (pen-cross/pencil/"
+                     "engraving/stipple/screentone-60/manga-square); using "
+                     "pen-cross\n",
+                     opt.hatchPreset.c_str());
+        applyHatchPreset(ropt.hatch, "pen-cross");
+      }
+    } else if (ropt.hatch.layers.empty()) {
+      applyHatchPreset(ropt.hatch, "pen-cross");  // no look, no preset
+    }
+    if (opt.hatchModeSet)
+      ropt.hatch.mode =
+          (opt.hatchMode == "over") ? HatchMode::Over : HatchMode::Ink;
+    if (opt.hatchBaseSet)
+      ropt.hatch.base =
+          (opt.hatchBase == "albedo") ? HatchBase::Albedo : HatchBase::Paper;
+    if (opt.hatchInkSet)
+      ropt.hatch.ink =
+          (opt.hatchInk == "albedo") ? HatchInk::FromAlbedo : HatchInk::Fixed;
+    for (int i = 0; i < 3; ++i) {
+      if (opt.hatchInkColorSet) ropt.hatch.inkColor[i] = opt.hatchInkColor[i];
+      if (opt.hatchPaperColorSet)
+        ropt.hatch.paperColor[i] = opt.hatchPaperColor[i];
+    }
+    // Global preset overrides: density (lattice pitch) and stroke width,
+    // then the per-layer --hatch-layer specs on top.
+    for (umbreon::HatchLayer& l : ropt.hatch.layers) {
+      if (opt.hatchSpacing > 0.0f) l.spacingPx = opt.hatchSpacing;
+      if (opt.hatchWidth > 0.0f) l.widthPx = opt.hatchWidth;
+    }
+    for (const std::string& spec : opt.hatchLayerSpecs)
+      applyHatchLayerSpec(ropt.hatch, spec);
+    // Tone recipe / contrast overrides.
+    if (opt.hatchToneSet) {
+      ropt.hatch.tone = opt.hatchTone;
+      ropt.hatch.toneLevels = opt.hatchToneLevels;
+    }
+    if (opt.hatchMinContrast >= 0.0f)
+      ropt.hatch.inkMinContrast = opt.hatchMinContrast;
+    if (opt.hatchInkShade >= 0.0f)
+      ropt.hatch.inkShadeDark = opt.hatchInkShade;
+    ropt.hatch.toneFog = opt.hatchToneFog;
+    ropt.hatch.inkHiRes = (opt.hatchRes == "hi");
+    // Per-section styles (--hatch-style ID=spec): size the table to the
+    // group list, seed every section from the GLOBAL options, then apply
+    // the overrides -- the same name->index resolution as --edge.
+    if (!opt.sectionHatch.empty()) {
+      GroupHatchStyle def;
+      def.enable = true;
+      def.base = ropt.hatch.base;
+      def.ink = ropt.hatch.ink;
+      for (int i = 0; i < 3; ++i) def.inkColor[i] = ropt.hatch.inkColor[i];
+      def.layerMask = 0x7fffffff;  // all layers
+      def.toneScale = 1.0f;
+      scene.groupHatchStyle.assign(groupNames.size(), def);
+      std::map<std::string, int> gidx;
+      for (std::size_t i = 0; i < groupNames.size(); ++i)
+        gidx[groupNames[i]] = static_cast<int>(i);
+      for (const auto& kv : opt.sectionHatch) {
+        auto it = gidx.find(kv.first);
+        if (it == gidx.end()) {
+          std::fprintf(stderr,
+                       "warning: section '%s' not found (try --list-groups)\n",
+                       kv.first.c_str());
+          continue;
+        }
+        GroupHatchStyle st = def;
+        const Options::HatchSectionSpec& sp = kv.second;
+        if (sp.off) st.enable = false;
+        if (sp.baseSet)
+          st.base = sp.baseAlbedo ? HatchBase::Albedo : HatchBase::Paper;
+        if (sp.inkSet)
+          st.ink = sp.inkAlbedo ? HatchInk::FromAlbedo : HatchInk::Fixed;
+        if (sp.colorSet)
+          for (int i = 0; i < 3; ++i) st.inkColor[i] = sp.color[i];
+        st.toneScale = sp.toneScale;
+        st.density = sp.density;
+        st.widthScale = sp.widthScale;
+        if (sp.layerMask >= 0) st.layerMask = sp.layerMask;
+        scene.groupHatchStyle[static_cast<std::size_t>(it->second)] = st;
+        std::printf("  hatch override: section %s (group %d)\n",
+                    kv.first.c_str(), it->second);
+      }
+    }
+    // NPR AO defaults: the coarse output-resolution AO gather acts as the
+    // tone denoiser, the low-discrepancy sampler halves its variance for
+    // free, and the fallback rim pixels (which skip the grid smoothing)
+    // get oversampled so the binarization does not fleck -- each only when
+    // AO is on and the user did not choose otherwise.
+    if (ropt.aoSamples > 0) {
+      if (!opt.aoResSet) ropt.aoResDiv = -1;
+      if (!opt.aoLdSet) ropt.aoLowDiscrepancy = true;
+      if (opt.aoResFallbackMul < 1) ropt.aoResFallbackSppMul = 4;
+    }
+  }
 
   // Diffuse GI: surface irradiance cache (steps 1-3: cache build + fill +
   // debug AOVs; the final composite is not wired yet, so color is unchanged).
