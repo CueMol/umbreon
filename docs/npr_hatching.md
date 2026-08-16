@@ -288,6 +288,35 @@ surface stays exactly ink-free.
 `--hatch-ink-shade`) lighten, matching how the silhouette ink fades -- the way
 a drawing lightens its far side. Drive its strength from the scene's fog.
 
+### Mark coordinate / UV (`--hatch-uv`)
+
+By default the marks are laid out in the pixel raster, so strokes keep a fixed
+screen angle whatever the surface does. The coordinate is an input, though:
+
+| Flag | Meaning |
+|---|---|
+| `--hatch-uv screen` (default) | the pixel raster |
+| `--hatch-uv analytic` | a surface parameterization built from the analytic tangent frame of CSG primitives |
+| `--hatch-uv-scale <f>` | UV units per stroke pixel unit (the analytic UV is in WORLD units, so this is roughly pixels per world unit) |
+
+`analytic` reuses **the same tangent the principled anisotropy uses** (shared
+helper `analyticSurfaceTangent`): a sphere's meridian off the world +Y pole, a
+cylinder's axis projected into the tangent plane. The parameterization is
+`(u, v) = (P.T, P.B)` with `B = N x T`; the lattice is periodic, so projecting
+the world position needs no per-primitive origin. A cylinder's `u` is exactly
+its axial distance, which is what makes a stick hatch along itself.
+
+Surfaces with no analytic tangent -- **mesh hits**, sphere poles, cylinder caps
+-- get no UV and fall back to screen coordinates **per pixel**, so the two
+spaces mix cleanly in one image.
+
+Library callers can supply their own field instead: fill
+`FrameResult::hatchUv` (w*h*2) or pass a `uv` buffer to `applyHatch`. A pixel
+whose pair is exactly `(0, 0)` counts as "no UV here" and uses screen
+coordinates. Everything downstream of the coordinate -- the lattice, the
+per-layer angle, the perturbations, the paper tooth -- is a pure function of
+that pair, so nothing else needs to know which space it is in.
+
 ### Per-section styling
 
 `--hatch-style ID=spec` overrides the style for one CueMol section, mirroring
@@ -366,6 +395,13 @@ umbreon::HatchOptions opt;
 umbreon::applyHatchLook(opt, "richardson");
 opt.enable = true;
 umbreon::applyHatch(w, h, rgba, tone, mask, albedo, opt);
+
+// ...or drive the marks from your own parameterization (w*h*2; a pixel
+// whose pair is exactly (0,0) falls back to screen coordinates):
+opt.uvSource = umbreon::HatchUvSource::Host;
+opt.uvScale = 12.0f;
+umbreon::applyHatch(w, h, rgba, tone, mask, albedo, opt,
+                    nullptr, 1, nullptr, 0, uv);
 ```
 
 `rgba` is the display-encoded canvas the ink multiplies into (the composite
@@ -382,10 +418,14 @@ itself.
 
 ## 7. Not implemented
 
-- **Object-space stroke direction.** Strokes run at fixed screen-space angles,
-  not along the surface (a ribbon's strokes do not follow its flow). The
-  design keeps the extension point (`hatchUv`, falling back to screen
-  coordinates when absent), but the direction field itself is future work.
+- **Surface-following strokes on MESHES.** `--hatch-uv analytic` makes
+  strokes follow spheres and cylinders (ball-and-stick), but a mesh has no
+  analytic tangent and no UV in this pipeline -- CueMol's `.inc` carries
+  position, normal and color only (its `uv_vectors` block is not emitted and
+  the reader ignores it), so ribbons still hatch at a fixed screen angle. The
+  interface for fixing this exists (see 4.5): fill `FrameResult::hatchUv`, or
+  pass a `uv` buffer to `applyHatch`, from any parameterization the host
+  has.
 - Object-space UV parameterization (lapped textures), TAM texture generation,
   temporal coherence for animation, GPU implementation, optimization-based
   stipple placement (the jitter approximates it).

@@ -64,6 +64,12 @@ struct HitShade {
   // the AO split), computed ONLY when RenderOptions::hatch.enable is on.
   // 1 = fully lit (paper side). Never feeds the color.
   float hatchTone = 1.0f;
+  // NPR hatch surface parameterization of this hit (HatchUvSource::Analytic).
+  // hatchUvValid stays 0 where the surface has no analytic tangent (mesh
+  // hits, sphere poles, cylinder caps), which the ink pass reads as "use
+  // screen coordinates for this pixel".
+  float hatchUv[2] = {0.0f, 0.0f};
+  std::uint8_t hatchUvValid = 0;
   // Material::reflection of this hit, recorded ONLY when pt2's traced
   // reflection owns the term (giIntegrator == 2 && pt2Reflect): the local
   // shade then skips its fake reflection*background and the GI post-pass
@@ -179,6 +185,61 @@ inline float hatchRimFactor(const ToneRecipe& tr, const Vec3& N,
   const float bias = 1.0f - tr.rimLightBias * lit;
   const float d = std::min(1.0f, tr.rimDarken) * edge * bias;
   return 1.0f - d;
+}
+
+// Analytic surface tangent of a CSG primitive, in world space: sphere =
+// the meridian direction off the world +Y pole, cylinder = its axis
+// projected into the tangent plane. Returns false where the primitive has
+// no well-defined tangent (sphere pole, cylinder cap, degenerate
+// projection), which every caller treats as "no frame here".
+//
+// Pole = world +Y (the vertical/up axis). CueMol exports scenes in CAMERA
+// coordinates (view axis = z), so a z pole would face the camera on every
+// sphere -- putting the tangent-field singularity dead center in the
+// highlight. The up axis keeps the poles at the top/bottom rim, at grazing.
+//
+// Shared by the principled anisotropy frame and the NPR hatch UV, so the
+// two agree by construction on what "along this surface" means.
+inline bool analyticSurfaceTangent(const ShadeContext& c, bool isSphere,
+                                   bool isCapped, unsigned primID,
+                                   const Vec3& N, const Vec3& Ng,
+                                   Vec3& outT) {
+  if (isSphere) {
+    if (std::fabs(N.y) >= 0.999f) return false;  // pole: no meridian
+    const Vec3 tPhi = safeNormalize(cross(Vec3{0.0f, 1.0f, 0.0f}, N));
+    outT = cross(N, tPhi);  // meridian (theta) direction
+    return true;
+  }
+  const std::vector<Vec3>& axes =
+      isCapped ? c.built.cylCapAxis : c.built.cylAxis;
+  if (axes.empty()) return false;
+  const Vec3 A = axes[primID];
+  const Vec3 ngu = safeNormalize(Ng, N);
+  if (std::fabs(dot(ngu, A)) >= 0.99f) return false;  // cap hit
+  const float andn = dot(A, N);
+  const Vec3 proj{A.x - N.x * andn, A.y - N.y * andn, A.z - N.z * andn};
+  if (dot(proj, proj) < 1.0e-12f) return false;
+  outT = safeNormalize(proj);
+  return true;
+}
+
+// Surface parameterization for the NPR hatch, built from that tangent:
+// (u, v) = (P.T, P.B) with B = N x T. The lattice is periodic, so the
+// arbitrary constant offset of projecting the world position is harmless;
+// what matters is that u runs ALONG the form (a cylinder's u is exactly
+// its axial distance), which is what makes strokes follow it instead of
+// the screen. Returns false when the primitive has no tangent.
+inline bool hatchAnalyticUv(const ShadeContext& c, bool isSphere,
+                            bool isCapped, unsigned primID, const Vec3& N,
+                            const Vec3& Ng, const Vec3& P, float& outU,
+                            float& outV) {
+  Vec3 T;
+  if (!analyticSurfaceTangent(c, isSphere, isCapped, primID, N, Ng, T))
+    return false;
+  const Vec3 B = cross(N, T);
+  outU = dot(P, T);
+  outV = dot(P, B);
+  return true;
 }
 
 // Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
@@ -440,47 +501,19 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
     // Real primitives receive light shadows (a buried atom is occluded from the
     // lights); outline decoration is never shadowed (silhouette must not darken).
     const bool primShadows = !fromEdge && shadowsActive;
-    // Anisotropy tangent frame (principled sphere/cylinder only): sphere =
-    // world-z pole (t1 = meridian direction), cylinder = axis projected to
-    // the tangent plane. Poles, caps and degenerate projections fall back to
-    // isotropic (tanValid stays false). The anisotropyRotation is baked into
-    // the tangent HERE so the direct highlight and the E_spec glossy pass
-    // share one frame definition.
+    // Anisotropy tangent frame (principled sphere/cylinder only), from the
+    // shared analytic tangent: poles, caps and degenerate projections fall
+    // back to isotropic (tanValid stays false). The anisotropyRotation is
+    // baked into the tangent HERE so the direct highlight and the E_spec
+    // glossy pass share one frame definition.
     Vec3 anisoT{0.0f, 0.0f, 0.0f};
     float anisoAspect = 1.0f;
     bool tanValid = false;
     if (pm.model == ShadingModel::Principled && pm.pbr.anisotropy != 0.0f &&
         !fromEdge) {
       Vec3 t1{0.0f, 0.0f, 0.0f};
-      if (isSphere) {
-        // Pole = world +Y (the vertical/up axis). CueMol exports scenes in
-        // CAMERA coordinates (view axis = z), so a z pole would face the
-        // camera on every sphere -- putting the tangent-field singularity
-        // and its isotropic fallback disk dead center in the highlight. The
-        // up axis keeps the poles at the top/bottom rim, seen at grazing.
-        if (std::fabs(N.y) < 0.999f) {
-          const Vec3 tPhi =
-              safeNormalize(cross(Vec3{0.0f, 1.0f, 0.0f}, N));
-          t1 = cross(N, tPhi);  // meridian (theta) direction
-          tanValid = true;
-        }
-      } else {
-        const std::vector<Vec3>& axes =
-            isCapped ? c.built.cylCapAxis : c.built.cylAxis;
-        if (!axes.empty()) {
-          const Vec3 A = axes[rh.hit.primID];
-          const Vec3 ngu = safeNormalize(Ng, N);
-          if (std::fabs(dot(ngu, A)) < 0.99f) {  // cap hit -> isotropic
-            const float andn = dot(A, N);
-            const Vec3 proj{A.x - N.x * andn, A.y - N.y * andn,
-                            A.z - N.z * andn};
-            if (dot(proj, proj) >= 1.0e-12f) {
-              t1 = safeNormalize(proj);
-              tanValid = true;
-            }
-          }
-        }
-      }
+      tanValid = analyticSurfaceTangent(c, isSphere, isCapped, rh.hit.primID,
+                                        N, Ng, t1);
       if (tanValid) {
         if (pm.pbr.anisotropyRotation != 0.0f) {
           const float ang = pm.pbr.anisotropyRotation * 6.2831853072f;
@@ -539,6 +572,18 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
         t = 1.0f;
       hs.hatchTone = t;
       if (c.opt.hatch.needsAlbedo()) hs.albedo = C;
+      // Surface-following stroke coordinate, from the same analytic frame
+      // the principled anisotropy uses. Mesh hits have no such frame, so
+      // only this (CSG primitive) branch can fill it.
+      if (c.opt.hatch.uvSource == HatchUvSource::Analytic) {
+        float uu = 0.0f, vv = 0.0f;
+        if (hatchAnalyticUv(c, isSphere, isCapped, rh.hit.primID, N, Ng, P,
+                            uu, vv)) {
+          hs.hatchUv[0] = uu;
+          hs.hatchUv[1] = vv;
+          hs.hatchUvValid = 1;
+        }
+      }
     }
     hs.group = isSphere ? c.built.sphereGroup[rh.hit.primID]
                : isCapped ? c.built.cylCapGroup[rh.hit.primID]

@@ -639,6 +639,107 @@ int main() {
             std::fabs(onMid - offMid) < 1.0e-6f);
   }
 
+  // --- 21. UV interface: applyHatch lays its marks in a caller-supplied
+  // coordinate, falling back to screen coordinates per pixel where the UV
+  // is absent (an exactly-zero pair), and uvScale maps UV to pixel units.
+  {
+    const int W = 48, H = 48;
+    const std::size_t npix = static_cast<std::size_t>(W) * H;
+    umbreon::HatchOptions opt;
+    opt.enable = true;
+    umbreon::applyHatchPreset(opt, "pen-cross");
+    const float toneLin = umbreon::srgbDecodeF(0.4f);
+    std::vector<float> toneBuf(npix, toneLin);
+    std::vector<float> mask(npix, 1.0f);
+    auto run = [&](const float* uv) {
+      std::vector<float> rgba(npix * 4, 1.0f);
+      umbreon::applyHatch(W, H, rgba.data(), toneBuf.data(), mask.data(),
+                          nullptr, opt, nullptr, 1, nullptr, 0, uv);
+      return rgba;
+    };
+    const std::vector<float> screen = run(nullptr);
+    // A UV that is the screen coordinate ROTATED by 90 degrees must give a
+    // different picture than the screen one (the marks followed the UV),
+    // yet the same ink amount (same lattice, just turned).
+    std::vector<float> uvRot(npix * 2, 0.0f);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t p = static_cast<std::size_t>(y) * W + x;
+        uvRot[p * 2 + 0] = -(static_cast<float>(y) + 0.5f);
+        uvRot[p * 2 + 1] = static_cast<float>(x) + 0.5f;
+      }
+    const std::vector<float> rotated = run(uvRot.data());
+    s.check("uv: marks follow the supplied coordinate", rotated != screen);
+    s.check("uv: a pure rotation keeps the ink amount",
+            std::fabs(meanInk(rotated) - meanInk(screen)) < 0.03f);
+    // Half the canvas carries no UV (zero pair) -> those pixels must match
+    // the screen-coordinate result exactly.
+    std::vector<float> uvHalf = uvRot;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W / 2; ++x) {
+        const std::size_t p = static_cast<std::size_t>(y) * W + x;
+        uvHalf[p * 2 + 0] = 0.0f;
+        uvHalf[p * 2 + 1] = 0.0f;
+      }
+    const std::vector<float> half = run(uvHalf.data());
+    bool fellBack = true, followed = false;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t p = static_cast<std::size_t>(y) * W + x;
+        if (x < W / 2) {
+          if (half[p * 4] != screen[p * 4]) fellBack = false;
+        } else if (half[p * 4] != screen[p * 4]) {
+          followed = true;
+        }
+      }
+    s.check("uv: pixels without a UV fall back to screen exactly", fellBack);
+    s.check("uv: pixels with a UV do not", followed);
+    // uvScale is the UV -> pixel-unit map: scaling the UV down by 2 with
+    // uvScale 2 reproduces the unscaled result bitwise.
+    std::vector<float> uvHalfScale(npix * 2, 0.0f);
+    for (std::size_t i = 0; i < uvRot.size(); ++i)
+      uvHalfScale[i] = uvRot[i] * 0.5f;
+    opt.uvScale = 2.0f;
+    const std::vector<float> scaled = run(uvHalfScale.data());
+    s.check("uv: uvScale maps UV units to pixel units", scaled == rotated);
+  }
+
+  // --- 22. Analytic UV end to end: a cylinder's strokes follow its axis,
+  // so rotating the stick in the image plane changes the picture, and the
+  // hatchUv AOV is filled only under a non-screen source.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {1.0f, 1.0f, 1.0f};
+    umbreon::Cylinder cy;
+    cy.p0 = {-1.5f, 0.0f, 0.0f};
+    cy.p1 = {1.5f, 0.0f, 0.0f};
+    cy.radius = 0.5f;
+    cy.color = {0.6f, 0.6f, 0.6f, 1.0f};
+    sc.cylinders.push_back(cy);
+    umbreon::RenderOptions o;
+    o.width = 48;
+    o.height = 48;
+    o.hatch.enable = true;
+    const umbreon::FrameResult fScreen = umbreon::render(sc, o);
+    s.check("analytic uv: screen source allocates no UV AOV",
+            fScreen.hatchUv.empty());
+    o.hatch.uvSource = umbreon::HatchUvSource::Analytic;
+    const umbreon::FrameResult fUv = umbreon::render(sc, o);
+    s.check("analytic uv: AOV sized w*h*2",
+            fUv.hatchUv.size() == 48u * 48u * 2u);
+    bool anyUv = false;
+    for (std::size_t i = 0; i < fUv.hatchUv.size(); ++i)
+      if (fUv.hatchUv[i] != 0.0f) anyUv = true;
+    s.check("analytic uv: the cylinder produced a parameterization", anyUv);
+    s.check("analytic uv: the picture follows the surface, not the screen",
+            !framesEqual(fScreen, fUv));
+    // Determinism, as everywhere else in this pass.
+    s.check("analytic uv: deterministic",
+            framesEqual(fUv, umbreon::render(sc, o)));
+  }
+
   // --- 15. screentone-60 mid-gray: display tone 0.5 covers ~50%.
   {
     umbreon::HatchOptions o;

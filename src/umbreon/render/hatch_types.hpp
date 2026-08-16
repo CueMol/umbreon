@@ -39,6 +39,21 @@ enum class HatchInk : std::uint8_t { Fixed = 0, FromAlbedo = 1 };
 // strokes; Dot = 2D lattice of halftone dots / stipple points.
 enum class LayerKind : std::uint8_t { Line = 0, Dot = 1 };
 
+// Where the coordinate the marks are laid out in comes from.
+//   Screen   the pixel raster (default): strokes keep a fixed screen angle.
+//   Analytic a surface parameterization built from the analytic tangent
+//            frame of CSG primitives -- the SAME frame the principled
+//            anisotropy uses (sphere = meridian off the world +Y pole,
+//            cylinder = the axis projected into the tangent plane), so a
+//            stick is hatched along its own axis instead of across the
+//            screen. Mesh hits have no analytic tangent and fall back to
+//            Screen per pixel.
+//   Host     a caller-supplied per-pixel UV (FrameResult::hatchUv filled
+//            externally, or the `uv` argument of applyHatch). Pixels whose
+//            UV is absent fall back to Screen.
+// Any source other than Screen fills the hatchUv AOV.
+enum class HatchUvSource : std::uint8_t { Screen = 0, Analytic = 1, Host = 2 };
+
 // Mark appearance and hand-drawn perturbation parameters, orthogonal to the
 // lattice/nesting logic. HARD CONSTRAINT: every perturbation is a pure
 // function of the lattice index hash and the along-mark coordinate -- never
@@ -215,6 +230,18 @@ struct HatchOptions {
   // them at 2 px. false = pixel-exact output-resolution strokes (crisper,
   // but the 2-output-px pitch floor applies).
   bool inkHiRes = true;
+  // Coordinate space the marks are laid out in (see HatchUvSource). Screen
+  // (the default) keeps the pass byte-identical to a build without UV
+  // support.
+  HatchUvSource uvSource = HatchUvSource::Screen;
+  // Scale from UV units to the pixel units the layer parameters are
+  // expressed in: a spacing of `spacingPx` covers `spacingPx / uvScale` of
+  // UV. With the Analytic source the UV is in WORLD units, so this is
+  // "pixels per world unit" -- roughly the on-screen size of a world unit
+  // if the strokes should read at their nominal pixel pitch. renderFrame
+  // folds the supersample factor in, exactly as it does for the pixel-unit
+  // layer parameters.
+  float uvScale = 1.0f;
   int toneLevels = 0;      // >1: quantize the encoded tone to N levels
   int albedoQuantize = 0;  // >1: posterize the Albedo base to N steps
   // Copied from RenderOptions::transparentBackground by renderFrame so the

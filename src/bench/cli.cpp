@@ -1290,6 +1290,21 @@ Options parseCli(int argc, char** argv) {
         fail("--hatch-tone-fog expects on/off");
       continue;
     }
+    if (a == "--hatch-uv") {
+      std::string v = value("--hatch-uv");
+      if (v == "screen" || v == "analytic")
+        o.hatchUv = v;
+      else
+        fail("--hatch-uv expects screen/analytic");
+      continue;
+    }
+    if (a == "--hatch-uv-scale") {
+      o.hatchUvScale =
+          static_cast<float>(std::atof(value("--hatch-uv-scale").c_str()));
+      if (o.ok && o.hatchUvScale <= 0.0f)
+        fail("--hatch-uv-scale expects a positive scale");
+      continue;
+    }
     if (a == "--hatch-res") {
       std::string v = value("--hatch-res");
       if (v == "out" || v == "hi")
@@ -1482,6 +1497,10 @@ void printUsage(const char* prog) {
       "  --hatch-ink-shade <f>    darken ink toward f at deep tone (pencil\n"
       "                           pressure; 1 = constant ink)          [1]\n"
       "  --hatch-tone-fog <on|off> fade the tone toward paper with scene fog [on]\n"
+      "  --hatch-uv <screen|analytic> mark coordinate: screen raster, or the\n"
+      "                           analytic surface frame of CSG primitives\n"
+      "                           (strokes follow spheres/sticks)   [screen]\n"
+      "  --hatch-uv-scale <f>     UV(world) -> stroke pixel units        [1]\n"
       "  --hatch-res <hi|out>     ink at supersampled res (fine grain, pitch\n"
       "                           >= 2/ss px) or output res (crisp, >= 2px) [hi]\n"
       "  --transparent-bg <on|off> transparent background output      [off]\n"

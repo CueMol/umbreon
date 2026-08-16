@@ -92,6 +92,10 @@ struct PixelResult {
   // background un-inked). Color is unaffected.
   float hatchTone = 1.0f;
   uint8_t hatchHit = 0;
+  // First-hit hatch surface parameterization (HatchUvSource::Analytic);
+  // hatchUvValid 0 = this pixel has none, so the ink falls back to screen.
+  float hatchUv[2] = {0.0f, 0.0f};
+  uint8_t hatchUvValid = 0;
 };
 
 // First-hit edge G-buffer of one primary ray, WITHOUT shading: what the
@@ -356,6 +360,8 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
   float clipFarVzOut = 0.0f;
   float firstHatchTone = 1.0f;
   uint8_t firstHatchHit = 0;
+  float firstHatchUv[2] = {0.0f, 0.0f};
+  uint8_t firstHatchUvValid = 0;
   Vec3 base = bg;
   float baseCov = opt.transparentBackground ? 0.0f : 1.0f;
 
@@ -424,6 +430,9 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
       firstAoPatched = hs.aoPatched;
       firstHatchTone = hs.hatchTone;
       firstHatchHit = 1;
+      firstHatchUv[0] = hs.hatchUv[0];
+      firstHatchUv[1] = hs.hatchUv[1];
+      firstHatchUvValid = hs.hatchUvValid;
       firstReflectivity = hs.reflectivity;
       firstReflAlpha = hs.reflAlpha;
       firstReflF0 = hs.reflF0;
@@ -529,7 +538,9 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
                      clipNearVzOut,
                      clipFarVzOut,
                      firstHatchTone,
-                     firstHatchHit};
+                     firstHatchHit,
+                     {firstHatchUv[0], firstHatchUv[1]},
+                     firstHatchUvValid};
 }
 
 }  // namespace detail

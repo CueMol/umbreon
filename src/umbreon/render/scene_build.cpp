@@ -131,7 +131,7 @@ void buildSpheres(RTCDevice device, RTCScene rscene, const Scene& scene,
 }  // namespace
 
 BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
-                            bool buildEdgeTables) {
+                            bool buildEdgeTables, bool forceAxisTables) {
   BuiltScene out;
   RTCScene rscene = rtcNewScene(device);
   out.scene = rscene;
@@ -168,7 +168,7 @@ BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
     buildTriangleMesh(device, rscene, scene.mesh, bakeOffsets, out);
     buildSpheres(device, rscene, scene, bakeOffsets, out, buildEdgeTables);
     buildCylinderGeometry(device, rscene, scene, bakeOffsets, out,
-                          buildEdgeTables);
+                          buildEdgeTables, forceAxisTables);
 
     rtcCommitScene(rscene);
     if (RTCError err = rtcGetDeviceError(device); err != RTC_ERROR_NONE)

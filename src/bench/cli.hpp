@@ -284,6 +284,11 @@ struct Options {
   // resolution, pitch floor 2 px). Pixel parameters mean OUTPUT pixels in
   // both modes.
   std::string hatchRes = "hi";
+  // Coordinate space of the marks (--hatch-uv): "screen" (default) or
+  // "analytic" (surface parameterization from the CSG analytic tangent).
+  std::string hatchUv = "screen";
+  // UV -> pixel-unit scale (--hatch-uv-scale); <0 keeps the default.
+  float hatchUvScale = -1.0f;
   // Coarse-AO fallback-pixel sample multiplier (--ao-res-fallback-mul);
   // <0 keeps the RenderOptions default.
   int aoResFallbackMul = -1;

@@ -315,7 +315,7 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
                 const float* mask, const float* albedo,
                 const HatchOptions& opt, const std::uint16_t* groups,
                 int groupSs, const GroupHatchStyle* styles,
-                std::size_t styleCount) {
+                std::size_t styleCount, const float* uv) {
   if (!opt.enable || w <= 0 || h <= 0 || rgba == nullptr ||
       tone == nullptr || mask == nullptr)
     return;
@@ -476,8 +476,20 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             // reduces to "over"; colored ink darkens where layers cross
             // (I^2), like real colored pencil / color tone stacking.
             float f[3] = {1.0f, 1.0f, 1.0f};
-            const float xc = static_cast<float>(x) + 0.5f;
-            const float yc = static_cast<float>(y) + 0.5f;
+            // Mark coordinate: the surface parameterization when this
+            // pixel has one, else the pixel raster. Everything downstream
+            // (lattice, angle rotation, perturbations, paper tooth) is a
+            // pure function of this pair, so the two spaces need no other
+            // special-casing.
+            float xc = static_cast<float>(x) + 0.5f;
+            float yc = static_cast<float>(y) + 0.5f;
+            if (uv != nullptr) {
+              const float su = uv[p * 2 + 0], sv = uv[p * 2 + 1];
+              if (su != 0.0f || sv != 0.0f) {
+                xc = su * opt.uvScale;
+                yc = sv * opt.uvScale;
+              }
+            }
             for (const detail::HatchLayerRt& L : *lay) {
               if (st != nullptr && L.layerId < 31u &&
                   ((st->layerMask >> L.layerId) & 1) == 0)
