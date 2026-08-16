@@ -231,7 +231,7 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     opt.paperColor[1] = 0.925f;
     opt.paperColor[2] = 0.867f;
     opt.inkMinContrast = 0.15f;
-    opt.inkShadeDark = 0.4f;   // pencil pressure: shadows darken the stick
+    opt.inkShadeDark = 0.28f;  // pencil pressure: shadows darken the stick
     opt.toneFog = true;        // far side fades into the paper
     // Lighting-only tone: a low ambient floor keeps the shadows readable,
     // the compressed white point opens the lit side up to bare paper, and
@@ -244,8 +244,9 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     // supplies the shading that follows the FORM (darkening toward each
     // silhouette) rather than one light direction.
     opt.tone.wrap = 0.5f;
-    opt.tone.rimDarken = 0.55f;
-    opt.tone.rimPower = 1.3f;
+    opt.tone.rimDarken = 1.0f;      // strong contour shading
+    opt.tone.rimPower = 1.4f;       // reaching in from the silhouette
+    opt.tone.rimLightBias = 0.35f;  // biased to each form's shaded side
     opt.tone.contactAoPow = 1.0f;
     opt.tone.shapeAoPow = 0.6f;
     opt.tone.whitePoint = 0.97f;
@@ -254,8 +255,8 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     // Fine strokes: with the default supersampled ink these are OUTPUT
     // pixels, so ss decides how far below one pixel they actually land.
     for (HatchLayer& l : opt.layers) {
-      l.spacingPx = 2.0f;
-      l.widthPx = 1.8f;
+      l.spacingPx = 1.0f;   // dense drawing grain (OUTPUT px; see hatch-res)
+      l.widthPx = 0.9f;
       l.mark.edgeSoftness = 0.55f;
       l.opacity = 1.0f;
     }

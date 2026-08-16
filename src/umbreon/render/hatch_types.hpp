@@ -118,13 +118,23 @@ struct ToneRecipe {
   // from clipping the tone flat, since the gradient is redistributed
   // instead of saturating. 0 = plain N.L (the shading model's own).
   float wrap = 0.0f;
-  // Rim (contour) darkening for the tone only: multiply by
-  // mix(1 - rimDarken, 1, saturate(N.V)^rimPower). Surfaces turning away
-  // from the viewer darken toward the silhouette -- the shading a
-  // draftsman actually applies, and it survives any light direction
-  // because it does not depend on one. 0 = off.
+  // Contour darkening for the tone only: surfaces turning away from the
+  // viewer darken toward the silhouette, which is the shading a draftsman
+  // applies to a rounded form and the reason the look survives a flat
+  // frontal key light (N.L alone leaves nothing to hatch there).
+  //
+  //   edge   = (1 - saturate(N.V))^rimPower           how contour-facing
+  //   bias   = mix(1, saturate(N.L-ish tone), rimLightBias)
+  //   tone  *= 1 - rimDarken * edge * bias
+  //
+  // rimLightBias is what keeps this from degenerating into a uniform
+  // outline: at 0 every silhouette darkens equally (every sphere gets a
+  // black ring, and the light direction disappears); at 1 the contour only
+  // darkens where the surface is ALSO turning away from the light, so a
+  // form reads as lit from somewhere while still being shaded by its form.
   float rimDarken = 0.0f;
   float rimPower = 1.0f;
+  float rimLightBias = 0.6f;
   float contactAoPow = 1.0f;   // contact AO exponent (crevices / contacts)
   float shapeAoPow = 0.6f;     // shape AO exponent (domain-scale relief)
   float blackPoint = 0.0f;     // applied at consumption, linear domain

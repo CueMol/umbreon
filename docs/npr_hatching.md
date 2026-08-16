@@ -108,12 +108,12 @@ darks are denser strokes of a *darker pencil of the same hue*. Its settings:
 | `base` / `ink` | Paper / FromAlbedo | every section draws in its own color on bare paper |
 | `paperColor` | `#F0ECDD` | warm drawing paper |
 | layers | `pencil` x3, `inkScale` 1.0 / 0.62 / 0.38 | three pencils: light wash, darker cross, darkest shadow core |
-| `inkShadeDark` | 0.4 | pencil pressure: the same stick darkens in shadow |
-| `spacing` / `width` | 2.0 / 1.8 output px | fine strokes; `--supersample` decides how far below a pixel they land |
+| `inkShadeDark` | 0.28 | pencil pressure: the same stick darkens in shadow |
+| `spacing` / `width` | 1.0 / 0.9 output px | dense drawing grain; `--supersample` decides how far below a pixel the strokes land |
 | `tone.whitePoint` | 0.97 | opens the lit side up to bare paper |
 | `tone.gamma` | 2.2 | pushes midtones into the stroke range |
 | `tone.specularCut` | 0.1 | punches the highlight through as pure paper |
-| `tone.wrap` / `rim` / `rimpow` | 0.5 / 0.55 / 1.3 | the drawing lighting model (see 4) -- shading follows the form, so the look works under a scene's own frontal lighting |
+| `tone.wrap` / `rim` / `rimpow` / `rimbias` | 0.5 / 1.0 / 1.4 / 0.35 | the drawing lighting model (see 4) -- shading follows the form, so the look works under a scene's own frontal lighting |
 | `toneFog` | on | the far side fades into the paper |
 
 `--shadows on` is worth adding, but keep AO **off**: the tone should follow
@@ -233,13 +233,22 @@ untouched:
 - `wrap=W` -- `saturate((N.L + W) / (1 + W))`. Softens the terminator and
   redistributes the gradient instead of clipping it, so a frontal key still
   produces midtones.
-- `rim=R`, `rimpow=P` -- multiply the tone by `mix(1 - R, 1, saturate(N.V)^P)`:
-  surfaces turning away from the viewer darken toward the silhouette. This
-  shades by the **form**, not by a light direction, so it survives any
-  lighting -- it is the shading a draftsman actually applies to a rounded
-  form.
+- `rim=R`, `rimpow=P`, `rimbias=B` -- contour darkening:
 
-The `richardson` look sets `wrap 0.5, rim 0.55, rimpow 1.3`, which is why it
+  ```
+  edge  = (1 - saturate(N.V))^P        how contour-facing the point is
+  tone *= 1 - R * edge * (1 - B * tone)
+  ```
+
+  Surfaces turning away from the viewer darken toward the silhouette, which
+  shades by the **form** rather than by a light direction, so it survives any
+  lighting. `rimbias` is what keeps it from becoming a uniform outline: at 0
+  every silhouette darkens equally (each sphere gets a black ring and the
+  light direction disappears -- very visible on a molecular surface, where the
+  whole picture turns into a mass of rings), while at 1 only the contour on a
+  form's *shaded* side darkens, so the figure still reads as lit.
+
+The `richardson` look sets `wrap 0.5, rim 1.0, rimpow 1.4, rimbias 0.35`, which is why it
 no longer needs the light rebalance that earlier recipes used: it renders
 correctly under a scene's own frontal-dominant CueMol lighting.
 

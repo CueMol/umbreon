@@ -162,14 +162,23 @@ inline AoShade aoShadeForHit(const ShadeContext& c, RTCScene rscene,
 // direction, so it survives a flat frontal key light, where N.L alone
 // leaves nothing to hatch. 1 (no change) when rimDarken is 0.
 inline float hatchRimFactor(const ToneRecipe& tr, const Vec3& N,
-                            const Vec3& V) {
+                            const Vec3& V, float lightTone) {
   if (tr.rimDarken <= 0.0f) return 1.0f;
   float ndv = dot(N, V);
   if (ndv < 0.0f) ndv = 0.0f;
   if (ndv > 1.0f) ndv = 1.0f;
-  const float f = (tr.rimPower == 1.0f) ? ndv : std::pow(ndv, tr.rimPower);
-  const float lo = 1.0f - std::min(1.0f, tr.rimDarken);
-  return lo + (1.0f - lo) * f;
+  // How contour-facing this point is (0 head-on, 1 at the silhouette).
+  float edge = 1.0f - ndv;
+  if (tr.rimPower != 1.0f) edge = std::pow(edge, tr.rimPower);
+  // Weigh it by how UNLIT the point already is, so the contour darkens on
+  // the shaded side of each form instead of ringing every silhouette
+  // equally (a uniform ring reads as an outline and erases the light).
+  float lit = lightTone;
+  if (lit < 0.0f) lit = 0.0f;
+  if (lit > 1.0f) lit = 1.0f;
+  const float bias = 1.0f - tr.rimLightBias * lit;
+  const float d = std::min(1.0f, tr.rimDarken) * edge * bias;
+  return 1.0f - d;
 }
 
 // Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
@@ -321,7 +330,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       const float sAo = aoQuality ? aoAov.shape : ao.openness;
       float t = tr.ambient + tr.diffuseWeight * toneAcc.diffuse;
       t *= std::pow(cAo, tr.contactAoPow) * std::pow(sAo, tr.shapeAoPow);
-      t *= hatchRimFactor(tr, N, V);
+      t *= hatchRimFactor(tr, N, V, t);
       if (tr.specularCut > 0.0f && toneAcc.specular > tr.specularCut)
         t = 1.0f;
       hs.hatchTone = t;
@@ -525,7 +534,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       float t = tr.ambient + tr.diffuseWeight * toneAcc.diffuse;
       t *= std::pow(toneContact, tr.contactAoPow) *
            std::pow(toneShape, tr.shapeAoPow);
-      t *= hatchRimFactor(tr, N, V);
+      t *= hatchRimFactor(tr, N, V, t);
       if (tr.specularCut > 0.0f && toneAcc.specular > tr.specularCut)
         t = 1.0f;
       hs.hatchTone = t;

@@ -594,6 +594,17 @@ int main() {
     s.check("tone model: rim darkens the contour relative to the center",
             (fRim.hatchTone[cPix] - fRim.hatchTone[rPix]) >
                 (fNo.hatchTone[cPix] - fNo.hatchTone[rPix]) + 0.05f);
+    // The light bias is what keeps rim from degenerating into a uniform
+    // outline: with bias 0 every silhouette darkens equally, with bias > 0
+    // the LIT side of the contour darkens less than the shaded side.
+    umbreon::RenderOptions ob = o;
+    ob.hatch.tone.rimDarken = 0.9f;
+    ob.hatch.tone.rimLightBias = 0.0f;
+    const umbreon::FrameResult fFlat = umbreon::render(sc, ob);
+    ob.hatch.tone.rimLightBias = 0.8f;
+    const umbreon::FrameResult fBias = umbreon::render(sc, ob);
+    s.check("tone model: light bias spares the lit contour",
+            fBias.hatchTone[rPix] > fFlat.hatchTone[rPix] + 0.02f);
     s.check("tone model: rim leaves the head-on center alone",
             std::fabs(fRim.hatchTone[cPix] - fNo.hatchTone[cPix]) < 0.02f);
     // Wrap lifts the mid/dark side without touching a full head-on hit.
