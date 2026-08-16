@@ -124,7 +124,8 @@ struct BuiltScene {
 // per-primitive global material-index side-tables used by the edge G-buffer
 // capture; when false those tables stay empty (no extra allocation, byte-identical).
 BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
-                            bool buildEdgeTables = false);
+                            bool buildEdgeTables = false,
+                            bool forceAxisTables = false);
 
 }  // namespace detail
 }  // namespace umbreon

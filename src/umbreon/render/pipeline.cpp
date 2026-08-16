@@ -321,6 +321,7 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
         l.mark.strokeGapPx *= s;
         l.mark.toothScalePx *= s;
       }
+      inkOpt.uvScale *= s;  // the UV shares the layer parameters' units
     }
     applyHatch(frame.width, frame.height, frame.color.data(),
                frame.hatchTone.data(), frame.hatchMask.data(),
@@ -329,7 +330,8 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
                /*groupSs=*/1,
                scene.groupHatchStyle.empty() ? nullptr
                                              : scene.groupHatchStyle.data(),
-               scene.groupHatchStyle.size());
+               scene.groupHatchStyle.size(),
+               frame.hatchUv.empty() ? nullptr : frame.hatchUv.data());
     inkDone = true;
   }
 
@@ -389,6 +391,12 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     if (!inkDone && !frame.hatchMask.empty())
       frame.hatchMask =
           boxDownsample(frame.hatchMask, frame.width, frame.height, 1, ss);
+    // The UV is a continuous surface coordinate, so the box average is the
+    // right reconstruction (it blurs mildly across a silhouette, which the
+    // mask already suppresses there).
+    if (!inkDone && !frame.hatchUv.empty())
+      frame.hatchUv =
+          boxDownsample(frame.hatchUv, frame.width, frame.height, 2, ss);
     frame.width = finalW;
     frame.height = finalH;
   }
@@ -437,7 +445,8 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
                ss,
                scene.groupHatchStyle.empty() ? nullptr
                                              : scene.groupHatchStyle.data(),
-               scene.groupHatchStyle.size());
+               scene.groupHatchStyle.size(),
+               frame.hatchUv.empty() ? nullptr : frame.hatchUv.data());
   return frame;
 }
 

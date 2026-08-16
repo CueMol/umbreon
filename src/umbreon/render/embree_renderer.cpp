@@ -241,6 +241,10 @@ void storeShadingChannels(FrameResult& res, const RenderOptions& opt,
   if (!res.hatchTone.empty()) {
     res.hatchTone[pix] = pr.hatchTone;
     res.hatchMask[pix] = static_cast<float>(pr.hatchHit);
+    if (!res.hatchUv.empty() && pr.hatchUvValid) {
+      res.hatchUv[pix * 2 + 0] = pr.hatchUv[0];
+      res.hatchUv[pix * 2 + 1] = pr.hatchUv[1];
+    }
     if (!res.hatchGroup.empty())
       res.hatchGroup[pix] =
           (pr.firstGroup >= 0 && pr.firstGroup < 0xFFFF)
@@ -535,6 +539,10 @@ void allocateFrameBuffers(const Scene& scene, const RenderOptions& opt, int W,
       res.hatchMask.assign(npix, 0.0f);
       if (!scene.groupHatchStyle.empty())
         res.hatchGroup.assign(npix, 0xFFFFu);
+      // Surface parameterization for the marks. Host-supplied UV is filled
+      // by the caller, so allocate for it too (zero = "no UV here").
+      if (opt.hatch.uvSource != HatchUvSource::Screen)
+        res.hatchUv.assign(npix * 2, 0.0f);
     }
     // GI working buffers: world-space first-hit position (gather seed key) and
     // the interpolated indirect (E, also the denoise target). The normal AOV is
@@ -1326,7 +1334,10 @@ FrameResult EmbreeRenderer::render(const Scene& scene, const RenderOptions& opt,
   BuiltScene built;
   const auto tBvh0 = std::chrono::high_resolution_clock::now();
   try {
-    built = buildEmbreeScene(device, scene, opt.strokeEdges.enable);
+    built = buildEmbreeScene(
+        device, scene, opt.strokeEdges.enable,
+        /*forceAxisTables=*/opt.hatch.enable &&
+            opt.hatch.uvSource == HatchUvSource::Analytic);
   } catch (...) {
     if (device != sharedDevice_) rtcReleaseDevice(device);
     throw;

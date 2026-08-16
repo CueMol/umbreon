@@ -40,19 +40,20 @@ namespace detail {
 // GeomKind; shadeHit dispatches on the kind.
 void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene,
                            const std::vector<Vec3>& bakeOffsets, BuiltScene& out,
-                           bool buildEdgeTables) {
+                           bool buildEdgeTables, bool forceAxisTables) {
   if (scene.cylinders.empty()) return;
 
   // Per-segment axis side tables are only needed when an anisotropic
-  // principled cylinder exists (the principled tangent frame); POV scenes
-  // and isotropic principled scenes allocate nothing.
-  bool buildAxisTables = false;
-  for (const Cylinder& c : scene.cylinders)
-    if (c.material.model == ShadingModel::Principled &&
-        c.material.pbr.anisotropy != 0.0f) {
-      buildAxisTables = true;
-      break;
-    }
+  // principled cylinder exists (the principled tangent frame) or the NPR
+  // hatch asks for the same frame; POV scenes with neither allocate nothing.
+  bool buildAxisTables = forceAxisTables;
+  if (!buildAxisTables)
+    for (const Cylinder& c : scene.cylinders)
+      if (c.material.model == ShadingModel::Principled &&
+          c.material.pbr.anisotropy != 0.0f) {
+        buildAxisTables = true;
+        break;
+      }
 
   // Partition source cylinders by cap semantics BEFORE chaining so the chain
   // builder only ever sees `open` edges (capped bonds must not be chained).

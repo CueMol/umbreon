@@ -647,6 +647,10 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
       ropt.hatch.inkShadeDark = opt.hatchInkShade;
     ropt.hatch.toneFog = opt.hatchToneFog;
     ropt.hatch.inkHiRes = (opt.hatchRes == "hi");
+    ropt.hatch.uvSource = (opt.hatchUv == "analytic")
+                              ? umbreon::HatchUvSource::Analytic
+                              : umbreon::HatchUvSource::Screen;
+    if (opt.hatchUvScale > 0.0f) ropt.hatch.uvScale = opt.hatchUvScale;
     // Per-section styles (--hatch-style ID=spec): size the table to the
     // group list, seed every section from the GLOBAL options, then apply
     // the overrides -- the same name->index resolution as --edge.

@@ -67,11 +67,16 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name);
 // (Scene::groupHatchStyle). A section with enable == false keeps its frame
 // color untouched; otherwise its base/ink/layerMask/toneScale override the
 // global options.
+// `uv` (w*h*2, nullable) is the surface parameterization the marks are laid
+// out in -- FrameResult::hatchUv, or any coordinate field the caller
+// produces itself. Where it is null, or a pixel's pair is exactly (0, 0),
+// that pixel falls back to screen coordinates. HatchOptions::uvScale maps
+// UV units to the pixel units the layer parameters use.
 void applyHatch(int w, int h, float* rgba, const float* tone,
                 const float* mask, const float* albedo,
                 const HatchOptions& opt,
                 const std::uint16_t* groups = nullptr, int groupSs = 1,
                 const GroupHatchStyle* styles = nullptr,
-                std::size_t styleCount = 0);
+                std::size_t styleCount = 0, const float* uv = nullptr);
 
 }  // namespace umbreon

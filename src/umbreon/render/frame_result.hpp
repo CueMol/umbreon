@@ -106,6 +106,14 @@ struct FrameResult {
   // non-empty. Never downsampled (integer ids); the final-resolution ink
   // composite samples the cell-center hi-res id instead.
   std::vector<std::uint16_t> hatchGroup;
+  // Per-pixel hatch surface parameterization (width*height*2), filled when
+  // RenderOptions::hatch.uvSource is not Screen: the ink lays its marks in
+  // this coordinate instead of the pixel raster, so strokes follow the
+  // surface. Pixels whose .z-equivalent validity is 0 -- encoded as an
+  // exactly-zero uv pair -- fall back to screen coordinates. A host may
+  // also fill this itself (HatchUvSource::Host) to drive the hatch from
+  // its own parameterization.
+  std::vector<float> hatchUv;
   // Adaptive-AA refinement mask debug AOV: sized (width/ss)*(height/ss) -- one
   // value per OUTPUT pixel, 1 = refined, 0 = replicated -- and written ONLY when
   // aaMode == 1 and aaDebug is on (else empty). Never downsampled.

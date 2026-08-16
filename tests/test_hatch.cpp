@@ -567,6 +567,179 @@ int main() {
     s.check("ink-res: hi is deterministic", framesEqual(fHi, fHi2));
   }
 
+  // --- 19. Tone lighting model: rim darkening shades by FORM, so a sphere
+  // lit flat head-on still produces a tone gradient toward its silhouette,
+  // and wrap lighting softens the terminator instead of clipping.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());  // head-on: N.L alone is near-flat
+    sc.background = {1.0f, 1.0f, 1.0f};
+    umbreon::Sphere sp;
+    sp.center = {0.0f, 0.0f, 0.0f};
+    sp.radius = 1.8f;
+    sp.color = {0.8f, 0.8f, 0.8f, 1.0f};
+    sc.spheres.push_back(sp);
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.hatch.enable = true;
+    // Center vs a point near the rim (world 1.5 -> pixel 56 at height 4).
+    const std::size_t cPix = 32 * 64 + 32;
+    const std::size_t rPix = 32 * 64 + 54;
+    o.hatch.tone.rimDarken = 0.0f;
+    const umbreon::FrameResult fNo = umbreon::render(sc, o);
+    o.hatch.tone.rimDarken = 0.6f;
+    const umbreon::FrameResult fRim = umbreon::render(sc, o);
+    s.check("tone model: rim darkens the contour relative to the center",
+            (fRim.hatchTone[cPix] - fRim.hatchTone[rPix]) >
+                (fNo.hatchTone[cPix] - fNo.hatchTone[rPix]) + 0.05f);
+    // The light bias is what keeps rim from degenerating into a uniform
+    // outline: with bias 0 every silhouette darkens equally, with bias > 0
+    // the LIT side of the contour darkens less than the shaded side.
+    umbreon::RenderOptions ob = o;
+    ob.hatch.tone.rimDarken = 0.9f;
+    ob.hatch.tone.rimLightBias = 0.0f;
+    const umbreon::FrameResult fFlat = umbreon::render(sc, ob);
+    ob.hatch.tone.rimLightBias = 0.8f;
+    const umbreon::FrameResult fBias = umbreon::render(sc, ob);
+    s.check("tone model: light bias spares the lit contour",
+            fBias.hatchTone[rPix] > fFlat.hatchTone[rPix] + 0.02f);
+    s.check("tone model: rim leaves the head-on center alone",
+            std::fabs(fRim.hatchTone[cPix] - fNo.hatchTone[cPix]) < 0.02f);
+    // Wrap lifts the mid/dark side without touching a full head-on hit.
+    umbreon::RenderOptions ow = o;
+    ow.hatch.tone.rimDarken = 0.0f;
+    ow.hatch.tone.wrap = 0.6f;
+    const umbreon::FrameResult fWrap = umbreon::render(sc, ow);
+    s.check("tone model: wrap lifts the grazing side",
+            fWrap.hatchTone[rPix] > fNo.hatchTone[rPix] + 0.02f);
+  }
+
+  // --- 20. Highlight knee: tones above the knee reach EXACT paper white
+  // (a true hole, not sparse strokes), while tones below it -- and so the
+  // size of the white area -- are left alone.
+  {
+    const int W = 64, H = 64;
+    umbreon::HatchOptions opt;
+    opt.enable = true;
+    umbreon::applyHatchPreset(opt, "pen-cross");
+    opt.tone.highlightAt = 1.0f;  // off
+    const float toneHi = umbreon::srgbDecodeF(0.93f);  // above a 0.9 knee
+    const float toneMid = umbreon::srgbDecodeF(0.70f); // below it
+    const float offHi = meanInk(hatchUniform(W, H, toneHi, opt));
+    const float offMid = meanInk(hatchUniform(W, H, toneMid, opt));
+    opt.tone.highlightAt = 0.9f;
+    opt.tone.highlightSoft = 0.05f;
+    const float onHi = meanInk(hatchUniform(W, H, toneHi, opt));
+    const float onMid = meanInk(hatchUniform(W, H, toneMid, opt));
+    s.check("highlight knee: above the knee is exactly ink-free",
+            offHi > 0.0f && onHi == 0.0f);
+    s.check("highlight knee: below the knee is untouched",
+            std::fabs(onMid - offMid) < 1.0e-6f);
+  }
+
+  // --- 21. UV interface: applyHatch lays its marks in a caller-supplied
+  // coordinate, falling back to screen coordinates per pixel where the UV
+  // is absent (an exactly-zero pair), and uvScale maps UV to pixel units.
+  {
+    const int W = 48, H = 48;
+    const std::size_t npix = static_cast<std::size_t>(W) * H;
+    umbreon::HatchOptions opt;
+    opt.enable = true;
+    umbreon::applyHatchPreset(opt, "pen-cross");
+    const float toneLin = umbreon::srgbDecodeF(0.4f);
+    std::vector<float> toneBuf(npix, toneLin);
+    std::vector<float> mask(npix, 1.0f);
+    auto run = [&](const float* uv) {
+      std::vector<float> rgba(npix * 4, 1.0f);
+      umbreon::applyHatch(W, H, rgba.data(), toneBuf.data(), mask.data(),
+                          nullptr, opt, nullptr, 1, nullptr, 0, uv);
+      return rgba;
+    };
+    const std::vector<float> screen = run(nullptr);
+    // A UV that is the screen coordinate ROTATED by 90 degrees must give a
+    // different picture than the screen one (the marks followed the UV),
+    // yet the same ink amount (same lattice, just turned).
+    std::vector<float> uvRot(npix * 2, 0.0f);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t p = static_cast<std::size_t>(y) * W + x;
+        uvRot[p * 2 + 0] = -(static_cast<float>(y) + 0.5f);
+        uvRot[p * 2 + 1] = static_cast<float>(x) + 0.5f;
+      }
+    const std::vector<float> rotated = run(uvRot.data());
+    s.check("uv: marks follow the supplied coordinate", rotated != screen);
+    s.check("uv: a pure rotation keeps the ink amount",
+            std::fabs(meanInk(rotated) - meanInk(screen)) < 0.03f);
+    // Half the canvas carries no UV (zero pair) -> those pixels must match
+    // the screen-coordinate result exactly.
+    std::vector<float> uvHalf = uvRot;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W / 2; ++x) {
+        const std::size_t p = static_cast<std::size_t>(y) * W + x;
+        uvHalf[p * 2 + 0] = 0.0f;
+        uvHalf[p * 2 + 1] = 0.0f;
+      }
+    const std::vector<float> half = run(uvHalf.data());
+    bool fellBack = true, followed = false;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t p = static_cast<std::size_t>(y) * W + x;
+        if (x < W / 2) {
+          if (half[p * 4] != screen[p * 4]) fellBack = false;
+        } else if (half[p * 4] != screen[p * 4]) {
+          followed = true;
+        }
+      }
+    s.check("uv: pixels without a UV fall back to screen exactly", fellBack);
+    s.check("uv: pixels with a UV do not", followed);
+    // uvScale is the UV -> pixel-unit map: scaling the UV down by 2 with
+    // uvScale 2 reproduces the unscaled result bitwise.
+    std::vector<float> uvHalfScale(npix * 2, 0.0f);
+    for (std::size_t i = 0; i < uvRot.size(); ++i)
+      uvHalfScale[i] = uvRot[i] * 0.5f;
+    opt.uvScale = 2.0f;
+    const std::vector<float> scaled = run(uvHalfScale.data());
+    s.check("uv: uvScale maps UV units to pixel units", scaled == rotated);
+  }
+
+  // --- 22. Analytic UV end to end: a cylinder's strokes follow its axis,
+  // so rotating the stick in the image plane changes the picture, and the
+  // hatchUv AOV is filled only under a non-screen source.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {1.0f, 1.0f, 1.0f};
+    umbreon::Cylinder cy;
+    cy.p0 = {-1.5f, 0.0f, 0.0f};
+    cy.p1 = {1.5f, 0.0f, 0.0f};
+    cy.radius = 0.5f;
+    cy.color = {0.6f, 0.6f, 0.6f, 1.0f};
+    sc.cylinders.push_back(cy);
+    umbreon::RenderOptions o;
+    o.width = 48;
+    o.height = 48;
+    o.hatch.enable = true;
+    const umbreon::FrameResult fScreen = umbreon::render(sc, o);
+    s.check("analytic uv: screen source allocates no UV AOV",
+            fScreen.hatchUv.empty());
+    o.hatch.uvSource = umbreon::HatchUvSource::Analytic;
+    const umbreon::FrameResult fUv = umbreon::render(sc, o);
+    s.check("analytic uv: AOV sized w*h*2",
+            fUv.hatchUv.size() == 48u * 48u * 2u);
+    bool anyUv = false;
+    for (std::size_t i = 0; i < fUv.hatchUv.size(); ++i)
+      if (fUv.hatchUv[i] != 0.0f) anyUv = true;
+    s.check("analytic uv: the cylinder produced a parameterization", anyUv);
+    s.check("analytic uv: the picture follows the surface, not the screen",
+            !framesEqual(fScreen, fUv));
+    // Determinism, as everywhere else in this pass.
+    s.check("analytic uv: deterministic",
+            framesEqual(fUv, umbreon::render(sc, o)));
+  }
+
   // --- 15. screentone-60 mid-gray: display tone 0.5 covers ~50%.
   {
     umbreon::HatchOptions o;

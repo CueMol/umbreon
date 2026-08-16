@@ -38,8 +38,24 @@ struct Light {
 // Passed as a nullable pointer; the default nullptr adds no work and keeps
 // the hatch-less render byte-identical.
 struct ToneAccum {
+  // INPUT (set by the caller before shading): wrap-lighting amount for the
+  // tone, ToneRecipe::wrap. The accumulators below then take
+  // saturate((N.L + wrap) / (1 + wrap)) instead of the raw N.L, softening
+  // the terminator and redistributing the gradient so a strong frontal
+  // light cannot clip the tone flat. Lights fully below the horizon still
+  // contribute nothing (the color path's ndl > 0 gate is untouched); the
+  // ambient floor covers that side.
+  float wrap = 0.0f;
+  // OUTPUT.
   float diffuse = 0.0f;
   float specular = 0.0f;
+
+  // Apply the wrap remap to one light's diffuse shape.
+  float wrapped(float ndl) const {
+    if (wrap <= 0.0f) return ndl;
+    const float w = (ndl + wrap) / (1.0f + wrap);
+    return w < 0.0f ? 0.0f : (w > 1.0f ? 1.0f : w);
+  }
 };
 
 // Rec.709 luminance of a linear radiance triple (tone accumulation only).

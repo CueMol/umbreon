@@ -231,23 +231,46 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     opt.paperColor[1] = 0.925f;
     opt.paperColor[2] = 0.867f;
     opt.inkMinContrast = 0.15f;
-    opt.inkShadeDark = 0.4f;   // pencil pressure: shadows darken the stick
+    opt.inkShadeDark = 0.28f;  // pencil pressure: shadows darken the stick
     opt.toneFog = true;        // far side fades into the paper
     // Lighting-only tone: a low ambient floor keeps the shadows readable,
     // the compressed white point opens the lit side up to bare paper, and
     // the specular cut punches the highlight through as pure paper.
     opt.tone.diffuseWeight = 0.85f;
     opt.tone.ambient = 0.05f;
+    // A drawing does not reproduce a hard terminator, and a hand-drawn
+    // figure is lit flatly from the front: wrap softens the terminator and
+    // keeps a frontal key from clipping the tone flat, while the rim term
+    // supplies the shading that follows the FORM (darkening toward each
+    // silhouette) rather than one light direction.
+    opt.tone.wrap = 0.5f;
+    opt.tone.rimDarken = 1.0f;      // strong contour shading
+    opt.tone.rimPower = 1.4f;       // reaching in from the silhouette
+    opt.tone.rimLightBias = 0.35f;  // biased to each form's shaded side
     opt.tone.contactAoPow = 1.0f;
     opt.tone.shapeAoPow = 0.6f;
-    opt.tone.whitePoint = 0.97f;
-    opt.tone.gamma = 2.2f;
-    opt.tone.specularCut = 0.1f;
+    // Do NOT clip the lit end: whitePoint below 1 turns every gently lit
+    // face into bare paper, so the highlights spread into large white
+    // holes. Opening it past 1 keeps the light side as sparse strokes and
+    // leaves the paper for the true highlights only; the higher gamma
+    // restores the dark end that the wider range would otherwise lift.
+    opt.tone.whitePoint = 1.2f;
+    opt.tone.gamma = 2.4f;
+    // The specular blow-out is off by default for the same reason: on a
+    // broad-lobe finish it paints a large white patch rather than a
+    // highlight. Raise it per scene if a crisp glint is wanted.
+    opt.tone.specularCut = 0.0f;
+    // Highlights: a narrow band at the top of the range goes to EXACT
+    // paper white. The knee sets where that band starts, so the white is
+    // clean without the highlight spreading (which is what lowering
+    // whitePoint would do).
+    opt.tone.highlightAt = 0.86f;
+    opt.tone.highlightSoft = 0.05f;
     // Fine strokes: with the default supersampled ink these are OUTPUT
     // pixels, so ss decides how far below one pixel they actually land.
     for (HatchLayer& l : opt.layers) {
-      l.spacingPx = 2.0f;
-      l.widthPx = 1.8f;
+      l.spacingPx = 0.5f;   // dense drawing grain (OUTPUT px; see hatch-res)
+      l.widthPx = 0.45f;
       l.mark.edgeSoftness = 0.55f;
       l.opacity = 1.0f;
     }
@@ -292,7 +315,7 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
                 const float* mask, const float* albedo,
                 const HatchOptions& opt, const std::uint16_t* groups,
                 int groupSs, const GroupHatchStyle* styles,
-                std::size_t styleCount) {
+                std::size_t styleCount, const float* uv) {
   if (!opt.enable || w <= 0 || h <= 0 || rgba == nullptr ||
       tone == nullptr || mask == nullptr)
     return;
@@ -382,6 +405,16 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             float t = detail::hatchClamp01((tLin - tr.blackPoint) / wpRange);
             if (tr.gamma != 1.0f) t = std::pow(t, tr.gamma);
             t = srgbEncodeF(t);
+            // Highlight knee: lift only the top of the range to exact
+            // paper white, leaving the mid tones (and so the highlight's
+            // AREA) where the curve above put them.
+            if (tr.highlightAt < 1.0f) {
+              const float lo =
+                  std::max(0.0f, tr.highlightAt - std::max(1.0e-4f,
+                                                           tr.highlightSoft));
+              const float k = detail::hatchSmoothstep(lo, tr.highlightAt, t);
+              t = t + (1.0f - t) * k;
+            }
             if (opt.toneLevels > 1) {
               const float n = static_cast<float>(opt.toneLevels - 1);
               t = std::round(t * n) / n;
@@ -443,8 +476,20 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             // reduces to "over"; colored ink darkens where layers cross
             // (I^2), like real colored pencil / color tone stacking.
             float f[3] = {1.0f, 1.0f, 1.0f};
-            const float xc = static_cast<float>(x) + 0.5f;
-            const float yc = static_cast<float>(y) + 0.5f;
+            // Mark coordinate: the surface parameterization when this
+            // pixel has one, else the pixel raster. Everything downstream
+            // (lattice, angle rotation, perturbations, paper tooth) is a
+            // pure function of this pair, so the two spaces need no other
+            // special-casing.
+            float xc = static_cast<float>(x) + 0.5f;
+            float yc = static_cast<float>(y) + 0.5f;
+            if (uv != nullptr) {
+              const float su = uv[p * 2 + 0], sv = uv[p * 2 + 1];
+              if (su != 0.0f || sv != 0.0f) {
+                xc = su * opt.uvScale;
+                yc = sv * opt.uvScale;
+              }
+            }
             for (const detail::HatchLayerRt& L : *lay) {
               if (st != nullptr && L.layerId < 31u &&
                   ((st->layerMask >> L.layerId) & 1) == 0)

@@ -39,6 +39,21 @@ enum class HatchInk : std::uint8_t { Fixed = 0, FromAlbedo = 1 };
 // strokes; Dot = 2D lattice of halftone dots / stipple points.
 enum class LayerKind : std::uint8_t { Line = 0, Dot = 1 };
 
+// Where the coordinate the marks are laid out in comes from.
+//   Screen   the pixel raster (default): strokes keep a fixed screen angle.
+//   Analytic a surface parameterization built from the analytic tangent
+//            frame of CSG primitives -- the SAME frame the principled
+//            anisotropy uses (sphere = meridian off the world +Y pole,
+//            cylinder = the axis projected into the tangent plane), so a
+//            stick is hatched along its own axis instead of across the
+//            screen. Mesh hits have no analytic tangent and fall back to
+//            Screen per pixel.
+//   Host     a caller-supplied per-pixel UV (FrameResult::hatchUv filled
+//            externally, or the `uv` argument of applyHatch). Pixels whose
+//            UV is absent fall back to Screen.
+// Any source other than Screen fills the hatchUv AOV.
+enum class HatchUvSource : std::uint8_t { Screen = 0, Analytic = 1, Host = 2 };
+
 // Mark appearance and hand-drawn perturbation parameters, orthogonal to the
 // lattice/nesting logic. HARD CONSTRAINT: every perturbation is a pure
 // function of the lattice index hash and the along-mark coordinate -- never
@@ -112,10 +127,47 @@ struct HatchLayer {
 struct ToneRecipe {
   float diffuseWeight = 1.0f;  // weight of the summed per-light diffuse
   float ambient = 0.12f;       // floor so shadows do not crush to black
+  // Wrap lighting for the tone only: saturate((N.L + wrap) / (1 + wrap)).
+  // A hand drawing does not reproduce a hard terminator -- it wraps the
+  // light around the form -- and this also keeps a strong frontal light
+  // from clipping the tone flat, since the gradient is redistributed
+  // instead of saturating. 0 = plain N.L (the shading model's own).
+  float wrap = 0.0f;
+  // Contour darkening for the tone only: surfaces turning away from the
+  // viewer darken toward the silhouette, which is the shading a draftsman
+  // applies to a rounded form and the reason the look survives a flat
+  // frontal key light (N.L alone leaves nothing to hatch there).
+  //
+  //   edge   = (1 - saturate(N.V))^rimPower           how contour-facing
+  //   bias   = mix(1, saturate(N.L-ish tone), rimLightBias)
+  //   tone  *= 1 - rimDarken * edge * bias
+  //
+  // rimLightBias is what keeps this from degenerating into a uniform
+  // outline: at 0 every silhouette darkens equally (every sphere gets a
+  // black ring, and the light direction disappears); at 1 the contour only
+  // darkens where the surface is ALSO turning away from the light, so a
+  // form reads as lit from somewhere while still being shaded by its form.
+  float rimDarken = 0.0f;
+  float rimPower = 1.0f;
+  float rimLightBias = 0.6f;
   float contactAoPow = 1.0f;   // contact AO exponent (crevices / contacts)
   float shapeAoPow = 0.6f;     // shape AO exponent (domain-scale relief)
   float blackPoint = 0.0f;     // applied at consumption, linear domain
   float whitePoint = 1.0f;
+  // Highlight knee: tones at or above `highlightAt` are pushed to exactly
+  // 1 (bare paper), with `highlightSoft` as the width of the ramp below it:
+  //
+  //   t >= at            -> 1
+  //   at-soft < t < at   -> smoothstep up to 1
+  //
+  // This separates the two things whitePoint conflates. whitePoint scales
+  // the WHOLE range, so lowering it to force a clean white also lifts every
+  // mid tone and the highlight spreads; the knee lifts only the top of the
+  // range, so the paper-white area stays exactly as large as `at` says
+  // while still being a true 1.0 hole rather than a sparse-stroke area.
+  // at >= 1 disables it (the default).
+  float highlightAt = 1.0f;
+  float highlightSoft = 0.06f;
   float gamma = 1.0f;          // artistic curve, linear domain
   float specularCut = 0.0f;    // >0: blow out to paper where spec exceeds it
 };
@@ -178,6 +230,18 @@ struct HatchOptions {
   // them at 2 px. false = pixel-exact output-resolution strokes (crisper,
   // but the 2-output-px pitch floor applies).
   bool inkHiRes = true;
+  // Coordinate space the marks are laid out in (see HatchUvSource). Screen
+  // (the default) keeps the pass byte-identical to a build without UV
+  // support.
+  HatchUvSource uvSource = HatchUvSource::Screen;
+  // Scale from UV units to the pixel units the layer parameters are
+  // expressed in: a spacing of `spacingPx` covers `spacingPx / uvScale` of
+  // UV. With the Analytic source the UV is in WORLD units, so this is
+  // "pixels per world unit" -- roughly the on-screen size of a world unit
+  // if the strokes should read at their nominal pixel pitch. renderFrame
+  // folds the supersample factor in, exactly as it does for the pixel-unit
+  // layer parameters.
+  float uvScale = 1.0f;
   int toneLevels = 0;      // >1: quantize the encoded tone to N levels
   int albedoQuantize = 0;  // >1: posterize the Albedo base to N steps
   // Copied from RenderOptions::transparentBackground by renderFrame so the

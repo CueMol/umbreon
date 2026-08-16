@@ -24,9 +24,13 @@ namespace detail {
 // scene has no cylinders. When `buildEdgeTables` is true, also fills the
 // per-primitive material-index tables (cylMatIndex / cylCapMatIndex) the
 // screen-space edge pass reads; false leaves them empty (byte-identical).
+// `forceAxisTables` builds the per-segment axis side tables even without an
+// anisotropic principled cylinder: the NPR hatch reads the same frame to
+// lay strokes along a stick (RenderOptions::hatch.uvSource).
 void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene,
                            const std::vector<Vec3>& bakeOffsets, BuiltScene& out,
-                           bool buildEdgeTables = false);
+                           bool buildEdgeTables = false,
+                           bool forceAxisTables = false);
 
 }  // namespace detail
 }  // namespace umbreon

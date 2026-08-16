@@ -35,9 +35,16 @@ dark blue helix black and a yellow one white at identical illumination. The
 tone is built from lighting only:
 
 ```
-tone = ambient + diffuseWeight * SUM_lights[ saturate(N.L)^brilliance * shadow * luma(light) ]
-tone *= contactAo^contactAoPow * shapeAo^shapeAoPow
+tone  = ambient + diffuseWeight * SUM_lights[ wrap(N.L)^brilliance * shadow * luma(light) ]
+tone *= contactAo^contactAoPow * shapeAo^shapeAoPow      # AO, when enabled
+tone *= 1 - rimDarken * edge * (1 - rimLightBias * tone) # contour shading
 ```
+
+`wrap()` and the contour term are the **drawing lighting model** (see 4): a
+raytraced `N.L` alone paints physically exact shadows a draftsman would not
+draw, and saturates flat under the frontal light figures are usually drawn
+under. At consumption the tone is remapped again (black/white points, gamma,
+the highlight knee) before the marks are thresholded against it.
 
 The tone is generated at the supersampled resolution and box-downsampled with
 the frame -- that average **is** the tone antialiasing.
@@ -73,6 +80,11 @@ minimum stroke pitch:
 | `hi` (default) | 2 / ss output px (ss=4 -> 0.5 px) | fine grain; sub-pixel strokes merge into an exact coverage tone |
 | `out` | 2 output px | crisp, individually resolvable strokes |
 
+Because the pitch floor scales with `ss`, the supersample factor is what
+decides how fine a drawing can get: the `richardson` look asks for a 0.5 px
+pitch, which needs `--supersample 4` (at ss3 it is clamped to 0.67 px). Raise
+`ss` before reaching for a coarser pitch.
+
 A minimum feature size exists because the ink is a raster: below ~2 px per
 lattice step the marks alias against the pixel grid. `subdiv` is clamped so
 the finest level always clears it.
@@ -93,7 +105,7 @@ umbreon_cli scene.pov --hatch on --hatch-look richardson --edges on
 
 | Look | Paper / ink | Marks | Use |
 |---|---|---|---|
-| `richardson` | paper base, ink from each section's own color, 3 pencils of one hue, pressure `inkShadeDark 0.4`, tone fog on | `pencil`, pitch 2 px, width 1.8 px | Jane-Richardson-style colored-pencil ribbon drawings |
+| `richardson` | paper base, ink from each section's own color, 3 pencils of one hue, pressure `inkShadeDark 0.28`, tone fog on | `pencil`, pitch 0.5 px, width 0.45 px | Jane-Richardson-style colored-pencil ribbon drawings |
 | `ink-cross` | white paper, fixed black ink | `pen-cross` | plain pen-and-ink monochrome figures |
 | `manga` | flat albedo fill (posterized to 4 steps), fixed black ink | `screentone-60` | comic-style flat fill under a halftone screen |
 
@@ -108,25 +120,24 @@ darks are denser strokes of a *darker pencil of the same hue*. Its settings:
 | `base` / `ink` | Paper / FromAlbedo | every section draws in its own color on bare paper |
 | `paperColor` | `#F0ECDD` | warm drawing paper |
 | layers | `pencil` x3, `inkScale` 1.0 / 0.62 / 0.38 | three pencils: light wash, darker cross, darkest shadow core |
-| `inkShadeDark` | 0.4 | pencil pressure: the same stick darkens in shadow |
-| `spacing` / `width` | 2.0 / 1.8 output px | fine strokes; `--supersample` decides how far below a pixel they land |
-| `tone.whitePoint` | 0.97 | opens the lit side up to bare paper |
-| `tone.gamma` | 2.2 | pushes midtones into the stroke range |
-| `tone.specularCut` | 0.1 | punches the highlight through as pure paper |
+| `inkShadeDark` | 0.28 | pencil pressure: the same stick darkens in shadow |
+| `spacing` / `width` | 0.5 / 0.45 output px | dense drawing grain; `--supersample` decides how far below a pixel the strokes land |
+| `tone.whitePoint` | 1.2 | does NOT clip the lit end (clipping spreads the highlight) |
+| `tone.gamma` | 2.4 | restores the dark end the wider range would lift |
+| `tone.highlightAt` / `highlightSoft` | 0.86 / 0.05 | a narrow top band goes to exact paper white, without enlarging it |
+| `tone.specularCut` | 0 (off) | on a broad lobe it paints a patch, not a highlight |
+| `tone.wrap` / `rim` / `rimpow` / `rimbias` | 0.5 / 1.0 / 1.4 / 0.35 | the drawing lighting model (see 4) -- shading follows the form, so the look works under a scene's own frontal lighting |
 | `toneFog` | on | the far side fades into the paper |
 
-Scene-side companions (not part of the look, since they are scene data):
+`--shadows on` is worth adding, but keep AO **off**: the tone should follow
+surface orientation, and AO darkening in the crevices muddies it.
 
-```sh
---shadows on \
---declare _light_inten=1.3 --declare _flash_frac=0.15 --declare _amb_frac=0
-```
-
-The CueMol export is dominated by a camera-mounted flash light, which flattens
-the shading; rebalancing toward the directional key light is what gives each
-ribbon its light-to-dark gradient. AO is best left **off** here: the tone
-should follow surface orientation, and AO darkening in the crevices muddies
-it.
+A CueMol export is dominated by its camera-mounted flash light. Thanks to the
+`rim` term the look no longer depends on rebalancing that, but the lighting is
+still yours to art-direct -- e.g.
+`--declare _light_inten=1.3 --declare _flash_frac=0.4 --declare _amb_frac=0`
+strengthens the directional key without the hard, over-exact shadows a full
+side light would draw.
 
 ---
 
@@ -218,10 +229,56 @@ base would break the color coding.
 | `--hatch-tone-fog <on\|off>` | on | fade the tone toward paper with the scene fog |
 
 `--hatch-tone` keys: `diffuse` (weight of the summed per-light diffuse),
-`ambient` (floor; 0 crushes shadows to solid ink), `contact` / `shape` (AO
-exponents), `black` / `white` (level remap), `gamma` (artistic curve),
-`speccut` (blow the specular highlight out to paper), `levels` (posterize the
-tone to N bands).
+`ambient` (floor; 0 crushes shadows to solid ink), `wrap` / `rim` / `rimpow` /
+`rimbias` (the drawing lighting model, below), `contact` / `shape` (AO
+exponents), `black` / `white` (level remap), `hl` / `hlsoft` (highlight knee,
+below), `gamma` (artistic curve), `speccut` (blow the specular highlight out
+to paper), `levels` (posterize the tone to N bands).
+
+#### Highlights (`hl`, `hlsoft`)
+
+Getting a clean paper-white highlight by lowering `white` does not work: that
+scales the whole range, so every gently lit face lifts too and the highlight
+spreads into a big white hole. The knee separates the two concerns -- tones at
+or above `hl` are pushed to exactly 1 (bare paper), with `hlsoft` as the width
+of the ramp below it, and everything under the knee is left untouched. So `hl`
+alone decides how LARGE the white area is, while the result is always a true
+1.0 hole rather than a sparse-stroke area. `hl >= 1` disables it.
+
+`speccut` is the other route (blow out where the specular exceeds a value),
+but on a broad-lobe finish it paints a large patch rather than a highlight;
+the `richardson` look leaves it off and uses `hl 0.86, hlsoft 0.05`.
+
+#### The drawing lighting model (`wrap`, `rim`)
+
+A raytraced `N.L` is the wrong shading law for a hand drawing in two ways: a
+strong side light paints a hard, physically exact shadow that no draftsman
+would draw, and the flat frontal light a figure is usually drawn under
+saturates `N.L` so that no tone gradient is left to hatch at all. Two terms
+fix this, and both apply to the **tone only** -- the rendered color is
+untouched:
+
+- `wrap=W` -- `saturate((N.L + W) / (1 + W))`. Softens the terminator and
+  redistributes the gradient instead of clipping it, so a frontal key still
+  produces midtones.
+- `rim=R`, `rimpow=P`, `rimbias=B` -- contour darkening:
+
+  ```
+  edge  = (1 - saturate(N.V))^P        how contour-facing the point is
+  tone *= 1 - R * edge * (1 - B * tone)
+  ```
+
+  Surfaces turning away from the viewer darken toward the silhouette, which
+  shades by the **form** rather than by a light direction, so it survives any
+  lighting. `rimbias` is what keeps it from becoming a uniform outline: at 0
+  every silhouette darkens equally (each sphere gets a black ring and the
+  light direction disappears -- very visible on a molecular surface, where the
+  whole picture turns into a mass of rings), while at 1 only the contour on a
+  form's *shaded* side darkens, so the figure still reads as lit.
+
+The `richardson` look sets `wrap 0.5, rim 1.0, rimpow 1.4, rimbias 0.35`, which is why it
+no longer needs the light rebalance that earlier recipes used: it renders
+correctly under a scene's own frontal-dominant CueMol lighting.
 
 Tone pipeline order: linear tone -> black/white remap -> `gamma` -> display
 encode -> `levels` -> threshold. Every stage maps 1 to 1, so a fully lit
@@ -230,6 +287,35 @@ surface stays exactly ink-free.
 `--hatch-tone-fog` makes distant strokes thin out and (with
 `--hatch-ink-shade`) lighten, matching how the silhouette ink fades -- the way
 a drawing lightens its far side. Drive its strength from the scene's fog.
+
+### Mark coordinate / UV (`--hatch-uv`)
+
+By default the marks are laid out in the pixel raster, so strokes keep a fixed
+screen angle whatever the surface does. The coordinate is an input, though:
+
+| Flag | Meaning |
+|---|---|
+| `--hatch-uv screen` (default) | the pixel raster |
+| `--hatch-uv analytic` | a surface parameterization built from the analytic tangent frame of CSG primitives |
+| `--hatch-uv-scale <f>` | UV units per stroke pixel unit (the analytic UV is in WORLD units, so this is roughly pixels per world unit) |
+
+`analytic` reuses **the same tangent the principled anisotropy uses** (shared
+helper `analyticSurfaceTangent`): a sphere's meridian off the world +Y pole, a
+cylinder's axis projected into the tangent plane. The parameterization is
+`(u, v) = (P.T, P.B)` with `B = N x T`; the lattice is periodic, so projecting
+the world position needs no per-primitive origin. A cylinder's `u` is exactly
+its axial distance, which is what makes a stick hatch along itself.
+
+Surfaces with no analytic tangent -- **mesh hits**, sphere poles, cylinder caps
+-- get no UV and fall back to screen coordinates **per pixel**, so the two
+spaces mix cleanly in one image.
+
+Library callers can supply their own field instead: fill
+`FrameResult::hatchUv` (w*h*2) or pass a `uv` buffer to `applyHatch`. A pixel
+whose pair is exactly `(0, 0)` counts as "no UV here" and uses screen
+coordinates. Everything downstream of the coordinate -- the lattice, the
+per-layer angle, the perturbations, the paper tooth -- is a pure function of
+that pair, so nothing else needs to know which space it is in.
 
 ### Per-section styling
 
@@ -265,10 +351,16 @@ speckle).
 ## 5. Recipes
 
 ```sh
-# Richardson-style colored pencil (the reference recipe)
-umbreon_cli scene.pov -W 1600 -H 1250 --supersample 3 --shadows on \
-  --declare _light_inten=1.3 --declare _flash_frac=0.15 --declare _amb_frac=0 \
+# Richardson-style colored pencil (the reference recipe). The look needs no
+# light rebalance: its contour term shades by the form, so a scene's own
+# frontal-dominant CueMol lighting works as-is.
+umbreon_cli scene.pov -W 1600 -H 1250 --supersample 4 --shadows on \
   --hatch on --hatch-look richardson --edges on
+
+# a bumpy molecular SURFACE needs the tone loosened (its many
+# away-facing facets otherwise sink the whole picture into dark strokes)
+umbreon_cli surface.pov --hatch on --hatch-look richardson --edges on \
+  --hatch-tone "ambient=0.10,gamma=1.6" 
 
 # monochrome pen figure
 umbreon_cli scene.pov --hatch on --hatch-look ink-cross --edges on
@@ -303,6 +395,13 @@ umbreon::HatchOptions opt;
 umbreon::applyHatchLook(opt, "richardson");
 opt.enable = true;
 umbreon::applyHatch(w, h, rgba, tone, mask, albedo, opt);
+
+// ...or drive the marks from your own parameterization (w*h*2; a pixel
+// whose pair is exactly (0,0) falls back to screen coordinates):
+opt.uvSource = umbreon::HatchUvSource::Host;
+opt.uvScale = 12.0f;
+umbreon::applyHatch(w, h, rgba, tone, mask, albedo, opt,
+                    nullptr, 1, nullptr, 0, uv);
 ```
 
 `rgba` is the display-encoded canvas the ink multiplies into (the composite
@@ -319,10 +418,14 @@ itself.
 
 ## 7. Not implemented
 
-- **Object-space stroke direction.** Strokes run at fixed screen-space angles,
-  not along the surface (a ribbon's strokes do not follow its flow). The
-  design keeps the extension point (`hatchUv`, falling back to screen
-  coordinates when absent), but the direction field itself is future work.
+- **Surface-following strokes on MESHES.** `--hatch-uv analytic` makes
+  strokes follow spheres and cylinders (ball-and-stick), but a mesh has no
+  analytic tangent and no UV in this pipeline -- CueMol's `.inc` carries
+  position, normal and color only (its `uv_vectors` block is not emitted and
+  the reader ignores it), so ribbons still hatch at a fixed screen angle. The
+  interface for fixing this exists (see 4.5): fill `FrameResult::hatchUv`, or
+  pass a `uv` buffer to `applyHatch`, from any parameterization the host
+  has.
 - Object-space UV parameterization (lapped textures), TAM texture generation,
   temporal coherence for animation, GPU implementation, optimization-based
   stipple placement (the jitter approximates it).
