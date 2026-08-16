@@ -196,7 +196,8 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
       out.y += dk * C.y * Lc.y;
       out.z += dk * C.z * Lc.z;
       // NPR hatch tone tap (see ToneAccum): shadowed N.L shape only.
-      if (toneAcc != nullptr) toneAcc->diffuse += ndl * toneLuma(Lc);
+      if (toneAcc != nullptr)
+        toneAcc->diffuse += toneAcc->wrapped(ndl) * toneLuma(Lc);
       if (!l.highlight) continue;  // fill lights: diffuse only (POV rule)
       if (f0max > 0.0f) {
         const Vec3 H =
@@ -279,7 +280,7 @@ inline Vec3 shadePrincipled(const Material& mat, const Vec3& C, const Vec3& N,
       // NPR hatch tone tap, area path: visibility is folded into accD/accS
       // per sample, so tap the averaged sums (see ToneAccum).
       if (toneAcc != nullptr) {
-        toneAcc->diffuse += inv * accD * toneLuma(l.color);
+        toneAcc->diffuse += toneAcc->wrapped(inv * accD) * toneLuma(l.color);
         toneAcc->specular +=
             inv * toneLuma(Vec3{accS.x * l.color.x, accS.y * l.color.y,
                                 accS.z * l.color.z});

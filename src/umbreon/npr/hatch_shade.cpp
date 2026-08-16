@@ -238,6 +238,14 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
     // the specular cut punches the highlight through as pure paper.
     opt.tone.diffuseWeight = 0.85f;
     opt.tone.ambient = 0.05f;
+    // A drawing does not reproduce a hard terminator, and a hand-drawn
+    // figure is lit flatly from the front: wrap softens the terminator and
+    // keeps a frontal key from clipping the tone flat, while the rim term
+    // supplies the shading that follows the FORM (darkening toward each
+    // silhouette) rather than one light direction.
+    opt.tone.wrap = 0.5f;
+    opt.tone.rimDarken = 0.55f;
+    opt.tone.rimPower = 1.3f;
     opt.tone.contactAoPow = 1.0f;
     opt.tone.shapeAoPow = 0.6f;
     opt.tone.whitePoint = 0.97f;

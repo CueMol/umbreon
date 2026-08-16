@@ -156,6 +156,22 @@ inline AoShade aoShadeForHit(const ShadeContext& c, RTCScene rscene,
                         c.seedW ? c.seedW : c.opt.width);
 }
 
+// Rim (contour) darkening for the NPR hatch tone: surfaces turning away
+// from the viewer darken toward the silhouette. This is the shading a
+// draftsman actually applies -- it follows the FORM rather than a light
+// direction, so it survives a flat frontal key light, where N.L alone
+// leaves nothing to hatch. 1 (no change) when rimDarken is 0.
+inline float hatchRimFactor(const ToneRecipe& tr, const Vec3& N,
+                            const Vec3& V) {
+  if (tr.rimDarken <= 0.0f) return 1.0f;
+  float ndv = dot(N, V);
+  if (ndv < 0.0f) ndv = 0.0f;
+  if (ndv > 1.0f) ndv = 1.0f;
+  const float f = (tr.rimPower == 1.0f) ? ndv : std::pow(ndv, tr.rimPower);
+  const float lo = 1.0f - std::min(1.0f, tr.rimDarken);
+  return lo + (1.0f - lo) * f;
+}
+
 // Shade a single ray hit. `rh` is the Embree hit, `rd` the ray direction, `org`
 // the ray origin, and (px, py) the hi-res pixel (for deterministic AO/shadow
 // sampling).
@@ -284,6 +300,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       }
     }
     ToneAccum toneAcc;
+    toneAcc.wrap = c.opt.hatch.enable ? c.opt.hatch.tone.wrap : 0.0f;
     hs.color = shadeLocal(triMat, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, shadowsActive,
@@ -304,6 +321,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       const float sAo = aoQuality ? aoAov.shape : ao.openness;
       float t = tr.ambient + tr.diffuseWeight * toneAcc.diffuse;
       t *= std::pow(cAo, tr.contactAoPow) * std::pow(sAo, tr.shapeAoPow);
+      t *= hatchRimFactor(tr, N, V);
       if (tr.specularCut > 0.0f && toneAcc.specular > tr.specularCut)
         t = 1.0f;
       hs.hatchTone = t;
@@ -492,6 +510,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       }
     }
     ToneAccum toneAcc;
+    toneAcc.wrap = c.opt.hatch.enable ? c.opt.hatch.tone.wrap : 0.0f;
     hs.color = shadeLocal(pm, C, N, V, c.lights, ambLight, c.bg,
                           c.opt.specularScale, aoFactor, diffuseAo, P, Ng, secEps,
                           rscene, primShadows,
@@ -506,6 +525,7 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
       float t = tr.ambient + tr.diffuseWeight * toneAcc.diffuse;
       t *= std::pow(toneContact, tr.contactAoPow) *
            std::pow(toneShape, tr.shapeAoPow);
+      t *= hatchRimFactor(tr, N, V);
       if (tr.specularCut > 0.0f && toneAcc.specular > tr.specularCut)
         t = 1.0f;
       hs.hatchTone = t;

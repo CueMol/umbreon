@@ -112,6 +112,19 @@ struct HatchLayer {
 struct ToneRecipe {
   float diffuseWeight = 1.0f;  // weight of the summed per-light diffuse
   float ambient = 0.12f;       // floor so shadows do not crush to black
+  // Wrap lighting for the tone only: saturate((N.L + wrap) / (1 + wrap)).
+  // A hand drawing does not reproduce a hard terminator -- it wraps the
+  // light around the form -- and this also keeps a strong frontal light
+  // from clipping the tone flat, since the gradient is redistributed
+  // instead of saturating. 0 = plain N.L (the shading model's own).
+  float wrap = 0.0f;
+  // Rim (contour) darkening for the tone only: multiply by
+  // mix(1 - rimDarken, 1, saturate(N.V)^rimPower). Surfaces turning away
+  // from the viewer darken toward the silhouette -- the shading a
+  // draftsman actually applies, and it survives any light direction
+  // because it does not depend on one. 0 = off.
+  float rimDarken = 0.0f;
+  float rimPower = 1.0f;
   float contactAoPow = 1.0f;   // contact AO exponent (crevices / contacts)
   float shapeAoPow = 0.6f;     // shape AO exponent (domain-scale relief)
   float blackPoint = 0.0f;     // applied at consumption, linear domain

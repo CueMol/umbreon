@@ -567,6 +567,44 @@ int main() {
     s.check("ink-res: hi is deterministic", framesEqual(fHi, fHi2));
   }
 
+  // --- 19. Tone lighting model: rim darkening shades by FORM, so a sphere
+  // lit flat head-on still produces a tone gradient toward its silhouette,
+  // and wrap lighting softens the terminator instead of clipping.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());  // head-on: N.L alone is near-flat
+    sc.background = {1.0f, 1.0f, 1.0f};
+    umbreon::Sphere sp;
+    sp.center = {0.0f, 0.0f, 0.0f};
+    sp.radius = 1.8f;
+    sp.color = {0.8f, 0.8f, 0.8f, 1.0f};
+    sc.spheres.push_back(sp);
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.hatch.enable = true;
+    // Center vs a point near the rim (world 1.5 -> pixel 56 at height 4).
+    const std::size_t cPix = 32 * 64 + 32;
+    const std::size_t rPix = 32 * 64 + 54;
+    o.hatch.tone.rimDarken = 0.0f;
+    const umbreon::FrameResult fNo = umbreon::render(sc, o);
+    o.hatch.tone.rimDarken = 0.6f;
+    const umbreon::FrameResult fRim = umbreon::render(sc, o);
+    s.check("tone model: rim darkens the contour relative to the center",
+            (fRim.hatchTone[cPix] - fRim.hatchTone[rPix]) >
+                (fNo.hatchTone[cPix] - fNo.hatchTone[rPix]) + 0.05f);
+    s.check("tone model: rim leaves the head-on center alone",
+            std::fabs(fRim.hatchTone[cPix] - fNo.hatchTone[cPix]) < 0.02f);
+    // Wrap lifts the mid/dark side without touching a full head-on hit.
+    umbreon::RenderOptions ow = o;
+    ow.hatch.tone.rimDarken = 0.0f;
+    ow.hatch.tone.wrap = 0.6f;
+    const umbreon::FrameResult fWrap = umbreon::render(sc, ow);
+    s.check("tone model: wrap lifts the grazing side",
+            fWrap.hatchTone[rPix] > fNo.hatchTone[rPix] + 0.02f);
+  }
+
   // --- 15. screentone-60 mid-gray: display tone 0.5 covers ~50%.
   {
     umbreon::HatchOptions o;

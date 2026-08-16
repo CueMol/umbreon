@@ -113,20 +113,18 @@ darks are denser strokes of a *darker pencil of the same hue*. Its settings:
 | `tone.whitePoint` | 0.97 | opens the lit side up to bare paper |
 | `tone.gamma` | 2.2 | pushes midtones into the stroke range |
 | `tone.specularCut` | 0.1 | punches the highlight through as pure paper |
+| `tone.wrap` / `rim` / `rimpow` | 0.5 / 0.55 / 1.3 | the drawing lighting model (see 4) -- shading follows the form, so the look works under a scene's own frontal lighting |
 | `toneFog` | on | the far side fades into the paper |
 
-Scene-side companions (not part of the look, since they are scene data):
+`--shadows on` is worth adding, but keep AO **off**: the tone should follow
+surface orientation, and AO darkening in the crevices muddies it.
 
-```sh
---shadows on \
---declare _light_inten=1.3 --declare _flash_frac=0.15 --declare _amb_frac=0
-```
-
-The CueMol export is dominated by a camera-mounted flash light, which flattens
-the shading; rebalancing toward the directional key light is what gives each
-ribbon its light-to-dark gradient. AO is best left **off** here: the tone
-should follow surface orientation, and AO darkening in the crevices muddies
-it.
+A CueMol export is dominated by its camera-mounted flash light. Thanks to the
+`rim` term the look no longer depends on rebalancing that, but the lighting is
+still yours to art-direct -- e.g.
+`--declare _light_inten=1.3 --declare _flash_frac=0.4 --declare _amb_frac=0`
+strengthens the directional key without the hard, over-exact shadows a full
+side light would draw.
 
 ---
 
@@ -218,10 +216,32 @@ base would break the color coding.
 | `--hatch-tone-fog <on\|off>` | on | fade the tone toward paper with the scene fog |
 
 `--hatch-tone` keys: `diffuse` (weight of the summed per-light diffuse),
-`ambient` (floor; 0 crushes shadows to solid ink), `contact` / `shape` (AO
-exponents), `black` / `white` (level remap), `gamma` (artistic curve),
-`speccut` (blow the specular highlight out to paper), `levels` (posterize the
-tone to N bands).
+`ambient` (floor; 0 crushes shadows to solid ink), `wrap` / `rim` / `rimpow`
+(the drawing lighting model, below), `contact` / `shape` (AO exponents),
+`black` / `white` (level remap), `gamma` (artistic curve), `speccut` (blow the
+specular highlight out to paper), `levels` (posterize the tone to N bands).
+
+#### The drawing lighting model (`wrap`, `rim`)
+
+A raytraced `N.L` is the wrong shading law for a hand drawing in two ways: a
+strong side light paints a hard, physically exact shadow that no draftsman
+would draw, and the flat frontal light a figure is usually drawn under
+saturates `N.L` so that no tone gradient is left to hatch at all. Two terms
+fix this, and both apply to the **tone only** -- the rendered color is
+untouched:
+
+- `wrap=W` -- `saturate((N.L + W) / (1 + W))`. Softens the terminator and
+  redistributes the gradient instead of clipping it, so a frontal key still
+  produces midtones.
+- `rim=R`, `rimpow=P` -- multiply the tone by `mix(1 - R, 1, saturate(N.V)^P)`:
+  surfaces turning away from the viewer darken toward the silhouette. This
+  shades by the **form**, not by a light direction, so it survives any
+  lighting -- it is the shading a draftsman actually applies to a rounded
+  form.
+
+The `richardson` look sets `wrap 0.5, rim 0.55, rimpow 1.3`, which is why it
+no longer needs the light rebalance that earlier recipes used: it renders
+correctly under a scene's own frontal-dominant CueMol lighting.
 
 Tone pipeline order: linear tone -> black/white remap -> `gamma` -> display
 encode -> `levels` -> threshold. Every stage maps 1 to 1, so a fully lit

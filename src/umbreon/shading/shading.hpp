@@ -129,7 +129,8 @@ inline Vec3 shadeLocal(const Material& mat, const Vec3& C, const Vec3& N,
     out.z += dk * C.z * Lc.z;
     // NPR hatch tone tap: shadowed diffuse shape only (no pigment, no
     // material diffuse weight, no diffuseAo -- see ToneAccum).
-    if (toneAcc != nullptr) toneAcc->diffuse += d * toneLuma(Lc);
+    if (toneAcc != nullptr)
+      toneAcc->diffuse += toneAcc->wrapped(d) * toneLuma(Lc);
 
     // POV fill (shadowless) lights contribute diffuse only -- no specular/phong
     // (trace.cpp gates highlights on Light_Type != FILL_LIGHT_SOURCE).
