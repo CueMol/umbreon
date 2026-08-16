@@ -157,6 +157,13 @@ struct HatchOptions {
   // (background pixels are never painted; partially covered pixels scale the
   // hatch by the pixel's coverage alpha).
   bool transparentBackground = false;
+  // Display transfer the frame was encoded with (Scene::assumedGamma; set by
+  // renderFrame). applyHatch needs it to bring the LINEAR albedo AOV into
+  // the same display space as the frame it composites into -- the encode
+  // must be the pipeline's own, not a fixed sRGB curve, or albedo-derived
+  // ink lands at a different brightness than the base it draws on.
+  // 1.0 (the default) means "albedo is already display-encoded".
+  float displayGamma = 1.0f;
   ToneRecipe tone;
   // TAM layers, multiply-composited. Empty (the default) is normalized by
   // renderFrame to the "pen-cross" preset (applyHatchPreset).

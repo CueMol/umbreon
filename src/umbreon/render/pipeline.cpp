@@ -99,6 +99,7 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
     }
     if (hi.hatch.layers.empty()) applyHatchPreset(hi.hatch, "pen-cross");
     hi.hatch.transparentBackground = hi.transparentBackground;
+    hi.hatch.displayGamma = scene.assumedGamma;
     // Per-section styles may need the albedo AOV even when the global
     // base/ink do not (Scene::groupHatchStyle overrides them per group).
     for (const GroupHatchStyle& g : scene.groupHatchStyle)
@@ -188,17 +189,16 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
       const HatchBase baseSel = st != nullptr ? st->base : hi.hatch.base;
       float b[3];
       if (baseSel == HatchBase::Albedo && !frame.albedo.empty()) {
-        // The DISPLAY value of the flat base is srgbEncodeF(albedo) -- the
-        // same formula applyHatch uses as its contrast reference -- so
-        // paint its gamma pre-image (the round trip through
-        // applyAssumedGamma lands exactly on the reference).
+        // Paint the LINEAR albedo: applyAssumedGamma below then displays it
+        // exactly like every other surface color, i.e. the flat base is the
+        // pigment as this pipeline shows it (fully lit, unshaded). Encoding
+        // it here with a different curve would desaturate the fill.
         for (int k = 0; k < 3; ++k) {
-          float d = srgbEncodeF(frame.albedo[p * 3 + k]);
+          b[k] = frame.albedo[p * 3 + k];
           if (hi.hatch.albedoQuantize > 1) {
             const float n = static_cast<float>(hi.hatch.albedoQuantize);
-            d = std::round(d * n) / n;
+            b[k] = std::round(b[k] * n) / n;
           }
-          b[k] = (gammaOn && d > 0.0f) ? std::pow(d, 1.0f / g) : d;
         }
       } else {
         b[0] = paperLin[0];

@@ -320,32 +320,32 @@ void applyHatch(int w, int h, float* rgba, const float* tone,
             const HatchInk inkSel = st != nullptr ? st->ink : opt.ink;
             const float* inkFixed =
                 st != nullptr ? st->inkColor : opt.inkColor;
-            float B[3];
-            if (opt.mode == HatchMode::Over) {
-              // The shaded frame is the base. Under a transparent
-              // background rgba is premultiplied; the multiply composite
-              // commutes with premultiplication, so using it directly is
-              // exact (see the write-back below).
-              B[0] = px4[0];
-              B[1] = px4[1];
-              B[2] = px4[2];
-            } else if (baseSel == HatchBase::Albedo && albedo != nullptr) {
-              for (int k = 0; k < 3; ++k) {
-                float b = srgbEncodeF(albedo[p * 3 + k]);
-                if (opt.albedoQuantize > 1) {
-                  const float n = static_cast<float>(opt.albedoQuantize);
-                  b = std::round(b * n) / n;
-                }
-                B[k] = b;
-              }
-            } else {
+            // Contrast reference = what this pixel actually shows between
+            // the marks. In Over mode that is the shaded frame; in Ink mode
+            // the pipeline already painted the flat base into the frame, so
+            // the frame is the base there too -- reading it (instead of
+            // re-deriving the base from the options) keeps the reference
+            // exact under fog, edge ink and any display transfer. Under a
+            // transparent background rgba is premultiplied; the multiply
+            // composite commutes with it (see the write-back below).
+            float B[3] = {px4[0], px4[1], px4[2]};
+            if (opt.mode == HatchMode::Ink && baseSel == HatchBase::Paper &&
+                albedo == nullptr) {
+              // Standalone callers may hand us an unpainted canvas; fall
+              // back to the configured paper.
               for (int k = 0; k < 3; ++k)
                 B[k] = detail::hatchClamp01(opt.paperColor[k]);
             }
             float I[3];
             if (inkSel == HatchInk::FromAlbedo && albedo != nullptr) {
-              for (int k = 0; k < 3; ++k)
-                I[k] = srgbEncodeF(albedo[p * 3 + k]);
+              // Bring the LINEAR albedo into the frame's display space with
+              // the pipeline's own transfer, so ink and base agree.
+              for (int k = 0; k < 3; ++k) {
+                const float a = std::max(0.0f, albedo[p * 3 + k]);
+                I[k] = detail::hatchClamp01(
+                    opt.displayGamma != 1.0f ? std::pow(a, opt.displayGamma)
+                                             : a);
+              }
             } else {
               for (int k = 0; k < 3; ++k)
                 I[k] = detail::hatchClamp01(inkFixed[k]);
