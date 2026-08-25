@@ -9,6 +9,9 @@
 coarse AO 出力が変わり `test_ao_coarse` の許容を破るため byte-identical を優先）。
 4 は CLI の NPR 既定（`--hatch` 時、明示指定なし）として適用する。
 *Brief:* `docs/plans/npr-tone-hatching-INSTRUCTIONS.md`（外部設計議論の合意事項）
+*Superseded in part:* Dot の 50% 反転（§6.2 F2）は被覆→半径テーブル方式に、stipple プリセットは
+`LayerKind::Stipple` に、`widthPx <= 2·step` クランプは `<= spacing` に置き換えた。
+`docs/plans/npr-hatch-mark-geometry.md` を参照。
 
 > 検証ノート: 本文書の `file:line` はすべて作業ツリー（`main` @ `ce89a25`、クリーン）に対して
 > 実際に検証済み。指示書との食い違いは §2 に **Discrepancy:** として明示した。

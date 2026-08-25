@@ -244,6 +244,17 @@ struct Options {
   // --hatch-spacing / --hatch-width.
   float hatchSpacing = 0.0f;
   float hatchWidth = 0.0f;
+  // Dot / Stipple mark radius scale applied to every preset layer (0 = keep
+  // the preset value): the Dot/Stipple analogue of --hatch-width, which
+  // only reaches Line layers. --hatch-dot-scale.
+  float hatchDotScale = 0.0f;
+  // Whole-configuration spec text (--hatch-spec <text|@file>): applied after
+  // the look / preset and BEFORE the explicit flags, so flags still win.
+  // See applyHatchSpec (npr/hatch_shade.hpp) for the grammar.
+  std::string hatchSpec;
+  // Print the resolved hatch configuration as spec text to stdout
+  // (--hatch-dump-spec on), e.g. to seed a hand-edited --hatch-spec.
+  bool hatchDumpSpec = false;
   // Per-layer overrides (--hatch-layer <idx:key=val,...>, repeatable), kept
   // as raw specs and resolved against the preset layers in scene_setup
   // (warn-on-miss like --edge; the layer list only exists after the preset
