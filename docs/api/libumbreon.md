@@ -121,7 +121,7 @@ downstream から直接 include しないでください）。
 | `<umbreon/render/frame_result.hpp>` | `FrameResult` / `Pt1Timing` / `Pt1RayCounts` |
 | `<umbreon/render/render_progress.hpp>` | `RenderPhase` / `RenderProgress`（進捗・キャンセルチャネル） |
 | `<umbreon/postprocess/image_ops.hpp>` | `srgbEncode8` / `applyAssumedGamma` / `boxDownsample` |
-| `<umbreon/npr/hatch_shade.hpp>` | `applyHatch`（プレーンポインタ引数のハッチ合成 image op）/ `applyHatchPreset` |
+| `<umbreon/npr/hatch_shade.hpp>` | `applyHatch`（プレーンポインタ引数のハッチ合成 image op）/ `applyHatchPreset` / `applyHatchLook` / `applyHatchStyle` / `hatchPresetTone` / spec テキスト（`applyHatchSpec` / `hatchStyleToSpec` / `applyHatch{Layer,Tone,Ink}Kv`） |
 
 `render_types.hpp` は互換用アンブレラで、従来どおりこれ1つを include すれば全型が揃います。
 新規コードは関心ごとのサブヘッダを直接 include しても構いません（どちらも install されます）。

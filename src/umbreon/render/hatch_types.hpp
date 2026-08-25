@@ -36,8 +36,12 @@ enum class HatchBase : std::uint8_t { Paper = 0, Albedo = 1 };
 enum class HatchInk : std::uint8_t { Fixed = 0, FromAlbedo = 1 };
 
 // Mark lattice kind of one hatch layer. Line = 1D lattice of parallel
-// strokes; Dot = 2D lattice of halftone dots / stipple points.
-enum class LayerKind : std::uint8_t { Line = 0, Dot = 1 };
+// strokes; Dot = 2D lattice of halftone dots whose RADIUS carries the tone
+// (AM screen); Stipple = 2D lattice of fixed-radius dots whose PRESENCE
+// carries the tone: every cell owns a hashed threshold and its dot exists
+// only where the tone is darker than that threshold (stochastic
+// stippling; subdiv nesting and the 50% inversion do not apply).
+enum class LayerKind : std::uint8_t { Line = 0, Dot = 1, Stipple = 2 };
 
 // Where the coordinate the marks are laid out in comes from.
 //   Screen   the pixel raster (default): strokes keep a fixed screen angle.
@@ -76,7 +80,10 @@ struct MarkStyle {
   float shapeExponent = 2.0f;  // Lp exponent: 1=diamond, 2=circle, >=16=square
   float dotAspect = 1.0f;      // ellipse stretch
   float dotAngleDeg = 0.0f;    // rotation of non-circular marks
-  bool invertAbove50 = true;   // grow white holes past ~50% coverage
+  // Let the dots merge past touching up to solid black (the classic AM
+  // screen); off stops them at the area-normalized full-cell radius, so
+  // the darkest tone keeps white gaps (coverage ~0.9).
+  bool invertAbove50 = true;
   // --- Line ---
   float wobbleAmpPx = 0.0f;   // along-line 1D-noise displacement amplitude
   float wobbleWavePx = 40.0f; // its wavelength
@@ -107,9 +114,22 @@ struct HatchLayer {
   float spacingPx = 10.0f;  // base lattice pitch S (level-0 marks)
   int subdiv = 2;           // K: number of nesting subdivision levels
   float widthPx = 1.1f;     // full line width (Line layers)
+  // Relative mark radius of Dot / Stipple layers (dimensionless; NOT scaled
+  // by the supersample factor). 1 = the area-normalized radius that makes a
+  // full lattice cover exactly (1 - tone). Dot: a dot GAIN -- the radius
+  // grows as if the tone were darker by dotScale^2, so > 1 over-darkens up
+  // to solid black through the inversion holes and < 1 never reaches
+  // black. Stipple: the fixed dot radius, dotScale * pitch / sqrt(A_p).
+  float dotScale = 1.0f;
   float toneHi = 0.95f;     // level-0 appearance threshold
   float toneLo = 0.55f;     // level-K appearance threshold (<= toneHi)
-  float fadeInv = 16.0f;    // mark grow-in speed below its threshold
+  // Mark grow-in speed below its appearance threshold: a mark reaches full
+  // size 1/fadeInv below the tone it appears at. <= 0 = auto: the mark
+  // grows linearly from zero at its own threshold to full size at the NEXT
+  // nesting level's threshold (toneLo for K = 0), so the layer's coverage
+  // is a continuous function of the tone instead of a staircase. Stipple
+  // layers treat auto as 32.
+  float fadeInv = 16.0f;
   float opacity = 1.0f;     // layer ink opacity multiplier
   // Ink darkness of THIS layer relative to the resolved ink color: layers
   // are pencils, and a hand drawing reaches its dark tones by switching to
@@ -170,6 +190,18 @@ struct ToneRecipe {
   float highlightSoft = 0.06f;
   float gamma = 1.0f;          // artistic curve, linear domain
   float specularCut = 0.0f;    // >0: blow out to paper where spec exceeds it
+  // Tone -> ink-amount mapping, applied in COVERAGE space after the display
+  // encode and the highlight knee (the last shaping step before the
+  // optional level quantization):
+  //   c = clamp01(strength * (1 - t)^curve);  t' = 1 - c
+  // strength is a linear ink gain (2 = twice the coverage a display tone
+  // asks for, saturating at solid black); curve bends the response with the
+  // end points pinned (paper stays paper, black stays black): > 1 keeps the
+  // mid tones light (ink pushed toward the shadows), < 1 fills them in.
+  // Defaults (1, 1) = coverage linear in the display tone, which is what a
+  // classic halftone screen reproduces.
+  float strength = 1.0f;
+  float curve = 1.0f;
 };
 
 // Per CueMol section (transparency group) hatch styling override, indexed by
@@ -188,7 +220,9 @@ struct GroupHatchStyle {
   // ribbon to carry any tone at all -- with the global pitch a thin stick
   // may catch only one or two marks and read as flat.
   float density = 1.0f;
-  float widthScale = 1.0f;  // and their mark width (thinner marks when < 1)
+  // ... and their mark size (thinner marks when < 1): multiplies widthPx of
+  // Line layers and dotScale of Dot / Stipple layers.
+  float widthScale = 1.0f;
 };
 
 // Master options for the tone-hatching pass (--hatch).

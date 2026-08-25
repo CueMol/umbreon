@@ -25,10 +25,26 @@ namespace umbreon {
 //   pencil         2 soft graphite Line layers: wobble, width modulation,
 //                  finite tapered strokes, paper tooth.
 //   engraving      1 deeply subdivided Line direction (copperplate).
-//   stipple        jittered nested Dot lattice (scientific stippling).
+//   stipple        jittered Stipple lattice: fixed-size dots whose count
+//                  carries the tone (scientific stippling).
 //   screentone-60  classic AM halftone dot screen at 45 deg (K = 0).
 //   manga-square   square-element (L-inf) screen at 45 deg.
 bool applyHatchPreset(HatchOptions& opt, const std::string& name);
+
+// Tone recipe that goes with a mark preset: how the shading tone is built
+// (wrap / rim / gamma / white point ...) so the preset's marks read a
+// molecular figure at their intended density out of the box. Writes `out`
+// and returns true for a known preset name, false (out untouched) otherwise.
+// applyHatchPreset itself never touches the tone (API compatibility);
+// applyHatchStyle combines the two.
+bool hatchPresetTone(const std::string& presetName, ToneRecipe& out);
+
+// Resolve a style NAME the way a host's single style selector should: a
+// look (applyHatchLook) wins; otherwise a mark preset (applyHatchPreset)
+// plus its hatchPresetTone recipe. The preset path leaves the paper / ink
+// model alone (the caller decides those). Returns false, opt untouched,
+// for an unknown name.
+bool applyHatchStyle(HatchOptions& opt, const std::string& name);
 
 // Replace the WHOLE hatch configuration with a named look: paper / ink
 // model, tone recipe, pencil pressure and the mark layers together. Mark
@@ -44,6 +60,63 @@ bool applyHatchPreset(HatchOptions& opt, const std::string& name);
 //                crosshatch, neutral tone recipe.
 //   manga        flat section fill + screentone dots and a hard ink line.
 bool applyHatchLook(HatchOptions& opt, const std::string& name);
+
+// ---- key=value access and the spec text ------------------------------------
+// One textual form of a hatch configuration, shared by the CLI
+// (--hatch-layer / --hatch-tone / --hatch-spec) and embedding hosts that
+// let a user edit a style: line-oriented,
+//   layer: kind=line,angle=45,spacing=10,width=1.1,...   (one line per layer)
+//   tone:  strength=1,curve=1,wrap=0.5,rim=1,...
+//   ink:   base=paper,ink=fixed,inkcolor=#000000,mincontrast=0.25,...
+// Lines are separated by '\n' (or ';'), entries by ','; blank lines and
+// '#' comments are ignored. Keys are lower-case; numbers use the C locale;
+// booleans are on/off (1/0, true/false accepted); colors are #rrggbb.
+//   layer keys: kind(line|dot|stipple) angle spacing subdiv width dotscale
+//               tonehi tonelo fade opacity inkscale soft seed shape aspect
+//               dotangle jitter invert wobble wobwave wjitter slen sgap
+//               taper anglejitter lenjitter tooth toothscale
+//   tone keys:  diffuse ambient wrap rim rimpow rimbias contact shape black
+//               white hl hlsoft gamma speccut strength curve levels
+//   ink keys:   mode(ink|over) base(paper|albedo) ink(fixed|albedo)
+//               inkcolor papercolor mincontrast inkshade tonefog albedoquant
+// Render-setup fields (inkHiRes, uvSource, uvScale, displayGamma,
+// transparentBackground) are not part of the text.
+
+// Apply one key=value pair. Returns false (target untouched) for an unknown
+// key or an unparsable value.
+bool applyHatchLayerKv(HatchLayer& layer, const std::string& key,
+                       const std::string& value);
+bool applyHatchToneKv(ToneRecipe& tone, const std::string& key,
+                      const std::string& value);
+// The ink / paper model keys, plus `levels` (HatchOptions::toneLevels) and
+// `albedoquant`.
+bool applyHatchInkKv(HatchOptions& opt, const std::string& key,
+                     const std::string& value);
+
+// Which sections of a spec text to read / write.
+enum HatchSpecSection : unsigned {
+  kHatchSpecLayers = 1u,
+  kHatchSpecTone = 2u,
+  kHatchSpecInk = 4u,
+  kHatchSpecAll = 7u,
+};
+
+// Apply a spec text. `layer:` lines REPLACE opt.layers (in line order) when
+// at least one is present; `tone:` / `ink:` lines override the named keys
+// only. Sections outside `sections` are skipped. On any error opt is left
+// untouched, `error` (optional) receives "line N: ..." and false is
+// returned.
+bool applyHatchSpec(HatchOptions& opt, const std::string& text,
+                    unsigned sections = kHatchSpecAll,
+                    std::string* error = nullptr);
+
+// Serialize a configuration to the spec text: one `layer:` line per layer
+// (keys filtered by the layer kind), then `tone:`, then `ink:`, each
+// selected by `sections`; '\n'-separated with a trailing newline. Feeding
+// the result to applyHatchSpec reproduces the configuration, and
+// re-serializing gives the same text.
+std::string hatchStyleToSpec(const HatchOptions& opt,
+                             unsigned sections = kHatchSpecAll);
 
 // Composite procedural hatching over rgba (w*h*4, DISPLAY-ENCODED, in
 // place; run AFTER the gamma encode). rgba is the BASE CANVAS the ink

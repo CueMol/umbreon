@@ -27,7 +27,8 @@ std::string resolveRelative(const std::string& base, const std::string& rel) {
 
 // Apply one --hatch-layer "idx:key=val,..." spec onto the preset layers.
 // Unknown indices / keys / values warn and are skipped (the render still
-// runs), mirroring the --edge warn-on-miss behavior.
+// runs), mirroring the --edge warn-on-miss behavior. The keys are those of
+// applyHatchLayerKv (the library's spec vocabulary).
 void applyHatchLayerSpec(umbreon::HatchOptions& h, const std::string& spec) {
   const std::size_t colon = spec.find(':');
   const int idx = std::atoi(spec.substr(0, colon).c_str());
@@ -55,65 +56,10 @@ void applyHatchLayerSpec(umbreon::HatchOptions& h, const std::string& spec) {
     }
     const std::string k = kv.substr(0, eq);
     const std::string v = kv.substr(eq + 1);
-    const float f = static_cast<float>(std::atof(v.c_str()));
-    const bool on = (v == "on" || v == "1" || v == "true");
-    if (k == "kind")
-      l.kind = (v == "dot") ? umbreon::LayerKind::Dot : umbreon::LayerKind::Line;
-    else if (k == "angle")
-      l.angleDeg = f;
-    else if (k == "spacing")
-      l.spacingPx = f;
-    else if (k == "subdiv")
-      l.subdiv = std::atoi(v.c_str());
-    else if (k == "width")
-      l.widthPx = f;
-    else if (k == "tonehi")
-      l.toneHi = f;
-    else if (k == "tonelo")
-      l.toneLo = f;
-    else if (k == "fade")
-      l.fadeInv = f;
-    else if (k == "opacity")
-      l.opacity = f;
-    else if (k == "inkscale")
-      l.inkScale = f;
-    else if (k == "soft")
-      l.mark.edgeSoftness = f;
-    else if (k == "seed")
-      l.mark.seed = static_cast<unsigned>(std::atoi(v.c_str()));
-    else if (k == "shape")
-      l.mark.shapeExponent = f;
-    else if (k == "aspect")
-      l.mark.dotAspect = f;
-    else if (k == "dotangle")
-      l.mark.dotAngleDeg = f;
-    else if (k == "jitter")
-      l.mark.jitter = f;
-    else if (k == "invert")
-      l.mark.invertAbove50 = on;
-    else if (k == "wobble")
-      l.mark.wobbleAmpPx = f;
-    else if (k == "wobwave")
-      l.mark.wobbleWavePx = f;
-    else if (k == "wjitter")
-      l.mark.widthJitter = f;
-    else if (k == "slen")
-      l.mark.strokeLenPx = f;
-    else if (k == "sgap")
-      l.mark.strokeGapPx = f;
-    else if (k == "taper")
-      l.mark.strokeTaper = f;
-    else if (k == "anglejitter")
-      l.mark.angleJitterDeg = f;
-    else if (k == "lenjitter")
-      l.mark.strokeLenJitter = f;
-    else if (k == "tooth")
-      l.mark.toothAmp = f;
-    else if (k == "toothscale")
-      l.mark.toothScalePx = f;
-    else
-      std::fprintf(stderr, "warning: --hatch-layer unknown key '%s'\n",
-                   k.c_str());
+    if (!applyHatchLayerKv(l, k, v))
+      std::fprintf(stderr,
+                   "warning: --hatch-layer unknown key or bad value '%s'\n",
+                   kv.c_str());
   }
 }
 
@@ -603,16 +549,29 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
                    opt.hatchLook.c_str());
     }
     if (!opt.hatchPreset.empty()) {
-      if (!applyHatchPreset(ropt.hatch, opt.hatchPreset)) {
+      // Under a look the preset only restyles the marks (the look keeps its
+      // tone recipe); on its own it also brings the preset's tone recipe.
+      const bool known = opt.hatchLook.empty()
+                             ? applyHatchStyle(ropt.hatch, opt.hatchPreset)
+                             : applyHatchPreset(ropt.hatch, opt.hatchPreset);
+      if (!known) {
         std::fprintf(stderr,
                      "warning: unknown --hatch-preset '%s' (pen-cross/pencil/"
                      "engraving/stipple/screentone-60/manga-square); using "
                      "pen-cross\n",
                      opt.hatchPreset.c_str());
-        applyHatchPreset(ropt.hatch, "pen-cross");
+        applyHatchStyle(ropt.hatch, "pen-cross");
       }
     } else if (ropt.hatch.layers.empty()) {
-      applyHatchPreset(ropt.hatch, "pen-cross");  // no look, no preset
+      applyHatchStyle(ropt.hatch, "pen-cross");  // no look, no preset
+    }
+    // A spec text restyles the whole configuration; the explicit flags
+    // below still win over it.
+    if (!opt.hatchSpec.empty()) {
+      std::string err;
+      if (!applyHatchSpec(ropt.hatch, opt.hatchSpec, kHatchSpecAll, &err))
+        std::fprintf(stderr, "warning: --hatch-spec ignored: %s\n",
+                     err.c_str());
     }
     if (opt.hatchModeSet)
       ropt.hatch.mode =
@@ -628,11 +587,12 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
       if (opt.hatchPaperColorSet)
         ropt.hatch.paperColor[i] = opt.hatchPaperColor[i];
     }
-    // Global preset overrides: density (lattice pitch) and stroke width,
-    // then the per-layer --hatch-layer specs on top.
+    // Global preset overrides: density (lattice pitch), line width and dot
+    // scale, then the per-layer --hatch-layer specs on top.
     for (umbreon::HatchLayer& l : ropt.hatch.layers) {
       if (opt.hatchSpacing > 0.0f) l.spacingPx = opt.hatchSpacing;
       if (opt.hatchWidth > 0.0f) l.widthPx = opt.hatchWidth;
+      if (opt.hatchDotScale > 0.0f) l.dotScale = opt.hatchDotScale;
     }
     for (const std::string& spec : opt.hatchLayerSpecs)
       applyHatchLayerSpec(ropt.hatch, spec);
@@ -651,6 +611,8 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
                               ? umbreon::HatchUvSource::Analytic
                               : umbreon::HatchUvSource::Screen;
     if (opt.hatchUvScale > 0.0f) ropt.hatch.uvScale = opt.hatchUvScale;
+    if (opt.hatchDumpSpec)
+      std::fputs(hatchStyleToSpec(ropt.hatch).c_str(), stdout);
     // Per-section styles (--hatch-style ID=spec): size the table to the
     // group list, seed every section from the GLOBAL options, then apply
     // the overrides -- the same name->index resolution as --edge.

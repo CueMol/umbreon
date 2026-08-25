@@ -3,8 +3,9 @@
 // Procedural Tonal Art Map ink math for the tone-hatching pass (--hatch):
 // the lattice / nesting-level logic (hatchFirstLevel), the per-layer runtime
 // normalization (min-feature and perturbation clamps, Lp area constants),
-// the analytic line / halftone-dot coverage evaluators and the deterministic
-// hash / value-noise primitives behind the hand-drawn perturbations.
+// the analytic line / halftone-dot / stochastic-stipple coverage evaluators
+// and the deterministic hash / value-noise primitives behind the hand-drawn
+// perturbations.
 // Everything here is a pure function of coordinates and layer constants --
 // no thread state, no accumulation order -- so the TBB row tiling of the
 // consumer (npr/hatch_shade.cpp) is bit-exact at any thread count. The
@@ -14,8 +15,10 @@
 //
 // Design record: docs/plans/npr-tone-hatching.md section 6 (including the
 // deviations from the brief's pseudo-code: the exact box-filter line
-// coverage, the sub-filter energy clamp on dots, the covering-radius
-// activation of the 50% inversion, and the K=0 / INT_MIN guards).
+// coverage, the sub-filter energy clamp on dots and the K=0 / INT_MIN
+// guards) and docs/plans/npr-hatch-mark-geometry.md (dot gain, the
+// coverage -> radius table that replaced the dual-lattice inversion, the
+// stochastic stipple and the auto fade).
 #pragma once
 
 #include <algorithm>
@@ -66,14 +69,15 @@ enum : std::uint32_t {
   kHatchStreamWidth = 4,
   kHatchStreamStroke = 5,
   kHatchStreamTooth = 6,
-  kHatchStreamHoleX = 7,
-  kHatchStreamHoleY = 8,
+  kHatchStreamHoleX = 7,      // (retired: dual-lattice holes)
+  kHatchStreamHoleY = 8,      // (retired)
   kHatchStreamDashLen = 9,    // per-stroke length scatter
   kHatchStreamDashPress = 10, // per-stroke pressure (width + darkness)
   kHatchStreamDashAngle = 11, // per-stroke angle scatter
   kHatchStreamField = 12,     // coherent direction-drift field
   kHatchStreamDashTaper = 13, // per-stroke asymmetric entry/tail lengths
   kHatchStreamBelly = 14,     // along-stroke width swell
+  kHatchStreamThreshold = 15, // per-cell appearance threshold (Stipple)
 };
 
 // Per-mark seed: pure function of (user seed, layer, lattice index, stream).
@@ -154,6 +158,9 @@ inline int hatchFirstLevel(int j, int K) {
   return ntz >= K ? 0 : K - ntz;
 }
 
+// Resolution of the Dot coverage -> radius table (HatchLayerRt::rTab).
+constexpr int kHatchRadN = 64;
+
 // One layer, normalized for evaluation at FINAL-resolution pixel coordinates.
 struct HatchLayerRt {
   LayerKind kind = LayerKind::Line;
@@ -161,6 +168,8 @@ struct HatchLayerRt {
   float step = 10.0f;              // finest lattice pitch spacing/2^K (>= 2px)
   int K = 0;                       // effective subdiv after the clamp below
   float halfWidth = 0.55f;         // half line width
+  float dotScale = 1.0f;           // Dot gain / Stipple radius scale, clamped
+  float rFixed = 0.0f;             // Stipple: fixed dot radius (px)
   float halfAA = 0.5f;             // AA filter half-width
   float toneHi = 0.95f;
   float toneLo = 0.55f;
@@ -188,14 +197,16 @@ struct HatchLayerRt {
   float sx = 1.0f, sy = 1.0f;  // aspect stretch (sx*sy == 1, area-neutral)
   float dotCos = 1.0f, dotSin = 0.0f;  // mark-shape rotation
   float jitterAmp = 0.0f;              // px (jitter * step)
-  bool invert = true;                  // 50% inversion enabled and reachable
-  float t50 = 0.0f;                    // inversion switch tone
-  float rFreeze = 1.0e30f;             // dot radius frozen at the switch
-  float R0 = 0.0f;                     // hole covering radius, units of step
+  // Dot layers: coverage -> radius table (hatchDotRadius). rTab[k] is the
+  // radius whose mean cell coverage is k / kHatchRadN, sampled with this
+  // layer's own mark function; rMax is the last entry -- past the covering
+  // radius (solid black) when invertAbove50 lets the dots merge, else the
+  // area-normalized full-cell radius.
+  float rMax = 0.0f;
+  float rTab[kHatchRadN + 1] = {};
   // Precomputed search windows (px).
   float padLine = 0.0f;
-  float padDot = 0.0f;
-  float padHole = 0.0f;
+  float padDot = 0.0f;   // Dot and Stipple marks
 };
 
 // Lp unit-ball area A_p = (2*Gamma(1+1/p))^2 / Gamma(1+2/p); p >= 16 is
@@ -208,6 +219,33 @@ inline float hatchLpArea(float p) {
   return (2.0f * g1) * (2.0f * g1) / g2;
 }
 
+// ---- mark shape (Dot / Stipple) --------------------------------------------
+
+// Lp distance of (dx, dy) from a mark center, in the mark frame (rotated by
+// dotAngleDeg, aspect stretch undone so the iso-contours are the stretched
+// shape while the enclosed area stays A_p * r^2).
+inline float hatchLpDist(const HatchLayerRt& L, float dx, float dy) {
+  const float rx = (L.dotCos * dx + L.dotSin * dy) / L.sx;
+  const float ry = (-L.dotSin * dx + L.dotCos * dy) / L.sy;
+  const float ax = std::fabs(rx), ay = std::fabs(ry);
+  if (L.pExp >= 16.0f) return std::max(ax, ay);
+  return std::pow(std::pow(ax, L.pExp) + std::pow(ay, L.pExp),
+                  1.0f / L.pExp);
+}
+
+// Coverage of one dot (or hole) mark of radius r at Lp distance d: the
+// smoothstep profile with a sub-filter ENERGY CLAMP -- a mark smaller than
+// the filter footprint contributes at most its area fraction, so a growing
+// dot rises from zero coverage instead of popping in at half coverage
+// (the dot-mark analogue of the exact line box filter).
+inline float hatchDotMark(const HatchLayerRt& L, float r, float d) {
+  if (r <= 0.0f) return 0.0f;
+  const float h = L.halfAA;
+  const float c = 1.0f - hatchSmoothstep(r - h, r + h, d);
+  const float att = std::min(1.0f, L.aP * r * r / (4.0f * h * h));
+  return att * c;
+}
+
 // Clamp a layer into its evaluable range and precompute the derived
 // constants. The min-feature clamp caps the subdivision so the finest pitch
 // stays >= 2 px: the ink is laid at FINAL resolution, so supersampling
@@ -215,7 +253,8 @@ inline float hatchLpArea(float p) {
 // box-downsampled), and a finer pitch would alias against the pixel grid.
 // Equivalent inputs normalize identically (spacing 10 / K 5 and spacing 10 /
 // K 2 produce byte-identical ink). Perturbation amplitudes are clamped so
-// the search windows stay small (<= ~5 cells per axis).
+// the search windows stay small (a few cells per axis; a line width up to
+// the level-0 pitch is the one knob that can widen them further).
 inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
                                         std::uint32_t layerId) {
   HatchLayerRt r;
@@ -231,18 +270,39 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   // box-downsampled). Clamp the base pitch to that floor, then cap the
   // subdivision so spacing / 2^K still clears it.
   const float spacing = std::max(2.0f, L.spacingPx);
-  int K = std::max(0, L.subdiv);
+  // Stipple layers are one flat lattice: the tone is carried by the dot
+  // count, not by nesting levels.
+  int K = (L.kind == LayerKind::Stipple) ? 0 : std::max(0, L.subdiv);
   const int kMax = std::max(
       0, static_cast<int>(std::floor(std::log2(spacing / 2.0f))));
   if (K > kMax) K = kMax;
   r.K = K;
   r.step = spacing / static_cast<float>(1 << K);
   r.halfAA = std::min(2.0f, std::max(0.5f, L.mark.edgeSoftness));
-  r.halfWidth =
-      0.5f * std::min(std::max(0.0f, L.widthPx), 2.0f * r.step);
+  // Width cap: the level-0 pitch (there the level-0 lines alone are solid)
+  // or twice the finest step, whichever is larger -- never below the
+  // former 2 * step cap, which for a K = 0 layer is the wider of the two
+  // (a wider band still matters while the fade is partial). Below the cap
+  // the width is the caller's (over-darkening is a legitimate choice).
+  r.halfWidth = 0.5f * std::min(std::max(0.0f, L.widthPx),
+                                std::max(spacing, 2.0f * r.step));
   r.toneHi = hatchClamp01(L.toneHi);
   r.toneLo = std::min(r.toneHi, hatchClamp01(L.toneLo));
-  r.fadeInv = std::max(1.0e-3f, L.fadeInv);
+  if (L.fadeInv > 0.0f) {
+    r.fadeInv = L.fadeInv;
+  } else if (L.kind == LayerKind::Stipple) {
+    r.fadeInv = 32.0f;
+  } else {
+    // Auto fade: a mark grows from zero at its own threshold to full size
+    // at the next level's threshold (toneLo when there is no nesting), so
+    // the layer's coverage is continuous in the tone. The band is the
+    // uniform threshold spacing of hatchLevelThreshold.
+    const float band =
+        (K > 0) ? (r.toneHi - r.toneLo) / static_cast<float>(K)
+                : (r.toneHi - r.toneLo);
+    r.fadeInv = 1.0f / std::max(band, 1.0e-3f);
+  }
+  r.dotScale = std::min(4.0f, std::max(0.0f, L.dotScale));
   r.opacity = hatchClamp01(L.opacity);
   r.inkScale = hatchClamp01(L.inkScale);
 
@@ -275,23 +335,17 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   const float jitter = std::min(0.5f, std::max(0.0f, L.mark.jitter));
   r.jitterAmp = jitter * r.step;
 
-  // 50% inversion: defer the switch until every nesting level has fully
-  // faded in (holes shrinking into a still-appearing lattice would kink the
-  // response); unreachable switch tones disable the inversion.
-  r.t50 = std::min(0.5f, r.toneLo - 1.0f / r.fadeInv);
-  r.invert = L.mark.invertAbove50 && r.t50 >= 0.05f;
-  if (r.invert) {
-    r.rFreeze = r.step * r.rhoP * std::sqrt(1.0f - r.t50);
-  } else {
-    r.t50 = 0.0f;
-    r.rFreeze = 1.0e30f;
-  }
-  // Hole covering radius (units of step): the Lp distance from any point to
-  // its nearest jittered dual-lattice center is <= 2^(1/p)*(0.5+jitter),
-  // inflated by the aspect stretch. Activating the holes AT this radius
-  // makes them cover the whole plane, so the switch is exactly continuous.
+  // Dot radius range. With invertAbove50 the dots may merge past touching
+  // up to the covering radius (the Lp distance from any point to its
+  // nearest jittered lattice center is <= 2^(1/p) * (0.5 + jitter) * step,
+  // inflated by the aspect stretch) plus the AA half-width, where the
+  // lattice is solid; otherwise they stop at the area-normalized full-cell
+  // radius (coverage ~0.9 at tone 0).
   const float aspectInflate = std::max(r.sx, r.sy);
-  r.R0 = std::pow(2.0f, 1.0f / r.pExp) * (0.5f + jitter) * aspectInflate;
+  const float rCover =
+      std::pow(2.0f, 1.0f / r.pExp) * (0.5f + jitter) * aspectInflate * r.step;
+  const bool merge = L.kind == LayerKind::Dot && L.mark.invertAbove50;
+  r.rMax = merge ? rCover + r.halfAA : r.step * r.rhoP;
 
   // Search windows: widen by every perturbation so displaced marks are not
   // clipped (the brief's fixed window would tear wobbled lines). Lines add
@@ -306,10 +360,65 @@ inline HatchLayerRt hatchNormalizeLayer(const HatchLayer& L,
   r.padLine = wMax + r.wobbleAmp + r.jitterAmp + dashReach + r.halfAA;
   const float stretch =
       std::pow(2.0f, std::max(0.0f, 0.5f - 1.0f / r.pExp)) * aspectInflate;
-  const float rReach =
-      r.invert ? r.rFreeze : (r.step * r.rhoP);
+  // Dot radii never exceed rMax; Stipple dots are fixed.
+  r.rFixed = r.dotScale * r.step * r.rhoP;
+  const float rReach = (L.kind == LayerKind::Stipple) ? r.rFixed : r.rMax;
   r.padDot = r.jitterAmp + stretch * rReach + r.halfAA;
-  r.padHole = r.jitterAmp + stretch * r.R0 * r.step + r.halfAA;
+
+  // Coverage -> radius table (Dot layers): sample the mean coverage of one
+  // lattice cell for radii up to rMax with the layer's own mark function
+  // (Lp shape, aspect, AA; jitter ignored), then invert it. Exact where the
+  // dots stand apart (the area-normalized closed form) and continuous
+  // through the overlap regime up to solid black, so a K = 0 screen tracks
+  // 1 - tone over the whole range. (The former dual-lattice inversion --
+  // frozen dots plus shrinking holes under a max composite -- held the
+  // coverage at 50% until its holes had shrunk well below the cell, a flat
+  // band from about tone 0.5 down to 0.3.)
+  if (L.kind == LayerKind::Dot) {
+    constexpr int kR = 64;  // radius samples
+    constexpr int kS = 16;  // sample points per cell axis
+    float cov[kR + 1];
+    for (int q = 0; q <= kR; ++q) {
+      const float rad = r.rMax * static_cast<float>(q) / static_cast<float>(kR);
+      double acc = 0.0;
+      for (int sy = 0; sy < kS; ++sy) {
+        for (int sx = 0; sx < kS; ++sx) {
+          const float px = (static_cast<float>(sx) + 0.5f) / kS * r.step;
+          const float py = (static_cast<float>(sy) + 0.5f) / kS * r.step;
+          float c = 0.0f;
+          for (int j = -1; j <= 2; ++j) {
+            for (int i = -1; i <= 2; ++i) {
+              const float m = hatchDotMark(
+                  r, rad,
+                  hatchLpDist(r, px - static_cast<float>(i) * r.step,
+                              py - static_cast<float>(j) * r.step));
+              if (m > c) c = m;
+            }
+          }
+          acc += c;
+        }
+      }
+      cov[q] = static_cast<float>(acc / (kS * kS));
+    }
+    // Invert the (non-decreasing) samples: rTab[k] = radius at coverage
+    // k / kHatchRadN; targets above the reachable coverage saturate at rMax.
+    int q = 0;
+    for (int k = 0; k <= kHatchRadN; ++k) {
+      const float target =
+          static_cast<float>(k) / static_cast<float>(kHatchRadN);
+      while (q < kR && cov[q] < target) ++q;
+      if (q == 0) {
+        r.rTab[k] = 0.0f;
+      } else if (cov[q] < target) {
+        r.rTab[k] = r.rMax;
+      } else {
+        const float c0 = cov[q - 1], c1 = cov[q];
+        const float f = (c1 > c0) ? (target - c0) / (c1 - c0) : 1.0f;
+        r.rTab[k] = r.rMax * (static_cast<float>(q - 1) + f) /
+                    static_cast<float>(kR);
+      }
+    }
+  }
   return r;
 }
 
@@ -468,119 +577,119 @@ inline float hatchLineInk(const HatchLayerRt& L, float x, float y,
 
 // ---- Dot layers -----------------------------------------------------------
 
-// Lp distance of (dx, dy) from a mark center, in the mark frame (rotated by
-// dotAngleDeg, aspect stretch undone so the iso-contours are the stretched
-// shape while the enclosed area stays A_p * r^2).
-inline float hatchLpDist(const HatchLayerRt& L, float dx, float dy) {
-  const float rx = (L.dotCos * dx + L.dotSin * dy) / L.sx;
-  const float ry = (-L.dotSin * dx + L.dotCos * dy) / L.sy;
-  const float ax = std::fabs(rx), ay = std::fabs(ry);
-  if (L.pExp >= 16.0f) return std::max(ax, ay);
-  return std::pow(std::pow(ax, L.pExp) + std::pow(ay, L.pExp),
-                  1.0f / L.pExp);
-}
 
-// Coverage of one dot (or hole) mark of radius r at Lp distance d: the
-// smoothstep profile with a sub-filter ENERGY CLAMP -- a mark smaller than
-// the filter footprint contributes at most its area fraction, so a growing
-// dot rises from zero coverage instead of popping in at half coverage
-// (the dot-mark analogue of the exact line box filter).
-inline float hatchDotMark(const HatchLayerRt& L, float r, float d) {
-  if (r <= 0.0f) return 0.0f;
-  const float h = L.halfAA;
-  const float c = 1.0f - hatchSmoothstep(r - h, r + h, d);
-  const float att = std::min(1.0f, L.aP * r * r / (4.0f * h * h));
-  return att * c;
+// Radius that gives a Dot layer the target mean coverage (table lookup).
+inline float hatchDotRadius(const HatchLayerRt& L, float coverage) {
+  const float x = hatchClamp01(coverage) * static_cast<float>(kHatchRadN);
+  const int k = static_cast<int>(x);
+  if (k >= kHatchRadN) return L.rTab[kHatchRadN];
+  const float f = x - static_cast<float>(k);
+  return L.rTab[k] + (L.rTab[k + 1] - L.rTab[k]) * f;
 }
 
 // Ink coverage of one Dot layer at pixel center (x, y). 2D lattice with
-// quadtree nesting (level = max of the two 1D levels), area-normalized
-// radius growth r = step * rho_p * sqrt(1 - tone) * fade (K = 0 degenerates
-// to the classic AM halftone screen, coverage ~ 1 - tone), optional
-// per-dot jitter (stipple), and the covering-radius 50% inversion: below
-// the switch tone the dots freeze and white holes on the DUAL lattice
-// shrink from the plane-covering radius R0 to zero, so coverage reaches
-// exactly 1.0 at tone 0 and the switch is continuous and monotone
-// (final = max(dotCov, invCov), both monotone).
+// quadtree nesting (level = max of the two 1D levels); every present dot
+// takes the radius that the coverage -> radius table assigns to the target
+// coverage 1 - t_eff, times the fade of its nesting level. With K = 0 this
+// is the classic AM halftone screen (coverage == 1 - tone, exact where the
+// dots stand apart and continuous through the merge to solid black);
+// optional per-dot jitter. Dot gain (HatchLayer::dotScale): the target
+// coverage sees an EFFECTIVE tone darkened by dotScale^2
+// (t_eff = 1 - dotScale^2 (1 - t), clamped) while the nesting thresholds
+// and the fade keep the true tone, so the gain resizes the marks without
+// changing which marks exist. Per-pixel monotone: the table radius is
+// non-increasing in t_eff, the fade non-increasing in t, and positions
+// are hash-only.
 inline float hatchDotInk(const HatchLayerRt& L, float x, float y,
                          float tone) {
   const float ux = L.cosA * x + L.sinA * y;
   const float uy = -L.sinA * x + L.cosA * y;
-  const float rBase =
-      L.step * L.rhoP * std::sqrt(std::max(0.0f, 1.0f - tone));
+  const float tEff =
+      (L.dotScale == 1.0f)
+          ? tone
+          : hatchClamp01(1.0f - L.dotScale * L.dotScale * (1.0f - tone));
+  const float rBase = hatchDotRadius(L, 1.0f - tEff);
   const bool unionMode = L.jitterAmp > 0.0f;  // jittered dots overlap
   float cov = 0.0f;
-  {
-    const int i0 = static_cast<int>(std::floor((ux - L.padDot) / L.step));
-    const int i1 = static_cast<int>(std::floor((ux + L.padDot) / L.step));
-    const int j0 = static_cast<int>(std::floor((uy - L.padDot) / L.step));
-    const int j1 = static_cast<int>(std::floor((uy + L.padDot) / L.step));
-    for (int j = j0; j <= j1; ++j) {
-      for (int i = i0; i <= i1; ++i) {
-        const int lv =
-            std::max(hatchFirstLevel(i, L.K), hatchFirstLevel(j, L.K));
-        const float t = hatchLevelThreshold(L, lv);
-        if (tone >= t) continue;
-        const float fade = std::min(1.0f, (t - tone) * L.fadeInv);
-        float r = rBase * fade;
-        if (r > L.rFreeze) r = L.rFreeze;  // frozen at the inversion switch
-        float cx = static_cast<float>(i) * L.step;
-        float cy = static_cast<float>(j) * L.step;
-        if (L.jitterAmp > 0.0f) {
-          cx += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
-                                        kHatchStreamJitX)) -
-                 0.5f) *
-                2.0f * L.jitterAmp;
-          cy += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
-                                        kHatchStreamJitY)) -
-                 0.5f) *
-                2.0f * L.jitterAmp;
-        }
-        const float c = hatchDotMark(L, r, hatchLpDist(L, ux - cx, uy - cy));
-        if (unionMode)
-          cov = 1.0f - (1.0f - cov) * (1.0f - c);
-        else if (c > cov)
-          cov = c;
+  const int i0 = static_cast<int>(std::floor((ux - L.padDot) / L.step));
+  const int i1 = static_cast<int>(std::floor((ux + L.padDot) / L.step));
+  const int j0 = static_cast<int>(std::floor((uy - L.padDot) / L.step));
+  const int j1 = static_cast<int>(std::floor((uy + L.padDot) / L.step));
+  for (int j = j0; j <= j1; ++j) {
+    for (int i = i0; i <= i1; ++i) {
+      const int lv =
+          std::max(hatchFirstLevel(i, L.K), hatchFirstLevel(j, L.K));
+      const float t = hatchLevelThreshold(L, lv);
+      if (tone >= t) continue;
+      const float fade = std::min(1.0f, (t - tone) * L.fadeInv);
+      const float r = rBase * fade;
+      float cx = static_cast<float>(i) * L.step;
+      float cy = static_cast<float>(j) * L.step;
+      if (L.jitterAmp > 0.0f) {
+        cx += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
+                                      kHatchStreamJitX)) -
+               0.5f) *
+              2.0f * L.jitterAmp;
+        cy += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
+                                      kHatchStreamJitY)) -
+               0.5f) *
+              2.0f * L.jitterAmp;
       }
+      const float c = hatchDotMark(L, r, hatchLpDist(L, ux - cx, uy - cy));
+      if (unionMode)
+        cov = 1.0f - (1.0f - cov) * (1.0f - c);
+      else if (c > cov)
+        cov = c;
     }
   }
-  if (L.invert && tone < L.t50) {
-    // White holes on the dual lattice, shrinking with tone. r_hole starts
-    // at the covering radius R0 (holes blanket the plane => invCov == 0,
-    // exact continuity at the switch) and ends at 0 (full black).
-    const float rHole =
-        L.step * (L.rhoP * std::sqrt(std::max(0.0f, tone)) +
-                  (L.R0 - L.rhoP * std::sqrt(L.t50)) * (tone / L.t50));
-    float holeMax = 0.0f;
-    const int i0 =
-        static_cast<int>(std::floor((ux - L.padHole) / L.step - 0.5f));
-    const int i1 =
-        static_cast<int>(std::floor((ux + L.padHole) / L.step - 0.5f));
-    const int j0 =
-        static_cast<int>(std::floor((uy - L.padHole) / L.step - 0.5f));
-    const int j1 =
-        static_cast<int>(std::floor((uy + L.padHole) / L.step - 0.5f));
-    for (int j = j0; j <= j1; ++j) {
-      for (int i = i0; i <= i1; ++i) {
-        float cx = (static_cast<float>(i) + 0.5f) * L.step;
-        float cy = (static_cast<float>(j) + 0.5f) * L.step;
-        if (L.jitterAmp > 0.0f) {
-          cx += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
-                                        kHatchStreamHoleX)) -
-                 0.5f) *
-                2.0f * L.jitterAmp;
-          cy += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
-                                        kHatchStreamHoleY)) -
-                 0.5f) *
-                2.0f * L.jitterAmp;
-        }
-        const float c =
-            hatchDotMark(L, rHole, hatchLpDist(L, ux - cx, uy - cy));
-        if (c > holeMax) holeMax = c;
+  return cov * hatchTooth(L, x, y);
+}
+
+// ---- Stipple layers -------------------------------------------------------
+
+// Ink coverage of one Stipple layer at pixel center (x, y): a jittered 2D
+// lattice whose cells each own a hashed appearance threshold
+// uT = toneLo + (toneHi - toneLo) * u, u ~ U[0,1). The cell's dot exists
+// where tone < uT, fades in over 1/fadeInv below it and otherwise keeps the
+// FIXED radius rFixed -- the size is tone-free, like a line's width, and the
+// tone is carried by the dot COUNT: expected coverage is
+// dotScale^2 * (toneHi - tone) / (toneHi - toneLo) before overlap (union
+// composite, since jittered dots overlap). Presence and radius are both
+// non-increasing in the tone and the positions are hash-only, so the layer
+// is per-pixel monotone and its marks never move. At tone 1 no cell is
+// below its threshold (u < 1), so paper stays ink-free.
+inline float hatchStippleInk(const HatchLayerRt& L, float x, float y,
+                             float tone) {
+  const float ux = L.cosA * x + L.sinA * y;
+  const float uy = -L.sinA * x + L.cosA * y;
+  const float range = L.toneHi - L.toneLo;
+  float cov = 0.0f;
+  const int i0 = static_cast<int>(std::floor((ux - L.padDot) / L.step));
+  const int i1 = static_cast<int>(std::floor((ux + L.padDot) / L.step));
+  const int j0 = static_cast<int>(std::floor((uy - L.padDot) / L.step));
+  const int j1 = static_cast<int>(std::floor((uy + L.padDot) / L.step));
+  for (int j = j0; j <= j1; ++j) {
+    for (int i = i0; i <= i1; ++i) {
+      const float u = hatchU01(
+          hatchMarkSeed(L.seed, L.layerId, i, j, kHatchStreamThreshold));
+      const float uT = L.toneLo + range * u;
+      if (tone >= uT) continue;
+      const float r = L.rFixed * std::min(1.0f, (uT - tone) * L.fadeInv);
+      float cx = static_cast<float>(i) * L.step;
+      float cy = static_cast<float>(j) * L.step;
+      if (L.jitterAmp > 0.0f) {
+        cx += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
+                                      kHatchStreamJitX)) -
+               0.5f) *
+              2.0f * L.jitterAmp;
+        cy += (hatchU01(hatchMarkSeed(L.seed, L.layerId, i, j,
+                                      kHatchStreamJitY)) -
+               0.5f) *
+              2.0f * L.jitterAmp;
       }
+      const float c = hatchDotMark(L, r, hatchLpDist(L, ux - cx, uy - cy));
+      cov = 1.0f - (1.0f - cov) * (1.0f - c);
     }
-    const float invCov = 1.0f - holeMax;
-    if (invCov > cov) cov = invCov;
   }
   return cov * hatchTooth(L, x, y);
 }
@@ -589,6 +698,7 @@ inline float hatchDotInk(const HatchLayerRt& L, float x, float y,
 inline float hatchLayerInk(const HatchLayerRt& L, float x, float y,
                            float tone) {
   if (L.kind == LayerKind::Line) return hatchLineInk(L, x, y, tone);
+  if (L.kind == LayerKind::Stipple) return hatchStippleInk(L, x, y, tone);
   return hatchDotInk(L, x, y, tone);
 }
 

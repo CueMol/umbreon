@@ -15,7 +15,10 @@ carries the tone, the edges carry the contours. Off by default; with
 `--hatch off` no AOV is allocated and the output is byte-identical to a build
 without the feature.
 
-Design record: [plans/npr-tone-hatching.md](plans/npr-tone-hatching.md).
+Design records: [plans/npr-tone-hatching.md](plans/npr-tone-hatching.md)
+(the pass) and [plans/npr-hatch-mark-geometry.md](plans/npr-hatch-mark-geometry.md)
+(mark size vs. shading: dot gain, the coverage table, stipple, auto fade,
+`strength` / `curve`, the spec text).
 Public API: `<umbreon/render/hatch_types.hpp>`, `<umbreon/npr/hatch_shade.hpp>`.
 
 ---
@@ -62,6 +65,32 @@ trick; the grow-from-zero-width fade follows Webb et al. (NPAR 2002).
 
 Regression-tested: per-pixel ink coverage is monotone non-decreasing as the
 tone darkens, under every preset and perturbation.
+
+### What carries the tone, and what you adjust
+
+Mark **size** is a free parameter of every layer kind; the **tone** decides
+how much of the lattice is inked. So the shading correlates with the
+illumination continuously, and the size knobs may over-darken (up to solid
+black) -- that is a legitimate artistic choice, not clamped away.
+
+| Kind | Tone drives | Size knob |
+|---|---|---|
+| Line | which lines exist (nesting levels) and, with the auto fade, how far each has grown toward its full width | `width` (px); cap = the level-0 pitch (where the lines are solid) or twice the finest step, whichever is larger |
+| Dot (screen) | the dot radius, through a coverage -> radius table so a K=0 screen covers exactly `1 - tone` up to solid black | `dotscale` (gain: the radius grows as if the tone were darker by `dotscale^2`) |
+| Stipple | how many cells are inked (per-cell hashed thresholds) | `dotscale` (fixed dot radius, `dotscale * pitch / sqrt(A_p)`) |
+
+**Auto fade** (`fade=0`, the line presets' default; the tuned `richardson`
+look keeps its own `fade 10`): a mark grows from zero
+at its own threshold to full size at the next nesting level's threshold, so
+a layer's coverage is a continuous function of the tone instead of a
+staircase that only moves at the thresholds.
+
+**Ink amount** (`--hatch-tone strength=G,curve=C`): after the display encode
+the tone is remapped in coverage space, `c = G * (1 - t)^C`, `t' = 1 - c`.
+`strength` is a linear ink gain (2 = twice the coverage, saturating at
+black); `curve` bends the response with the end points pinned (paper stays
+paper): `> 1` keeps the mid tones light, `< 1` fills them in. Both kinds of
+mark respond alike: lines gain nesting levels, dots gain radius.
 
 ### Ink resolution and pixel units
 
@@ -149,15 +178,18 @@ side light would draw.
 
 ## 3. Mark presets (`--hatch-preset`)
 
-A preset chooses only the **layers** (mark kind, angles, thresholds,
-perturbations). Use it to restyle the marks of a look, or on its own.
+A preset chooses the **layers** (mark kind, angles, thresholds,
+perturbations). Use it to restyle the marks of a look, or on its own -- on
+its own it also brings a tone recipe tuned for its marks (`hatchPresetTone`;
+under a look the look's recipe stays). The recipes currently all start
+from the `richardson` one and are being tuned per mark kind.
 
 | Preset | Layers | Character |
 |---|---|---|
 | `pen-cross` (default) | 3 Line: 45 / -45 / 0 deg | hard crosshatch, no perturbation, seed-independent |
 | `pencil` | 3 Line: 55 / -35 / 80 deg, `inkScale` 1 / 0.62 / 0.38 | individual strokes: wobble, per-stroke length/pressure/angle, tapered ends, paper tooth |
 | `engraving` | 1 Line, `subdiv` 3 | copperplate: one direction, tone by insertion + width modulation |
-| `stipple` | 1 Dot, `jitter` 0.4 | scientific stippling |
+| `stipple` | 1 Stipple, `jitter` 0.45, `dotscale` 0.9 | scientific stippling: fixed-size dots, the count carries the tone |
 | `screentone-60` | 1 Dot at 45 deg, `subdiv` 0 | classic AM halftone screen (~60 lpi on a 300 dpi figure) |
 | `manga-square` | 1 Dot at 45 deg, `shapeExponent` 16 | square-element screen |
 
@@ -168,10 +200,20 @@ strokes and by switching to a darker stick.
 ### Mark shapes (Dot layers)
 
 `shapeExponent` is one continuous Lp knob: 1 = diamond, 2 = circle, 4 =
-rounded square, >= 16 = square. Radii are area-normalized by `1/sqrt(A_p)`, so
-**changing the shape does not change the apparent density** (regression
-tested). Past ~50% coverage the dots freeze and white holes grow on the dual
-lattice, so full black is reachable with a continuous, monotone transition.
+rounded square, >= 16 = square. The radius for a target coverage comes from a
+per-layer **coverage -> radius table** sampled with the layer's own mark
+function (shape, aspect, AA), so **changing the shape does not change the
+apparent density** (regression tested) and the response stays continuous
+through the merge: past touching the dots grow on until, at the covering
+radius, the screen is solid black (`invert=off` stops them at the
+area-normalized full-cell radius instead, leaving white gaps at tone 0).
+`dotscale` scales the radius as a dot GAIN (see 1): 1.5 over-darkens by
+2.25x, 0.7 never reaches black.
+
+A Stipple layer (`kind=stipple`) is the other dot model: the dots keep a
+fixed radius (`dotscale`) and every lattice cell owns a hashed appearance
+threshold between `tonelo` and `tonehi`, so the tone is carried by how
+many dots there are. `subdiv` and `invert` do not apply.
 
 Dot screens benefit from the default `--hatch-res hi` twice over: the box
 downsample antialiases each dot's rim (at `out` the same dot quantizes into a
@@ -212,15 +254,18 @@ base would break the color coding.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--hatch-spacing <px>` | preset | base lattice pitch, all layers (output px) |
-| `--hatch-width <px>` | preset | mark width, all layers (output px) |
+| `--hatch-width <px>` | preset | line width, Line layers (output px) |
+| `--hatch-dot-scale <f>` | preset | dot radius scale, Dot / Stipple layers |
 | `--hatch-res <hi\|out>` | `hi` | ink resolution (see 1) |
 | `--hatch-layer <i:k=v,...>` | -- | per-layer override, repeatable |
+| `--hatch-spec <text\|@file>` | -- | the whole configuration as spec text (below) |
+| `--hatch-dump-spec <on\|off>` | off | print the resolved configuration as spec text |
 
-`--hatch-layer` keys: `kind=line|dot`, `angle`, `spacing`, `subdiv`, `width`,
-`tonehi`, `tonelo`, `fade`, `opacity`, `inkscale`, `soft`, `seed`, `shape`,
-`aspect`, `dotangle`, `jitter`, `invert=on|off`, `wobble`, `wobwave`,
-`wjitter`, `slen`, `sgap`, `taper`, `anglejitter`, `lenjitter`, `tooth`,
-`toothscale`.
+`--hatch-layer` keys: `kind=line|dot|stipple`, `angle`, `spacing`, `subdiv`,
+`width` (Line), `dotscale` (Dot / Stipple), `tonehi`, `tonelo`, `fade` (0 =
+auto), `opacity`, `inkscale`, `soft`, `seed`, `shape`, `aspect`, `dotangle`,
+`jitter`, `invert=on|off`, `wobble`, `wobwave`, `wjitter`, `slen`, `sgap`,
+`taper`, `anglejitter`, `lenjitter`, `tooth`, `toothscale`.
 
 ```sh
 # start from pencil, but make the shadow pencil darker and the strokes longer
@@ -239,7 +284,8 @@ base would break the color coding.
 `rimbias` (the drawing lighting model, below), `contact` / `shape` (AO
 exponents), `black` / `white` (level remap), `hl` / `hlsoft` (highlight knee,
 below), `gamma` (artistic curve), `speccut` (blow the specular highlight out
-to paper), `levels` (posterize the tone to N bands).
+to paper), `strength` / `curve` (ink amount, see 1), `levels` (posterize the
+tone to N bands).
 
 #### Highlights (`hl`, `hlsoft`)
 
@@ -287,8 +333,14 @@ no longer needs the light rebalance that earlier recipes used: it renders
 correctly under a scene's own frontal-dominant CueMol lighting.
 
 Tone pipeline order: linear tone -> black/white remap -> `gamma` -> display
-encode -> `levels` -> threshold. Every stage maps 1 to 1, so a fully lit
-surface stays exactly ink-free.
+encode -> highlight knee -> `strength` / `curve` -> `levels` -> threshold.
+Every stage maps 1 to 1, so a fully lit surface stays exactly ink-free.
+
+Note on the global multipliers under a fine look such as `richardson`
+(0.5 px pitch): the pitch sits at the min-feature floor (2 px on the ink
+grid), so a density above 1 changes nothing until `--supersample` exceeds 4,
+while a density below 1 coarsens as expected; the width scale works up to
+the cap (about 3x at `--supersample 3`).
 
 `--hatch-tone-fog` makes distant strokes thin out and (with
 `--hatch-ink-shade`) lighten, matching how the silhouette ink fades -- the way
@@ -337,11 +389,37 @@ umbreon_cli scene.pov --hatch on \
 
 Spec entries: `off` (leave the section normally shaded), `base=paper|albedo`,
 `ink=fixed|albedo`, `color=#RRGGBB`, `tone=F` (tone scale), `layers=MASK`
-(layer bitmask), `density=F` (mark-density multiplier), `width=F`.
+(layer bitmask), `density=F` (mark-density multiplier), `width=F` (mark-size
+multiplier: the line width of Line layers, the dot scale of Dot / Stipple
+layers).
 
 `density` matters for small features: a thin stick or ligand catches only a
 couple of marks at the ribbon's pitch and reads as flat, so give it a finer
 grain -- or a flat fill, which carries color better at that size.
+
+### Spec text (`--hatch-spec`, `--hatch-dump-spec`)
+
+The whole configuration has a textual form, shared with embedding hosts that
+let a user edit a style (CueMol's layer editor loads a style with it and sends
+the edited result back). `--hatch-dump-spec on` prints the resolved
+configuration; `--hatch-spec` (inline, or `@file`) applies one after the
+look / preset and before the explicit flags (which still win):
+
+```
+layer: kind=line,angle=45,spacing=10,subdiv=2,width=1.1,tonehi=0.95,tonelo=0.55,fade=0,opacity=1,inkscale=1,soft=0.5,seed=0,jitter=0,wobble=0,wobwave=40,wjitter=0,slen=0,sgap=0,taper=0.3,anglejitter=0,lenjitter=0,tooth=0,toothscale=3
+layer: kind=dot,angle=45,spacing=5,subdiv=0,dotscale=1,tonehi=1,tonelo=1,fade=32,opacity=1,inkscale=1,soft=0.5,seed=0,jitter=0,shape=2,aspect=1,dotangle=0,invert=on,tooth=0,toothscale=3
+tone: diffuse=0.85,ambient=0.05,wrap=0.5,rim=1,rimpow=3.5,rimbias=0.35,contact=1,shape=0.6,black=0,white=1.2,hl=0.86,hlsoft=0.05,gamma=2.4,speccut=0,strength=1,curve=1,levels=0
+ink: mode=ink,base=paper,ink=fixed,inkcolor=#000000,papercolor=#ffffff,mincontrast=0.25,inkshade=1,tonefog=on,albedoquant=0
+```
+
+One `layer:` line per layer (one or more lines REPLACE the layers, in order);
+`tone:` and `ink:` override the keys they name. Lines are separated by
+newlines or `;`, entries by `,`; `#` starts a comment. Numbers use the C
+locale, booleans are `on`/`off`, colors `#rrggbb`. The keys are those of
+`--hatch-layer` and `--hatch-tone`, plus for `ink:` `mode=ink|over`,
+`base=paper|albedo`, `ink=fixed|albedo`, `inkcolor`, `papercolor`,
+`mincontrast`, `inkshade`, `tonefog`, `albedoquant`. A bad entry rejects the
+whole text (with its line number) and leaves the configuration untouched.
 
 ### AO interaction
 
@@ -398,9 +476,15 @@ tone it produced itself (a hand-painted or retouched one, for instance):
 #include <umbreon/npr/hatch_shade.hpp>
 
 umbreon::HatchOptions opt;
-umbreon::applyHatchLook(opt, "richardson");
+umbreon::applyHatchStyle(opt, "richardson");  // a look, or a preset + its tone
 opt.enable = true;
 umbreon::applyHatch(w, h, rgba, tone, mask, albedo, opt);
+
+// ...or let a user edit the style as text and send it back:
+std::string text = umbreon::hatchStyleToSpec(opt);      // load as a template
+std::string err;
+if (!umbreon::applyHatchSpec(opt, editedText, umbreon::kHatchSpecAll, &err))
+  /* err = "line N: ..." and opt is unchanged */;
 
 // ...or drive the marks from your own parameterization (w*h*2; a pixel
 // whose pair is exactly (0,0) falls back to screen coordinates):

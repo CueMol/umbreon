@@ -2,7 +2,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <vector>
+
+#include "npr/hatch_shade.hpp"
 
 namespace umbreon {
 namespace {
@@ -1158,6 +1162,36 @@ Options parseCli(int argc, char** argv) {
         fail("--hatch-width expects a positive pixel width");
       continue;
     }
+    if (a == "--hatch-dot-scale") {
+      o.hatchDotScale =
+          static_cast<float>(std::atof(value("--hatch-dot-scale").c_str()));
+      if (o.ok && o.hatchDotScale <= 0.0f)
+        fail("--hatch-dot-scale expects a positive scale");
+      continue;
+    }
+    if (a == "--hatch-spec") {
+      // --hatch-spec <text|@file>: the spec grammar of applyHatchSpec;
+      // '@path' reads the text from a file.
+      std::string v = value("--hatch-spec");
+      if (o.ok && !v.empty() && v[0] == '@') {
+        std::ifstream in(v.substr(1));
+        if (!in) {
+          fail("--hatch-spec: cannot read '" + v.substr(1) + "'");
+        } else {
+          std::ostringstream buf;
+          buf << in.rdbuf();
+          v = buf.str();
+        }
+      }
+      if (o.ok) o.hatchSpec = v;
+      continue;
+    }
+    if (a == "--hatch-dump-spec") {
+      std::string v = value("--hatch-dump-spec");
+      if (o.ok && !parseBool(v, o.hatchDumpSpec))
+        fail("--hatch-dump-spec expects on/off");
+      continue;
+    }
     if (a == "--hatch-style") {
       // --hatch-style ID=spec : per-section hatch override (repeatable),
       // mirroring --edge. spec := entry (":" entry)*, entry := off |
@@ -1229,45 +1263,18 @@ Options parseCli(int argc, char** argv) {
           break;
         }
         const std::string k = ent.substr(0, e2);
-        const float f = static_cast<float>(std::atof(ent.substr(e2 + 1).c_str()));
-        if (k == "diffuse")
-          o.hatchTone.diffuseWeight = f;
-        else if (k == "ambient")
-          o.hatchTone.ambient = f;
-        else if (k == "wrap")
-          o.hatchTone.wrap = f;
-        else if (k == "rim")
-          o.hatchTone.rimDarken = f;
-        else if (k == "rimpow")
-          o.hatchTone.rimPower = f;
-        else if (k == "rimbias")
-          o.hatchTone.rimLightBias = f;
-        else if (k == "contact")
-          o.hatchTone.contactAoPow = f;
-        else if (k == "shape")
-          o.hatchTone.shapeAoPow = f;
-        else if (k == "black")
-          o.hatchTone.blackPoint = f;
-        else if (k == "white")
-          o.hatchTone.whitePoint = f;
-        else if (k == "hl")
-          o.hatchTone.highlightAt = f;
-        else if (k == "hlsoft")
-          o.hatchTone.highlightSoft = f;
-        else if (k == "gamma")
-          o.hatchTone.gamma = f;
-        else if (k == "speccut")
-          o.hatchTone.specularCut = f;
-        else if (k == "levels")
-          o.hatchToneLevels = static_cast<int>(f);
-        else {
+        const std::string v = ent.substr(e2 + 1);
+        if (k == "levels") {
+          o.hatchToneLevels = std::atoi(v.c_str());
+        } else if (!applyHatchToneKv(o.hatchTone, k, v)) {
           ok = false;
           break;
         }
       }
       if (!ok)
         fail("--hatch-tone expects key=val,... (keys diffuse ambient contact "
-             "wrap rim rimpow rimbias shape black white hl hlsoft gamma speccut levels)");
+             "wrap rim rimpow rimbias shape black white hl hlsoft gamma speccut "
+             "strength curve levels)");
       else
         o.hatchToneSet = true;
       continue;
@@ -1477,22 +1484,26 @@ void printUsage(const char* prog) {
       "  --hatch-base <paper|albedo>   ink-mode base under the hatch [paper]\n"
       "  --hatch-ink <fixed|albedo>    ink color source              [fixed]\n"
       "  --hatch-spacing <px>     base line pitch override, all layers [preset]\n"
-      "  --hatch-width <px>       line width override, all layers    [preset]\n"
+      "  --hatch-width <px>       line width override, Line layers   [preset]\n"
+      "  --hatch-dot-scale <f>    dot radius scale, Dot/Stipple layers [preset]\n"
+      "  --hatch-spec <text|@file> whole configuration as spec text (layer: /\n"
+      "                           tone: / ink: lines; see docs/npr_hatching.md)\n"
+      "  --hatch-dump-spec <on|off> print the resolved spec text to stdout [off]\n"
       "  --hatch-layer <i:k=v,..> per-layer override (repeatable), keys:\n"
-      "                           kind=line|dot angle spacing subdiv width\n"
-      "                           tonehi tonelo fade opacity inkscale soft seed\n"
-      "                           shape aspect dotangle jitter invert=on|off\n"
-      "                           wobble wobwave wjitter slen sgap taper\n"
-      "                           anglejitter lenjitter tooth toothscale\n"
+      "                           kind=line|dot|stipple angle spacing subdiv\n"
+      "                           width dotscale tonehi tonelo fade(0=auto)\n"
+      "                           opacity inkscale soft seed shape aspect\n"
+      "                           dotangle jitter invert=on|off wobble wobwave\n"
+      "                           wjitter slen sgap taper anglejitter lenjitter\n"
+      "                           tooth toothscale\n"
       "  --hatch-style <ID=spec>  per-section hatch override (repeatable), e.g.\n"
       "                           _34_35=base=albedo:color=#202020:tone=0.8\n"
       "                           (entries off, base=paper|albedo,\n"
       "                           ink=fixed|albedo, color=#RRGGBB, tone=F,\n"
       "                           layers=MASK, density=F, width=F)\n"
       "  --hatch-tone <k=v,..>    tone recipe (diffuse ambient wrap rim rimpow\n"
-      "                           rimbias\n"
-      "                           contact shape black white hl hlsoft gamma\n"
-      "                           speccut levels)\n"
+      "                           rimbias contact shape black white hl hlsoft\n"
+      "                           gamma speccut strength curve levels)\n"
       "  --hatch-min-contrast <f> min display-luma gap base vs ink   [0.25]\n"
       "  --hatch-ink-shade <f>    darken ink toward f at deep tone (pencil\n"
       "                           pressure; 1 = constant ink)          [1]\n"

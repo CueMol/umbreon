@@ -751,5 +751,254 @@ int main() {
             std::fabs(c - 0.5f) < 0.08f);
   }
 
+  // --- 23. Dot gain (HatchLayer::dotScale): on a K=0 screen the coverage at
+  // a display tone scales with dotScale^2 (the radius sees a tone darkened
+  // by the gain), stays monotone in the tone with the inversion on, and
+  // still reaches solid black.
+  {
+    const float tLin = umbreon::srgbDecodeF(0.7f);
+    float cov[3];
+    const float scales[3] = {0.5f, 1.0f, 1.5f};
+    for (int k = 0; k < 3; ++k) {
+      umbreon::HatchOptions o = makeDotOpt(2.0f, false);
+      o.layers[0].dotScale = scales[k];
+      cov[k] = meanInk(hatchUniform(192, 192, tLin, o));
+    }
+    // Expected 0.3 * dotScale^2 = 0.075 / 0.3 / 0.675 (non-overlapping dots).
+    s.check("dotScale: 0.5 quarters the coverage", std::fabs(cov[0] - 0.075f) < 0.03f);
+    s.check("dotScale: 1 is the area-exact screen", std::fabs(cov[1] - 0.3f) < 0.05f);
+    s.check("dotScale: 1.5 gains 2.25x", std::fabs(cov[2] - 0.675f) < 0.06f);
+    s.check("dotScale: monotone in the scale", cov[0] < cov[1] && cov[1] < cov[2]);
+    umbreon::HatchOptions inv = makeDotOpt(2.0f, true);
+    inv.layers[0].dotScale = 1.5f;
+    s.check("dotScale: inversion stays per-pixel monotone",
+            sweepMonotone(inv, 96, 96, 40, 2.0e-3f));
+    float prev = 0.0f, maxJump = 0.0f;
+    for (int i = 0; i <= 40; ++i) {
+      const float td = 1.0f - static_cast<float>(i) / 40.0f;
+      const float m = meanInk(hatchUniform(96, 96, umbreon::srgbDecodeF(td), inv));
+      if (i > 0) maxJump = std::max(maxJump, m - prev);
+      prev = m;
+    }
+    s.check("dotScale: no coverage pop across the gained switch", maxJump < 0.1f);
+    s.check("dotScale: solid black at tone 0", prev > 0.99f);
+  }
+
+  // --- 23b. AM screen tone tracking: with the coverage -> radius table a
+  // K=0 screen follows 1 - tone through the overlap regime too (the former
+  // dual-lattice inversion sat at 50% from tone 0.5 down to ~0.3).
+  {
+    const umbreon::HatchOptions o = makeDotOpt(2.0f, true);
+    const float tones[5] = {0.7f, 0.45f, 0.35f, 0.25f, 0.1f};
+    bool tracks = true;
+    for (float td : tones) {
+      const float m = meanInk(hatchUniform(192, 192, umbreon::srgbDecodeF(td), o));
+      if (std::fabs(m - (1.0f - td)) >= 0.05f) {
+        std::fprintf(stderr, "screen tracking: tone %.2f -> %.3f\n", td, m);
+        tracks = false;
+      }
+    }
+    s.check("screen: coverage tracks 1 - tone to solid black", tracks);
+    const umbreon::HatchOptions sq = makeDotOpt(16.0f, true);
+    s.check("screen: square marks reach solid black too",
+            meanInk(hatchUniform(96, 96, 0.0f, sq)) > 0.995f);
+  }
+
+  // --- 24. Stipple layers: fixed-size dots whose COUNT carries the tone, so
+  // the mean coverage tracks dotScale^2 * (1 - tone) through the mid tones
+  // (the nested Dot lattice could not), paper stays ink-free, and subdiv
+  // is ignored.
+  {
+    umbreon::HatchOptions o;
+    o.enable = true;
+    umbreon::HatchLayer l;
+    l.kind = umbreon::LayerKind::Stipple;
+    l.angleDeg = 0.0f;
+    l.spacingPx = 8.0f;
+    l.dotScale = 0.85f;
+    l.toneHi = 1.0f;
+    l.toneLo = 0.0f;
+    l.fadeInv = 32.0f;
+    l.mark.jitter = 0.0f;
+    o.layers.push_back(l);
+    const float tones[3] = {0.8f, 0.6f, 0.4f};
+    bool tracks = true;
+    for (float td : tones) {
+      const float m = meanInk(hatchUniform(192, 192, umbreon::srgbDecodeF(td), o));
+      if (std::fabs(m - 0.7225f * (1.0f - td)) >= 0.05f) tracks = false;
+    }
+    s.check("stipple: coverage tracks dotScale^2 * (1 - tone)", tracks);
+    s.check("stipple: paper stays ink-free",
+            meanInk(hatchUniform(64, 64, 1.0f, o)) == 0.0f);
+    umbreon::HatchOptions o2 = o;
+    o2.layers[0].subdiv = 2;
+    const std::vector<float> a = hatchUniform(64, 64, umbreon::srgbDecodeF(0.5f), o);
+    const std::vector<float> b = hatchUniform(64, 64, umbreon::srgbDecodeF(0.5f), o2);
+    s.check("stipple: subdiv is ignored", a == b);
+    s.check("stipple: per-pixel monotone", sweepMonotone(o, 96, 96, 20, 2.0e-3f));
+  }
+
+  // --- 25. Line width cap at the level-0 pitch (was 2 * finest step): a
+  // width beyond the old cap now widens the lines; beyond the pitch it is
+  // solid and changes nothing.
+  {
+    auto lineOpt = [](float width) {
+      umbreon::HatchOptions o;
+      o.enable = true;
+      umbreon::HatchLayer l;
+      l.kind = umbreon::LayerKind::Line;
+      l.angleDeg = 0.0f;
+      l.spacingPx = 8.0f;
+      l.subdiv = 2;  // finest step 2 px: the old cap was 4 px
+      l.widthPx = width;
+      o.layers.push_back(l);
+      return o;
+    };
+    const float tLin = umbreon::srgbDecodeF(0.8f);  // level-0 lines only
+    const float w4 = meanInk(hatchUniform(96, 96, tLin, lineOpt(4.0f)));
+    const float w6 = meanInk(hatchUniform(96, 96, tLin, lineOpt(6.0f)));
+    s.check("width cap: 6 px is wider than 4 px", w6 > w4 + 0.1f);
+    s.check("width cap: the pitch is the ceiling",
+            hatchUniform(64, 64, tLin, lineOpt(8.0f)) ==
+                hatchUniform(64, 64, tLin, lineOpt(12.0f)));
+  }
+
+  // --- 26. Auto fade (fadeInv <= 0): the line presets' coverage is a
+  // continuous function of the display tone -- no staircase steps at the
+  // nesting thresholds -- and still monotone.
+  {
+    umbreon::HatchOptions o;
+    o.enable = true;
+    umbreon::applyHatchPreset(o, "pen-cross");
+    s.check("auto fade: preset asks for it", o.layers[0].fadeInv <= 0.0f);
+    float prev = 0.0f, maxJump = 0.0f;
+    for (int i = 0; i <= 40; ++i) {
+      const float td = 1.0f - static_cast<float>(i) / 40.0f;
+      const float m = meanInk(hatchUniform(96, 96, umbreon::srgbDecodeF(td), o));
+      if (i > 0) maxJump = std::max(maxJump, m - prev);
+      prev = m;
+    }
+    s.check("auto fade: no coverage step larger than a 1/40 tone step",
+            maxJump < 0.06f);
+    s.check("auto fade: pen-cross stays monotone",
+            sweepMonotone(o, 96, 96, 20, 2.0e-3f));
+  }
+
+  // --- 27. Spec text: every look / preset serializes to a text that
+  // applies back to the same configuration (text-identical after a second
+  // round), a bad entry is rejected without touching the target, and the
+  // key=value accessors take the new keys.
+  {
+    const char* names[9] = {"richardson", "ink-cross", "manga",
+                            "pen-cross", "pencil", "engraving",
+                            "stipple", "screentone-60", "manga-square"};
+    bool roundTrip = true;
+    for (const char* name : names) {
+      umbreon::HatchOptions o;
+      umbreon::applyHatchStyle(o, name);
+      const std::string s1 = umbreon::hatchStyleToSpec(o);
+      umbreon::HatchOptions o2;
+      std::string err;
+      if (!umbreon::applyHatchSpec(o2, s1, umbreon::kHatchSpecAll, &err) ||
+          o2.layers.size() != o.layers.size() ||
+          umbreon::hatchStyleToSpec(o2) != s1) {
+        std::fprintf(stderr, "spec round trip failed for %s: %s\n", name,
+                     err.c_str());
+        roundTrip = false;
+      }
+    }
+    s.check("spec: every style round-trips text-identically", roundTrip);
+    umbreon::HatchOptions ink;
+    ink.enable = true;
+    umbreon::applyHatchLook(ink, "ink-cross");
+    umbreon::HatchOptions ink2;
+    ink2.enable = true;
+    umbreon::applyHatchSpec(ink2, umbreon::hatchStyleToSpec(ink));
+    s.check("spec: ink-cross via spec renders byte-identically",
+            hatchUniform(64, 64, umbreon::srgbDecodeF(0.6f), ink) ==
+                hatchUniform(64, 64, umbreon::srgbDecodeF(0.6f), ink2));
+    umbreon::HatchOptions bad;
+    umbreon::applyHatchLook(bad, "manga");
+    const std::string before = umbreon::hatchStyleToSpec(bad);
+    std::string err;
+    const bool rejected =
+        !umbreon::applyHatchSpec(bad, "layer: angle=10\nlayer: bogus=1", umbreon::kHatchSpecAll, &err);
+    s.check("spec: a bad entry is rejected with a line number",
+            rejected && err.find("line 2") != std::string::npos);
+    s.check("spec: a rejected text leaves the target untouched",
+            umbreon::hatchStyleToSpec(bad) == before);
+    umbreon::HatchOptions onlyTone;
+    umbreon::applyHatchLook(onlyTone, "ink-cross");
+    umbreon::applyHatchSpec(onlyTone, "layer: kind=dot\ntone: strength=2",
+                            umbreon::kHatchSpecTone);
+    s.check("spec: section mask skips the other sections",
+            onlyTone.layers.size() == 3 && onlyTone.tone.strength == 2.0f);
+    umbreon::HatchLayer l;
+    s.check("kv: dotscale / kind=stipple / unknown key",
+            umbreon::applyHatchLayerKv(l, "dotscale", "1.5") && l.dotScale == 1.5f &&
+                umbreon::applyHatchLayerKv(l, "kind", "stipple") &&
+                l.kind == umbreon::LayerKind::Stipple &&
+                !umbreon::applyHatchLayerKv(l, "nosuch", "1") &&
+                !umbreon::applyHatchLayerKv(l, "width", "abc"));
+    umbreon::ToneRecipe t;
+    s.check("kv: tone strength / curve",
+            umbreon::applyHatchToneKv(t, "strength", "1.3") && t.strength == 1.3f &&
+                umbreon::applyHatchToneKv(t, "curve", "0.8") && t.curve == 0.8f);
+    umbreon::HatchOptions io;
+    s.check("kv: ink color / base",
+            umbreon::applyHatchInkKv(io, "papercolor", "#f0ecdd") &&
+                std::fabs(io.paperColor[0] - 240.0f / 255.0f) < 1e-6f &&
+                umbreon::applyHatchInkKv(io, "base", "albedo") &&
+                io.base == umbreon::HatchBase::Albedo);
+  }
+
+  // --- 28. Ink amount (ToneRecipe::strength / curve): strength scales the
+  // coverage at a display tone, paper stays ink-free, the sweep stays
+  // monotone, and curve > 1 lightens the mid tones while < 1 fills them.
+  {
+    auto pen = [](float strength, float curve) {
+      umbreon::HatchOptions o;
+      o.enable = true;
+      umbreon::applyHatchPreset(o, "pen-cross");
+      o.tone.strength = strength;
+      o.tone.curve = curve;
+      return o;
+    };
+    const float t7 = umbreon::srgbDecodeF(0.7f);
+    const float c05 = meanInk(hatchUniform(96, 96, t7, pen(0.5f, 1.0f)));
+    const float c10 = meanInk(hatchUniform(96, 96, t7, pen(1.0f, 1.0f)));
+    const float c15 = meanInk(hatchUniform(96, 96, t7, pen(1.5f, 1.0f)));
+    s.check("strength: more strength, more ink", c05 < c10 && c10 < c15);
+    s.check("strength: paper stays ink-free",
+            meanInk(hatchUniform(64, 64, 1.0f, pen(2.0f, 1.0f))) == 0.0f);
+    s.check("strength: sweep stays monotone",
+            sweepMonotone(pen(1.5f, 1.0f), 96, 96, 20, 2.0e-3f));
+    const float t5 = umbreon::srgbDecodeF(0.5f);
+    const float k2 = meanInk(hatchUniform(96, 96, t5, pen(1.0f, 2.0f)));
+    const float k1 = meanInk(hatchUniform(96, 96, t5, pen(1.0f, 1.0f)));
+    const float k05 = meanInk(hatchUniform(96, 96, t5, pen(1.0f, 0.5f)));
+    s.check("curve: > 1 lightens the mid tones, < 1 fills them",
+            k2 < k1 && k1 < k05);
+  }
+
+  // --- 29. Style resolution: a mark preset brings its tone recipe through
+  // applyHatchStyle only; applyHatchPreset stays layers-only.
+  {
+    umbreon::HatchOptions viaStyle, viaPreset, unknown;
+    s.check("style: preset name resolves with a tone recipe",
+            umbreon::applyHatchStyle(viaStyle, "stipple") &&
+                viaStyle.tone.wrap > 0.0f &&
+                viaStyle.layers[0].kind == umbreon::LayerKind::Stipple);
+    umbreon::applyHatchPreset(viaPreset, "stipple");
+    s.check("style: applyHatchPreset leaves the tone alone",
+            viaPreset.tone.wrap == 0.0f);
+    s.check("style: look names resolve too",
+            umbreon::applyHatchStyle(viaStyle, "richardson") &&
+                viaStyle.ink == umbreon::HatchInk::FromAlbedo);
+    s.check("style: unknown name is rejected",
+            !umbreon::applyHatchStyle(unknown, "no-such-style") &&
+                unknown.layers.empty());
+  }
+
   return s.report();
 }

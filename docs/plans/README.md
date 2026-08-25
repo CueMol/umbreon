@@ -44,3 +44,8 @@
   分離、Lp 面積補正つき網点 + 被覆半径起動の 50% 反転、コントラスト保証、名前付きプリセット 6 種、
   セクション別スタイル（`--hatch-style ID=spec`）。既定 OFF で byte-identical。
   **Phase 1-3 実装完了**（branch `feat/npr-tone-hatching`）。
+- [npr-hatch-mark-geometry.md](npr-hatch-mark-geometry.md) — `--hatch` のマーク形状と shading の分離。
+  Dot の径 knob `dotScale`（tone 空間ゲイン）、双対格子 50% 反転を**被覆→半径テーブル**に置換
+  （K=0 網点が全域で `被覆 = 1 - tone`）、確率的 `LayerKind::Stipple`、Line の auto fade（連続応答）と
+  幅クランプ緩和、`ToneRecipe::strength / curve`、preset 別 tone recipe（`applyHatchStyle`）、
+  ホスト向け spec テキスト（`applyHatchSpec` / `hatchStyleToSpec`）。**実装完了**（0.2.0）。
