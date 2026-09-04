@@ -169,6 +169,17 @@ struct ScreenClassifyParams {
   // continuity is treated as surface contact (intersection contour) and not
   // inked; only a genuine depth step draws a border.
   float depthGapPx = 12.0f;
+  // Floor on that depth tolerance, RELATIVE to view-z. The analytic
+  // intersectors resolve a hit distance only to a few 1e-5 of its magnitude
+  // (Embree's curve solvers in particular), so two surfaces that coincide --
+  // a capsule's hemispherical end cap centered on an atom sphere of the same
+  // radius -- z-fight by about that much. At extreme zoom depthGapPx *
+  // pixelSize drops below this noise and the jitter classifies as a field
+  // of one-pixel depth steps (blobs of ink inside the atom). Ordinary
+  // framings never reach the floor: at 200 world units of view distance it
+  // is 0.008, while depthGapPx * pixelSize is 0.02 for a 6-unit frame at
+  // 3600 px, so those classify byte-identically.
+  float depthTolRel = 4.0e-5f;
   // One-sided slope clamp in pixelSize units, so extreme grazing noise cannot
   // extrapolate across a genuine fold.
   float slopeClampPx = 300.0f;

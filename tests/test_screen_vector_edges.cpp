@@ -183,6 +183,28 @@ int main() {
             (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
   }
 
+  // ---- (4a) mixed-kind view-z step: DepthGap, and STRONG ------------------
+  // The same step between two primitive kinds of ONE section (a sphere in
+  // front of a bond): the ID-keyed branch classifies it, and it must carry
+  // the strong bit -- a weak-only DepthGap chain is pruned unless strong
+  // neighbors support it, which left such a sphere's outline missing exactly
+  // where the bond was behind it.
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u, cyl = (9u << 2) | 3u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, x < 8 ? sph : cyl, x < 8 ? 10.0f : 60.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("mixed-kind step: one DepthGap crack per row",
+               countClass(cf, CrackClass::DepthGap), 16);
+    s.check_eq("mixed-kind step: nothing else fires", countActive(cf), 16);
+    s.check("mixed-kind step: the crack is strong",
+            (cf.right[b.idx(7, 5)] & kCrackStrongBit) != 0);
+    s.check("mixed-kind step: nearer (first) side owns",
+            (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
+  }
+
   // ---- (4b) facet kink: a pure slope change never fires --------------------
   // Piecewise-linear depth (flat, then a steep ramp) models the facet boundary
   // of a coarse mesh seen at grazing incidence: the steep side's one-sided
@@ -196,6 +218,32 @@ int main() {
         b.set(x, y, 9, x < 8 ? 100.0f : 100.0f + 30.0f * (x - 7));
     const CrackField cf = classify(b, defaults);
     s.check_eq("facet kink: slope change never fires", countActive(cf), 0);
+  }
+
+  // ---- (4c) precision floor: coincident surfaces never read as a step ----
+  // Two primitive kinds of one section share a surface (a capsule's end cap
+  // on its atom sphere) and alternate as the first hit with a view-z jitter
+  // of the intersectors' precision. With the lateral threshold shrunk below
+  // that jitter (an extreme zoom), the relative floor depthTolRel * viewZ
+  // keeps the mixed-kind boundary a contact; with the floor off it fires as
+  // a field of DepthGap cracks.
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (1u << 2) | 1u, cyl = (1u << 2) | 2u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        const bool odd = ((x + y) & 1) != 0;
+        b.set(x, y, odd ? sph : cyl, 1.0e5f + (odd ? 0.5f : -0.5f));
+      }
+    ScreenClassifyParams p = defaults;
+    p.depthGapPx = 0.5f;  // lateral tolerance 0.5 < the 1.0 jitter step
+    const CrackField withFloor = classify(b, p);  // floor 4e-5 * 1e5 = 4
+    s.check_eq("precision floor: coincident kinds stay a contact",
+               countActive(withFloor), 0);
+    p.depthTolRel = 0.0f;
+    const CrackField noFloor = classify(b, p);
+    s.check("precision floor: without it the jitter fires DepthGap",
+            countClass(noFloor, CrackClass::DepthGap) > 0);
   }
 
   // ---- (4c) DepthGap NMS: a smeared step fires once, not as a band --------

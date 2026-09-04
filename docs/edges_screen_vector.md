@@ -30,7 +30,12 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      sections (`objectId >> 2`), across a genuine depth step. A boundary
      between mixed primitive kinds of ONE section (a sphere, cylinder and
      mesh mixed in one CueMol section) instead inks as `DepthGap` under the
-     silhouette toggle -- it is a self-occlusion, not a border. Either way a
+     silhouette toggle -- it is a self-occlusion, not a border -- and that
+     crack is always STRONG: the contact veto already demanded the full
+     depth-gap threshold from both one-sided extrapolations, and an id
+     change has no grazing-rim profile to suppress, so a sphere's rim over
+     a bond of its own section never depends on chain support (left weak,
+     it was pruned wherever no strong neighbor backed it). Either way a
      depth-CONTINUOUS contact (a bond embedded in an atom) is never inked,
      so connecting primitives join seamlessly,
    - `DepthGap`   -- same id, view-z discontinuity. Slope-adaptive: both
@@ -231,7 +236,7 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--stroke-depth-gap <f>` | 12 | DepthGap threshold, world units per lateral pixel (a slope cutoff). Facet kinks of a coarse mesh measure a few px; genuine self-occlusion steps measure hundreds -- lower it only for very subtle depth steps |
+| `--stroke-depth-gap <f>` | 12 | DepthGap threshold, world units per lateral pixel (a slope cutoff). Facet kinks of a coarse mesh measure a few px; genuine self-occlusion steps measure hundreds -- lower it only for very subtle depth steps. Floored at `4e-5 * viewZ` (`ScreenClassifyParams::depthTolRel`), the analytic intersectors' relative precision: at an extreme zoom the lateral threshold would otherwise drop below the float jitter of two coincident surfaces (a capsule cap on its atom sphere) and classify it as a field of one-pixel steps |
 | `--stroke-screen-simplify <f>` | 0.4 | Douglas-Peucker tolerance, FINAL px |
 | `--stroke-screen-smooth <int>` | 2 | Chaikin iterations |
 | `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all) |

@@ -583,5 +583,57 @@ int main() {
             minR(20, 26, 97, 99) < 0.5f);
   }
 
+  // ===== S6: a sphere in front of a bond of its own section keeps its rim =====
+  // Full mode inks every same-section self-occlusion. A sphere over another
+  // SPHERE already did (S1: same primitive kind, the same-id branch marks the
+  // step strong); a sphere over a BOND -- the mixed-kind branch -- classified
+  // as a weak DepthGap that the prune dropped wherever no strong neighbor
+  // supported it, so the rim vanished exactly over the bond. Sphere A at the
+  // origin, cylinder B of the same group 6 units behind it crossing the view
+  // below A's center; A's lower rim over B (world (0, -0.7), px (32, 43))
+  // must be inked, as its upper rim over the background is.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();  // ortho, frames [-2,2]^2
+    sc.background = {1, 1, 1};
+    umbreon::Sphere a;
+    a.center = {0.0f, 0.0f, 0.0f};
+    a.radius = 0.7f;
+    a.color = pigment;
+    a.group = 1;
+    sc.spheres.push_back(a);
+    umbreon::Cylinder b;  // same section, 6 units behind, closed bond
+    b.p0 = {-3.0f, -1.0f, -6.0f};
+    b.p1 = {3.0f, -1.0f, -6.0f};
+    b.radius = 0.6f;
+    b.color = {0.9f, 0.9f, 0.3f, 1.0f};
+    b.group = 1;
+    sc.cylinders.push_back(b);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 2.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto minR = [&](int cx, int cy, int r) {
+      float m = 1.0f;
+      for (int y = cy - r; y <= cy + r; ++y)
+        for (int x = cx - r; x <= cx + r; ++x)
+          m = std::min(m, f.color[(static_cast<std::size_t>(y) * 64 + x) * 4]);
+      return m;
+    };
+    s.check("S6 rim over bond: upper rim over background inked",
+            minR(32, 21, 2) < 0.5f);
+    s.check("S6 rim over bond: lower rim over the bond inked",
+            minR(32, 43, 2) < 0.5f);
+  }
+
   return s.report();
 }

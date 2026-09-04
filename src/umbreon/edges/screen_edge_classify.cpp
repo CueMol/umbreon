@@ -19,6 +19,15 @@ using screen_edge::facingCos;
 using screen_edge::kBackground;
 using screen_edge::pixelSizeAt;
 
+// Depth tolerance at pixel size `px` for a crack whose nearer side sits at
+// view-z `vz`: the lateral-pixel scaled threshold, floored by the
+// intersectors' relative precision (ScreenClassifyParams::depthTolRel) so
+// that coincident surfaces z-fighting at float precision never read as a
+// depth step, however far the frame is zoomed in.
+inline float depthTolAt(const ScreenClassifyParams& p, float px, float vz) {
+  return std::max(p.depthGapPx * px, p.depthTolRel * vz);
+}
+
 // One-sided slope of the viewZ field at pixel `a` looking away from the crack
 // (toward `outer`), clamped to +-clampS. Background / off-image outer neighbors
 // contribute zero slope (flat extrapolation).
@@ -222,7 +231,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
       const float s =
           sideSlope(viewZ, objectId, iFg, iOutFg, outFgValid, clampS);
       const float pred = viewZ[iFg] + s;
-      const float tol = p.depthGapPx * px;
+      const float tol = depthTolAt(p, px, viewZ[iFg]);
       const float rn = clip->nearVz ? clip->nearVz[iBg] : 0.0f;
       const float rf = clip->farVz ? clip->farVz[iBg] : 0.0f;
       if ((rn > 0.0f && std::fabs(rn - pred) <= tol) ||
@@ -307,7 +316,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
       return 0;
     const float px = pixelSizeAt(sp, std::min(vzA, vzB));
     const float clampS = p.slopeClampPx * px;
-    const float tol = p.depthGapPx * px;
+    const float tol = depthTolAt(p, px, std::min(vzA, vzB));
     const float gapA = std::fabs(
         vzB - (vzA + contactSideSlope(viewZ, objectId, normal, sp, ia, iOutA,
                                       outAValid, clampS, p.borderGrazeCos)));
@@ -342,10 +351,19 @@ inline std::uint8_t classifyPair(const float* viewZ,
              owner | kCrackContactBit;
     }
     const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
+    // A same-section mixed-kind step that cleared the contact veto is STRONG
+    // evidence: the veto already demanded the full depth-gap threshold from
+    // both one-sided extrapolations, and an id change has no grazing-rim
+    // profile of its own to suppress (the weak/strong hysteresis exists for
+    // the same-id rim noise of the block below). Left weak, the crack only
+    // survived the prune with strong neighbors: a sphere in front of a bond
+    // of its own section lost its outline exactly where the bond was behind
+    // it, while the same sphere in front of another sphere (same id, the
+    // block below) kept it.
     return static_cast<std::uint8_t>(sameSection ? CrackClass::DepthGap
                                      : outlineSil ? CrackClass::Silhouette
                                                   : CrackClass::ObjectId) |
-           owner;
+           owner | (sameSection ? kCrackStrongBit : 0);
   }
 
   // 3. DepthGap: same id, both one-sided planar extrapolations miss the far
@@ -365,6 +383,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
     const float vzNear = std::min(vzA, vzB);
     const float px = pixelSizeAt(sp, vzNear);
     const float clampS = p.slopeClampPx * px;
+    const float tolGap = depthTolAt(p, px, vzNear);
     const float sA = sideSlope(viewZ, objectId, ia, iOutA, outAValid, clampS);
     const float sB = sideSlope(viewZ, objectId, ib, iOutB, outBValid, clampS);
     const float predA = vzA + sA;
@@ -395,7 +414,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
     // weak hysteresis crack.
     const bool ridge = sA < -0.25f * px && sB < -0.25f * px;
     const float weakRatio = std::max(0.0f, std::min(1.0f, p.weakGapRatio));
-    if (std::min(gapA, gapB) > weakRatio * p.depthGapPx * px) {
+    if (std::min(gapA, gapB) > weakRatio * tolGap) {
       const float g0 = std::fabs(vzB - vzA);
       // Parallel-pair strength on a's far side (pair outA-a) and b's far side
       // (pair b-outB): bg neighbor => that pair is a silhouette boundary =>
@@ -415,7 +434,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
         // STRONG: full absolute threshold + step dominance (the raw step must
         // dwarf the near side's own recession; see nearSideRecession). A
         // ridge crease never promotes (see the ridge comment above).
-        bool strong = !ridge && std::min(gapA, gapB) > p.depthGapPx * px;
+        bool strong = !ridge && std::min(gapA, gapB) > tolGap;
         if (strong && p.stepDominanceK > 0.0f) {
           const float rec = nearSideRecession(viewZ, objectId, W, H, ia, ib);
           strong = rec >= 0.0f && g0 > p.stepDominanceK * std::max(rec, px);
