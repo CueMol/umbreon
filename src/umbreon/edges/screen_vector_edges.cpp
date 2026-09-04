@@ -875,6 +875,30 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
 
     // Greedy best-opposite pairing per junction CLUSTER; partner[chain][end].
     constexpr float kContinueCos = -0.82f;  // ~145 deg or straighter
+    // Depth gate on a pair: the owner view-z at the two ends must be
+    // continuous by the same slope-clamp criterion that splits a run (Stage
+    // 4). Two lines that continue each other in 2D but sit on surfaces at
+    // different depths -- a far object's silhouette running on into a near
+    // object's contour where the two are nearly tangent -- are not one
+    // physical line: the woven "bar" would be split back into two runs at
+    // that very corner (taper, re-centering bite), while the near object's
+    // own continuing contour, demoted to a stem, gets clipped along the
+    // near-parallel far line for a whole clip radius (a gap in the outline
+    // with a stub beyond it). Rejecting the pair lets the same-depth
+    // continuation pair instead, and leaves the far line as the stem.
+    auto endVz = [&](const WeaveEnd& e, float& out) {
+      const ScreenChain& c = traced[e.chain];
+      if (c.edgeVz.empty() || c.edgeVz.size() != c.edgeClass.size())
+        return false;
+      out = c.edgeVz[e.end == 0 ? 0 : c.edgeVz.size() - 1];
+      return true;
+    };
+    auto endsVzContinuous = [&](const WeaveEnd& A, const WeaveEnd& B) {
+      float a, b2;
+      if (!endVz(A, a) || !endVz(B, b2)) return true;
+      const float px = pixelSizeAt(sp, std::min(a, b2));
+      return std::fabs(b2 - a) <= se.screenSlopeClampPx * px;
+    };
     std::vector<std::array<int, 2>> partnerChain(
         traced.size(), {-1, -1});
     std::vector<std::array<int, 2>> partnerEnd(traced.size(), {-1, -1});
@@ -892,6 +916,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
               dirOf(traced[ends[i].chain], ends[i].end);
           for (std::size_t j = i + 1; j < ends.size(); ++j) {
             if (used[j]) continue;
+            if (!endsVzContinuous(ends[i], ends[j])) continue;
             const std::array<float, 2> dj =
                 dirOf(traced[ends[j].chain], ends[j].end);
             const float cosT = di[0] * dj[0] + di[1] * dj[1];

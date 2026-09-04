@@ -16,6 +16,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
+#include "edges/screen_edge_common.hpp"
 #include "postprocess/fog.hpp"
 
 namespace umbreon {
@@ -955,6 +956,66 @@ struct AnisoSmoothingShader : StrokeShader {
   }
 };
 
+// Outside alignment: clamp the OUTER half-width to the room actually available
+// on that side. The offset band lays the whole width on the contour's far
+// side, which is "the background or the occluded surface behind" only as long
+// as nothing nearer sits within a stroke width of the crack: where the
+// background gap beside a far object's silhouette is thinner than the line,
+// the band runs on across the gap and onto the FOREGROUND object beyond -- a
+// bite out of a nearer sphere, carrying the far line's depth-fog color (the
+// foreground surface was never part of this contour). Per resampled vertex,
+// walk from the backbone along the outer normal over the hi-res plane view-z
+// AOV and stop at the first pixel whose surface is nearer than the vertex's
+// own view-z by more than the classifier's depth-gap tolerance
+// (screenDepthGapPx lateral pixels of depth -- a step the classifier itself
+// reads as a distinct occluder); the outer half-width then ends half a pixel
+// before it. The walk starts one FINAL pixel out, past the sub-pixel halo
+// where Chaikin/RDP may have pulled the backbone inside the owner: the
+// owner's own grazing rim is nearer than the vertex by far more than the
+// tolerance at high zoom and must never count, so no band is clamped below
+// that. The inner pad and centered ribbons are untouched, and a band that
+// meets no nearer surface is byte-identical.
+struct OuterRoomShader : StrokeShader {
+  const float* viewZ;  // hi-res plane view-z; 0 = background
+  int W, H;
+  float tolConst, tolSlope;  // tolerance = tolConst + tolSlope * vz
+  int side;                  // +1: outer side is +normal (left), -1: right
+  float skipPx;              // halo zone skipped at the walk start, hi-res px
+  OuterRoomShader(const float* z, int w, int h, float tc, float ts, int sd,
+                  float skip)
+      : viewZ(z), W(w), H(h), tolConst(tc), tolSlope(ts), side(sd),
+        skipPx(skip) {}
+  int shade(Stroke& s) const override {
+    const std::size_t n = s.verts.size();
+    if (n < 2) return 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      StrokeVertex& v = s.verts[i];
+      const Vec2& pa = s.verts[i == 0 ? 0 : i - 1].p;
+      const Vec2& pb = s.verts[i + 1 < n ? i + 1 : n - 1].p;
+      Vec2 t = pb - pa;
+      const float l = norm2(t);
+      if (l <= kZero) continue;
+      t = t * (1.0f / l);
+      // +normal (left of travel) is (-t.y, t.x), as in buildStrip.
+      const Vec2 out = side > 0 ? Vec2{-t.y, t.x} : Vec2{t.y, -t.x};
+      float& outer = side > 0 ? v.attr.leftThick : v.attr.rightThick;
+      if (outer <= skipPx) continue;
+      const float tol = tolConst + tolSlope * v.vz;
+      for (float d = skipPx; d <= outer; d += 1.0f) {
+        const int x = static_cast<int>(std::lround(v.p.x + out.x * d));
+        const int y = static_cast<int>(std::lround(v.p.y + out.y * d));
+        if (x < 0 || y < 0 || x >= W || y >= H) break;
+        const float sz = viewZ[static_cast<std::size_t>(y) * W + x];
+        if (sz > 0.0f && sz < v.vz - tol) {
+          outer = std::max(skipPx, d - 0.5f);
+          break;
+        }
+      }
+    }
+    return 0;
+  }
+};
+
 // Build a parametric Stroke from a visibility-tagged projected polyline, stamping
 // the resolved per-chain default attribute into every vertex (Freestyle
 // Operators::createStroke, Operators.cpp:1082-1155). Accumulates 2D arc length to
@@ -1212,6 +1273,24 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
   const float stepPx =
       std::max(1.0f, static_cast<float>(se.resampleStepPx) * ssScale);
 
+  // Outer-room clamp inputs (OuterRoomShader): the hi-res plane view-z AOV
+  // the screen source classified from, and the classifier's depth-gap
+  // tolerance at hi-res pixel size (pixelSizeAt is a constant under ortho and
+  // proportional to view-z under perspective; read the coefficient off
+  // vz = 1). A source without the AOV skips the clamp.
+  const float* roomViewZ =
+      frame.viewZ.size() == static_cast<std::size_t>(W) * H
+          ? frame.viewZ.data()
+          : nullptr;
+  float roomTolConst = 0.0f, roomTolSlope = 0.0f;
+  if (roomViewZ != nullptr) {
+    const ScreenProj sp = makeScreenProj(scene.camera, W, H);
+    const float c1 = std::max(0.0f, se.screenDepthGapPx) *
+                     screen_edge::pixelSizeAt(sp, 1.0f);
+    roomTolConst = sp.ortho ? c1 : 0.0f;
+    roomTolSlope = sp.ortho ? 0.0f : c1;
+  }
+
   std::vector<StyledStrip> strips;
   std::vector<NodeDot> nodeDots;    // --stroke-node-dots overlay (else empty)
   std::vector<DebugPoly> debugPolys;
@@ -1342,6 +1421,14 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     if (scene.fog.enabled && !se.edgesOnly)
       shaders.push_back(std::make_unique<FogShader>(
           scene.fog, opt.transparentBackground));
+    // Outside alignment, after every shader that sets widths (taper, the
+    // junction re-centering): clamp the outer half-width to the room before
+    // the nearest foreground surface, so the band never paints onto an
+    // object in front of the contour (OuterRoomShader).
+    if (in.outsideSide != 0 && roomViewZ != nullptr)
+      shaders.push_back(std::make_unique<OuterRoomShader>(
+          roomViewZ, W, H, roomTolConst, roomTolSlope,
+          in.outsideSide > 0 ? 1 : -1, 1.0f * ssScale));
     for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
 
     // Build the variable-width ribbon strips (one per maximal visible run).

@@ -109,8 +109,17 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    covering the sub-pixel halo where Chaikin/RDP pull the backbone off the
    crack line and keeping the round-cap fan radius nonzero), so a thick
    line never thins the object whose contour it draws -- the ink lands on
-   the background or on the occluded surface behind instead. Crease runs (a
-   surface fold, no occluded side) always draw centered.
+   the background or on the occluded surface behind instead. It never lands
+   on a surface in FRONT of the contour: per resampled vertex the draw stage
+   walks the outer normal over the hi-res view-z AOV and clamps the outer
+   half-width at the first pixel nearer than the vertex by more than the
+   depth-gap tolerance (`OuterRoomShader`), so where the background gap
+   beside a far object's silhouette is thinner than the line, the band
+   stops at the foreground object instead of running across the gap onto
+   it (with depth fog that bite carried the far line's fog color). The walk
+   skips the first final pixel, so the owner's own grazing rim inside the
+   smoothing halo never counts. Crease runs (a surface fold, no occluded
+   side) always draw centered.
    JUNCTION HANDLING. The TOPOLOGY mechanisms below (notch bridge,
    draw-span coalescing, junction weaving and re-wiring) run for EVERY
    alignment: center and outside share one extracted line structure --
@@ -172,7 +181,17 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      corners within a 2 px Chebyshev radius are clustered (union-find) and
      pairing runs once per cluster over all its ends. Pairs joining ends
      on different corners keep both endpoints and insert a short bridge
-     segment carrying the previous edgel's attributes.
+     segment carrying the previous edgel's attributes. A pair is DEPTH
+     GATED: the owner view-z at the two ends must be continuous by the same
+     slope-clamp test that splits a run. A far object's silhouette running
+     on into a near object's contour where the two are nearly tangent is
+     straight in 2D but not one physical line; woven, it would be split
+     back into two runs at that corner (a re-centering bite into the near
+     object) while the near object's own continuing contour, demoted to a
+     stem, got clipped along the near-parallel far line for a whole clip
+     radius (a gap in the outline with a stub beyond it). Rejecting the
+     pair lets the same-depth continuation weave and leaves the far line
+     as the stem.
      Each junction records the woven bar's local direction, band side and
      style key (BarInfo, registered for every corner of the cluster) for
      the stem handling below.

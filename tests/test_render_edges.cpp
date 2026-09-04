@@ -419,5 +419,169 @@ int main() {
     s.check("S3 contact on: interior stays clean", minR(on, 32, 32, 2) > 0.9f);
   }
 
+  // ===== S4: the outside-aligned band stops at a nearer surface =====
+  // A far cylinder B (same group) stands 2 px right of the near sphere A's
+  // rim with only background between them. B's silhouette band (6 px, laid
+  // on the background side by the outside alignment) is wider than the gap
+  // and must end at A's rim instead of running onto A: before the
+  // OuterRoomShader it painted a 4 px bite over the nearer sphere -- black,
+  // or with depth fog the far line's fog white. World (0.4, 0), A's rim, is
+  // px 38.4; B's rim (0.525, 0) is px 40.4. A is flat-shaded (flatOutline
+  // material), so every pixel of A must equal A's center color.
+  {
+    auto roomScene = [&](bool fog) {
+      umbreon::Scene sc;
+      sc.camera = makeOrthoCam();  // ortho, frames [-2,2]^2; camera at z=10
+      sc.background = {1, 1, 1};
+      umbreon::Sphere a;  // near, group 1
+      a.center = {-0.6f, 0, 0};
+      a.radius = 1.0f;
+      a.color = pigment;
+      a.group = 1;
+      sc.spheres.push_back(a);
+      umbreon::Cylinder b;  // far, same group, 2 px of background from A
+      b.p0 = {1.125f, -2.5f, -3.0f};
+      b.p1 = {1.125f, 2.5f, -3.0f};
+      b.radius = 0.6f;
+      b.color = {0.9f, 0.9f, 0.3f, 1.0f};
+      b.group = 1;
+      sc.cylinders.push_back(b);
+      if (fog) {  // A (view-z <= 10) unfogged, B (view-z 13) fully white
+        sc.fog.enabled = true;
+        sc.fog.color = {1, 1, 1};
+        sc.fog.start = 10.5f;
+        sc.fog.end = 12.0f;
+      }
+      umbreon::EdgeStyle es;
+      umbreon::EdgeClassStyle& sil =
+          es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+      sil.enabled = true;  // black, opacity 1 (defaults)
+      sil.width = 6.0f;    // wider than the 2 px gap
+      sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+      sc.groupEdgeStyle[1] = es;
+      return sc;
+    };
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.strokeEdges.enable = true;
+    auto px = [](const umbreon::FrameResult& f, int x, int y, int c) {
+      return f.color[(static_cast<std::size_t>(y) * 64 + x) * 4 + c];
+    };
+    // Every pixel of the window matches A's flat color (sampled at A's
+    // center, px (22, 32)): no ink of any color over A's rim interior.
+    auto flatLikeA = [&](const umbreon::FrameResult& f, int x0, int x1,
+                         int y0, int y1) {
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          for (int c = 0; c < 3; ++c)
+            if (std::fabs(px(f, x, y, c) - px(f, 22, 32, c)) > 0.05f)
+              return false;
+      return true;
+    };
+    auto minR = [&](const umbreon::FrameResult& f, int x0, int x1, int y0,
+                    int y1) {
+      float m = 1.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) m = std::min(m, px(f, x, y, 0));
+      return m;
+    };
+    // The probe window is 2-3 px inside A's rim: B's unclamped band reached
+    // px 34.9, A's own band (pad 0.5 px inside the rim) starts near 37.9.
+    const umbreon::FrameResult nf = umbreon::render(roomScene(false), o);
+    s.check("S4 room: A's color is a mid tone (probe is meaningful)",
+            px(nf, 22, 32, 0) > 0.1f && px(nf, 22, 32, 0) < 0.9f);
+    s.check("S4 room: the gap between A and B is inked",
+            minR(nf, 39, 40, 30, 34) < 0.5f);
+    s.check("S4 room: no black band over A's rim interior",
+            flatLikeA(nf, 35, 36, 30, 34));
+    const umbreon::FrameResult ff = umbreon::render(roomScene(true), o);
+    s.check("S4 room: no fog-white band over A's rim interior",
+            flatLikeA(ff, 35, 36, 30, 34));
+    s.check("S4 room: A's own rim is still outlined under fog",
+            minR(ff, 38, 43, 30, 34) < 0.5f);
+  }
+
+  // ===== S5: junction weaving does not join lines at different depths =====
+  // A near capsule C (cylinder + end sphere, one group) over a far cylinder
+  // D, 12 units deeper, whose top silhouette runs 0.05 above C's bottom edge:
+  // C covers D's edge under the stick, and where the sphere's arc meets D's
+  // exposed edge three cracks join -- the sphere's arc (Silhouette, near),
+  // the arc's continuation over D into the stick's bottom edge (DepthGap,
+  // near) and D's top edge against the background (Silhouette, far). In 2D
+  // the far edge continues the near contour almost straight while the arc
+  // arrives curving, so straightness alone wove far + near into one bar: the
+  // bar was split back into two runs at the corner and the re-centering taper
+  // at that split painted a bite of ink INTO the sphere, while the sphere's
+  // own arc, demoted to a stem, was clipped along the near-parallel bar. The
+  // depth gate rejects the far + near pair, so the near contour weaves with
+  // itself and the far edge becomes the stem. Frame: ortho [-2,2]^2 over
+  // 128 px (32 px per unit), camera at z = 10; the sphere is flat-shaded.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Cylinder c;  // near stick, group 1
+    c.p0 = {-3.0f, 0.0f, 0.0f};
+    c.p1 = {0.0f, 0.0f, 0.0f};
+    c.radius = 1.0f;
+    c.color = pigment;
+    c.group = 1;
+    sc.cylinders.push_back(c);
+    umbreon::Sphere cap;  // its rounded end, center px (64, 64), r 32 px
+    cap.center = {0.0f, 0.0f, 0.0f};
+    cap.radius = 1.0f;
+    cap.color = pigment;
+    cap.group = 1;
+    sc.spheres.push_back(cap);
+    umbreon::Cylinder d;  // far stick: top edge y = -0.95, view-z 22
+    d.p0 = {-0.5f, -1.95f, -12.0f};
+    d.p1 = {3.0f, -1.95f, -12.0f};
+    d.radius = 1.0f;
+    d.color = {0.9f, 0.9f, 0.3f, 1.0f};
+    d.group = 1;
+    sc.cylinders.push_back(d);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 6.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 128;
+    o.height = 128;
+    o.strokeEdges.enable = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto px = [&](int x, int y, int c2) {
+      return f.color[(static_cast<std::size_t>(y) * 128 + x) * 4 + c2];
+    };
+    auto minR = [&](int x0, int x1, int y0, int y1) {
+      float m = 1.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) m = std::min(m, px(x, y, 0));
+      return m;
+    };
+    // Every pixel of the window matches the sphere's flat color at its
+    // center (64, 64): no ink inside the sphere.
+    auto flatLikeSphere = [&](int x0, int x1, int y0, int y1) {
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          for (int c2 = 0; c2 < 3; ++c2)
+            if (std::fabs(px(x, y, c2) - px(64, 64, c2)) > 0.05f) return false;
+      return true;
+    };
+    // The junction sits at px (75, 93); the woven far + near bar's taper
+    // used to paint the rows just above it, inside the sphere.
+    s.check("S5 weave: no bite of ink inside the sphere at the junction",
+            flatLikeSphere(70, 79, 88, 90));
+    // The far edge (a stem now) is still outlined, right of the sphere.
+    s.check("S5 weave: far edge stem still outlined",
+            minR(108, 118, 89, 93) < 0.5f);
+    // The near stick's bottom edge stays outlined left of the sphere.
+    s.check("S5 weave: stick bottom edge outlined",
+            minR(20, 26, 97, 99) < 0.5f);
+  }
+
   return s.report();
 }
