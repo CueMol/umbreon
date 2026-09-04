@@ -2310,9 +2310,14 @@ int main() {
       }
     }
     // Control: the same points NOT flagged closed keep the open-polyline
-    // ends -- the round cap fans bulge inside the loop at the seam.
-    s.check("closed loop draw: open control still caps into the seam",
-            seamInk(render(16, true, false)) > 0);
+    // ends -- with butt caps the turning seam shows its wedge crack.
+    {
+      const umbreon::FrameResult fr = render(16, false, false);
+      float mn, mx;
+      ring(fr, rad + 4.0f, mn, mx);
+      s.check("closed loop draw: open control leaves the seam crack",
+              mx > 0.5f);
+    }
   }
 
   // (20h) end clip zone (draw stage): the stem end clip culls the ink beyond
@@ -2370,6 +2375,58 @@ int main() {
     // Unbounded control (zone 0): the far leg is culled.
     s.check("end clip zone: unbounded control culls the far leg",
             lumAt(render(0.0f), 14, 27) > 0.9f);
+  }
+
+  // (20i) round cap on an offset band (draw stage): the semicircle over the
+  // band's end cross-section, centered on the band's midline. The fan used
+  // to sit on the backbone with its radius lerping from the outer width to
+  // the pad, a spiral whose outer edge curled around the backbone -- every
+  // free end of an occlusion contour ended in a hook. A horizontal chain
+  // with the band on its +y side, thickness 6: band y in [16, 22], free
+  // end at x 24.5, so the cap is the half-disc of radius 3 around
+  // (24.5, 19). Checked at the chain's END (+x travel, band on the left)
+  // and at its START (the same points reversed: -x travel, band on the
+  // right) -- the two caps take their normal from the travel direction.
+  for (bool atEnd : {true, false}) {
+    umbreon::FrameResult fr;
+    fr.width = 40;
+    fr.height = 32;
+    fr.color.assign(static_cast<std::size_t>(40) * 32 * 4, 1.0f);
+    umbreon::Scene scene;
+    umbreon::RenderOptions opt;
+    opt.width = 40;
+    opt.height = 32;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.thickness = 6;
+    opt.strokeEdges.roundCap = true;
+    std::vector<umbreon::StrokeChainInput> chain(1);
+    if (atEnd) {
+      chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
+                      {24.5f, 16.5f, 10.0f, 1.0f, true}};
+      chain[0].outsideSide = 1;
+    } else {
+      chain[0].pts = {{24.5f, 16.5f, 10.0f, 1.0f, true},
+                      {8.5f, 16.5f, 10.0f, 1.0f, true}};
+      chain[0].outsideSide = -1;
+    }
+    umbreon::renderStrokeChains(fr, scene, opt, chain);
+    auto lumAt = [&](int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * 40 + x) * 4];
+    };
+    const std::string tag = atEnd ? "offset cap (end): " : "offset cap (start): ";
+    s.check(tag + "the band lies below the backbone",
+            lumAt(16, 20) < 0.1f && lumAt(16, 14) > 0.9f);
+    s.check(tag + "the cap reaches out along the band's midline",
+            lumAt(27, 19) < 0.1f);
+    s.check(tag + "no hook past the inner edge (above the midline)",
+            lumAt(27, 17) > 0.9f);
+    s.check(tag + "symmetric about the band's midline",
+            lumAt(26, 17) < 0.1f && lumAt(26, 21) < 0.1f &&
+                lumAt(27, 21) > 0.9f);
+    // Nothing spills behind the endpoint on the inner side (the old spiral
+    // ended near the backbone; the new cap must not cross it either).
+    s.check(tag + "inner pad side stays clean", lumAt(25, 15) > 0.9f);
   }
 
   // (20g) junction taper + fold re-centering (draw stage). A flagged end

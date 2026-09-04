@@ -121,7 +121,11 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    covering the sub-pixel halo where Chaikin/RDP pull the backbone off the
    crack line and keeping the round-cap fan radius nonzero), so a thick
    line never thins the object whose contour it draws -- the ink lands on
-   the background or on the occluded surface behind instead. It never lands
+   the background or on the occluded surface behind instead. A round cap
+   on the offset band is the semicircle over the band's end cross-section,
+   centered on the band's midline (a fan around the backbone whose radius
+   lerped from the outer width to the pad drew a spiral that curled into a
+   hook at every free end of an occlusion contour). It never lands
    on a surface in FRONT of the contour: per resampled vertex the draw stage
    walks the outer normal over the hi-res view-z AOV and clamps the outer
    half-width at the first pixel nearer than the vertex by more than the

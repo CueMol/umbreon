@@ -411,9 +411,15 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
 }
 
 // Half-disk cap fans beyond the run's two endpoints (--stroke-cap round):
-// sweep from the left offset through the OUTWARD pole to the right offset,
-// radius lerping between the endpoint's left/right half-widths (a tapered
-// end keeps its thin tip). capStart/capEnd let the caller skip an end: a
+// the SEMICIRCLE over the band's end cross-section -- centered on the
+// band's midline (the backbone offset by half the left/right difference),
+// radius half the band width -- swept from the left offset through the
+// OUTWARD pole to the right offset. A symmetric band gets the legacy fan
+// around the backbone; an offset band (outside alignment) gets a proper
+// rounded end. The fan used to sit on the backbone with its radius lerping
+// from the outer width to the inner pad, which drew a spiral: the outer
+// edge curled around the backbone into a hook at every free end of an
+// occlusion contour. capStart/capEnd let the caller skip an end: a
 // junction-tapered end (outside alignment) must stay a butt -- its cap
 // would poke a half-width past the line it meets.
 void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
@@ -427,18 +433,22 @@ void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
     const float l = norm2(d);
     return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
   };
+  // `travel` is the backbone direction at the end (L is on its LEFT, as in
+  // the strip builders); `out` points away from the stroke.
+  auto cap = [&](std::size_t i, const Vec2& travel, const Vec2& out) {
+    const Vec2 sd = orth(travel);
+    const Vec2 c = bb[i] + sd * (0.5f * (L[i] - R[i]));
+    const float r = 0.5f * (L[i] + R[i]);
+    appendArcFan(c, sd * r, Vec2{-sd.x * r, -sd.y * r}, out, i, fanPts,
+                 fanSrc);
+  };
   if (capStart) {  // start: outward = against the first segment
     const Vec2 d = unit(bb[1] - bb[0]);
-    const Vec2 sd = orth(d);
-    appendArcFan(bb[0], sd * L[0], Vec2{-sd.x * R[0], -sd.y * R[0]},
-                 Vec2{-d.x, -d.y}, 0, fanPts, fanSrc);
+    cap(0, d, Vec2{-d.x, -d.y});
   }
   if (capEnd) {  // end: outward = along the last segment
     const Vec2 d = unit(bb[n - 1] - bb[n - 2]);
-    const Vec2 sd = orth(d);
-    appendArcFan(bb[n - 1], sd * L[n - 1],
-                 Vec2{-sd.x * R[n - 1], -sd.y * R[n - 1]}, d, n - 1, fanPts,
-                 fanSrc);
+    cap(n - 1, d, d);
   }
 }
 
