@@ -742,6 +742,79 @@ int main() {
             mx < 0.5f);
   }
 
+  // ===== S10: a small capsule behind a bigger one, junctioned twice =====
+  // The rear capsule's silhouette T's into the front capsule's outline at
+  // its top and bottom edges. Each stem end is clipped against the plane
+  // through the bar there; the upper bar is the front capsule's CURVED cap
+  // rim, and the rear band, wrapping around the small capsule to its lower
+  // edge, lay beyond that plane inside the clip's influence radius: a white
+  // gap opened between the front band and the rear band (the tRNA dashed
+  // line). The cull is confined to the stem's own extension zone now.
+  // Ortho [-2,2]^2 over 256 px (64 px/unit): front capsule A, axis x = -0.5
+  // from y -0.6 to 0.6, r 0.5 (right edge x = 0 -> px 128, its 31.5 px
+  // outside band ending near px 159); rear capsule B at z -2, axis y = 0.65
+  // from x -0.3 to 1.2, r 0.35 (lower edge y = 0.3 -> px row 109, band
+  // below it). The gap was the white triangle at x 159-163, y 109-113.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    auto capsule = [&](float x0, float y0, float x1, float y1, float z,
+                       float r) {
+      umbreon::Cylinder c;
+      c.p0 = {x0, y0, z};
+      c.p1 = {x1, y1, z};
+      c.radius = r;
+      c.color = pigment;
+      c.open = false;
+      c.group = 1;
+      sc.cylinders.push_back(c);
+      for (int e = 0; e < 2; ++e) {
+        umbreon::Sphere sp;
+        sp.center = e == 0 ? c.p0 : c.p1;
+        sp.radius = r;
+        sp.color = pigment;
+        sp.group = 1;
+        sc.spheres.push_back(sp);
+      }
+    };
+    capsule(-0.5f, -0.6f, -0.5f, 0.6f, 0.0f, 0.5f);
+    capsule(-0.3f, 0.65f, 1.2f, 0.65f, -2.0f, 0.35f);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 32.0f;  // half 16: clip radius 66 px reaches the lower band
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto maxR = [&](int x0, int x1, int y0, int y1) {
+      float m = 0.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          m = std::max(m, f.color[(static_cast<std::size_t>(y) * 256 + x) * 4]);
+      return m;
+    };
+    // The rear band just below B's lower edge, right of A's band: inked
+    // without a gap (the old cull left a white triangle here).
+    s.check("S10 twice-junctioned stem: rear band below B is unbroken",
+            maxR(159, 163, 109, 112) < 0.5f);
+    // Further along the same band, and the band above B's upper edge
+    // (the other clip), stay inked as before.
+    s.check("S10 twice-junctioned stem: rear band below B inked further on",
+            maxR(164, 200, 110, 114) < 0.5f);
+    s.check("S10 twice-junctioned stem: rear band above B is unbroken",
+            maxR(160, 200, 52, 56) < 0.5f);
+  }
+
   // ===== S8: completeness over a random ball-and-stick cluster =====
   // Every genuine occlusion step between primitives of ONE section must be
   // inked in Full mode. From the render's own G-buffer take each adjacent

@@ -232,7 +232,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      met line through the foreign cracks it finds, estimates its outer-band
      side from their owner bits, extends the stem to touch it and clips
      beyond it. A free end with nothing in reach (a genuine cusp tail)
-     keeps its crisp offset tip. Clipped ends draw no round cap.
+     keeps its crisp offset tip. Clipped ends draw no round cap. The
+     cull is confined to the stem's own extension zone (one band width to
+     either side of the line through its endpoint along its outward
+     direction, `StrokeEndClip::zone`): the plane only approximates the
+     met line locally, and a stem that wraps around a small object and
+     comes back (a capsule's silhouette behind a bigger capsule,
+     junctioned at both ends) crossed it again inside the influence
+     radius, where its band was culled into a white gap.
    - TAPER fallback: a run end whose neighbor run has a different voted
      side, a deep fold at a run boundary, a junction with no woven bar
      (e.g. a Y of three stems) and the closed-chain seam wrap still blend

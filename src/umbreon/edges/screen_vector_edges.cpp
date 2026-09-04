@@ -1364,10 +1364,17 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   // Coordinates are STROKE coords. bandN = unit normal toward the bar's
   // band; (0, 0) = unknown -> a small slack past the backbone (the bar's
   // ink covers any overshoot when its band faces the stem; otherwise the
-  // sub-px slack is invisible).
+  // sub-px slack is invisible). (endX, endY) is the stem's endpoint and
+  // (outX, outY) its unit outward direction: the cull is confined to the
+  // stem's straight extension zone (one band width to either side of that
+  // line), because the plane only approximates the met line locally -- a
+  // curved bar leaves it inside the influence radius, and a stem wrapping
+  // around a small object and coming back crossed it again far from the
+  // junction (StrokeEndClip::zone).
   auto stemClip = [&](float barPx, float barPy, float barDx, float barDy,
-                      float bandNx, float bandNy, float outX, float outY,
-                      CrackClass barCls, std::uint16_t barGrp, float stemHalf) {
+                      float bandNx, float bandNy, float endX, float endY,
+                      float outX, float outY, CrackClass barCls,
+                      std::uint16_t barGrp, float stemHalf) {
     StrokeEndClip clip;
     float nx = -barDy, ny = barDx;
     if (nx * outX + ny * outY < 0.0f) {
@@ -1389,6 +1396,11 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     clip.nx = nx;
     clip.ny = ny;
     clip.radius = 4.0f * std::max(halfBar, stemHalf) + 2.0f * ssScale;
+    clip.ex = endX;
+    clip.ey = endY;
+    clip.ox = outX;
+    clip.oy = outY;
+    clip.zone = 2.0f * stemHalf + 2.0f * ssScale;
     return clip;
   };
 
@@ -1714,8 +1726,9 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
               const ScreenChainVert& v =
                   end == 0 ? w.pts.front() : w.pts.back();
               clip = stemClip(v.x, v.y, bar->second.dx, bar->second.dy,
-                              bar->second.bnx, bar->second.bny, -din[0],
-                              -din[1], bar->second.cls, bar->second.grp, rh);
+                              bar->second.bnx, bar->second.bny, v.x, v.y,
+                              -din[0], -din[1], bar->second.cls,
+                              bar->second.grp, rh);
             } else {
               taper = true;
               extend = extJunction;
@@ -1723,16 +1736,16 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           } else if (deg <= 1) {
             const auto h = probeFreeEnd(wi, end);
             if (h.dist >= 0.0f) {
-              clip = stemClip(h.px, h.py, h.dx, h.dy, h.bnx, h.bny, -din[0],
-                              -din[1], h.cls, h.grp, rh);
+              const ScreenChainVert& ev =
+                  end == 0 ? w.pts.front() : w.pts.back();
+              clip = stemClip(h.px, h.py, h.dx, h.dy, h.bnx, h.bny, ev.x, ev.y,
+                              -din[0], -din[1], h.cls, h.grp, rh);
               // Extend exactly to the intersection of the outward ray with
               // the fitted met line (near-parallel: fall back to the probe
               // reach; clamp against runaway grazing intersections).
               const float ox = -din[0], oy = -din[1];
               const float nx = -h.dy, ny = h.dx;
               const float denom = ox * nx + oy * ny;
-              const ScreenChainVert& ev =
-                  end == 0 ? w.pts.front() : w.pts.back();
               float t = h.dist;
               if (std::fabs(denom) > 0.2f)
                 t = ((h.px - ev.x) * nx + (h.py - ev.y) * ny) / denom;

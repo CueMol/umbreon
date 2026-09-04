@@ -2315,6 +2315,63 @@ int main() {
             seamInk(render(16, true, false)) > 0);
   }
 
+  // (20h) end clip zone (draw stage): the stem end clip culls the ink beyond
+  // its plane only within the stem's own extension zone -- the plane is a
+  // local approximation of the met line. A U-shaped stem whose start is
+  // clipped by a 45-degree plane: the far leg comes back BEYOND that plane
+  // inside the influence radius (a small capsule's silhouette behind a
+  // bigger one, junctioned at both ends) and must keep its band; the
+  // overshoot beyond the plane at the start itself is still culled.
+  {
+    auto render = [&](float zone) {
+      umbreon::FrameResult fr;
+      fr.width = 56;
+      fr.height = 48;
+      fr.color.assign(static_cast<std::size_t>(56) * 48 * 4, 1.0f);
+      umbreon::Scene scene;
+      umbreon::RenderOptions opt;
+      opt.width = 56;
+      opt.height = 48;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.thickness = 6;  // outside: 5.5 px out, 0.5 px pad
+      std::vector<umbreon::StrokeChainInput> chain(1);
+      // +x, +y, -x legs: the left (+normal) band lies INSIDE the U.
+      chain[0].pts = {{10.5f, 10.5f, 10.0f, 1.0f, true},
+                      {40.5f, 10.5f, 10.0f, 1.0f, true},
+                      {40.5f, 30.5f, 10.0f, 1.0f, true},
+                      {10.5f, 30.5f, 10.0f, 1.0f, true}};
+      chain[0].outsideSide = 1;
+      umbreon::StrokeEndClip& c = chain[0].clipStart;
+      c.enabled = true;
+      c.px = 10.5f;  // plane through the start, tilted 45 degrees:
+      c.py = 10.5f;  // "beyond" = below the diagonal y - x > 0
+      c.nx = -0.70710678f;
+      c.ny = 0.70710678f;
+      c.radius = 40.0f;  // reaches the far leg (20 px away)
+      c.ex = 10.5f;
+      c.ey = 10.5f;
+      c.ox = -1.0f;  // outward = -x (the stem arrives from +x)
+      c.oy = 0.0f;
+      c.zone = zone;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      return fr;
+    };
+    auto lumAt = [&](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    const umbreon::FrameResult z = render(8.0f);  // 2 * half + 2
+    s.check("end clip zone: far leg beyond the plane keeps its band",
+            lumAt(z, 14, 27) < 0.5f);
+    s.check("end clip zone: overshoot beyond the plane at the start culled",
+            lumAt(z, 11, 14) > 0.9f);
+    s.check("end clip zone: start band on the near side of the plane inked",
+            lumAt(z, 14, 12) < 0.5f);
+    // Unbounded control (zone 0): the far leg is culled.
+    s.check("end clip zone: unbounded control culls the far leg",
+            lumAt(render(0.0f), 14, 27) > 0.9f);
+  }
+
   // (20g) junction taper + fold re-centering (draw stage). A flagged end
   // blends the offset band back to the symmetric ribbon over one stroke
   // width, so the ribbon arrives centered where it meets other lines; a

@@ -95,18 +95,29 @@ using Strip = std::vector<Vec2>;
 // constant `opacity` applies to the whole strip -- the exact legacy path.
 // Per-pixel end-clip disc (StrokeEndClip resolved for rasterization): a pixel
 // within r2 of (px, py) whose offset has a positive dot with (nx, ny) is
-// culled. nClips == 0 on every legacy path.
+// culled -- when zone > 0 only within `zone` px of the stem's extension
+// line through (ex, ey) along (ox, oy) (see StrokeEndClip). nClips == 0 on
+// every legacy path.
 struct ClipDisc {
   float px = 0.0f, py = 0.0f;
   float nx = 0.0f, ny = 0.0f;
   float r2 = 0.0f;
+  float ex = 0.0f, ey = 0.0f;
+  float ox = 0.0f, oy = 0.0f;
+  float zone = 0.0f;
 };
 
 inline bool clippedPx(float x, float y, const ClipDisc* clips, int nClips) {
   for (int c = 0; c < nClips; ++c) {
     const float dx = x - clips[c].px, dy = y - clips[c].py;
     if (dx * dx + dy * dy > clips[c].r2) continue;
-    if (dx * clips[c].nx + dy * clips[c].ny > 0.0f) return true;
+    if (dx * clips[c].nx + dy * clips[c].ny <= 0.0f) continue;
+    if (clips[c].zone > 0.0f) {
+      const float ex = x - clips[c].ex, ey = y - clips[c].ey;
+      if (std::fabs(ex * clips[c].oy - ey * clips[c].ox) > clips[c].zone)
+        continue;
+    }
+    return true;
   }
   return false;
 }
@@ -1505,6 +1516,11 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       chainClips[nChainClips].nx = ec->nx;
       chainClips[nChainClips].ny = ec->ny;
       chainClips[nChainClips].r2 = ec->radius * ec->radius;
+      chainClips[nChainClips].ex = ec->ex;
+      chainClips[nChainClips].ey = ec->ey;
+      chainClips[nChainClips].ox = ec->ox;
+      chainClips[nChainClips].oy = ec->oy;
+      chainClips[nChainClips].zone = ec->zone;
       ++nChainClips;
     }
     buildStrokeReps(

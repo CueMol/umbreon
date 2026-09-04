@@ -52,6 +52,18 @@ struct StrokeEndClip {
   float px = 0.0f, py = 0.0f;  // anchor, hi-res px
   float nx = 0.0f, ny = 0.0f;  // unit normal; ink beyond it is culled
   float radius = 0.0f;         // influence radius around the anchor
+  // The stem's own END ZONE: ink is culled only within `zone` px of the
+  // line through the stem endpoint (ex, ey) along its outward direction
+  // (ox, oy) -- the straight extension the stem's band can overshoot
+  // along. The plane is a LOCAL approximation of the met line: a curved
+  // bar bends away inside the influence radius, and a stem that wraps
+  // around and comes back (the silhouette of a small capsule behind a
+  // bigger one, junctioned at both ends) crossed the plane again far from
+  // the junction, where its band was culled into a white gap. zone <= 0 =
+  // unbounded.
+  float ex = 0.0f, ey = 0.0f;
+  float ox = 0.0f, oy = 0.0f;
+  float zone = 0.0f;
 };
 
 // One chain handed to the shared draw stage. styleSlot indexes EdgeStyle::cls[]
