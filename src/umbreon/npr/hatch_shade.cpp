@@ -449,7 +449,13 @@ bool applyHatchLook(HatchOptions& opt, const std::string& name) {
       opt.inkColor[k] = 0.0f;
       opt.paperColor[k] = 1.0f;
     }
-    opt.albedoQuantize = 4;
+    // The flat fill is each section's OWN color, exactly. A per-channel
+    // posterize (albedoquant) merges neighbouring hues into one lattice
+    // color -- two helices colored hsb(0, 0.3, 1) and hsb(29, 0.3, 1) both
+    // landed on (1, 0.75, 0.75) at 4 steps -- which breaks the molecular
+    // color coding the fill exists to carry. It stays available as an
+    // opt-in through the spec key.
+    opt.albedoQuantize = 0;
     opt.inkMinContrast = 0.35f;
     opt.inkShadeDark = 1.0f;
     hatchPresetTone("screentone-60", opt.tone);
