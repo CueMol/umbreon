@@ -47,23 +47,18 @@ struct StrokePoint {
 // rasterization time. The stem keeps its offset band and terminates flush
 // against the far edge of the met line's ink instead of poking past it or
 // re-centering (a taper visibly necks shallow-angle junctions).
+// A chain end that MEETS another line: a junction stem on a woven bar, or a
+// free end the crack-field probe connected to a line. The draw stage extends
+// the raster backbone by the pad past the vector endpoint (so a smoothing
+// deviation of the met line cannot open a pinhole) and draws no round cap
+// there. What that overshoot may paint is decided per pixel by the depth
+// permission of the offset band (it never paints over a surface nearer than
+// its own contour; see DepthPermit in stroke_render.cpp), not by any clip
+// geometry: the earlier clip planes, discs, zones and parallel guards were
+// local approximations of the met line that failed whenever the stem's own
+// body, a curved bar or a mis-fitted line re-entered them.
 struct StrokeEndClip {
   bool enabled = false;
-  float px = 0.0f, py = 0.0f;  // anchor, hi-res px
-  float nx = 0.0f, ny = 0.0f;  // unit normal; ink beyond it is culled
-  float radius = 0.0f;         // influence radius around the anchor
-  // The stem's own END ZONE: ink is culled only within `zone` px of the
-  // line through the stem endpoint (ex, ey) along its outward direction
-  // (ox, oy) -- the straight extension the stem's band can overshoot
-  // along. The plane is a LOCAL approximation of the met line: a curved
-  // bar bends away inside the influence radius, and a stem that wraps
-  // around and comes back (the silhouette of a small capsule behind a
-  // bigger one, junctioned at both ends) crossed the plane again far from
-  // the junction, where its band was culled into a white gap. zone <= 0 =
-  // unbounded.
-  float ex = 0.0f, ey = 0.0f;
-  float ox = 0.0f, oy = 0.0f;
-  float zone = 0.0f;
 };
 
 // One chain handed to the shared draw stage. styleSlot indexes EdgeStyle::cls[]

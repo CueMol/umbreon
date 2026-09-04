@@ -228,31 +228,40 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      chain is split at the junction and the stem is spliced onto the
      continuing half; the remaining half becomes a stem. Iterated to a
      fixed point so long chains resolve every junction.
-   - STEM CLIP: a chain end still sitting at a junction after the weaving
-     is a true stem. It keeps its offset band, is EXTENDED into the
-     junction (the met line's drawn backbone can sit a few px off its
-     lattice cracks after smoothing) and its ink is CULLED beyond the bar's
-     far ink boundary (a half-plane + influence-radius test at
-     rasterization time): the stem terminates flush against the bar with no
-     spur, no gap, and no re-centering (a taper visibly necked
-     shallow-angle junctions). A degree-1 free end left short of a line by
-     the weak-tail trims / bg-clearance kills is connected the same way:
-     the crack-field probe (a 45-degree cone, ~half-width reach) fits the
-     met line through the foreign cracks it finds, estimates its outer-band
-     side from their owner bits, extends the stem to touch it and clips
-     beyond it. A free end with nothing in reach (a genuine cusp tail)
-     keeps its crisp offset tip. Clipped ends draw no round cap. The
-     cull is confined to the stem's own extension zone (one band width to
-     either side of the line through its endpoint along its outward
-     direction, `StrokeEndClip::zone`): the plane only approximates the
-     met line locally, and a stem that wraps around a small object and
-     comes back (a capsule's silhouette behind a bigger capsule,
-     junctioned at both ends) crossed it again inside the influence
-     radius, where its band was culled into a white gap. A met line
-     running nearly ALONG the stem (within ~20 degrees of its outward
-     direction) is a continuation, not a bar: its plane would lie along
-     the stem and cull one side of the stem's own band, so such a clip is
-     ignored and the end stays a plain butt.
+   - STEM end: a chain end still sitting at a junction after the weaving
+     is a true stem. It keeps its offset band and is EXTENDED into the
+     junction by the pad (the met line's drawn backbone can sit a few px
+     off its lattice cracks after smoothing); it draws no round cap. A
+     degree-1 free end left short of a line by the weak-tail trims /
+     bg-clearance kills is connected the same way: the crack-field probe
+     (a 45-degree cone, ~half-width reach) fits the met line through the
+     foreign cracks it finds and extends the stem to touch it. A free end
+     with nothing in reach (a genuine cusp tail) keeps its crisp offset
+     tip. What the overshoot beyond the met line may paint is NOT decided
+     by any clip geometry but by the DEPTH PERMISSION below; the earlier
+     clip planes, influence discs, extension zones and parallel guards were
+     local approximations of the met line that failed whenever the stem's
+     own body (a capsule's silhouette junctioned at both ends), a curved
+     bar (a small cap rim) or a mis-fitted line (a free end whose probe cone
+     straddled two outlines) came back inside them, cutting the band away
+     from its own object.
+   - DEPTH PERMISSION (`DepthPermit`, rasterization): an offset band paints
+     its outer part only where the hi-res plane view-z AOV holds nothing
+     nearer than the stroke's own depth (per resampled vertex, from the
+     run's own edgels) by more than the classifier's depth-gap tolerance.
+     Background and farther surfaces always permit; the inner pad and the
+     first final pixel past the backbone (the owner's own grazing rim) are
+     never tested. This is the per-pixel form of the OuterRoomShader's
+     vertex walk (which still shapes the vector width) and the one rule
+     behind every end: a stem's overshoot lands on the object the bar
+     outlines and is culled there, a band beside a thin background gap
+     stops at the object past the gap, and nothing can ever cut a band
+     away from its own object.
+   - IMAGE-BORDER end: a chain ending within a pixel of the frame is
+     extended off-screen along its end direction far enough that the
+     band's outer edge leaves the frame too (a contour crossing the border
+     at a shallow angle otherwise stopped with a visible cap while its
+     object ran on to the border); no probe, taper or cap.
    - TAPER fallback: a run end whose neighbor run has a different voted
      side, a deep fold at a run boundary, a junction with no woven bar
      (e.g. a Y of three stems) and the closed-chain seam wrap still blend

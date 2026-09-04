@@ -857,6 +857,16 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       for (int dy = -2; dy <= 2; ++dy)
         for (int dx = -2; dx <= 2; ++dx) {
           if (dx == 0 && dy == 0) continue;
+          // Stay on the lattice: a neighbor id computed past the left or
+          // right border wraps onto the opposite border of the next/previous
+          // row, and once fused the two border ends of a contour crossing
+          // the whole frame (a stick's top edge) into one "junction": the
+          // two straight pieces were woven into a single chain bridged
+          // across the frame, drawn as a line through the object while the
+          // real edge lost its band.
+          if (cx + dx < 0 || cx + dx >= cornerW || cy + dy < 0 ||
+              cy + dy > static_cast<long>(cf.H))
+            continue;
           const auto it = cidIdx.find((cy + dy) * cornerW + (cx + dx));
           if (it == cidIdx.end()) continue;
           const std::size_t ra = findRoot(i), rb = findRoot(it->second);
@@ -1356,53 +1366,6 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                        : std::array<float, 2>{0.0f, 0.0f};
   };
 
-  // Build the end clip for a stem terminating on a known bar line (Stage 3.5
-  // BarInfo or the free-end probe's fit): cull this chain's ink beyond the
-  // bar-ink boundary FARTHEST from the stem, so the stem keeps its offset
-  // band and stops flush at the bar's far edge -- clipping replaces the
-  // earlier re-centering taper, which visibly necked shallow junctions.
-  // Coordinates are STROKE coords. bandN = unit normal toward the bar's
-  // band; (0, 0) = unknown -> a small slack past the backbone (the bar's
-  // ink covers any overshoot when its band faces the stem; otherwise the
-  // sub-px slack is invisible). (endX, endY) is the stem's endpoint and
-  // (outX, outY) its unit outward direction: the cull is confined to the
-  // stem's straight extension zone (one band width to either side of that
-  // line), because the plane only approximates the met line locally -- a
-  // curved bar leaves it inside the influence radius, and a stem wrapping
-  // around a small object and coming back crossed it again far from the
-  // junction (StrokeEndClip::zone).
-  auto stemClip = [&](float barPx, float barPy, float barDx, float barDy,
-                      float bandNx, float bandNy, float endX, float endY,
-                      float outX, float outY, CrackClass barCls,
-                      std::uint16_t barGrp, float stemHalf) {
-    StrokeEndClip clip;
-    float nx = -barDy, ny = barDx;
-    if (nx * outX + ny * outY < 0.0f) {
-      nx = -nx;
-      ny = -ny;
-    }
-    const float halfBar = halfFor(barCls, barGrp);
-    const float pad = std::min(halfBar, 0.5f * ssScale);
-    float extent;
-    if (bandNx == 0.0f && bandNy == 0.0f)
-      extent = 0.5f * ssScale;
-    else if (bandNx * nx + bandNy * ny > 0.0f)
-      extent = std::max(0.5f * ssScale, 2.0f * halfBar - pad);
-    else
-      extent = pad;
-    clip.enabled = true;
-    clip.px = barPx + nx * extent;
-    clip.py = barPy + ny * extent;
-    clip.nx = nx;
-    clip.ny = ny;
-    clip.radius = 4.0f * std::max(halfBar, stemHalf) + 2.0f * ssScale;
-    clip.ex = endX;
-    clip.ey = endY;
-    clip.ox = outX;
-    clip.oy = outY;
-    clip.zone = 2.0f * stemHalf + 2.0f * ssScale;
-    return clip;
-  };
 
   // FREE-END probe: the prune's weak-tail trim and the classifier's
   // bg-clearance kill leave a stem's lattice end 1-3 px short of the line
@@ -1664,15 +1627,18 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       // Junction end handling. After the Stage-3.5 weaving, a chain end
       // still sitting at a junction is a true STEM -- the bar it meets was
       // woven into one chain and never ends here. The stem keeps its offset
-      // band and is CLIPPED against the woven bar's ink (stemClip; extended
-      // into the bar so smoothing deviations cannot open a pinhole). A
-      // degree-1 free end left short of a line by the weak-tail trims is
-      // connected the same way via the crack-field probe's fitted line.
-      // The re-centering TAPER remains for the cases with no met line to
-      // clip against: a run boundary whose neighbor's voted side differs, a
-      // deep fold at a run boundary (only real hairpins remain after the
-      // PASS-1 notch bridge), a junction with no woven bar (e.g. a Y of
-      // three stems), and the closed-chain seam wrap.
+      // band up to the bar (extended into it by the pad so smoothing
+      // deviations cannot open a pinhole, no round cap); what its overshoot
+      // may paint is decided per pixel by the draw stage's depth permission
+      // (an offset band never paints over a surface nearer than its own
+      // contour), so no clip geometry is derived from the bar. A degree-1
+      // free end left short of a line by the weak-tail trims is connected
+      // the same way, extended to the crack-field probe's fitted line. An
+      // end on the image border is extended off-screen. The re-centering
+      // TAPER remains for: a run boundary whose neighbor's voted side
+      // differs, a deep fold at a run boundary (only real hairpins remain
+      // after the PASS-1 notch bridge), a junction with no woven bar (e.g. a
+      // Y of three stems), and the closed-chain seam wrap.
       if (in.outsideSide != 0 && !runClosed) {
         const bool wrap = ch.closed && spans.size() > 1;
         // The run's resolved half-width sizes the fold window.
@@ -1719,16 +1685,29 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                               float& extend) {
           const int deg = end == 0 ? ch.deg0 : ch.deg1;
           const std::array<float, 2> din = endDirIn(w, end);
+          const ScreenChainVert& ev = end == 0 ? w.pts.front() : w.pts.back();
+          // IMAGE-BORDER end: the contour leaves the frame. Extend the drawn
+          // backbone off-screen far enough that the band's OUTER edge leaves
+          // the frame as well -- a contour crossing the border at a shallow
+          // angle otherwise stopped with a visible cap while its object ran
+          // on to the border. No probe, taper or cap (the cap is off-screen).
+          const float fw = static_cast<float>(cf.W), fh = static_cast<float>(cf.H);
+          const bool atX = ev.x < 1.0f || ev.x > fw - 2.0f;
+          const bool atY = ev.y < 1.0f || ev.y > fh - 2.0f;
+          if ((atX || atY) && !(din[0] == 0.0f && din[1] == 0.0f)) {
+            float across = 0.0f;  // chain direction component across the border
+            if (atX) across = std::max(across, std::fabs(din[0]));
+            if (atY) across = std::max(across, std::fabs(din[1]));
+            const float pad = std::min(rh, 0.5f * ssScale);
+            extend = (2.0f * rh + pad + ssScale) / std::max(across, 0.1f) +
+                     2.0f * ssScale;
+            return;
+          }
           if (deg >= 3) {
             const auto bar = barAt.find(endCorner(w, end));
             if (bar != barAt.end() &&
                 !(din[0] == 0.0f && din[1] == 0.0f)) {
-              const ScreenChainVert& v =
-                  end == 0 ? w.pts.front() : w.pts.back();
-              clip = stemClip(v.x, v.y, bar->second.dx, bar->second.dy,
-                              bar->second.bnx, bar->second.bny, v.x, v.y,
-                              -din[0], -din[1], bar->second.cls,
-                              bar->second.grp, rh);
+              clip.enabled = true;  // stem end on a woven bar
             } else {
               taper = true;
               extend = extJunction;
@@ -1736,10 +1715,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           } else if (deg <= 1) {
             const auto h = probeFreeEnd(wi, end);
             if (h.dist >= 0.0f) {
-              const ScreenChainVert& ev =
-                  end == 0 ? w.pts.front() : w.pts.back();
-              clip = stemClip(h.px, h.py, h.dx, h.dy, h.bnx, h.bny, ev.x, ev.y,
-                              -din[0], -din[1], h.cls, h.grp, rh);
+              clip.enabled = true;  // free end connected to the probed line
               // Extend exactly to the intersection of the outward ray with
               // the fitted met line (near-parallel: fall back to the probe
               // reach; clamp against runaway grazing intersections).

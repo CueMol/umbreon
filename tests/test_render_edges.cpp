@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -819,6 +821,9 @@ int main() {
     s.check(std::string("S9 closed outline (") + (round ? "round" : "butt") +
                 "): the band is inked all around (no seam crack)",
             mx < 0.5f);
+    s.check_eq(std::string("S9 closed outline (") + (round ? "round" : "butt") +
+                   "): the band hugs every silhouette",
+               countBandGaps(f), 0);
   }
 
   // ===== S10: a small capsule behind a bigger one, junctioned twice =====
@@ -892,6 +897,8 @@ int main() {
             maxR(164, 200, 110, 114) < 0.5f);
     s.check("S10 twice-junctioned stem: rear band above B is unbroken",
             maxR(160, 200, 52, 56) < 0.5f);
+    s.check_eq("S10 twice-junctioned stem: the band hugs every silhouette",
+               countBandGaps(f), 0);
   }
 
   // ===== S8: completeness over a random ball-and-stick cluster =====
@@ -1059,6 +1066,121 @@ int main() {
     s.check_eq("S11 oblique capsules: every silhouette is inked",
                st.missSils, 0);
     s.check_eq("S11 oblique capsules: the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S12: a sphere's rim ending on the outline of the stick behind =====
+  // A sphere in front of a stick: its rim over the stick (a depth-gap
+  // contour) ends where it meets the stick's top outline and the sphere's
+  // own silhouette. That free end used to be clipped against a line fitted
+  // through the cracks ahead of it -- the fit straddled the two outlines,
+  // and the plane cut the sphere's silhouette band diagonally off the
+  // sphere (the very chain the rim belongs to). Ends carry no clip geometry
+  // now; the band must hug the sphere all the way round. Ortho [-2,2]^2 over
+  // 256 px: stick axis y = -0.4, r 0.5 (top edge px row 122); sphere center
+  // (0.3, 0.2, 1) r 0.8 (right rim x 1.1 -> px 198 at the stick's top).
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Cylinder c;
+    c.p0 = {-2.5f, -0.4f, 0.0f};
+    c.p1 = {2.5f, -0.4f, 0.0f};
+    c.radius = 0.5f;
+    c.color = pigment;
+    c.open = false;
+    c.group = 1;
+    sc.cylinders.push_back(c);
+    umbreon::Sphere sp;
+    sp.center = {0.3f, 0.2f, 1.0f};
+    sp.radius = 0.8f;
+    sp.color = {0.9f, 0.2f, 0.2f, 1.0f};
+    sp.group = 1;
+    sc.spheres.push_back(sp);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 24.0f;
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto lum = [&](int x, int y) {
+      return f.color[(static_cast<std::size_t>(y) * 256 + x) * 4];
+    };
+    // The sphere's silhouette band just above the junction with the stick's
+    // top edge (10 px up the rim), 7 and 17 px outside the rim.
+    s.check("S12 rim end: sphere silhouette band intact above the junction",
+            lum(205, 112) < 0.5f && lum(215, 112) < 0.5f);
+    const BoundaryStats st = boundaryStats(f, 0.5f, 3);
+    s.check_eq("S12 rim end: every occlusion step is inked", st.missSteps, 0);
+    s.check_eq("S12 rim end: every silhouette is inked", st.missSils, 0);
+    s.check_eq("S12 rim end: the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S13: contours leaving the frame run off-screen =====
+  // A chain ending on the image border is extended off-screen until the
+  // band's outer edge leaves the frame too. A stick whose top edge crosses
+  // the bottom border at a shallow angle (upper edge y = -1.7 - 0.3 x, px
+  // row 198 + 0.3 col, exiting at col 192): its band above the edge stays
+  // visible along the bottom rows until col ~243, where the old rounded end
+  // stopped at col ~200. A sphere leaving through the top border joins for
+  // the hug check. Ortho [-2,2]^2 over 256 px, width 16 (15.5 px outside).
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Cylinder c;
+    c.p0 = {-2.5f, -1.25f, 0.0f};
+    c.p1 = {1.8f, -2.54f, 0.0f};
+    c.radius = 0.3f;
+    c.color = pigment;
+    c.open = false;
+    c.group = 1;
+    sc.cylinders.push_back(c);
+    umbreon::Sphere sp;
+    sp.center = {-1.2f, 1.7f, 0.5f};
+    sp.radius = 0.8f;
+    sp.color = pigment;
+    sp.group = 1;
+    sc.spheres.push_back(sp);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 16.0f;
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto lum = [&](int x, int y) {
+      return f.color[(static_cast<std::size_t>(y) * 256 + x) * 4];
+    };
+    s.check("S13 border exit: the band runs on along the bottom rows",
+            lum(225, 253) < 0.5f && lum(232, 254) < 0.5f);
+    s.check("S13 border exit: nothing above the band's outer edge",
+            lum(225, 240) > 0.9f);
+    const BoundaryStats st = boundaryStats(f, 0.5f, 3);
+    s.check_eq("S13 border exit: every silhouette is inked", st.missSils, 0);
+    s.check_eq("S13 border exit: the band hugs every silhouette",
                countBandGaps(f), 0);
   }
 

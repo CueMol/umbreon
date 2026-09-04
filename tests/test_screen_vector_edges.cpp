@@ -2383,63 +2383,6 @@ int main() {
     }
   }
 
-  // (20h) end clip zone (draw stage): the stem end clip culls the ink beyond
-  // its plane only within the stem's own extension zone -- the plane is a
-  // local approximation of the met line. A U-shaped stem whose start is
-  // clipped by a 45-degree plane: the far leg comes back BEYOND that plane
-  // inside the influence radius (a small capsule's silhouette behind a
-  // bigger one, junctioned at both ends) and must keep its band; the
-  // overshoot beyond the plane at the start itself is still culled.
-  {
-    auto render = [&](float zone) {
-      umbreon::FrameResult fr;
-      fr.width = 56;
-      fr.height = 48;
-      fr.color.assign(static_cast<std::size_t>(56) * 48 * 4, 1.0f);
-      umbreon::Scene scene;
-      umbreon::RenderOptions opt;
-      opt.width = 56;
-      opt.height = 48;
-      opt.supersample = 1;
-      opt.strokeEdges.enable = true;
-      opt.strokeEdges.thickness = 6;  // outside: 5.5 px out, 0.5 px pad
-      std::vector<umbreon::StrokeChainInput> chain(1);
-      // +x, +y, -x legs: the left (+normal) band lies INSIDE the U.
-      chain[0].pts = {{10.5f, 10.5f, 10.0f, 1.0f, true},
-                      {40.5f, 10.5f, 10.0f, 1.0f, true},
-                      {40.5f, 30.5f, 10.0f, 1.0f, true},
-                      {10.5f, 30.5f, 10.0f, 1.0f, true}};
-      chain[0].outsideSide = 1;
-      umbreon::StrokeEndClip& c = chain[0].clipStart;
-      c.enabled = true;
-      c.px = 10.5f;  // plane through the start, tilted 45 degrees:
-      c.py = 10.5f;  // "beyond" = below the diagonal y - x > 0
-      c.nx = -0.70710678f;
-      c.ny = 0.70710678f;
-      c.radius = 40.0f;  // reaches the far leg (20 px away)
-      c.ex = 10.5f;
-      c.ey = 10.5f;
-      c.ox = -1.0f;  // outward = -x (the stem arrives from +x)
-      c.oy = 0.0f;
-      c.zone = zone;
-      umbreon::renderStrokeChains(fr, scene, opt, chain);
-      return fr;
-    };
-    auto lumAt = [&](const umbreon::FrameResult& fr, int x, int y) {
-      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
-    };
-    const umbreon::FrameResult z = render(8.0f);  // 2 * half + 2
-    s.check("end clip zone: far leg beyond the plane keeps its band",
-            lumAt(z, 14, 27) < 0.5f);
-    s.check("end clip zone: overshoot beyond the plane at the start culled",
-            lumAt(z, 11, 14) > 0.9f);
-    s.check("end clip zone: start band on the near side of the plane inked",
-            lumAt(z, 14, 12) < 0.5f);
-    // Unbounded control (zone 0): the far leg is culled.
-    s.check("end clip zone: unbounded control culls the far leg",
-            lumAt(render(0.0f), 14, 27) > 0.9f);
-  }
-
   // (20i) round cap on an offset band (draw stage): the semicircle over the
   // band's end cross-section, centered on the band's midline. The fan used
   // to sit on the backbone with its radius lerping from the outer width to
@@ -2492,52 +2435,115 @@ int main() {
     s.check(tag + "inner pad side stays clean", lumAt(25, 15) > 0.9f);
   }
 
-  // (20j) end clip along the stem (draw stage): a met line running nearly
-  // along the stem's outward direction is a continuation, not a bar; its
-  // plane would cull one side of the stem's own band. Such a clip is
-  // ignored (plain butt end); a crossing plane still clips.
+  // (20k) depth permission (draw stage): an offset band paints its outer
+  // part only where the hi-res view-z AOV holds nothing nearer than the
+  // stroke's own depth. This is the one rule behind every end treatment:
+  // a stem's overshoot past a junction lands on the near object beyond the
+  // bar and is culled there, while background, farther surfaces and the rim
+  // halo always permit -- so a band can never be cut away from its own
+  // object (which every clip plane / disc / zone geometry could do). A +x
+  // chain at depth 10 with the band on +y (y 16..22); a one-pixel NEARER
+  // column (view-z 5) at x 26 -- between the resampled vertices, so the
+  // OuterRoomShader's vertex walk cannot see it -- a FARTHER block (view-z
+  // 20) under x 32..40, background elsewhere.
   {
-    auto render = [&](float nx, float ny) {
-      umbreon::FrameResult fr;
-      fr.width = 40;
-      fr.height = 32;
-      fr.color.assign(static_cast<std::size_t>(40) * 32 * 4, 1.0f);
-      umbreon::Scene scene;
-      umbreon::RenderOptions opt;
-      opt.width = 40;
-      opt.height = 32;
-      opt.supersample = 1;
-      opt.strokeEdges.enable = true;
-      opt.strokeEdges.thickness = 6;  // band y in [16, 22]
-      std::vector<umbreon::StrokeChainInput> chain(1);
-      chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
-                      {24.5f, 16.5f, 10.0f, 1.0f, true}};
-      chain[0].outsideSide = 1;
-      umbreon::StrokeEndClip& c = chain[0].clipEnd;
-      c.enabled = true;
-      c.px = 24.5f;
-      c.py = 16.5f;
-      c.nx = nx;
-      c.ny = ny;
-      c.radius = 40.0f;
-      c.ex = 24.5f;
-      c.ey = 16.5f;
-      c.ox = 1.0f;  // outward = +x
-      c.oy = 0.0f;
-      umbreon::renderStrokeChains(fr, scene, opt, chain);
-      return fr;
+    const int W = 56, H = 32;
+    umbreon::FrameResult fr;
+    fr.width = W;
+    fr.height = H;
+    fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    fr.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        if (x == 26 && y >= 17) fr.viewZ[static_cast<std::size_t>(y) * W + x] = 5.0f;
+        if (x >= 32 && x <= 40 && y >= 14)
+          fr.viewZ[static_cast<std::size_t>(y) * W + x] = 20.0f;
+      }
+    umbreon::Scene scene;
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.thickness = 6;
+    opt.strokeEdges.screenDepthGapPx = 0.0f;  // tolerance 0
+    std::vector<umbreon::StrokeChainInput> chain(1);
+    chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
+                    {48.5f, 16.5f, 10.0f, 1.0f, true}};
+    chain[0].outsideSide = 1;
+    umbreon::renderStrokeChains(fr, scene, opt, chain);
+    auto lumAt = [&](int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * W + x) * 4];
     };
-    auto lumAt = [&](const umbreon::FrameResult& fr, int x, int y) {
-      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    s.check("depth permission: nearer column culled beyond the halo",
+            lumAt(26, 19) > 0.9f && lumAt(26, 21) > 0.9f);
+    s.check("depth permission: the rim halo past the backbone is kept",
+            lumAt(26, 17) < 0.1f);
+    s.check("depth permission: neighbors over background untouched",
+            lumAt(25, 20) < 0.1f && lumAt(27, 20) < 0.1f);
+    s.check("depth permission: farther surface permits",
+            lumAt(36, 20) < 0.1f);
+    s.check("depth permission: inner side of the backbone untouched",
+            lumAt(26, 15) > 0.9f && lumAt(20, 15) > 0.9f);
+  }
+
+  // (20l) a contour crossing the whole frame keeps its band at both
+  // borders. A stick spanning the frame with a sphere in front of it: its
+  // top edge runs to the left and right borders around the sphere's rim.
+  // The junction clustering used to compute neighbor corner ids past the
+  // border, which wrap onto the opposite border of the adjacent row, so
+  // two border ends could fuse into one "junction" and be woven into a
+  // single chain bridged across the frame (the edge lost its band and a
+  // line crossed the sphere; reproduced end-to-end by the render test
+  // S12). Guarded here on the synthetic lattice.
+  {
+    const int W = 48, H = 24;
+    umbreon::FrameResult frame;
+    frame.width = W;
+    frame.height = H;
+    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    frame.objectId.assign(static_cast<std::size_t>(W) * H, 0xFFFFFFFFu);
+    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t i = static_cast<std::size_t>(y) * W + x;
+        if (y >= 12) {  // the stick: section 1, capped cylinder, farther
+          frame.objectId[i] = (1u << 2) | 3u;
+          frame.viewZ[i] = 50.0f;
+        }
+        const int dx = x - 24, dy = y - 12;
+        if (dx * dx + dy * dy <= 64) {  // the sphere in front (step 30 >
+          frame.objectId[i] = (1u << 2) | 1u;  // the 12 px tolerance, so
+          frame.viewZ[i] = 20.0f;              // its rim reaches the edge)
+        }
+      }
+    umbreon::Scene scene;
+    scene.camera.position = {0.0f, 0.0f, 100.0f};
+    scene.camera.direction = {0.0f, 0.0f, -1.0f};
+    scene.camera.up = {0.0f, 1.0f, 0.0f};
+    scene.camera.orthographic = true;
+    scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+    scene.background = {1.0f, 1.0f, 1.0f};
+    scene.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    umbreon::EdgeClassStyle& cs =
+        scene.groupEdgeStyle[1]
+            .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    cs.enabled = true;
+    cs.width = 4.0f;  // outside band 3.5 px above the top edge (y 8..12)
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+    auto lum = [&](int x, int y) {
+      return frame.color[(static_cast<std::size_t>(y) * W + x) * 4];
     };
-    // Plane along the stem (normal +y): would cull the whole band.
-    const umbreon::FrameResult along = render(0.0f, 1.0f);
-    s.check("end clip along the stem: ignored, band intact",
-            lumAt(along, 16, 19) < 0.1f && lumAt(along, 23, 19) < 0.1f);
-    // Crossing plane (normal +x): the overshoot past the endpoint is culled.
-    const umbreon::FrameResult across = render(1.0f, 0.0f);
-    s.check("end clip across the stem: still clips past the endpoint",
-            lumAt(across, 16, 19) < 0.1f && lumAt(across, 26, 19) > 0.9f);
+    s.check("border weave: the top edge keeps its band at both borders",
+            lum(4, 10) < 0.5f && lum(43, 10) < 0.5f);
+    s.check("border weave: no bridge line across the sphere",
+            lum(24, 9) > 0.9f && lum(20, 10) > 0.9f);
   }
 
   // (20g) junction taper + fold re-centering (draw stage). A flagged end
