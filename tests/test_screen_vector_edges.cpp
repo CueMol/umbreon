@@ -205,6 +205,69 @@ int main() {
             (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
   }
 
+  // ---- (4a3) silhouette clearance on the same-section step ---------------
+  // A one-pixel sliver of another kind along the outline (a bond's cap
+  // sphere alternating with the bond's side at the rim) makes a huge
+  // mixed-kind step PARALLEL to the outline: killed, like the weak same-id
+  // rim noise. The same step 4 px inside stays strong, and a step running
+  // INTO the outline along its own direction (a contour terminal) stays.
+  // Background at x < 4; sphere sliver at x = 4 (rows 4-11); cylinder
+  // elsewhere; clearance 3 px (the default).
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u, cyl = (9u << 2) | 3u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x) {
+        const bool sliver = x == 4 && y >= 4 && y <= 11;
+        b.set(x, y, sliver ? sph : cyl, sliver ? 10.0f : 60.0f);
+      }
+    const CrackField cf = classify(b, defaults);
+    int sliverCracks = 0;
+    for (int y = 4; y <= 11; ++y)
+      if (cf.right[b.idx(4, y)] & kCrackClassMask) ++sliverCracks;
+    s.check_eq("sliver clearance: the sliver's side crack is killed",
+               sliverCracks, 0);
+    // Its end cracks (row 3|4 and 11|12 at x = 4) run into the outline.
+    s.check("sliver clearance: the sliver's end cracks reach the outline",
+            (cf.down[b.idx(4, 3)] & kCrackClassMask) != 0 &&
+                (cf.down[b.idx(4, 11)] & kCrackClassMask) != 0);
+  }
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u, cyl = (9u << 2) | 3u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x)
+        b.set(x, y, x < 9 ? sph : cyl, x < 9 ? 10.0f : 60.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check("sliver clearance: the same step 4 px inside stays strong",
+            (cf.right[b.idx(8, 6)] & kCrackClassMask) ==
+                    static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+                (cf.right[b.idx(8, 6)] & kCrackStrongBit) != 0);
+  }
+  {
+    // Analytic same-id: two spheres' sliver (same objectId) along the
+    // outline is killed too; 4 px inside it is strong.
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x) {
+        const bool sliver = x == 4 && y >= 4 && y <= 11;
+        b.set(x, y, sph, sliver ? 10.0f : 60.0f);
+      }
+    const CrackField cf = classify(b, defaults);
+    int sliverCracks = 0;
+    for (int y = 4; y <= 11; ++y)
+      if (cf.right[b.idx(4, y)] & kCrackClassMask) ++sliverCracks;
+    s.check_eq("sliver clearance: same-id analytic sliver crack is killed",
+               sliverCracks, 0);
+    Buffers c(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x) c.set(x, y, sph, x < 9 ? 10.0f : 60.0f);
+    const CrackField cf2 = classify(c, defaults);
+    s.check("sliver clearance: same-id analytic step 4 px inside is strong",
+            (cf2.right[c.idx(8, 6)] & kCrackStrongBit) != 0);
+  }
+
   // ---- (4a2) analytic same-id step at a grazing rim: STRONG ---------------
   // Two primitives of the same kind and section (two spheres) share an
   // objectId, so their occlusion step goes through the same-id branch. The
@@ -2427,6 +2490,54 @@ int main() {
     // Nothing spills behind the endpoint on the inner side (the old spiral
     // ended near the backbone; the new cap must not cross it either).
     s.check(tag + "inner pad side stays clean", lumAt(25, 15) > 0.9f);
+  }
+
+  // (20j) end clip along the stem (draw stage): a met line running nearly
+  // along the stem's outward direction is a continuation, not a bar; its
+  // plane would cull one side of the stem's own band. Such a clip is
+  // ignored (plain butt end); a crossing plane still clips.
+  {
+    auto render = [&](float nx, float ny) {
+      umbreon::FrameResult fr;
+      fr.width = 40;
+      fr.height = 32;
+      fr.color.assign(static_cast<std::size_t>(40) * 32 * 4, 1.0f);
+      umbreon::Scene scene;
+      umbreon::RenderOptions opt;
+      opt.width = 40;
+      opt.height = 32;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.thickness = 6;  // band y in [16, 22]
+      std::vector<umbreon::StrokeChainInput> chain(1);
+      chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
+                      {24.5f, 16.5f, 10.0f, 1.0f, true}};
+      chain[0].outsideSide = 1;
+      umbreon::StrokeEndClip& c = chain[0].clipEnd;
+      c.enabled = true;
+      c.px = 24.5f;
+      c.py = 16.5f;
+      c.nx = nx;
+      c.ny = ny;
+      c.radius = 40.0f;
+      c.ex = 24.5f;
+      c.ey = 16.5f;
+      c.ox = 1.0f;  // outward = +x
+      c.oy = 0.0f;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      return fr;
+    };
+    auto lumAt = [&](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    // Plane along the stem (normal +y): would cull the whole band.
+    const umbreon::FrameResult along = render(0.0f, 1.0f);
+    s.check("end clip along the stem: ignored, band intact",
+            lumAt(along, 16, 19) < 0.1f && lumAt(along, 23, 19) < 0.1f);
+    // Crossing plane (normal +x): the overshoot past the endpoint is culled.
+    const umbreon::FrameResult across = render(1.0f, 0.0f);
+    s.check("end clip across the stem: still clips past the endpoint",
+            lumAt(across, 16, 19) < 0.1f && lumAt(across, 26, 19) > 0.9f);
   }
 
   // (20g) junction taper + fold re-centering (draw stage). A flagged end

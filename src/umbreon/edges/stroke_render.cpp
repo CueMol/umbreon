@@ -1521,6 +1521,16 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     int nChainClips = 0;
     for (const StrokeEndClip* ec : {&in.clipStart, &in.clipEnd}) {
       if (!ec->enabled || ec->radius <= 0.0f) continue;
+      // A met line running nearly ALONG the stem (within ~20 degrees of its
+      // outward direction) is a continuation, not a bar to stop at: its
+      // plane would lie along the stem itself and cull one side of the
+      // stem's own band wherever the stem curves across it. Junction
+      // clusters left by sliver cracks along an outline produced exactly
+      // that: the outline's band cut away from the object over a whole
+      // clip radius. Such an end stays a plain butt.
+      if ((ec->ox != 0.0f || ec->oy != 0.0f) &&
+          std::fabs(ec->nx * ec->ox + ec->ny * ec->oy) < 0.34f)
+        continue;
       chainClips[nChainClips].px = ec->px;
       chainClips[nChainClips].py = ec->py;
       chainClips[nChainClips].nx = ec->nx;

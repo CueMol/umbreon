@@ -11,6 +11,85 @@
 #include "test_util.hpp"
 #include "umbreon.hpp"
 
+// Boundary completeness over a render's own G-buffer (edges-only, supersample
+// 1: objectId / viewZ / color are all at the output size). Every adjacent
+// pixel pair that is foreground on both sides with a view-z step of at least
+// `step`, or foreground against background, must have ink within `reach`
+// px of one of its pixels. Fills the pair counts and the misses.
+struct BoundaryStats {
+  int steps = 0, missSteps = 0, sils = 0, missSils = 0;
+};
+static BoundaryStats boundaryStats(const umbreon::FrameResult& f, float step,
+                                   int reach) {
+  const int W = f.width, H = f.height;
+  auto fg = [&](int x, int y) {
+    return f.objectId[static_cast<std::size_t>(y) * W + x] != 0xFFFFFFFFu;
+  };
+  auto vz = [&](int x, int y) {
+    return f.viewZ[static_cast<std::size_t>(y) * W + x];
+  };
+  auto inkNear = [&](int x, int y) {
+    for (int dy = -reach; dy <= reach; ++dy)
+      for (int dx = -reach; dx <= reach; ++dx) {
+        const int xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        if (f.color[(static_cast<std::size_t>(yy) * W + xx) * 4] < 0.5f)
+          return true;
+      }
+    return false;
+  };
+  BoundaryStats st;
+  auto pair = [&](int x0, int y0, int x1, int y1) {
+    const bool f0 = fg(x0, y0), f1 = fg(x1, y1);
+    if (f0 && f1) {
+      if (std::fabs(vz(x0, y0) - vz(x1, y1)) < step) return;
+      ++st.steps;
+      if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++st.missSteps;
+    } else if (f0 != f1) {
+      ++st.sils;
+      if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++st.missSils;
+    }
+  };
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x) {
+      if (x + 1 < W) pair(x, y, x + 1, y);
+      if (y + 1 < H) pair(x, y, x, y + 1);
+    }
+  return st;
+}
+
+// The outline band must HUG the object: with the outside alignment the ink
+// lies on the background side of every silhouette, so each background pixel
+// 4-adjacent to a foreground pixel has ink somewhere in its 3x3 neighborhood
+// (the half-pixel pad and the smoothed backbone allow one pixel of slack).
+// A band displaced off its object -- a stem clip cutting the outline's own
+// band, a seam or cap artifact -- shows up here as a white gap. Returns the
+// number of such gap pixels (edges-only, supersample 1).
+static int countBandGaps(const umbreon::FrameResult& f) {
+  const int W = f.width, H = f.height;
+  auto fg = [&](int x, int y) {
+    return x >= 0 && y >= 0 && x < W && y < H &&
+           f.objectId[static_cast<std::size_t>(y) * W + x] != 0xFFFFFFFFu;
+  };
+  int gaps = 0;
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x) {
+      if (fg(x, y)) continue;
+      if (!(fg(x - 1, y) || fg(x + 1, y) || fg(x, y - 1) || fg(x, y + 1)))
+        continue;
+      bool ink = false;
+      for (int dy = -1; dy <= 1 && !ink; ++dy)
+        for (int dx = -1; dx <= 1 && !ink; ++dx) {
+          const int xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          if (f.color[(static_cast<std::size_t>(yy) * W + xx) * 4] < 0.5f)
+            ink = true;
+        }
+      if (!ink) ++gaps;
+    }
+  return gaps;
+}
+
 int main() {
   umbreon::test::Suite s("render_edges");
   const umbreon::Vec4 pigment{0.5f, 0.6f, 0.7f, 1.0f};
@@ -915,6 +994,72 @@ int main() {
     if (missSteps != 0 || missSils != 0)
       std::printf("  S8: steps %d (missing %d), silhouettes %d (missing %d)\n",
                   steps, missSteps, sils, missSils);
+    s.check_eq("S8 completeness: the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S11: thick outlines hug oblique capsules (sliver junctions) =====
+  // A closed bond with its cap spheres, seen obliquely at high zoom: along
+  // the tangent circle where the cap sphere meets the bond's side, the two
+  // coincident surfaces alternate pixel by pixel at the rim. Their steps
+  // read as huge mixed-kind depth gaps parallel to the outline; they
+  // fragmented the outline into junction clusters whose stem clips (planes
+  // along the outline) cut the outline's own band off the object over a
+  // whole clip radius -- a white gap between the band and the bond. The
+  // silhouette clearance now kills such slivers and a clip along the stem
+  // is ignored. Two capsules, the far one crossing behind, thick round
+  // strokes as CueMol draws them; every boundary must be inked and the band
+  // must hug every silhouette pixel.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();  // ortho [-2,2]^2
+    sc.background = {1, 1, 1};
+    auto capsule = [&](umbreon::Vec3 p0, umbreon::Vec3 p1, float r) {
+      umbreon::Cylinder c;
+      c.p0 = p0;
+      c.p1 = p1;
+      c.radius = r;
+      c.color = pigment;
+      c.open = false;
+      c.group = 1;
+      sc.cylinders.push_back(c);
+      for (const umbreon::Vec3& e : {p0, p1}) {
+        umbreon::Sphere sp;
+        sp.center = e;
+        sp.radius = r;
+        sp.color = pigment;
+        sp.group = 1;
+        sc.spheres.push_back(sp);
+      }
+    };
+    capsule({-1.2f, -1.4f, -0.8f}, {0.6f, 0.6f, 0.9f}, 0.7f);
+    capsule({-1.8f, 1.2f, -3.0f}, {1.9f, 0.2f, -2.5f}, 0.5f);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 24.0f;
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    const BoundaryStats st = boundaryStats(f, 0.5f, 3);
+    s.check("S11 oblique capsules: boundaries to check",
+            st.steps > 50 && st.sils > 300);
+    s.check_eq("S11 oblique capsules: every occlusion step is inked",
+               st.missSteps, 0);
+    s.check_eq("S11 oblique capsules: every silhouette is inked",
+               st.missSils, 0);
+    s.check_eq("S11 oblique capsules: the band hugs every silhouette",
+               countBandGaps(f), 0);
   }
 
   return s.report();

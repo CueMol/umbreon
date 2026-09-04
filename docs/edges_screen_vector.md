@@ -61,9 +61,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      contour (ratios >= ~500) stays strong even where the surface it sits
      on is steep. Weak cracks (above `weakGapRatio` = 0.5 of the threshold)
      trace normally but survive only with chain support (Stage 2.5). The
-     background-clearance kill applies to weak cracks only, and spares a
-     crack whose along-crack strip reaches the background (the terminal
-     piece of a contour landing on the outline). A section whose
+     background-clearance kill applies to weak cracks, to same-section
+     mixed-kind steps and to analytic same-id steps (none of which has a
+     dominance gate), and spares a crack whose along-crack strip reaches
+     the background (the terminal piece of a contour landing on the
+     outline). Besides a tube's own rim signal it removes the one-pixel
+     slivers of a coincident surface -- a bond's cap sphere alternating
+     with the bond's side along their tangent circle at the rim -- whose
+     huge steps fragmented the outline into junction clusters. A section whose
      `SilhouetteMode` is `Outline` suppresses BOTH DepthGap variants at
      classification (see "Outline mode" below),
    - `Crease`     -- shading-normal fold (off by default, `--stroke-crease`).
@@ -243,7 +248,11 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      met line locally, and a stem that wraps around a small object and
      comes back (a capsule's silhouette behind a bigger capsule,
      junctioned at both ends) crossed it again inside the influence
-     radius, where its band was culled into a white gap.
+     radius, where its band was culled into a white gap. A met line
+     running nearly ALONG the stem (within ~20 degrees of its outward
+     direction) is a continuation, not a bar: its plane would lie along
+     the stem and cull one side of the stem's own band, so such a clip is
+     ignored and the end stays a plain butt.
    - TAPER fallback: a run end whose neighbor run has a different voted
      side, a deep fold at a run boundary, a junction with no woven bar
      (e.g. a Y of three stems) and the closed-chain seam wrap still blend

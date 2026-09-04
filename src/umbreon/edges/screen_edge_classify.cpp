@@ -97,6 +97,29 @@ inline bool bgAlongCrack(const std::uint32_t* objectId, int W, int H, int x,
   return false;
 }
 
+// The silhouette-clearance rule for a depth step INSIDE a section: true when
+// the crack survives (clearance off, no background within bgClearancePx of
+// either pixel, or background reached ALONG the crack's own direction -- a
+// contour terminal running into the outline). A step hugging the outline
+// sideways is grazing-rim signal the silhouette class already inks: a
+// tube's own rim piling depth into its last pixels, or a one-pixel sliver
+// of a coincident surface (a bond's cap sphere alternating with the bond's
+// side along their tangent circle) reading as a huge step between two ids.
+// Such slivers fragment the outline into junction clusters whose stem
+// clips then cut the outline's own band.
+inline bool outlineClear(const ScreenClassifyParams& p,
+                         const std::uint32_t* objectId, int W, int H, int ia,
+                         int ib) {
+  if (p.bgClearancePx <= 0) return true;
+  const int ax = ia % W, ay = ia / W;
+  const int bx = ib % W, by = ib / W;
+  if (!nearBackground(objectId, W, H, ax, ay, p.bgClearancePx) &&
+      !nearBackground(objectId, W, H, bx, by, p.bgClearancePx))
+    return true;
+  return bgAlongCrack(objectId, W, H, ax, ay, (ib - ia) == 1,
+                      p.bgClearancePx);
+}
+
 // Wide-baseline recession slope of a crack's NEAR side (world units per
 // pixel): walk up to 6 pixels away from the crack along the pair axis,
 // staying on the near pixel's objectId, and return the steepest secant
@@ -350,6 +373,15 @@ inline std::uint8_t classifyPair(const float* viewZ,
                                            : CrackClass::ObjectId) |
              owner | kCrackContactBit;
     }
+    // Silhouette clearance for the same-section step (the rule of the weak
+    // same-id path below): a mixed-kind step hugging the outline sideways
+    // is the rim's grazing signal (or a coincident-surface sliver), not a
+    // contour, and the outline already inks there. Cross-section boundaries
+    // are exempt: those are the object borders themselves.
+    if (sameSection && !outlineClear(p, objectId, W, H, ia, ib)) {
+      if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kBgKilled;
+      return 0;
+    }
     const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
     // A same-section mixed-kind step that cleared the contact veto is STRONG
     // evidence: the veto already demanded the full depth-gap threshold from
@@ -452,6 +484,12 @@ inline std::uint8_t classifyPair(const float* viewZ,
         // nearSideRecession. A ridge crease never promotes (see the ridge
         // comment above).
         bool strong = !(ridge && !analytic) && std::min(gapA, gapB) > tolGap;
+        // An analytic step has no dominance gate, so the silhouette
+        // clearance below must reach it too: two coincident spheres of one
+        // section (a bond's cap on its atom) alternate along their tangent
+        // circle at the rim exactly like the mixed-kind sliver above.
+        if (strong && analytic && !outlineClear(p, objectId, W, H, ia, ib))
+          strong = false;
         if (strong && !analytic && p.stepDominanceK > 0.0f) {
           const float rec = nearSideRecession(viewZ, objectId, W, H, ia, ib);
           strong = rec >= 0.0f && g0 > p.stepDominanceK * std::max(rec, px);
@@ -521,14 +559,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
         // class already inks the boundary), EXCEPT when the crack runs into
         // the outline along its own direction -- the terminal piece of a
         // contour landing on the silhouette must reach it.
-        const int ax = ia % W, ay = ia / W;
-        const int bx = ib % W, by = ib / W;
-        const bool rightCrack = (ib - ia) == 1;
-        if (p.bgClearancePx <= 0 ||
-            (!nearBackground(objectId, W, H, ax, ay, p.bgClearancePx) &&
-             !nearBackground(objectId, W, H, bx, by, p.bgClearancePx)) ||
-            bgAlongCrack(objectId, W, H, ax, ay, rightCrack,
-                         p.bgClearancePx)) {
+        if (outlineClear(p, objectId, W, H, ia, ib)) {
           if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kInkedWeak;
           return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner |
                  (ridge ? kCrackRidgeBit : std::uint8_t{0});
