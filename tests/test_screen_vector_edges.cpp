@@ -2215,6 +2215,106 @@ int main() {
     s.check("align draw: butt cap still ends at the endpoint", !buttBeyond);
   }
 
+  // (20d) closed loop (draw stage): a chain flagged `closed` (front == back)
+  // is joined across its seam like an interior corner and draws no end caps
+  // there. Drawn as an open polyline the seam showed a wedge gap (butt) or,
+  // under outside alignment, two cap fans whose outer -> pad radius lerp
+  // bulged into the object (the capsule "seam" bumps). A regular polygon
+  // traversed so that the +normal (left) points OUTWARD, outsideSide +1: the
+  // ring one px INSIDE the loop stays white all around (including the seam
+  // vertex at angle 0) and the ring inside the band is inked all around
+  // (no crack at the seam) -- for round cap/join (turning seam: square ends
+  // + fan) and butt/miter, and for a fine polygon whose seam is straight.
+  {
+    const int W = 64, H = 64;
+    const float cx = 32.5f, cy = 32.5f, rad = 16.0f;
+    auto render = [&](int sides, bool round, bool closedFlag) {
+      umbreon::FrameResult fr;
+      fr.width = W;
+      fr.height = H;
+      fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      umbreon::Scene scene;
+      umbreon::RenderOptions opt;
+      opt.width = W;
+      opt.height = H;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.thickness = 12;  // outside: 11.5 px out, 0.5 px pad in
+      opt.strokeEdges.roundCap = round;
+      opt.strokeEdges.roundJoin = round;
+      std::vector<umbreon::StrokeChainInput> chain(1);
+      // Decreasing angle: at angle 0 the travel is toward -y, whose left
+      // normal (-dy, dx) points +x = outward. The seam vertex is
+      // (cx + rad, cy) = (48.5, 32.5); pixel centers sit on integers.
+      for (int i = 0; i <= sides; ++i) {
+        const float th = -2.0f * 3.14159265f * static_cast<float>(i % sides) /
+                         static_cast<float>(sides);
+        chain[0].pts.push_back({cx + rad * std::cos(th), cy + rad * std::sin(th),
+                                10.0f, 1.0f, true});
+      }
+      chain[0].outsideSide = 1;
+      chain[0].closed = closedFlag;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      return fr;
+    };
+    auto lumAt = [&](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    // Ring samples every 3 degrees; returns (min, max) luminance.
+    auto ring = [&](const umbreon::FrameResult& fr, float r, float& mn,
+                    float& mx) {
+      mn = 1.0f;
+      mx = 0.0f;
+      for (int a = 0; a < 360; a += 3) {
+        const float th = 3.14159265f * static_cast<float>(a) / 180.0f;
+        const int x = static_cast<int>(std::lround(cx + r * std::cos(th)));
+        const int y = static_cast<int>(std::lround(cy + r * std::sin(th)));
+        const float l = lumAt(fr, x, y);
+        mn = std::min(mn, l);
+        mx = std::max(mx, l);
+      }
+    };
+    // Ink count in the two pixel columns 1.5 and 2.5 px INSIDE the seam
+    // vertex (x 47, 46), rows +-3 around it: past the 0.5 px pad, so the
+    // joined seam leaves them white; the old cap fans bulged ~2 px in.
+    auto seamInk = [&](const umbreon::FrameResult& fr) {
+      int n = 0;
+      for (int y = 29; y <= 36; ++y)
+        for (int x = 46; x <= 47; ++x)
+          if (lumAt(fr, x, y) < 0.5f) ++n;
+      return n;
+    };
+    for (int sides : {16, 48}) {
+      // Inradius of the polygon (edge midpoints); two px inside it (the
+      // rounded sample pixel stays clear of the pad).
+      const float inner =
+          rad * std::cos(3.14159265f / static_cast<float>(sides)) - 2.0f;
+      const char* tag = sides == 16 ? "turning seam" : "straight seam";
+      for (bool round : {true, false}) {
+        const umbreon::FrameResult fr = render(sides, round, true);
+        float mn, mx;
+        ring(fr, inner, mn, mx);
+        s.check(std::string("closed loop draw (") + tag +
+                    (round ? ", round" : ", butt") +
+                    "): ring inside the loop stays white at the seam",
+                mn > 0.9f);
+        ring(fr, rad + 4.0f, mn, mx);
+        s.check(std::string("closed loop draw (") + tag +
+                    (round ? ", round" : ", butt") +
+                    "): band inked all around (no seam crack)",
+                mx < 0.5f);
+        s.check_eq(std::string("closed loop draw (") + tag +
+                       (round ? ", round" : ", butt") +
+                       "): no ink inside the seam vertex",
+                   seamInk(fr), 0);
+      }
+    }
+    // Control: the same points NOT flagged closed keep the open-polyline
+    // ends -- the round cap fans bulge inside the loop at the seam.
+    s.check("closed loop draw: open control still caps into the seam",
+            seamInk(render(16, true, false)) > 0);
+  }
+
   // (20g) junction taper + fold re-centering (draw stage). A flagged end
   // blends the offset band back to the symmetric ribbon over one stroke
   // width, so the ribbon arrives centered where it meets other lines; a

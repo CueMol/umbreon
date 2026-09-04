@@ -238,6 +238,12 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      (e.g. a Y of three stems) and the closed-chain seam wrap still blend
      the offset back to the symmetric ribbon over one stroke width
      (AlignRecenterShader); tapered ends draw no round cap either.
+   - CLOSED loop: a run covering a whole closed loop (an isolated sphere or
+     capsule outline, `StrokeChainInput::closed`) is joined across its seam
+     like an interior corner (miter, or square ends plus the outer arc fan
+     under round joins) and draws no end caps there. An open-polyline seam
+     left a wedge crack (butt) or, with the outside alignment, two cap fans
+     whose outer-to-pad radius lerp bulged into the object.
 
 ## Flags
 

@@ -148,7 +148,7 @@ struct StyledStrip {
 // passes L[k]==R[k]==halfThick (scalar overload below), reducing this to the
 // constant-width path expression-for-expression (byte-identical).
 Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
-                 const std::vector<float>& R) {
+                 const std::vector<float>& R, bool closed) {
   Strip out;
   const std::size_t n = bb.size();
   if (n < 2 || L.size() != n || R.size() != n) return out;
@@ -160,19 +160,10 @@ Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
     return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
   };
 
-  // First vertex: normal of the first segment.
-  {
-    const Vec2 dir = unit(bb[1] - bb[0]);
-    const Vec2 sd = orth(dir);
-    out[0] = bb[0] + sd * L[0];   // left (+)
-    out[1] = bb[0] - sd * R[0];   // right (-)
-  }
-
-  // Interior vertices: miter join (each side offset by the CURRENT vertex width).
-  for (std::size_t k = 1; k + 1 < n; ++k) {
+  // Miter join at vertex k between the segment from pPrev and the segment to
+  // pNext (each side offset by the CURRENT vertex width) -> out[2k], out[2k+1].
+  auto miterAt = [&](std::size_t k, const Vec2& pPrev, const Vec2& pNext) {
     const Vec2& p = bb[k];
-    const Vec2& pPrev = bb[k - 1];
-    const Vec2& pNext = bb[k + 1];
     const Vec2 dirN = pNext - p;        // to next
     const Vec2 dirP = p - pPrev;        // from prev
     const float dirNNorm = norm2(dirN);
@@ -220,10 +211,30 @@ Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
       out[2 * k] = p + sdAvg * lw;
     if (overruns(out[2 * k + 1], rw * kMaxRatioLengthSingu))
       out[2 * k + 1] = p - sdAvg * rw;
+  };
+
+  // A closed loop (bb.front() == bb.back()) JOINS at its seam: vertex 0 is
+  // mitered between the last segment (from bb[n-2]) and the first, and the
+  // duplicated seam vertex n-1 repeats that pair, so the strip closes with
+  // no wedge gap and needs no end caps.
+  const bool seam = closed && n >= 3;
+
+  if (seam) {
+    miterAt(0, bb[n - 2], bb[1]);
+  } else {  // first vertex: normal of the first segment
+    const Vec2 dir = unit(bb[1] - bb[0]);
+    const Vec2 sd = orth(dir);
+    out[0] = bb[0] + sd * L[0];   // left (+)
+    out[1] = bb[0] - sd * R[0];   // right (-)
   }
 
-  // Last vertex: normal of the last segment.
-  {
+  // Interior vertices: miter join.
+  for (std::size_t k = 1; k + 1 < n; ++k) miterAt(k, bb[k - 1], bb[k + 1]);
+
+  if (seam) {
+    out[2 * (n - 1)] = out[0];
+    out[2 * (n - 1) + 1] = out[1];
+  } else {  // last vertex: normal of the last segment
     const Vec2 dir = unit(bb[n - 1] - bb[n - 2]);
     const Vec2 sd = orth(dir);
     out[2 * (n - 1)] = bb[n - 1] + sd * L[n - 1];
@@ -292,7 +303,7 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
                       const std::vector<float>& R,
                       std::vector<std::size_t>& pairSrc,
                       std::vector<Vec2>& fanPts,
-                      std::vector<std::size_t>& fanSrc) {
+                      std::vector<std::size_t>& fanSrc, bool closed) {
   Strip out;
   const std::size_t n = bb.size();
   if (n < 2 || L.size() != n || R.size() != n) return out;
@@ -309,7 +320,44 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
   };
   const float kStraightCos = 0.9848f;  // cos(10 deg)
 
-  {  // first vertex: normal of the first segment
+  // A closed loop (bb.front() == bb.back()) JOINS at its seam exactly like
+  // an interior corner: a near-straight seam gets the averaged-normal pair
+  // at both ends; a turning seam STARTS the strip square on the first
+  // segment, ENDS it square on the last, and fills the outer wedge with an
+  // arc fan at bb[0]. No end caps are needed (or wanted: under outside
+  // alignment the outer -> pad radius lerp of a cap fan bulged into the
+  // object at the seam).
+  const bool seam = closed && n >= 3;
+  Vec2 seamL{0.0f, 0.0f}, seamR{0.0f, 0.0f};  // the pair closing the strip
+
+  if (seam) {
+    const Vec2& p = bb[0];
+    const Vec2 udirP = unit(p - bb[n - 2]);
+    const Vec2 udirN = unit(bb[1] - p);
+    const Vec2 sdP = orth(udirP);
+    const Vec2 sdN = orth(udirN);
+    const float lw = L[0], rw = R[0];
+    const float turnCos = dot2(udirP, udirN);
+    Vec2 sdAvg = sdP + sdN;
+    const bool degenerate =
+        norm2(udirP) <= kZero || norm2(udirN) <= kZero || norm2(sdAvg) <= kZero;
+    if (degenerate || turnCos >= kStraightCos) {
+      sdAvg = degenerate ? Vec2{0.0f, 0.0f} : unit(sdAvg);
+      seamL = p + sdAvg * lw;
+      seamR = p - sdAvg * rw;
+      pushPair(seamL, seamR, 0);
+    } else {
+      pushPair(p + sdN * lw, p - sdN * rw, 0);
+      seamL = p + sdP * lw;
+      seamR = p - sdP * rw;
+      const float crossD = udirP.x * udirN.y - udirP.y * udirN.x;
+      const Vec2 a0 = crossD > 0.0f ? Vec2{-sdP.x * rw, -sdP.y * rw}
+                                    : Vec2{sdP.x * lw, sdP.y * lw};
+      const Vec2 a1 = crossD > 0.0f ? Vec2{-sdN.x * rw, -sdN.y * rw}
+                                    : Vec2{sdN.x * lw, sdN.y * lw};
+      appendArcFan(p, a0, a1, a0 + a1, 0, fanPts, fanSrc);
+    }
+  } else {  // first vertex: normal of the first segment
     const Vec2 sd = orth(unit(bb[1] - bb[0]));
     pushPair(bb[0] + sd * L[0], bb[0] - sd * R[0], 0);
   }
@@ -342,7 +390,9 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
                                   : Vec2{sdN.x * lw, sdN.y * lw};
     appendArcFan(p, a0, a1, a0 + a1, k, fanPts, fanSrc);
   }
-  {  // last vertex: normal of the last segment
+  if (seam) {
+    pushPair(seamL, seamR, n - 1);
+  } else {  // last vertex: normal of the last segment
     const Vec2 sd = orth(unit(bb[n - 1] - bb[n - 2]));
     pushPair(bb[n - 1] + sd * L[n - 1], bb[n - 1] - sd * R[n - 1], n - 1);
   }
@@ -672,6 +722,9 @@ struct Stroke {
   float length2d = 0.0f;
   int chainIdx = 0;
   int precedence = 0;
+  // Closed loop (StrokeChainInput::closed): verts.front().p == verts.back().p
+  // and the ribbon is joined across the seam instead of capped.
+  bool closed = false;
 };
 
 // Stylization shader contract (Freestyle StrokeShader, StrokeShader.h:50-77): a
@@ -1130,14 +1183,21 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
       // legacy miter builder, with duplicated corner entries under round
       // joins. fanSrc does the same per arc-fan triangle.
       std::vector<std::size_t> pairSrc, fanSrc;
+      // A closed loop drawn WHOLE (one visible run over every vertex, seam
+      // vertex still duplicated) joins the ribbon across its seam and draws
+      // no end caps there; a loop chopped by hidden runs is open pieces.
+      const bool seamJoin = s.closed && runFirst == 0 &&
+                            vIdx == s.verts.size() && pos.size() >= 3 &&
+                            norm2(pos.front() - pos.back()) < kZero;
       if (roundJoin) {
-        ss.strip = buildStripRound(pos, lw, rw, pairSrc, ss.fanPts, fanSrc);
+        ss.strip = buildStripRound(pos, lw, rw, pairSrc, ss.fanPts, fanSrc,
+                                   seamJoin);
       } else {
-        ss.strip = buildStrip(pos, lw, rw);
+        ss.strip = buildStrip(pos, lw, rw, seamJoin);
         pairSrc.resize(pos.size());
         for (std::size_t i = 0; i < pairSrc.size(); ++i) pairSrc[i] = i;
       }
-      if (roundCap)
+      if (roundCap && !seamJoin)
         appendCapFans(pos, lw, rw,
                       capStart || runFirst != 0,
                       capEnd || vIdx != s.verts.size(),
@@ -1387,6 +1447,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     defAttr.alpha = opacity;
     Stroke stroke =
         buildStroke(proj, defAttr, static_cast<int>(ci), in.precedence);
+    stroke.closed = in.closed;
     resampleStroke(stroke, stepPx);
 
     // STYLIZATION: run the per-vertex stroke shaders (Freestyle

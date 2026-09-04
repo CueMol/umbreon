@@ -685,6 +685,63 @@ int main() {
             minR(13, 18, 58, 70) < 0.5f);
   }
 
+  // ===== S9: a lone sphere's closed outline has no seam =====
+  // The silhouette of an isolated sphere traces as ONE closed loop. The draw
+  // stage used to draw it as an open polyline: with the outside alignment
+  // and round caps the two cap fans at the seam bulged into the sphere (a
+  // two-humped bump on the inner edge of every capsule of a dashed line);
+  // with butt caps the seam showed a wedge crack. Sample two rings around the
+  // rim wherever the trace happened to start: one px inside the rim stays
+  // blank, the band outside is inked all around. Ortho [-2,2]^2 over 128 px:
+  // rim radius 32 px around (64, 64).
+  for (bool round : {true, false}) {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Sphere a;
+    a.center = {0.0f, 0.0f, 0.0f};
+    a.radius = 1.0f;
+    a.color = pigment;
+    a.group = 1;
+    sc.spheres.push_back(a);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 12.0f;  // outside: 11.5 px out, 0.5 px pad in
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 128;
+    o.height = 128;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = round;
+    o.strokeEdges.roundJoin = round;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto ring = [&](float r, float& mn, float& mx) {
+      mn = 1.0f;
+      mx = 0.0f;
+      for (int a = 0; a < 360; a += 2) {
+        const float th = 3.14159265f * static_cast<float>(a) / 180.0f;
+        const int x = static_cast<int>(std::lround(64.0f + r * std::cos(th)));
+        const int y = static_cast<int>(std::lround(64.0f + r * std::sin(th)));
+        const float l = f.color[(static_cast<std::size_t>(y) * 128 + x) * 4];
+        mn = std::min(mn, l);
+        mx = std::max(mx, l);
+      }
+    };
+    float mn, mx;
+    ring(30.0f, mn, mx);
+    s.check(std::string("S9 closed outline (") + (round ? "round" : "butt") +
+                "): two px inside the rim stays blank all around",
+            mn > 0.9f);
+    ring(38.0f, mn, mx);
+    s.check(std::string("S9 closed outline (") + (round ? "round" : "butt") +
+                "): the band is inked all around (no seam crack)",
+            mx < 0.5f);
+  }
+
   // ===== S8: completeness over a random ball-and-stick cluster =====
   // Every genuine occlusion step between primitives of ONE section must be
   // inked in Full mode. From the render's own G-buffer take each adjacent

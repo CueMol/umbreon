@@ -84,6 +84,12 @@ struct StrokeChainInput {
   // End clips (preferred over the taper at junction stem ends whose met
   // line is known; see StrokeEndClip).
   StrokeEndClip clipStart, clipEnd;
+  // A closed loop: pts.front() == pts.back() (the seam vertex duplicated)
+  // and the loop is continuous across it. The draw stage joins the ribbon
+  // at the seam like any interior corner and draws no end caps there -- an
+  // open-polyline seam left a wedge gap (butt) or, under outside alignment,
+  // cap fans whose outer -> pad radius lerp bulged into the object.
+  bool closed = false;
 };
 
 // Resolve the ribbon style for one chain by its style slot + section group:

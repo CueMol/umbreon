@@ -1635,6 +1635,9 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                                w.cls[w.runs[r].e0])));
       in.styleSlot = classStyleSlot(runClass);
       in.outsideSide = w.side[spans[si].r0];
+      // The whole loop as one span: the draw stage joins the ribbon across
+      // the seam (no end caps; see StrokeChainInput::closed).
+      in.closed = runClosed;
       // DepthGap falls back to the Silhouette slot when the section never
       // configured the Disconnected class (the default style table ships all
       // slots disabled except those the CLI enables; without the fallback a
