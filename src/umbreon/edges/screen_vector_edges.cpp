@@ -1152,17 +1152,12 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     if (cancelled()) return;
     const ScreenChain& ch = traced[chIdx];
     if (ch.pts.size() < 2 || ch.edgeClass.empty()) continue;
-    // Speck filter on the RAW chain: every edgel is one hi-res px long, so the
-    // edgel count IS the arc length. JUNCTION-AWARE: a short chain whose ends
-    // are both junctions (degree >= 3) is a piece of a larger boundary chopped
-    // by side-branches (e.g. grazing-rim depth-gap spurs T-ing into the
-    // silhouette) and is KEPT -- dropping it would dash the outline. Only a
-    // short chain with a free end (a spur) or a tiny closed loop is an
-    // isolated speckle and is dropped.
-    if (minChainLen > 0.0f &&
-        static_cast<float>(ch.edgeClass.size()) < minChainLen &&
-        !(ch.deg0 >= 3 && ch.deg1 >= 3))
-      continue;
+    // Speck filter on the RAW chain (isScreenSpeck): a short chain with a
+    // free end (a spur) or a short closed loop (a one-pixel island, whatever
+    // its seam corner's degree) is an isolated speckle and is dropped; a
+    // short open chain junctioned at both ends is a chopped piece of a
+    // larger boundary and is kept.
+    if (isScreenSpeck(ch, minChainLen)) continue;
 
     ChainWork w;
     w.chIdx = chIdx;

@@ -369,6 +369,22 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf,
 // into kept chains (support propagation).
 bool keepScreenChain(const ScreenChain& ch, int minStrong = 1);
 
+// Stage-4 speck filter: a chain shorter than `minLen` edgels (one hi-res px
+// each, so the count is the arc length) is an isolated speckle and is
+// dropped -- EXCEPT an open chain whose BOTH ends are junctions (degree >=
+// 3), which is a piece of a larger boundary chopped by side branches (e.g.
+// grazing-rim depth-gap spurs T-ing into the silhouette) and must stay, or
+// the outline would dash. A CLOSED loop is never such a piece: a 3-4 edgel
+// loop is a one-pixel island (a junction tangle around it gives its seam
+// corner degree 3 too), and drawn with a wide round-capped stroke it is a
+// blob, so short loops drop whatever their seam degree. minLen <= 0 keeps
+// everything.
+inline bool isScreenSpeck(const ScreenChain& ch, float minLen) {
+  if (minLen <= 0.0f) return false;
+  if (static_cast<float>(ch.edgeClass.size()) >= minLen) return false;
+  return ch.closed || !(ch.deg0 >= 3 && ch.deg1 >= 3);
+}
+
 // Zero every crack cell traversed by `ch` in the field (class bits and all).
 // Used by the Stage-2.5 prune: dropped chains stop chopping their neighbors
 // into junction fragments on the next trace. The range overload erases only

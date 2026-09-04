@@ -431,11 +431,28 @@ inline std::uint8_t classifyPair(const float* viewZ,
                                                 : std::fabs(viewZ[iOutB] - vzB);
       if (g0 > gLeft && g0 >= gRight) {
         const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
-        // STRONG: full absolute threshold + step dominance (the raw step must
-        // dwarf the near side's own recession; see nearSideRecession). A
-        // ridge crease never promotes (see the ridge comment above).
-        bool strong = !ridge && std::min(gapA, gapB) > tolGap;
-        if (strong && p.stepDominanceK > 0.0f) {
+        // The ridge test and the step-dominance gate below exist for MESH
+        // artifacts: a coarse mesh's facet-horizon slivers (a sight line
+        // skimming a facet edge lands a few pixels' worth of the same
+        // grazing ramp deeper) and its convex fold ridges. A same-id step
+        // between ANALYTIC primitives (kind bits != Mesh; two spheres or two
+        // bonds of one section) has neither: a convex sphere or cylinder
+        // cannot self-occlude with a step, so the step is another primitive
+        // occluding, and the near primitive's rim is ALWAYS grazing there --
+        // the dominance gate then fails by construction, and the normal
+        // rescue only holds when the far surface happens to face away from
+        // the rim normal. Left to the gate, a sphere's rim over a sphere or
+        // bond of its own section dropped to weak and was pruned wherever
+        // no strong neighbor supported it (the mixed-kind branch above had
+        // the same defect). Analytic same-id steps are strong at the full
+        // threshold, like the mixed-kind step.
+        const bool analytic = (objectId[ia] & 3u) != 0u;
+        // STRONG: full absolute threshold + (meshes) step dominance -- the
+        // raw step must dwarf the near side's own recession; see
+        // nearSideRecession. A ridge crease never promotes (see the ridge
+        // comment above).
+        bool strong = !(ridge && !analytic) && std::min(gapA, gapB) > tolGap;
+        if (strong && !analytic && p.stepDominanceK > 0.0f) {
           const float rec = nearSideRecession(viewZ, objectId, W, H, ia, ib);
           strong = rec >= 0.0f && g0 > p.stepDominanceK * std::max(rec, px);
           // Normal-difference rescue: the dominance gate exists to kill

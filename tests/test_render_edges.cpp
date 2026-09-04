@@ -635,5 +635,157 @@ int main() {
             minR(32, 43, 2) < 0.5f);
   }
 
+  // ===== S7: a sphere's rim over another sphere of its own section =====
+  // Same primitive kind, same section: the same-id branch. Sphere B sits
+  // behind A, offset so that under A's right rim B's surface faces only ~40
+  // degrees away from the rim normal: the mesh step-dominance gate fails at
+  // A's grazing rim, the normal rescue does not reach its threshold, and the
+  // step dropped to weak and was pruned -- A's rim vanished exactly over B.
+  // Analytic same-id steps are strong at the full threshold now. Frame:
+  // ortho [-2,2]^2 over 128 px; A's right rim, world (0.5, 0), is px (80, 64).
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Sphere a;
+    a.center = {-0.5f, 0.0f, 0.0f};
+    a.radius = 1.0f;
+    a.color = pigment;
+    a.group = 1;
+    sc.spheres.push_back(a);
+    umbreon::Sphere b;  // behind A, its disc reaching past A's right rim
+    b.center = {-0.3f, 0.0f, -3.0f};
+    b.radius = 1.2f;
+    b.color = {0.9f, 0.9f, 0.3f, 1.0f};
+    b.group = 1;
+    sc.spheres.push_back(b);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 2.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 128;
+    o.height = 128;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto minR = [&](int x0, int x1, int y0, int y1) {
+      float m = 1.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          m = std::min(m, f.color[(static_cast<std::size_t>(y) * 128 + x) * 4]);
+      return m;
+    };
+    s.check("S7 rim over sphere: A's rim over B inked",
+            minR(78, 83, 58, 70) < 0.5f);
+    s.check("S7 rim over sphere: A's rim over the background inked",
+            minR(13, 18, 58, 70) < 0.5f);
+  }
+
+  // ===== S8: completeness over a random ball-and-stick cluster =====
+  // Every genuine occlusion step between primitives of ONE section must be
+  // inked in Full mode. From the render's own G-buffer take each adjacent
+  // pixel pair that is foreground on both sides with a view-z step of at
+  // least 0.5 (2.7x the depth-gap tolerance at this frame: 12 px * 4/256),
+  // or foreground against background, and require ink within 3 px of it.
+  // A deterministic LCG cluster of 24 atoms and the bonds between close
+  // pairs, all one group; this is the check that caught the same-id rim
+  // defect above, kept as a broad regression net for the classifier.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();  // ortho [-2,2]^2
+    sc.background = {1, 1, 1};
+    std::uint32_t seed = 12345u;
+    auto rnd = [&]() {
+      seed = seed * 1664525u + 1013904223u;
+      return static_cast<float>(seed >> 8) / 16777216.0f;
+    };
+    std::vector<umbreon::Vec3> atoms;
+    for (int i = 0; i < 24; ++i)
+      atoms.push_back({rnd() * 3.0f - 1.5f, rnd() * 3.0f - 1.5f,
+                       rnd() * 3.0f - 1.5f});
+    for (const umbreon::Vec3& c : atoms) {
+      umbreon::Sphere sp;
+      sp.center = c;
+      sp.radius = 0.28f;
+      sp.color = pigment;
+      sp.group = 1;
+      sc.spheres.push_back(sp);
+    }
+    for (std::size_t i = 0; i < atoms.size(); ++i)
+      for (std::size_t j = i + 1; j < atoms.size(); ++j) {
+        const float dx = atoms[i].x - atoms[j].x, dy = atoms[i].y - atoms[j].y,
+                    dz = atoms[i].z - atoms[j].z;
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1.2f) continue;
+        umbreon::Cylinder cy;  // closed bond, as CueMol hands them over
+        cy.p0 = atoms[i];
+        cy.p1 = atoms[j];
+        cy.radius = 0.12f;
+        cy.color = pigment;
+        cy.group = 1;
+        sc.cylinders.push_back(cy);
+      }
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 2.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;  // the G-buffer is then at the output resolution
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    const int W = 256, H = 256;
+    const float step = 0.5f;
+    auto fg = [&](int x, int y) {
+      return f.objectId[static_cast<std::size_t>(y) * W + x] != 0xFFFFFFFFu;
+    };
+    auto vz = [&](int x, int y) {
+      return f.viewZ[static_cast<std::size_t>(y) * W + x];
+    };
+    auto inkNear = [&](int x, int y) {
+      for (int dy = -3; dy <= 3; ++dy)
+        for (int dx = -3; dx <= 3; ++dx) {
+          const int xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          if (f.color[(static_cast<std::size_t>(yy) * W + xx) * 4] < 0.5f)
+            return true;
+        }
+      return false;
+    };
+    int steps = 0, missSteps = 0, sils = 0, missSils = 0;
+    auto pair = [&](int x0, int y0, int x1, int y1) {
+      const bool f0 = fg(x0, y0), f1 = fg(x1, y1);
+      if (f0 && f1) {
+        if (std::fabs(vz(x0, y0) - vz(x1, y1)) < step) return;
+        ++steps;
+        if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++missSteps;
+      } else if (f0 != f1) {
+        ++sils;
+        if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++missSils;
+      }
+    };
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        if (x + 1 < W) pair(x, y, x + 1, y);
+        if (y + 1 < H) pair(x, y, x, y + 1);
+      }
+    s.check("S8 completeness: the cluster has occlusion steps to check",
+            steps > 200 && sils > 500);
+    s.check("S8 completeness: every occlusion step is inked",
+            missSteps == 0);
+    s.check("S8 completeness: every silhouette is inked", missSils == 0);
+    if (missSteps != 0 || missSils != 0)
+      std::printf("  S8: steps %d (missing %d), silhouettes %d (missing %d)\n",
+                  steps, missSteps, sils, missSils);
+  }
+
   return s.report();
 }

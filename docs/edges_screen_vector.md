@@ -43,7 +43,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      grazing surface is predicted by at least one side; a pure slope change
      -- a facet kink -- is predicted exactly by the steep side), plus
      non-maximum suppression across the crack so the boundary stays one
-     crack thin. DepthGap cracks carry a STRONG/weak hysteresis tier: strong
+     crack thin. DepthGap cracks carry a STRONG/weak hysteresis tier. Between
+     two ANALYTIC primitives (kind bits != mesh: two spheres or two bonds of
+     one section) the step is strong at the full `--stroke-depth-gap`
+     threshold, like the mixed-kind step: a convex sphere or cylinder cannot
+     self-occlude, so the step is another primitive occluding, and the near
+     one's rim is always grazing at the crack, so the mesh gates below would
+     fail by construction (a sphere's rim over a sphere or bond of its own
+     section used to drop to weak and vanish). On a MESH id strong
      needs the full `--stroke-depth-gap` threshold AND step dominance -- the
      raw step must exceed `stepDominanceK` (default 250) times the near
      side's wide-baseline recession slope. This kills the facet-horizon
@@ -239,7 +246,7 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 | `--stroke-depth-gap <f>` | 12 | DepthGap threshold, world units per lateral pixel (a slope cutoff). Facet kinks of a coarse mesh measure a few px; genuine self-occlusion steps measure hundreds -- lower it only for very subtle depth steps. Floored at `4e-5 * viewZ` (`ScreenClassifyParams::depthTolRel`), the analytic intersectors' relative precision: at an extreme zoom the lateral threshold would otherwise drop below the float jitter of two coincident surfaces (a capsule cap on its atom sphere) and classify it as a field of one-pixel steps |
 | `--stroke-screen-simplify <f>` | 0.4 | Douglas-Peucker tolerance, FINAL px |
 | `--stroke-screen-smooth <int>` | 2 | Chaikin iterations |
-| `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all) |
+| `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all). A short open chain junctioned at both ends is a chopped piece of a longer boundary and stays; a short closed loop (a one-pixel island) drops whatever its seam corner's degree |
 | `--stroke-outline <on|off>` | off | outer-contour silhouette mode (`SilhouetteMode::Outline`) as the global default for every section |
 | `--stroke-contact <on|off>` | off | ink depth-continuous CROSS-section contact/intersection contours (the curve where one section plunges into another) |
 | `--stroke-align <outside\|center>` | outside | ink placement as the global default for every section: `outside` puts the full stroke width on the occluded/background side of every occlusion contour (Silhouette / ObjectId / DepthGap) so the nearer object never thins; `center` splits it across the line (legacy). Contact and Crease lines always center. Per section via `--edge ID=sil:align=...` (`EdgeStyle::align`, the OWNER section's setting governs) |

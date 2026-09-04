@@ -205,6 +205,40 @@ int main() {
             (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
   }
 
+  // ---- (4a2) analytic same-id step at a grazing rim: STRONG ---------------
+  // Two primitives of the same kind and section (two spheres) share an
+  // objectId, so their occlusion step goes through the same-id branch. The
+  // near side is a sphere's rim, receding steeply toward the crack: the
+  // mesh step-dominance gate (step > 250 x the near side's recession) then
+  // fails, and with matching normals the rescue cannot hold. For a MESH id
+  // that is the facet-sliver veto working as designed (the crack stays weak);
+  // for an analytic id it dropped the rim of a sphere over another sphere or
+  // bond of its own section, so analytic same-id steps are strong at the
+  // full threshold.
+  {
+    auto stepField = [&](std::uint32_t id) {
+      Buffers b(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          // near side recedes 3 units per px toward the crack (x = 7: 31),
+          // far side flat at 100: step 69, recession 3 -> 250 x 3 > 69.
+          b.set(x, y, id, x < 8 ? 10.0f + 3.0f * x : 100.0f);
+      return b;
+    };
+    const Buffers sph = stepField((9u << 2) | 1u);
+    const CrackField cs = classify(sph, defaults);
+    s.check_eq("analytic same-id step: one DepthGap crack per row",
+               countClass(cs, CrackClass::DepthGap), 16);
+    s.check("analytic same-id step: strong despite the grazing near rim",
+            (cs.right[sph.idx(7, 5)] & kCrackStrongBit) != 0);
+    const Buffers mesh = stepField((9u << 2) | 0u);
+    const CrackField cm = classify(mesh, defaults);
+    s.check_eq("mesh same-id step: still fires (weak candidate)",
+               countClass(cm, CrackClass::DepthGap), 16);
+    s.check("mesh same-id step: the dominance gate keeps it weak",
+            (cm.right[mesh.idx(7, 5)] & kCrackStrongBit) == 0);
+  }
+
   // ---- (4b) facet kink: a pure slope change never fires --------------------
   // Piecewise-linear depth (flat, then a steep ramp) models the facet boundary
   // of a coarse mesh seen at grazing incidence: the steep side's one-sided
@@ -1033,13 +1067,18 @@ int main() {
   // but it does not dominate the near side's own recession, so it must stay
   // WEAK (drawable only with chain support). A same-magnitude-class step on a
   // flat surface is a true occlusion contour and is STRONG.
+  // NOTE: the same-id weak/strong hysteresis (dominance gate, ndelta rescue,
+  // fold probe, ridge test) is mesh-only; the analytic kinds (sphere,
+  // cylinder) go strong at the full threshold. The synthetic buffers in this
+  // and the later hysteresis/prune blocks therefore use mesh-kind ids (low
+  // two bits 0: 4 = group 1, 8 = group 2).
   {
     Buffers b(24, 8);
     for (int y = 0; y < 8; ++y)
       for (int x = 0; x < 24; ++x) {
         float vz = 100.0f + 10.0f * x;  // grazing ramp, 10 per px
         if (x >= 12) vz += 45.0f;       // sliver: ~4.5 px of ramp
-        b.set(x, y, 9, vz);
+        b.set(x, y, 8, vz);
       }
     const CrackField cf = classify(b, defaults);
     const std::uint8_t byte = cf.right[b.idx(11, 4)];
@@ -1053,7 +1092,7 @@ int main() {
     Buffers b(16, 8);
     for (int y = 0; y < 8; ++y)
       for (int x = 0; x < 16; ++x)
-        b.set(x, y, 9, x < 8 ? 100.0f : 500.0f);  // step 400 over flat
+        b.set(x, y, 8, x < 8 ? 100.0f : 500.0f);  // step 400 over flat
     const CrackField cf = classify(b, defaults);
     const std::uint8_t byte = cf.right[b.idx(7, 4)];
     s.check("flat step: DepthGap strong",
@@ -1079,7 +1118,7 @@ int main() {
           vz = 600.0f + (y >= 10 ? 30.0f : 0.0f);   // weak connector at y 9|10
         else
           vz = 1500.0f + (y >= 15 ? 30.0f : 0.0f);  // weak spur at y 14|15
-        b.set(x, y, 9, vz);
+        b.set(x, y, 8, vz);
       }
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
@@ -1131,11 +1170,11 @@ int main() {
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x < 8)
-          b.set(x, y, 5, 100.0f);       // near surface, section 1
+          b.set(x, y, 4, 100.0f);       // near surface, section 1
         else if (y < 8)
-          b.set(x, y, 9, 130.0f);       // far surface, section 2 -> ObjectId
+          b.set(x, y, 8, 130.0f);       // far surface, section 2 -> ObjectId
         else
-          b.set(x, y, 5, 130.0f);       // far surface, section 1 -> weak gap
+          b.set(x, y, 4, 130.0f);       // far surface, section 1 -> weak gap
       }
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
@@ -1175,11 +1214,11 @@ int main() {
     for (int y = 0; y < 12; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x < 8)
-          b.set(x, y, 5, 100.0f);
+          b.set(x, y, 4, 100.0f);
         else if (y < 8)
-          b.set(x, y, 9, 130.0f);
+          b.set(x, y, 8, 130.0f);
         else
-          b.set(x, y, 5, 130.0f);
+          b.set(x, y, 4, 130.0f);
       }
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
@@ -1210,7 +1249,7 @@ int main() {
                          510, 390, 270, 150, 30};
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x)
-        b.set(x, y, 9, x < 8 ? 100.0f : 100.0f + f[y]);
+        b.set(x, y, 8, x < 8 ? 100.0f : 100.0f + f[y]);
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
         umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
@@ -1255,7 +1294,7 @@ int main() {
     Buffers b(16, 16);
     for (int y = 4; y < 12; ++y)
       for (int x = 4; x < 12; ++x)
-        b.set(x, y, 9, x >= 8 ? 130.0f : 100.0f);  // step 30 into the outline
+        b.set(x, y, 8, x >= 8 ? 130.0f : 100.0f);  // step 30 into the outline
     const CrackField cf = classify(b, defaults);
     s.check_eq("perpendicular weak line: every crack reaches the outline",
                countClass(cf, CrackClass::DepthGap), 8);
@@ -1264,7 +1303,7 @@ int main() {
     Buffers b(16, 16);
     for (int y = 4; y < 12; ++y)
       for (int x = 4; x < 12; ++x)
-        b.set(x, y, 9, y >= 6 ? 130.0f : 100.0f);  // line 2 px below outline
+        b.set(x, y, 8, y >= 6 ? 130.0f : 100.0f);  // line 2 px below outline
     const CrackField cf = classify(b, defaults);
     s.check("parallel weak line: interior crack killed by clearance",
             (cf.down[b.idx(7, 5)] & kCrackClassMask) == 0);
@@ -1546,9 +1585,9 @@ int main() {
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x < 8)
-          b.set(x, y, 9, 100.0f);  // near, facing (0,0,1)
+          b.set(x, y, 8, 100.0f);  // near, facing (0,0,1)
         else
-          b.set(x, y, 9, 130.0f, 1.0f, 0.0f, 0.0f);  // far, edge-on normal
+          b.set(x, y, 8, 130.0f, 1.0f, 0.0f, 0.0f);  // far, edge-on normal
       }
     // Step 30 over flat sides: full threshold (30 > 12) passes, dominance
     // (30 > 250) fails, ndelta = 1 > 0.3 -> rescue candidate on every row.
@@ -1746,10 +1785,10 @@ int main() {
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x <= 7)
-          b.set(x, y, 9, 200.0f + 0.81f * static_cast<float>(7 - x), 0.7f,
+          b.set(x, y, 8, 200.0f + 0.81f * static_cast<float>(7 - x), 0.7f,
                 0.0f, 0.72f);
         else
-          b.set(x, y, 9, 217.0f + 1.04f * static_cast<float>(x - 8), -0.7f,
+          b.set(x, y, 8, 217.0f + 1.04f * static_cast<float>(x - 8), -0.7f,
                 0.0f, 0.72f);
       }
     CrackField cf = classify(b, defaults);
@@ -2612,6 +2651,33 @@ int main() {
             lumAt(21, 16) < 0.1f);
     s.check("align contact: contact contour inks the far (east) side",
             lumAt(26, 16) < 0.1f);
+  }
+
+  // ---- speck filter predicate (isScreenSpeck) ----------------------------
+  // A short open chain junctioned at both ends is a chopped piece of a
+  // longer boundary and stays; a short chain with a free end, or a short
+  // CLOSED loop whatever its seam degree, is an isolated speckle. Length is
+  // the edgel count; minLen <= 0 disables the filter.
+  {
+    auto chain = [](std::size_t nEdgels, bool closed, int d0, int d1) {
+      ScreenChain c;
+      c.edgeClass.assign(nEdgels, static_cast<std::uint8_t>(CrackClass::DepthGap));
+      c.pts.resize(nEdgels + 1);
+      c.closed = closed;
+      c.deg0 = d0;
+      c.deg1 = d1;
+      return c;
+    };
+    s.check("speck: short open piece between junctions is kept",
+            !umbreon::isScreenSpeck(chain(3, false, 3, 3), 12.0f));
+    s.check("speck: short open spur with a free end is dropped",
+            umbreon::isScreenSpeck(chain(3, false, 3, 1), 12.0f));
+    s.check("speck: short closed loop is dropped even at a junction",
+            umbreon::isScreenSpeck(chain(3, true, 3, 3), 12.0f));
+    s.check("speck: long closed loop is kept",
+            !umbreon::isScreenSpeck(chain(40, true, 2, 2), 12.0f));
+    s.check("speck: filter off keeps a 1-edgel loop",
+            !umbreon::isScreenSpeck(chain(1, true, 3, 3), 0.0f));
   }
 
   return s.report();
