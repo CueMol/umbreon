@@ -297,11 +297,19 @@ contact/intersection contours -- a stick penetrating a ribbon of another
 section, a bond embedded in an atom -- are suppressed by default,
 thresholded by `--stroke-depth-gap`. `--stroke-contact on` revives the
 CROSS-section contact contour (same-section contact stays seamless), in Full
-and Outline modes alike. Because the near side is numerical noise at a
-contact, its owner is deterministic instead: a single Outline-mode side owns
-(and draws its `sil` style as `Silhouette`); otherwise the smaller group id
-owns (its `obj` style under `--stroke-border`, `sil` when both sides are
-Outline). Same-section steps ink as depth-gap lines under
+and Outline modes alike. The contour classifies as `Silhouette` when either
+side is an Outline-mode section (it belongs to that section's outline), else
+as `ObjectId` under `--stroke-border`. Because the near side is numerical
+noise at a contact, its OWNER (whose style in that class draws it) is decided
+from the two sections' styles instead, so it never depends on scene order:
+the side whose line is WIDER owns, then the DARKER one (luminance faded by
+opacity), then a single Outline-mode side, then the smaller group id, which
+is reached only when both styles are identical and the choice is invisible.
+A section that draws no line in that class always loses, so a stick with
+edge lines plunging into an edge-less ribbon still gets its intersection
+contour, and the contour continues the dominant outline (a thick ball-and-
+stick line stays thick where it enters a thin-lined ribbon). Same-section
+steps ink as depth-gap lines under
 `--stroke-silhouette`. One exception to the border gate: a cross-section
 boundary whose NEAR side is an Outline-mode section promotes to `Silhouette`
 and follows `--stroke-silhouette` instead (see Outline mode below). The
@@ -330,8 +338,9 @@ silhouette toggle extracts for that section:
   side, the nearer section's `ObjectId` boundary (under `--stroke-border`)
   applies unchanged; hidden lines are still never drawn, and depth-continuous
   contact boundaries stay suppressed in every mode unless `--stroke-contact
-  on` inks them (an Outline side then owns the contact contour, closing the
-  group's outline where it plunges into another section's surface).
+  on` inks them (the contour then classifies as `Silhouette`, closing the
+  group's outline where it plunges into another section's surface, in the
+  style of whichever side has the more visible line -- see above).
 
 `--stroke-outline on` sets Outline as the default for every section; a
 per-section `--edge` spec sets it with the `mode` attribute, e.g.

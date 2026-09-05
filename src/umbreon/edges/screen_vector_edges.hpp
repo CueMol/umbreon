@@ -129,6 +129,21 @@ struct ScreenClipAovs {
   const float* farVz = nullptr;       // bg: removed-hit vz beyond clipFar
 };
 
+// How visible one section's line is, for the CONTACT owner decision: the
+// band width and the lightness (luminance composited over white by the
+// opacity; 1 = invisible) of one style slot. A disabled slot ranks as width 0,
+// lightness 1. Per section, one entry for the Silhouette slot and one for the
+// Object slot (screenContactRank builds them from an EdgeStyle).
+struct ScreenContactRankEntry {
+  float width = 0.0f;
+  float light = 1.0f;
+};
+struct ScreenContactRank {
+  ScreenContactRankEntry sil;
+  ScreenContactRankEntry obj;
+};
+ScreenContactRank screenContactRank(const EdgeStyle& es);
+
 // Stage-1 parameters. The class gates mirror the stroke master nature toggles
 // (silhouette gates Silhouette + DepthGap, objectBoundary gates ObjectId --
 // wired from the border toggle -- and crease gates Crease). Thresholds are in
@@ -142,10 +157,14 @@ struct ScreenClassifyParams {
   // where one section's primitive plunges into another section's surface)
   // instead of vetoing them as contact. Cross-section only: same-section
   // contact (a bond embedded in an atom) never inks. Ownership is
-  // DETERMINISTIC because the near side is numerical noise at a contact: a
-  // single Outline-mode side owns (Silhouette class, its outer contour);
-  // otherwise the smaller group id owns (ObjectId under objectBoundary,
-  // Silhouette when both sides are Outline). Wired from the contact toggle.
+  // DETERMINISTIC because the near side is numerical noise at a contact; it
+  // is decided from the two sections' STYLES (groupContactRank), so it does
+  // not depend on which section came first: the side whose contact line is
+  // WIDER owns, then the DARKER one, then a single Outline-mode side, then
+  // the smaller group id (reached only when the styles are identical, where
+  // the choice is invisible). The class is Silhouette when either side is
+  // Outline (that section's outer contour), else ObjectId under
+  // objectBoundary. Wired from the contact toggle.
   bool contactBoundary = false;
   bool crease = false;
   // Per-SECTION silhouette mode table, indexed by group id (objectId >> 2).
@@ -160,6 +179,14 @@ struct ScreenClassifyParams {
   const SilhouetteMode* groupSilhMode = nullptr;
   std::size_t groupSilhModeCount = 0;
   SilhouetteMode silhModeDefault = SilhouetteMode::Full;
+  // Per-SECTION contact rank table, indexed by group id: the width and
+  // lightness of the line each section would draw for a contact contour --
+  // its Silhouette slot when the contact classifies as Silhouette (either
+  // side Outline), its Object slot otherwise (screenContactRank). A null
+  // table or an out-of-range group ranks as "no line" on both sides, so the
+  // Outline / smaller-id tie-breaks decide as before the table existed.
+  const ScreenContactRank* groupContactRank = nullptr;
+  std::size_t groupContactRankCount = 0;
   // DepthGap: fire when BOTH one-sided planar extrapolations miss the far
   // pixel by more than depthGapPx * pixelSize (world units per lateral pixel;
   // this is the second-derivative form of the Mol*-style curvature veto -- a

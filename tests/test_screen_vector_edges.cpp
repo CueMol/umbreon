@@ -835,6 +835,92 @@ int main() {
       s.check("contact (5p): occlusion step owned by the near side",
               (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
     }
+    mode[2] = umbreon::SilhouetteMode::Full;
+    fill(10.0f);
+
+    // ---- (5q) contact owner by STYLE (groupContactRank) --------------------
+    // With a rank table the owner is the side whose contact line is more
+    // visible: wider, then darker; a disabled slot always loses. Only when
+    // both rank equal do the Outline / smaller-id tie-breaks above apply, so
+    // the owner never depends on which section came first.
+    {
+      auto styleOf = [](bool enabled, float width, float gray, float opacity) {
+        umbreon::EdgeStyle es;
+        for (int k : {static_cast<int>(umbreon::EdgeClass::Silhouette),
+                      static_cast<int>(umbreon::EdgeClass::Object)}) {
+          umbreon::EdgeClassStyle& cs = es.cls[k];
+          cs.enabled = enabled;
+          cs.width = width;
+          cs.color[0] = cs.color[1] = cs.color[2] = gray;
+          cs.opacity = opacity;
+        }
+        return es;
+      };
+      std::vector<umbreon::ScreenContactRank> rank(3);
+      p.groupContactRank = rank.data();
+      p.groupContactRankCount = rank.size();
+      auto ownerBit = [&]() {
+        return classify(b, p).right[b.idx(7, 8)] & kCrackOwnerBit;
+      };
+      auto setRanks = [&](const umbreon::EdgeStyle& a,
+                          const umbreon::EdgeStyle& c) {
+        rank[1] = umbreon::screenContactRank(a);
+        rank[2] = umbreon::screenContactRank(c);
+      };
+
+      // Helper: a disabled slot ranks as no line; lightness folds opacity.
+      {
+        const umbreon::ScreenContactRank r0 =
+            umbreon::screenContactRank(styleOf(false, 8.0f, 0.0f, 1.0f));
+        const umbreon::ScreenContactRank r1 =
+            umbreon::screenContactRank(styleOf(true, 3.0f, 0.0f, 0.5f));
+        s.check("contact (5q): disabled slot ranks as width 0 / light 1",
+                r0.obj.width == 0.0f && r0.obj.light == 1.0f &&
+                    r0.sil.width == 0.0f);
+        s.check("contact (5q): rank carries width and opacity-faded light",
+                r1.obj.width == 3.0f && std::fabs(r1.obj.light - 0.5f) < 1e-5f);
+      }
+
+      // Wider wins, whichever id it sits on.
+      setRanks(styleOf(true, 2.0f, 0.0f, 1.0f), styleOf(true, 8.0f, 0.0f, 1.0f));
+      s.check("contact (5q): the wider line owns (larger id)",
+              ownerBit() != 0);
+      setRanks(styleOf(true, 8.0f, 0.0f, 1.0f), styleOf(true, 2.0f, 0.0f, 1.0f));
+      s.check("contact (5q): the wider line owns (smaller id)",
+              ownerBit() == 0);
+
+      // Same width: the darker line owns; a fainter (opacity) line loses.
+      setRanks(styleOf(true, 4.0f, 0.6f, 1.0f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): same width, the darker line owns",
+              ownerBit() != 0);
+      setRanks(styleOf(true, 4.0f, 0.0f, 0.3f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): same width, the more opaque line owns",
+              ownerBit() != 0);
+
+      // An edge-less section never owns: the contact still inks, in the
+      // other side's style, even though the edge-less side has the smaller
+      // id (and even when it is the Outline side).
+      setRanks(styleOf(false, 0.0f, 0.0f, 1.0f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): an edge-less smaller id loses to the edged side",
+              ownerBit() != 0);
+      mode[1] = umbreon::SilhouetteMode::Outline;
+      s.check("contact (5q): an edge-less Outline side loses too",
+              ownerBit() != 0);
+      mode[1] = umbreon::SilhouetteMode::Full;
+
+      // Identical styles: the old tie-breaks (a single Outline side, then the
+      // smaller id) decide, where the choice is invisible anyway.
+      setRanks(styleOf(true, 4.0f, 0.0f, 1.0f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): identical styles fall to the smaller id",
+              ownerBit() == 0);
+      mode[2] = umbreon::SilhouetteMode::Outline;
+      s.check("contact (5q): identical styles fall to the Outline side first",
+              ownerBit() != 0);
+      mode[2] = umbreon::SilhouetteMode::Full;
+
+      p.groupContactRank = nullptr;
+      p.groupContactRankCount = 0;
+    }
   }
 
   // ---- tracer helpers ------------------------------------------------------
@@ -3076,6 +3162,100 @@ int main() {
               chan(fr, 22, 16, 1) < 0.1f && chan(fr, 25, 16, 1) < 0.1f);
       s.check("edge group: each side keeps its own style",
               chan(fr, 13, 6, 0) > 0.9f && chan(fr, 35, 6, 0) < 0.1f);
+    }
+  }
+
+  // (20n) CONTACT OWNER BY STYLE, end to end: the contact contour between two
+  // touching same-depth Full-mode sections (lattice of (20e)) is drawn in the
+  // style of the side with the WIDER line whichever group id it sits on, and
+  // still inks when the smaller-id side draws no edge lines at all (it then
+  // takes the edged side's style). Contact bands are centered on x = 23.5, so
+  // a 6 px band covers x = 21..25 while a 2 px band reaches only x = 23..24.
+  {
+    auto build = [&](umbreon::FrameResult& frame) {
+      const int W = 48, H = 32;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 44; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+    };
+    // Full mode, Silhouette and Object slots alike (as CueMol sets them);
+    // width 0 = the section draws no edge lines.
+    auto sceneFor = [&](float width1, float width2) {
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 100.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = 32.0f;  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      scene.groupEdgeStyle.assign(3, umbreon::EdgeStyle{});
+      const float widths[3] = {0.0f, width1, width2};
+      for (int g = 1; g <= 2; ++g) {
+        umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
+        for (int k : {static_cast<int>(umbreon::EdgeClass::Silhouette),
+                      static_cast<int>(umbreon::EdgeClass::Object)}) {
+          es.cls[k].enabled = widths[g] > 0.0f;
+          es.cls[k].width = widths[g];
+        }
+      }
+      return scene;
+    };
+    umbreon::RenderOptions opt;
+    opt.width = 48;
+    opt.height = 32;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;
+    opt.strokeEdges.contact = true;
+    auto lum = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * 48 + x) * 4];
+    };
+    auto wideContact = [&](const umbreon::FrameResult& fr) {
+      return lum(fr, 21, 16) < 0.1f && lum(fr, 25, 16) < 0.1f;
+    };
+    // Wider line on the LARGER id: the contact band is the 6 px one.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 6.0f), opt);
+      s.check("contact owner: the wider (larger-id) side styles the contact",
+              wideContact(fr));
+    }
+    // Wider line on the SMALLER id: the same 6 px band.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(6.0f, 2.0f), opt);
+      s.check("contact owner: the wider (smaller-id) side styles the contact",
+              wideContact(fr));
+    }
+    // Control: two 2 px sides leave x = 21 / 25 clean (the band is 2 px).
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 2.0f), opt);
+      s.check("contact owner: equal 2 px sides draw a 2 px contact band",
+              !wideContact(fr) && lum(fr, 23, 16) < 0.1f);
+    }
+    // The smaller-id side draws no edge lines: the contact still inks, in
+    // the edged side's 6 px style, and the edge-less side's own rim stays
+    // clean.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(0.0f, 6.0f), opt);
+      s.check("contact owner: an edge-less smaller id still gets the contact",
+              wideContact(fr));
+      s.check("contact owner: the edge-less side draws no rim of its own",
+              lum(fr, 13, 6) > 0.9f && lum(fr, 13, 9) > 0.9f);
     }
   }
 

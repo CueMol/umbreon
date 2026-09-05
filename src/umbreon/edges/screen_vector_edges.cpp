@@ -366,6 +366,14 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   cp.groupSilhMode = groupMode.empty() ? nullptr : groupMode.data();
   cp.groupSilhModeCount = groupMode.size();
   cp.silhModeDefault = se.defaultStyle.silhouetteMode;
+  // Per-section contact rank table (the contact owner is the side with the
+  // more visible line; see ScreenClassifyParams::contactBoundary).
+  std::vector<ScreenContactRank> groupRank;
+  groupRank.reserve(scene.groupEdgeStyle.size());
+  for (const EdgeStyle& es : scene.groupEdgeStyle)
+    groupRank.push_back(screenContactRank(es));
+  cp.groupContactRank = groupRank.empty() ? nullptr : groupRank.data();
+  cp.groupContactRankCount = groupRank.size();
   const float* normalPtr = frame.normal.empty() ? nullptr : frame.normal.data();
   if (cp.crease && !normalPtr) cp.crease = false;
   const char* dumpPrefix = std::getenv("UMBREON_SCREEN_EDGE_DUMP");

@@ -161,6 +161,44 @@ inline bool outlineMode(const ScreenClassifyParams& p, std::uint32_t id) {
   return m == SilhouetteMode::Outline;
 }
 
+// Contact rank of a foreground pixel's section for the class the contact
+// would draw as (sil: Silhouette slot, else Object slot). No table / group
+// past it: "no line" (width 0, lightness 1) -- both sides then tie and the
+// mode / id tie-breaks decide.
+inline ScreenContactRankEntry contactRank(const ScreenClassifyParams& p,
+                                          std::uint32_t id, bool sil) {
+  const std::uint32_t g = id >> 2;
+  if (!p.groupContactRank || g >= p.groupContactRankCount)
+    return ScreenContactRankEntry{};
+  const ScreenContactRank& r = p.groupContactRank[g];
+  return sil ? r.sil : r.obj;
+}
+
+// Owner of a CONTACT crack between the sections of pixels A (first) and B
+// (second): 0 = A, kCrackOwnerBit = B. The near side is noise at a contact,
+// so the owner is the side whose contact line is the more VISIBLE one -- the
+// wider band, then the darker one -- which makes the intersection contour
+// continue the dominant outline and never depends on scene order. A section
+// drawing no line in this class (disabled slot) always loses, so a contact
+// with an edge-less section still inks in the other side's style. Ties fall
+// to a single Outline-mode side (its outer contour) and then to the smaller
+// group id, which is reached only when both styles are identical and the
+// choice is invisible. The ranks are per section, so the owner is constant
+// along a contour and the run key never flickers.
+inline std::uint8_t contactOwner(const ScreenClassifyParams& p,
+                                 std::uint32_t idA, std::uint32_t idB,
+                                 bool outA, bool outB, bool sil) {
+  const ScreenContactRankEntry ra = contactRank(p, idA, sil);
+  const ScreenContactRankEntry rb = contactRank(p, idB, sil);
+  constexpr float kEps = 1e-4f;
+  if (std::fabs(ra.width - rb.width) > kEps)
+    return ra.width > rb.width ? 0 : kCrackOwnerBit;
+  if (std::fabs(ra.light - rb.light) > kEps)
+    return ra.light < rb.light ? 0 : kCrackOwnerBit;
+  if (outA != outB) return outA ? 0 : kCrackOwnerBit;
+  return (idA >> 2) <= (idB >> 2) ? 0 : kCrackOwnerBit;
+}
+
 // Classify ONE crack between pixel indices ia (first: left/top) and ib
 // (second: right/bottom). iOutA / iOutB are the outer straight-line neighbors
 // (a's far side, b's far side) with validity flags. Returns the packed crack
@@ -353,19 +391,17 @@ inline std::uint8_t classifyPair(const float* viewZ,
       // depth-continuous boundary the near side is numerical noise, and a
       // noisy owner would flicker the (class, group) run key along the
       // contour (alternating styles, dashed lines where one side's slot is
-      // disabled). A single Outline-mode side owns (the contour belongs to
-      // that section's outline, Silhouette class in its sil style);
-      // otherwise the smaller group id owns (ObjectId under the border
-      // gate; Silhouette when both sides are Outline).
+      // disabled). It is decided from the two sections' styles instead
+      // (contactOwner): the class is Silhouette when either side is Outline
+      // (the contour belongs to that section's outline), else ObjectId under
+      // the border gate, and the side whose line in that class is more
+      // visible owns it.
       const bool outA = p.silhouette && outlineMode(p, objectId[ia]);
       const bool outB = p.silhouette && outlineMode(p, objectId[ib]);
       const bool sil = outA || outB;
       if (!sil && !p.objectBoundary) return 0;
       const std::uint8_t owner =
-          outA != outB ? (outA ? 0 : kCrackOwnerBit)
-                       : ((objectId[ia] >> 2) <= (objectId[ib] >> 2)
-                              ? 0
-                              : kCrackOwnerBit);
+          contactOwner(p, objectId[ia], objectId[ib], outA, outB, sil);
       // The contact bit marks the owner as a tie-break, not the nearer
       // surface: no outer side is defined, so the outside stroke alignment
       // keeps these edgels centered.
@@ -600,7 +636,26 @@ inline std::uint8_t classifyPair(const float* viewZ,
   return 0;
 }
 
+// Rank of one style slot: its band width, and its luminance composited over
+// white by the opacity (so a faint line ranks light). Disabled: no line.
+ScreenContactRankEntry slotRank(const EdgeClassStyle& cs) {
+  ScreenContactRankEntry e;
+  if (!cs.enabled) return e;
+  const float lum = 0.299f * cs.color[0] + 0.587f * cs.color[1] +
+                    0.114f * cs.color[2];
+  e.width = cs.width;
+  e.light = 1.0f - cs.opacity * (1.0f - lum);
+  return e;
+}
+
 }  // namespace
+
+ScreenContactRank screenContactRank(const EdgeStyle& es) {
+  ScreenContactRank r;
+  r.sil = slotRank(es.cls[static_cast<int>(EdgeClass::Silhouette)]);
+  r.obj = slotRank(es.cls[static_cast<int>(EdgeClass::Object)]);
+  return r;
+}
 
 CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,
