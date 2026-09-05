@@ -975,6 +975,18 @@ Options parseCli(int argc, char** argv) {
         fail("--stroke-outline expects on/off");
       continue;
     }
+    if (a == "--stroke-outline-far") {
+      std::string v = value("--stroke-outline-far");
+      if (v == "off") {
+        o.strokeOutlineFar = std::numeric_limits<float>::infinity();
+      } else {
+        const float d = static_cast<float>(std::atof(v.c_str()));
+        if (o.ok && d <= 0.0f)
+          fail("--stroke-outline-far expects a positive view-z or off");
+        o.strokeOutlineFar = d;
+      }
+      continue;
+    }
     if (a == "--stroke-taper") {
       std::string v = value("--stroke-taper");
       if (o.ok && !parseBool(v, o.strokeTaper))
@@ -1472,6 +1484,10 @@ void printUsage(const char* prog) {
       "  --stroke-outline <on|off> outer-contour silhouettes: no same-section\n"
       "                            self-occlusion lines; the contour draws even\n"
       "                            against objects behind the section       [off]\n"
+      "  --stroke-outline-far <vz|off> outline: a same-section step whose FAR\n"
+      "                            side lies beyond this view-z inks as a\n"
+      "                            depth-gap line anyway (fogged-away surface\n"
+      "                            behind the near object)                  [off]\n"
       "  --stroke-taper <on|off>  taper stroke width toward its ends (demo) [off]\n"
       "  --stroke-smooth <on|off> corner-preserving backbone smoothing (demo)[off]\n"
       "  --stroke-cap <butt|round> line end caps                        [butt]\n"

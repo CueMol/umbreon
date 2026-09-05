@@ -396,6 +396,11 @@ struct Options {
   // draws no line, only the section union's outer contour inks. A per-section
   // --edge spec can override it with mode=full|outline.
   bool strokeOutline = false;
+  // --stroke-outline-far: Outline mode's far-side depth (linear view-z). A
+  // same-section self-occlusion step whose FAR side lies beyond it inks as a
+  // depth-gap line even in Outline mode (a fogged-away surface behind the
+  // near object no longer hides its contour). +inf = off.
+  float strokeOutlineFar = std::numeric_limits<float>::infinity();
   // Demo stylization shader (--stroke-taper): taper width toward stroke ends.
   bool strokeTaper = false;
   // Demo geometry shader (--stroke-smooth): corner-preserving backbone smoothing.

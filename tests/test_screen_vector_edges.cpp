@@ -923,6 +923,110 @@ int main() {
     }
   }
 
+  // ---- (5r) Outline far-side depth rule (outlineFarVz) --------------------
+  // In Outline mode a same-section self-occlusion step is suppressed only
+  // while the surface BEHIND the near object -- the far side of the step --
+  // lies at or before p.outlineFarVz; beyond it the step takes the Full-mode
+  // DepthGap path, so a near object's contour over a fogged-away sibling
+  // still inks. The rule reads the far side's depth only; the cross-section
+  // promotion and the contact veto do not consult it.
+  {
+    std::vector<umbreon::SilhouetteMode> mode(6, umbreon::SilhouetteMode::Full);
+    mode[2] = umbreon::SilhouetteMode::Outline;
+    mode[5] = umbreon::SilhouetteMode::Outline;
+    ScreenClassifyParams p = defaults;
+    p.groupSilhMode = mode.data();
+    p.groupSilhModeCount = mode.size();
+    // The (5o a) square: same id, an interior step vz 10 | 60, group 2.
+    auto square = [&](float vzNear, float vzFar) {
+      Buffers b(16, 16);
+      for (int y = 4; y < 12; ++y)
+        for (int x = 4; x < 12; ++x)
+          b.set(x, y, (2u << 2) | 1u, x < 8 ? vzNear : vzFar);
+      return b;
+    };
+    {
+      Buffers b = square(10.0f, 60.0f);
+      s.check_eq("outline far (5r): default (+inf) suppresses the step",
+                 countClass(classify(b, p), CrackClass::DepthGap), 0);
+      p.outlineFarVz = 100.0f;
+      s.check_eq("outline far (5r): far side within the depth: suppressed",
+                 countClass(classify(b, p), CrackClass::DepthGap), 0);
+      p.outlineFarVz = 50.0f;
+      const CrackField cf = classify(b, p);
+      s.check_eq("outline far (5r): far side beyond the depth inks DepthGap",
+                 countClass(cf, CrackClass::DepthGap), 8);
+      s.check_eq("outline far (5r): perimeter silhouette unchanged",
+                 countClass(cf, CrackClass::Silhouette), 32);
+      const std::uint8_t c = cf.right[b.idx(7, 8)];
+      s.check("outline far (5r): the step is strong and owned by the near side",
+              (c & kCrackStrongBit) != 0 && (c & kCrackOwnerBit) == 0);
+    }
+    // Exactly at the depth: still suppressed (<=); both sides beyond: fires.
+    {
+      Buffers at = square(10.0f, 50.0f);
+      s.check_eq("outline far (5r): far side exactly at the depth: suppressed",
+                 countClass(classify(at, p), CrackClass::DepthGap), 0);
+      Buffers beyond = square(70.0f, 120.0f);
+      s.check_eq("outline far (5r): both sides beyond the depth: inks",
+                 countClass(classify(beyond, p), CrackClass::DepthGap), 8);
+    }
+    // Full mode never consults the depth: identical to plain Full.
+    {
+      Buffers b = square(10.0f, 60.0f);
+      mode[2] = umbreon::SilhouetteMode::Full;
+      s.check_eq("outline far (5r): Full mode ignores the depth",
+                 countClass(classify(b, p), CrackClass::DepthGap),
+                 countClass(classify(b, defaults), CrackClass::DepthGap));
+      mode[2] = umbreon::SilhouetteMode::Outline;
+    }
+    // The same-section MIXED-KIND step (a sphere over a cylinder of its own
+    // Outline section, group 5): the same rule, at the other suppression
+    // site.
+    {
+      Buffers bm(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          bm.set(x, y, (5u << 2) | (x < 8 ? 1u : 2u), x < 8 ? 10.0f : 60.0f);
+      p.outlineFarVz = 100.0f;
+      s.check_eq("outline far (5r): mixed-kind step within the depth: silent",
+                 countActive(classify(bm, p)), 0);
+      p.outlineFarVz = 50.0f;
+      const CrackField cf = classify(bm, p);
+      s.check_eq("outline far (5r): mixed-kind step beyond the depth inks",
+                 countClass(cf, CrackClass::DepthGap), 16);
+      s.check_eq("outline far (5r): mixed-kind step, nothing else",
+                 countActive(cf), 16);
+    }
+    // Untouched paths, with everything "beyond" (depth 5): the (5o c)
+    // frame's cross-section promotion still gives 16 Silhouette / 0
+    // ObjectId (the Outline group's own step now inks, 16 more DepthGap),
+    // and an equal-depth cross-section contact stays silent.
+    {
+      p.outlineFarVz = 5.0f;
+      Buffers bc(24, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 24; ++x) {
+          const std::uint32_t id = x < 12 ? (1u << 2) : (2u << 2);
+          const float vz = (x < 6 || (x >= 12 && x < 18)) ? 10.0f : 60.0f;
+          bc.set(x, y, id, vz);
+        }
+      const CrackField cf = classify(bc, p);
+      s.check_eq("outline far (5r): cross-section promotion unchanged",
+                 countClass(cf, CrackClass::Silhouette), 16);
+      s.check_eq("outline far (5r): no ObjectId appears",
+                 countClass(cf, CrackClass::ObjectId), 0);
+      s.check_eq("outline far (5r): both groups' steps ink beyond the depth",
+                 countClass(cf, CrackClass::DepthGap), 32);
+      Buffers bt(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          bt.set(x, y, x < 8 ? (1u << 2) : (2u << 2), 10.0f);
+      s.check_eq("outline far (5r): equal-depth contact stays silent",
+                 countActive(classify(bt, p)), 0);
+    }
+  }
+
   // ---- tracer helpers ------------------------------------------------------
   using umbreon::ScreenChain;
   auto totalEdgels = [](const std::vector<ScreenChain>& chains) {
@@ -3320,6 +3424,84 @@ int main() {
                   lum(fr, 22, 16) < 0.1f);
       s.check("contact band: still nothing on the owner's side",
               lum(fr, 26, 16) > 0.9f);
+    }
+  }
+
+  // (20p) OUTLINE FAR-SIDE DEPTH RULE, end to end: an Outline section's near
+  // block over its own far block (one id, a same-id self-occlusion step all
+  // around the near block) gets no line under pure Outline, and a depth-gap
+  // line -- drawn with the sil slot, the Disconnected slot being unset --
+  // once the far block lies beyond outlineFarVz: the near object's contour
+  // over a fogged-away sibling. The near block's right edge at x = 27.5 (vz
+  // 50 over vz 200) inks on the far side under the Outside alignment, x =
+  // 28..31 for a 4 px band; the union's outer contour inks in every case.
+  {
+    auto build = [&](umbreon::FrameResult& frame) {
+      const int W = 48, H = 32;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 44; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          const bool near = x >= 12 && x < 28 && y >= 12 && y < 20;
+          frame.objectId[i] = (1u << 2) | 1u;  // one section, sphere kind
+          frame.viewZ[i] = near ? 50.0f : 200.0f;
+        }
+    };
+    auto render = [&](float farVz) {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 100.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = 32.0f;  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      scene.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+      umbreon::EdgeStyle& es = scene.groupEdgeStyle[1];
+      umbreon::EdgeClassStyle& cs =
+          es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+      cs.enabled = true;
+      cs.width = 4.0f;
+      es.silhouetteMode = umbreon::SilhouetteMode::Outline;
+      umbreon::RenderOptions opt;
+      opt.width = 48;
+      opt.height = 32;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.edgesOnly = true;
+      opt.strokeEdges.outlineFarVz = farVz;
+      umbreon::applyScreenVectorEdges(fr, scene, opt);
+      return fr;
+    };
+    auto lum = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * 48 + x) * 4];
+    };
+    {
+      const umbreon::FrameResult fr =
+          render(std::numeric_limits<float>::infinity());
+      s.check("outline far: pure Outline draws no step over the far block",
+              lum(fr, 29, 16) > 0.9f && lum(fr, 30, 16) > 0.9f);
+      s.check("outline far: pure Outline keeps the outer contour",
+              lum(fr, 13, 6) < 0.1f);
+    }
+    {
+      const umbreon::FrameResult fr = render(300.0f);
+      s.check("outline far: far block within the depth: no step line",
+              lum(fr, 29, 16) > 0.9f && lum(fr, 30, 16) > 0.9f);
+    }
+    {
+      const umbreon::FrameResult fr = render(100.0f);
+      s.check("outline far: far block beyond the depth: the step inks",
+              lum(fr, 29, 16) < 0.1f && lum(fr, 30, 16) < 0.1f);
+      s.check("outline far: the band lies on the far side of the step",
+              lum(fr, 25, 16) > 0.9f);
+      s.check("outline far: the outer contour still inks",
+              lum(fr, 13, 6) < 0.1f);
     }
   }
 

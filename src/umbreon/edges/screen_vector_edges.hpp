@@ -179,6 +179,13 @@ struct ScreenClassifyParams {
   const SilhouetteMode* groupSilhMode = nullptr;
   std::size_t groupSilhModeCount = 0;
   SilhouetteMode silhModeDefault = SilhouetteMode::Full;
+  // Outline-mode far-side depth rule (StrokeEdgeOptions::outlineFarVz): an
+  // Outline section's same-section self-occlusion step is suppressed only
+  // while the FAR side of the step (the surface behind the near object,
+  // max(vzA, vzB)) lies at or before this view-z; beyond it the step takes
+  // the Full-mode DepthGap path. Consulted only where outlineMode() holds;
+  // +inf = pure Outline.
+  float outlineFarVz = std::numeric_limits<float>::infinity();
   // Per-SECTION contact rank table, indexed by group id: the width and
   // lightness of the line each section would draw for a contact contour --
   // its Silhouette slot when the contact classifies as Silhouette (either

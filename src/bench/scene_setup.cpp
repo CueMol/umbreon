@@ -326,6 +326,7 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
     ropt.strokeEdges.crease = opt.strokeCrease;
     ropt.strokeEdges.border = opt.strokeBorder;
     ropt.strokeEdges.contact = opt.strokeContact;
+    ropt.strokeEdges.outlineFarVz = opt.strokeOutlineFar;
     ropt.strokeEdges.taper = opt.strokeTaper;
     ropt.strokeEdges.smooth = opt.strokeSmooth;
     ropt.strokeEdges.roundCap = opt.strokeRoundCap;

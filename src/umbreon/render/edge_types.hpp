@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 namespace umbreon {
 
@@ -133,6 +134,16 @@ struct StrokeEdgeOptions {
   // under `border` (sil when both sides are Outline). Default off: contours
   // match the pre-flag output exactly.
   bool contact = false;
+  // Outline mode only: a same-section self-occlusion step (the near object's
+  // contour over another surface of its own section) is suppressed only
+  // while the surface BEHIND it -- the far side of the step -- lies at or
+  // before this linear view-z; a step whose far side is beyond it classifies
+  // as DepthGap exactly as in Full mode (drawn with the disc slot, sil
+  // fallback). Meant for fogged scenes: set it where the fog has all but
+  // swallowed the far surface, so a near object's contour over a fogged-away
+  // sibling still reads as a contour against the background. +inf (default)
+  // = pure Outline, byte-identical to before.
+  float outlineFarVz = std::numeric_limits<float>::infinity();
 
   // --- feature-edge extraction params (mirror ObjectSpaceEdgeOptions) ---
   // Ray-cast visibility is analytic, so no 3D lift is needed (raise == 0).

@@ -161,6 +161,16 @@ inline bool outlineMode(const ScreenClassifyParams& p, std::uint32_t id) {
   return m == SilhouetteMode::Outline;
 }
 
+// Outline-mode suppression of a same-section self-occlusion step between
+// view-z vzA / vzB: the section is Outline AND the FAR side of the step (the
+// surface behind the near object) lies at or before p.outlineFarVz. Beyond
+// it that surface is fogged away, so the step is the near object's contour
+// against the background and takes the Full-mode DepthGap path instead.
+inline bool outlineSuppress(const ScreenClassifyParams& p, std::uint32_t id,
+                            float vzA, float vzB) {
+  return outlineMode(p, id) && std::max(vzA, vzB) <= p.outlineFarVz;
+}
+
 // Contact rank of a foreground pixel's section for the class the contact
 // would draw as (sil: Silhouette slot, else Object slot). No table / group
 // past it: "no line" (width 0, lightness 1) -- both sides then tie and the
@@ -369,7 +379,11 @@ inline std::uint8_t classifyPair(const float* viewZ,
     const bool outlineSil =
         !sameSection && p.silhouette &&
         outlineMode(p, vzA <= vzB ? objectId[ia] : objectId[ib]);
-    if (sameSection ? (!p.silhouette || outlineMode(p, objectId[ia]))
+    // Same-section step: Outline suppresses it while the surface behind the
+    // step is within the far-side depth (outlineSuppress); a step over a
+    // surface beyond it inks as in Full mode.
+    if (sameSection ? (!p.silhouette ||
+                       outlineSuppress(p, objectId[ia], vzA, vzB))
                     : (!outlineSil && !p.objectBoundary &&
                        !(p.contactBoundary && p.silhouette &&
                          (outlineMode(p, objectId[ia]) ||
@@ -447,8 +461,9 @@ inline std::uint8_t classifyPair(const float* viewZ,
   // profile there), which kills the rim annulus next to the outline.
   const float vzA = viewZ[ia], vzB = viewZ[ib];
   // An Outline-mode section suppresses the same-id DepthGap (self-occlusion)
-  // block entirely but still falls through to the Crease test below.
-  if (p.silhouette && !outlineMode(p, objectId[ia])) {
+  // block entirely -- unless the far side lies beyond the far-side depth
+  // (outlineSuppress) -- but still falls through to the Crease test below.
+  if (p.silhouette && !outlineSuppress(p, objectId[ia], vzA, vzB)) {
     const float vzNear = std::min(vzA, vzB);
     const float px = pixelSizeAt(sp, vzNear);
     const float clampS = p.slopeClampPx * px;
