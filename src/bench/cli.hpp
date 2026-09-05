@@ -200,6 +200,13 @@ struct Options {
   // an override keeps the global stroke style (StrokeEdgeOptions::defaultStyle,
   // seeded from the --stroke-* toggles below).
   std::map<std::string, EdgeStyle> sectionEdge;
+  // Edge group of a section (--edge-group ID=N, repeatable): sections with
+  // the same N form one edge group for the stroke pass (Scene::
+  // edgeGroupOfGroup): no contact line inside the group, one style per
+  // group (the --edge override of any member section, last wins). Unlisted
+  // sections stay their own edge group. Resolved against geo.groupNames in
+  // main, warn-on-miss like --edge.
+  std::map<std::string, int> sectionEdgeGroup;
   // Debug AOV dump prefix (--dump-aov <prefix>): when set AND edges are on, write
   // false-color objectId/materialId, normal*0.5+0.5 and normalized viewZ images
   // named "<prefix>_*.png". Empty => no dump.

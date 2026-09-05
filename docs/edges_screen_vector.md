@@ -284,6 +284,7 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 | `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all). A short open chain junctioned at both ends is a chopped piece of a longer boundary and stays; a short closed loop (a one-pixel island) drops whatever its seam corner's degree |
 | `--stroke-outline <on|off>` | off | outer-contour silhouette mode (`SilhouetteMode::Outline`) as the global default for every section |
 | `--stroke-contact <on|off>` | off | ink depth-continuous CROSS-section contact/intersection contours (the curve where one section plunges into another) |
+| `--edge-group <ID=N>` | (each section its own) | put a section into EDGE GROUP N (repeatable): the stroke pass treats one edge group as one section -- no contact line inside it, a contact line between groups (under `--stroke-contact`), same-group depth steps as self-occlusion, one style per group (the `--edge` override of a member section; last wins). `Scene::edgeGroupOfGroup`; the transparency group stays per section |
 | `--stroke-align <outside\|center>` | outside | ink placement as the global default for every section: `outside` puts the full stroke width on the occluded/background side of every occlusion contour (Silhouette / ObjectId / DepthGap) so the nearer object never thins; `center` splits it across the line (legacy). Contact and Crease lines always center. Per section via `--edge ID=sil:align=...` (`EdgeStyle::align`, the OWNER section's setting governs) |
 
 The nature toggles keep their meaning under the screen source:
@@ -365,6 +366,19 @@ raw viewZ/objectId planes. `UMBREON_SCREEN_EDGE_DUMP_ROI=x0,y0,x1,y1`
 restricts the PPM/CSV to a hi-res pixel rectangle. The hysteresis internals
 (`weakGapRatio`, `stepDominanceK`) are `ScreenClassifyParams` struct
 defaults, deliberately not CLI flags.
+
+## Edge groups
+
+A "section" above is a primitive group (`objectId >> 2`, one CueMol
+renderer). `Scene::edgeGroupOfGroup` maps primitive groups onto EDGE GROUPS
+(`--edge-group ID=N`; CueMol's `egroup` renderer property), and the screen
+source runs on the objectId AOV with the groups replaced by their edge
+groups: everything that says "section" here -- the contact veto, the
+same-section DepthGap vs cross-section ObjectId classification, the Outline
+union, the per-section style (`groupEdgeStyle` is indexed by edge group),
+the contact owner -- then means the edge group. The frame's own AOV is not
+modified, so transparency post-blending and every other consumer keep the
+primitive group. An empty map is the identity.
 
 ## Limitations
 

@@ -323,6 +323,28 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   const ScreenProj sp = makeScreenProj(scene.camera, W, H);
   const float ssScale = static_cast<float>(std::max(1, opt.supersample));
 
+  // EDGE GROUPS (Scene::edgeGroupOfGroup): the pass sees the objectId AOV
+  // with each primitive group replaced by its edge group, so every stage
+  // below (classification, tracing, prune, probes, styling) treats an edge
+  // group as one section. The frame's own AOV is untouched (transparency
+  // and everything else still key on the primitive group).
+  std::vector<std::uint32_t> edgeIdBuf;
+  const std::uint32_t* edgeIds = frame.objectId.data();
+  if (!scene.edgeGroupOfGroup.empty()) {
+    edgeIdBuf.resize(frame.objectId.size());
+    for (std::size_t i = 0; i < frame.objectId.size(); ++i) {
+      const std::uint32_t id = frame.objectId[i];
+      edgeIdBuf[i] =
+          id == kBackground
+              ? id
+              : (static_cast<std::uint32_t>(scene.edgeGroupFor(
+                     static_cast<std::uint16_t>(id >> 2)))
+                 << 2) |
+                    (id & 3u);
+    }
+    edgeIds = edgeIdBuf.data();
+  }
+
   // Stage 1: classify. The nature master toggles gate the classes here (the
   // shared draw stage applies only the per-section style table).
   ScreenClassifyParams cp;
@@ -387,15 +409,14 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     cp.clipNearVz = scene.clipNear;
     cp.clipFarVz = scene.clipFar;
   }
-  CrackField cf = classifyCracks(W, H, frame.viewZ.data(),
-                                 frame.objectId.data(), normalPtr, sp, cp,
-                                 dumpPrefix ? &dbg : nullptr,
+  CrackField cf = classifyCracks(W, H, frame.viewZ.data(), edgeIds,
+                                 normalPtr, sp, cp, dumpPrefix ? &dbg : nullptr,
                                  occluded ? &occluded : nullptr,
                                  hasClip ? &clipAovs : nullptr, progress);
   if (cancelled()) return;
   if (dumpPrefix) {
-    writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
-                   frame.objectId.data(), normalPtr, sp, cp);
+    writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(), edgeIds,
+                   normalPtr, sp, cp);
     // Raw clip-cut planes for offline analysis (full frame, debug only).
     if (hasClip) {
       const std::size_t n = static_cast<std::size_t>(W) * H;
@@ -420,18 +441,16 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   // sections / alpha-graded fragments fade their edges accordingly.
   const float* surfAlphaPtr =
       frame.surfAlpha.empty() ? nullptr : frame.surfAlpha.data();
-  std::vector<ScreenChain> traced =
-      traceCrackChains(cf, frame.viewZ.data(), frame.objectId.data(),
-                       surfAlphaPtr, progress);
+  std::vector<ScreenChain> traced = traceCrackChains(
+      cf, frame.viewZ.data(), edgeIds, surfAlphaPtr, progress);
   if (cancelled()) return;
   const std::size_t tracedRaw = traced.size();
   // Self-support needs ~2 FINAL px of strong evidence so a lone borderline
   // crack cannot resurrect an isolated sliver as a dash.
   const int minStrong = std::max(1, static_cast<int>(std::lround(
                                         2.0f * ssScale)));
-  traced = pruneWeakChains(cf, std::move(traced), frame.viewZ.data(),
-                           frame.objectId.data(), minStrong, surfAlphaPtr,
-                           progress);
+  traced = pruneWeakChains(cf, std::move(traced), frame.viewZ.data(), edgeIds,
+                           minStrong, surfAlphaPtr, progress);
   if (cancelled()) return;
 
   // Debug level 3+: one line per drawn run (side / taper / clip wiring);
@@ -1471,7 +1490,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                     : (second ? yy + 1 : yy) * cf.W + xx;
             hit.cls = static_cast<CrackClass>(byte & kCrackClassMask);
             hit.grp = static_cast<std::uint16_t>(
-                frame.objectId[static_cast<std::size_t>(ownPix)] >> 2);
+                edgeIds[static_cast<std::size_t>(ownPix)] >> 2);
           }
         }
       }

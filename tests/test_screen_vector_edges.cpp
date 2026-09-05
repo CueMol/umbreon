@@ -2984,6 +2984,101 @@ int main() {
             lumAt(26, 16) < 0.1f);
   }
 
+  // (20m) EDGE GROUPS (Scene::edgeGroupOfGroup): two touching same-depth
+  // sections (groups 1 and 2) mapped into ONE edge group behave as one
+  // section -- no contact line between them even with contact on, and one
+  // style for both (the edge group's entry); mapped into different edge
+  // groups the contact line inks (contact on) and each side keeps its own
+  // style. The frame's objectId AOV is not modified. Same lattice as (20e).
+  {
+    auto build = [&](umbreon::FrameResult& frame) {
+      const int W = 48, H = 32;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 44; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+    };
+    auto sceneFor = [&](std::vector<std::uint16_t> map, std::size_t nStyles,
+                        float redOfStyle1) {
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 100.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = 32.0f;  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      scene.groupEdgeStyle.assign(nStyles, umbreon::EdgeStyle{});
+      for (std::size_t g = 1; g < nStyles; ++g) {
+        umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
+        umbreon::EdgeClassStyle& cs =
+            es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+        cs.enabled = true;
+        cs.width = 4.0f;
+        cs.color[0] = g == 1 ? redOfStyle1 : 0.0f;  // style 1 may be red
+        cs.color[1] = 0.0f;
+        cs.color[2] = 0.0f;
+        es.cls[static_cast<int>(umbreon::EdgeClass::Object)] = cs;
+        es.silhouetteMode = umbreon::SilhouetteMode::Outline;
+      }
+      scene.edgeGroupOfGroup = std::move(map);
+      return scene;
+    };
+    umbreon::RenderOptions opt;
+    opt.width = 48;
+    opt.height = 32;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;
+    opt.strokeEdges.contact = true;
+    auto chan = [](const umbreon::FrameResult& fr, int x, int y, int c) {
+      return fr.color[(static_cast<std::size_t>(y) * 48 + x) * 4 + c];
+    };
+    // Helper semantics.
+    {
+      umbreon::Scene sc;
+      s.check("edge group: empty map is the identity",
+              sc.edgeGroupFor(7) == 7);
+      sc.edgeGroupOfGroup = {0, 3, 3};
+      s.check("edge group: mapped groups resolve, past the table = itself",
+              sc.edgeGroupFor(1) == 3 && sc.edgeGroupFor(2) == 3 &&
+                  sc.edgeGroupFor(5) == 5);
+    }
+    // ONE edge group (both primitive groups -> edge group 1, styled red).
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      const umbreon::Scene sc = sceneFor({0, 1, 1}, 2, 1.0f);
+      umbreon::applyScreenVectorEdges(fr, sc, opt);
+      // No contact line at x = 23.5 (mid-height, both sides).
+      s.check("edge group: no contact line inside one edge group",
+              chan(fr, 22, 16, 1) > 0.9f && chan(fr, 25, 16, 1) > 0.9f);
+      // The shared outer contour inks on both sides, in edge group 1's red.
+      s.check("edge group: the union's outline inks in the group's style",
+              chan(fr, 13, 6, 1) < 0.1f && chan(fr, 13, 6, 0) > 0.9f &&
+                  chan(fr, 35, 6, 1) < 0.1f && chan(fr, 35, 6, 0) > 0.9f);
+      s.check("edge group: the frame's objectId AOV is untouched",
+              fr.objectId[static_cast<std::size_t>(16) * 48 + 30] == (2u << 2));
+    }
+    // TWO edge groups (1 -> 1 red, 2 -> 2 black): contact line, own styles.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      const umbreon::Scene sc = sceneFor({0, 1, 2}, 3, 1.0f);
+      umbreon::applyScreenVectorEdges(fr, sc, opt);
+      s.check("edge group: contact line between two edge groups",
+              chan(fr, 22, 16, 1) < 0.1f && chan(fr, 25, 16, 1) < 0.1f);
+      s.check("edge group: each side keeps its own style",
+              chan(fr, 13, 6, 0) > 0.9f && chan(fr, 35, 6, 0) < 0.1f);
+    }
+  }
+
   // ---- speck filter predicate (isScreenSpeck) ----------------------------
   // A short open chain junctioned at both ends is a chopped piece of a
   // longer boundary and stays; a short chain with a free end, or a short

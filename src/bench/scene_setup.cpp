@@ -413,6 +413,47 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
                     kv.first.c_str(), it->second);
       }
     }
+    // --edge-group ID=N: sections of one edge group become ONE section for
+    // the stroke pass (Scene::edgeGroupOfGroup). Unlisted sections keep an
+    // edge group of their own, numbered past the listed ones so nothing
+    // collides. The style table is re-indexed by edge group: a listed
+    // group takes the (last) member section's style, an unlisted section
+    // keeps its own.
+    if (!opt.sectionEdgeGroup.empty()) {
+      std::map<std::string, int> gidx;
+      for (std::size_t i = 0; i < groupNames.size(); ++i)
+        gidx[groupNames[i]] = static_cast<int>(i);
+      int maxListed = -1;
+      for (const auto& kv : opt.sectionEdgeGroup)
+        maxListed = std::max(maxListed, kv.second);
+      std::vector<int> egOf(groupNames.size(), -1);
+      for (const auto& kv : opt.sectionEdgeGroup) {
+        auto it = gidx.find(kv.first);
+        if (it == gidx.end()) {
+          std::fprintf(stderr,
+                       "warning: section '%s' not found (try --list-groups)\n",
+                       kv.first.c_str());
+          continue;
+        }
+        egOf[static_cast<std::size_t>(it->second)] = kv.second;
+      }
+      int next = maxListed + 1;
+      for (int& e : egOf)
+        if (e < 0) e = next++;
+      std::vector<umbreon::EdgeStyle> byEdgeGroup(
+          static_cast<std::size_t>(next), ds);
+      scene.edgeGroupOfGroup.resize(groupNames.size());
+      for (std::size_t g = 0; g < groupNames.size(); ++g) {
+        scene.edgeGroupOfGroup[g] = static_cast<std::uint16_t>(egOf[g]);
+        byEdgeGroup[static_cast<std::size_t>(egOf[g])] =
+            scene.groupEdgeStyle[g];
+      }
+      scene.groupEdgeStyle.swap(byEdgeGroup);
+      for (const auto& kv : opt.sectionEdgeGroup)
+        if (gidx.count(kv.first))
+          std::printf("  edge group: section %s -> edge group %d\n",
+                      kv.first.c_str(), kv.second);
+    }
   }
   if (ropt.strokeEdges.enable) {
     // Remove baked POV edge primitives (edge_line/edge_line2 -> open
@@ -434,7 +475,8 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
       const int kSil = static_cast<int>(umbreon::EdgeClass::Silhouette);
       const int kObj = static_cast<int>(umbreon::EdgeClass::Object);
       const int kCrease = static_cast<int>(umbreon::EdgeClass::Crease);
-      auto sectionRemovesBaked = [&](std::uint16_t g) -> bool {
+      auto sectionRemovesBaked = [&](std::uint16_t group) -> bool {
+        const std::uint16_t g = scene.edgeGroupFor(group);  // style index
         if (g >= ng) return false;  // unaddressable group: keep baked edges
         const umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
         return es.cls[kSil].enabled || es.cls[kObj].enabled ||
