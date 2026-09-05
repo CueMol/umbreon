@@ -2571,6 +2571,19 @@ int main() {
             lumAt(36, 20) < 0.1f);
     s.check("depth permission: inner side of the backbone untouched",
             lumAt(26, 15) > 0.9f && lumAt(20, 15) > 0.9f);
+
+    // The same chain flagged CONTACT (StrokePoint::contact = 1): the
+    // surface beside a depth-continuous contact contour is the other
+    // section's own surface, so the nearer column is not a culling
+    // occluder and the band stays whole.
+    std::fill(fr.color.begin(), fr.color.end(), 1.0f);
+    chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true, 1.0f},
+                    {48.5f, 16.5f, 10.0f, 1.0f, true, 1.0f}};
+    umbreon::renderStrokeChains(fr, scene, opt, chain);
+    s.check("depth permission: a contact chain is exempt",
+            lumAt(26, 19) < 0.1f && lumAt(26, 21) < 0.1f);
+    s.check("depth permission: contact exemption keeps the inner side clean",
+            lumAt(26, 15) > 0.9f);
   }
 
   // (20l) a contour crossing the whole frame keeps its band at both
@@ -2999,26 +3012,34 @@ int main() {
             lumAt(obCen, 20, 16) > 0.9f);
   }
 
-  // (20e) per-section align + contact runs stay centered: two touching
+  // (20e) per-section align + the contact run's side: two touching
   // same-depth sections (their shared outer silhouette splits into per-group
   // runs at the touch corners), section 1 overridden to Center, section 2 on
   // the Outside default; the depth-continuous contact boundary between them
-  // (both Outline, contact on -> Silhouette class) must ink BOTH sides even
-  // under Outside alignment (the vote abstains on contact edgels).
+  // (both Outline, contact on -> Silhouette class) is owned by section 1
+  // (identical styles, both Outline -> the smaller id), so it follows
+  // section 1's alignment: centered here, and on the non-owner (east) side
+  // once section 1 is Outside too -- contact edgels vote their outer side
+  // like occlusion edgels, so a contour that is part contact and part
+  // occlusion keeps one band on one side.
   {
     const int W = 48, H = 32;
     umbreon::FrameResult frame;
-    frame.width = W;
-    frame.height = H;
-    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
-    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
-    frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
-    for (int y = 8; y < 24; ++y)
-      for (int x = 4; x < 44; ++x) {
-        const std::size_t i = static_cast<std::size_t>(y) * W + x;
-        frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
-        frame.viewZ[i] = 50.0f;
-      }
+    auto makeFrame = [&]() {
+      frame = umbreon::FrameResult{};
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 44; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+    };
+    makeFrame();
     umbreon::Scene scene;
     scene.camera.position = {0.0f, 0.0f, 100.0f};
     scene.camera.direction = {0.0f, 0.0f, -1.0f};
@@ -3062,12 +3083,19 @@ int main() {
             lumAt(35, 3) < 0.1f);
     s.check("align per-section: Outside section leaves its interior clean",
             lumAt(35, 10) > 0.9f);
-    // Contact boundary x = 23.5 (width 6): centered band [20.5, 26.5] inks
-    // both sides at mid-height.
-    s.check("align contact: contact contour inks the owner (west) side",
-            lumAt(21, 16) < 0.1f);
-    s.check("align contact: contact contour inks the far (east) side",
-            lumAt(26, 16) < 0.1f);
+    // Contact boundary x = 23.5 (width 6), owner section 1 (Center): the
+    // band [20.5, 26.5] inks both sides at mid-height.
+    s.check("align contact: Center owner keeps the contact band centered",
+            lumAt(21, 16) < 0.1f && lumAt(26, 16) < 0.1f);
+    // Owner section 1 on Outside: the band lies on the non-owner (east)
+    // side, [23.5, 29.5], and the owner's side stays clean.
+    makeFrame();
+    scene.groupEdgeStyle[1].align = umbreon::StrokeAlign::Outside;
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+    s.check("align contact: Outside owner lays the contact band outside",
+            lumAt(25, 16) < 0.1f && lumAt(28, 16) < 0.1f);
+    s.check("align contact: Outside owner's own side stays clean",
+            lumAt(21, 16) > 0.9f);
   }
 
   // (20m) EDGE GROUPS (Scene::edgeGroupOfGroup): two touching same-depth
@@ -3158,8 +3186,12 @@ int main() {
       build(fr);
       const umbreon::Scene sc = sceneFor({0, 1, 2}, 3, 1.0f);
       umbreon::applyScreenVectorEdges(fr, sc, opt);
+      // Same width on both sides, so the DARKER (black, east) group owns the
+      // contact contour: its 4 px band lies on the non-owner (west) side of
+      // x = 23.5, in black.
       s.check("edge group: contact line between two edge groups",
-              chan(fr, 22, 16, 1) < 0.1f && chan(fr, 25, 16, 1) < 0.1f);
+              chan(fr, 20, 16, 1) < 0.1f && chan(fr, 22, 16, 1) < 0.1f &&
+                  chan(fr, 22, 16, 0) < 0.1f && chan(fr, 25, 16, 1) > 0.9f);
       s.check("edge group: each side keeps its own style",
               chan(fr, 13, 6, 0) > 0.9f && chan(fr, 35, 6, 0) < 0.1f);
     }
@@ -3169,8 +3201,9 @@ int main() {
   // touching same-depth Full-mode sections (lattice of (20e)) is drawn in the
   // style of the side with the WIDER line whichever group id it sits on, and
   // still inks when the smaller-id side draws no edge lines at all (it then
-  // takes the edged side's style). Contact bands are centered on x = 23.5, so
-  // a 6 px band covers x = 21..25 while a 2 px band reaches only x = 23..24.
+  // takes the edged side's style). Under the Outside default the band lies
+  // on the NON-owner side of the boundary x = 23.5: a 6 px band owned by the
+  // east section covers x = 18..23, one owned by the west section x = 24..29.
   {
     auto build = [&](umbreon::FrameResult& frame) {
       const int W = 48, H = 32;
@@ -3218,44 +3251,75 @@ int main() {
     auto lum = [](const umbreon::FrameResult& fr, int x, int y) {
       return fr.color[(static_cast<std::size_t>(y) * 48 + x) * 4];
     };
-    auto wideContact = [&](const umbreon::FrameResult& fr) {
-      return lum(fr, 21, 16) < 0.1f && lum(fr, 25, 16) < 0.1f;
+    // 6 px band on the west (east section owns) / east (west section owns)
+    // side of x = 23.5, the owner's side clean.
+    auto wideWest = [&](const umbreon::FrameResult& fr) {
+      return lum(fr, 19, 16) < 0.1f && lum(fr, 22, 16) < 0.1f &&
+             lum(fr, 26, 16) > 0.9f;
     };
-    // Wider line on the LARGER id: the contact band is the 6 px one.
+    auto wideEast = [&](const umbreon::FrameResult& fr) {
+      return lum(fr, 25, 16) < 0.1f && lum(fr, 28, 16) < 0.1f &&
+             lum(fr, 21, 16) > 0.9f;
+    };
+    // Wider line on the LARGER (east) id: its 6 px band, laid west.
     {
       umbreon::FrameResult fr;
       build(fr);
       umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 6.0f), opt);
       s.check("contact owner: the wider (larger-id) side styles the contact",
-              wideContact(fr));
+              wideWest(fr));
     }
-    // Wider line on the SMALLER id: the same 6 px band.
+    // Wider line on the SMALLER (west) id: its 6 px band, laid east.
     {
       umbreon::FrameResult fr;
       build(fr);
       umbreon::applyScreenVectorEdges(fr, sceneFor(6.0f, 2.0f), opt);
       s.check("contact owner: the wider (smaller-id) side styles the contact",
-              wideContact(fr));
+              wideEast(fr));
     }
-    // Control: two 2 px sides leave x = 21 / 25 clean (the band is 2 px).
+    // Control: two 2 px sides (identical -> the west id owns) draw a 2 px
+    // band east of the boundary, x = 24 only.
     {
       umbreon::FrameResult fr;
       build(fr);
       umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 2.0f), opt);
       s.check("contact owner: equal 2 px sides draw a 2 px contact band",
-              !wideContact(fr) && lum(fr, 23, 16) < 0.1f);
+              lum(fr, 24, 16) < 0.1f && lum(fr, 27, 16) > 0.9f &&
+                  lum(fr, 21, 16) > 0.9f);
     }
     // The smaller-id side draws no edge lines: the contact still inks, in
-    // the edged side's 6 px style, and the edge-less side's own rim stays
-    // clean.
+    // the edged (east) side's 6 px style laid west, and the edge-less
+    // side's own rim stays clean.
     {
       umbreon::FrameResult fr;
       build(fr);
       umbreon::applyScreenVectorEdges(fr, sceneFor(0.0f, 6.0f), opt);
       s.check("contact owner: an edge-less smaller id still gets the contact",
-              wideContact(fr));
+              wideWest(fr));
       s.check("contact owner: the edge-less side draws no rim of its own",
               lum(fr, 13, 6) > 0.9f && lum(fr, 13, 9) > 0.9f);
+    }
+    // (20o) CONTACT BAND OVER A RISING SURFACE: the west section now slopes
+    // toward the viewer away from the boundary (vz = 50 - 3 * (23.5 - x)),
+    // meeting the flat east section (vz 50) at the boundary -- a contact
+    // (the west side's extrapolation predicts the east pixel exactly). The
+    // east section owns (6 px vs 2 px) and its band lies west, over the
+    // rising surface, which 5 px in is 15 units nearer than the contour:
+    // past the depth-gap tolerance (12), so the depth permission used to
+    // notch the band there. A contact band is exempt and stays whole.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 24; ++x)
+          fr.viewZ[static_cast<std::size_t>(y) * 48 + x] =
+              50.0f - 3.0f * (23.5f - static_cast<float>(x));
+      umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 6.0f), opt);
+      s.check("contact band: whole over the rising non-owner surface",
+              lum(fr, 18, 16) < 0.1f && lum(fr, 20, 16) < 0.1f &&
+                  lum(fr, 22, 16) < 0.1f);
+      s.check("contact band: still nothing on the owner's side",
+              lum(fr, 26, 16) > 0.9f);
     }
   }
 

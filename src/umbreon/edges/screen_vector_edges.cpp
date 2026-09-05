@@ -944,13 +944,35 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       if (ends.size() < 2) continue;
       std::vector<char> used(ends.size(), 0);
       bool haveBar = false;
+      // The (class, group) key of an end's last edgel: two ends of ONE
+      // physical line share it, two different lines meeting at the corner
+      // usually do not.
+      auto endKey = [&](const WeaveEnd& e) {
+        const ScreenChain& c = traced[e.chain];
+        const std::size_t ei = e.end == 0 ? 0 : c.edgeClass.size() - 1;
+        const std::uint32_t g = c.edgeGroup.size() == c.edgeClass.size()
+                                    ? c.edgeGroup[ei]
+                                    : 0u;
+        return (g << 8) | c.edgeClass[ei];
+      };
       for (;;) {
-        float best = kContinueCos;
-        int bi = -1, bj = -1;
+        // Straightest continuation, but a pair of the SAME key first: at a
+        // corner where a contact ring (ObjectId, the stick) meets the
+        // ribbon's own fold line (DepthGap, the ribbon), the fold ran on
+        // into a piece of the ring because that turn happened to be the
+        // straighter one, leaving the ring split across two chains; the
+        // piece then ended at run boundaries against the fold's runs
+        // (tapered, side-changed) while the rest of the ring ended clipped
+        // at the corner, and the two halves of one band met in a lump.
+        // Pairing like with like keeps each line whole; ends without a
+        // same-key partner still pair by direction alone.
+        float best = kContinueCos, bestSame = kContinueCos;
+        int bi = -1, bj = -1, si = -1, sj = -1;
         for (std::size_t i = 0; i < ends.size(); ++i) {
           if (used[i]) continue;
           const std::array<float, 2> di =
               dirOf(traced[ends[i].chain], ends[i].end);
+          const std::uint32_t ki = endKey(ends[i]);
           for (std::size_t j = i + 1; j < ends.size(); ++j) {
             if (used[j]) continue;
             if (!endsVzContinuous(ends[i], ends[j])) continue;
@@ -962,7 +984,17 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
               bi = static_cast<int>(i);
               bj = static_cast<int>(j);
             }
+            if (ki == endKey(ends[j]) && cosT <= bestSame) {
+              bestSame = cosT;
+              si = static_cast<int>(i);
+              sj = static_cast<int>(j);
+            }
           }
+        }
+        if (si >= 0) {
+          best = bestSame;
+          bi = si;
+          bj = sj;
         }
         if (bi < 0) break;
         used[bi] = used[bj] = 1;
@@ -1346,12 +1378,17 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     // thick line; only Crease stays centered (a surface fold has no
     // occluded side). Keyed on the run class, NOT styleSlot (the
     // DepthGap->sil slot fallback is a style lookup, not a class change).
-    // The run's group is the OWNER (nearer) section, so a section's align
-    // governs its own contours. The outer side is voted per run over the
-    // edgel side bits: a majority absorbs the few edgels whose owner
-    // flipped (owner jitter, mergeShortClassRuns relabels). Contact edgels
-    // (bit 2) have no defined outer side and abstain; an all-contact run
-    // (or a tie) stays centered.
+    // The run's group is the OWNER section, so a section's align governs
+    // its own contours. The outer side is voted per run over the edgel side
+    // bits: a majority absorbs the few edgels whose owner flipped (owner
+    // jitter, mergeShortClassRuns relabels). Contact edgels (bit 2) vote
+    // like the rest: their owner is the side with the dominant line
+    // (contactOwner), and the non-owner side is the contour's outer side
+    // exactly as on the occlusion segments of the same contour (a stick's
+    // cap ring over a ribbon is part occlusion, part intersection); a
+    // centered contact run beside an outside-aligned occlusion run would
+    // jog the band by half its width at every run boundary. A tie stays
+    // centered.
     w.side.assign(w.runs.size(), 0);
     for (std::size_t ri = 0; ri < w.runs.size(); ++ri) {
       const CrackClass rc = static_cast<CrackClass>(w.cls[w.runs[ri].e0]);
@@ -1360,11 +1397,8 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           w.flg.size() != w.cls.size())
         continue;
       long vote = 0;
-      for (std::size_t e = w.runs[ri].e0; e < w.runs[ri].e1; ++e) {
-        const std::uint8_t f = w.flg[e];
-        if (f & 4) continue;
-        vote += (f & 8) ? 1 : -1;
-      }
+      for (std::size_t e = w.runs[ri].e0; e < w.runs[ri].e1; ++e)
+        vote += (w.flg[e] & 8) ? 1 : -1;
       w.side[ri] = vote > 0 ? 1 : (vote < 0 ? -1 : 0);
     }
     works.push_back(std::move(w));
@@ -1480,9 +1514,10 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           if (vx * ox + vy * oy < 0.7071f * d) continue;  // 45-deg cone
           mids.push_back({mx, my});
           const bool second = (byte & kCrackOwnerBit) != 0;
-          if (!(byte & kCrackContactBit)) {
+          {
             // The met line's band (outer side) points toward the NON-owner
-            // pixel of its cracks; contact cracks abstain (arbitrary owner).
+            // pixel of its cracks, contact cracks included (their owner is
+            // the dominant-line side, see contactOwner).
             const float toOuter = second ? -1.0f : 1.0f;
             if (plane == 0)
               bnxAcc += toOuter;
@@ -1697,8 +1732,23 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           return std::sqrt(cx2 * cx2 + cy2 * cy2) <
                  0.55f * (arcA + arcB);
         };
+        // Does the band continue across the run boundary into span nb (no
+        // taper)? Yes when the neighbor keeps the side, and also when the
+        // neighbor is a DIFFERENT LINE (another class/group takes over the
+        // lattice curve -- a ribbon's fold running into the contact ring of
+        // the atom embedded in it): the band then simply stops flush where
+        // the other line starts. The taper exists for a same-line owner
+        // flip (the band switching sides along one contour); applied at a
+        // line change it necked a 26 px contact piece between two thin fold
+        // runs into a spindle, and the ring's band grew a lump there.
+        auto keyOf = [&](std::size_t ri) {
+          return (static_cast<std::uint32_t>(w.grp[w.runs[ri].e0]) << 8) |
+                 static_cast<std::uint32_t>(w.cls[w.runs[ri].e0]);
+        };
         auto continues = [&](std::size_t nb) {  // nb = span index
-          return w.side[spans[nb].r0] == in.outsideSide;
+          const std::size_t rn = spans[nb].r0;
+          if (keyOf(rn) != keyOf(spans[si].r0)) return true;
+          return w.side[rn] == in.outsideSide;
         };
         // Resolve one chain end: bar clip (junction / probed free end) or
         // the taper fallback. The endpoint NODE lands exactly ON the met
@@ -1792,7 +1842,8 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       {
         const std::size_t nV = pts.size();
         const bool hasA = w.alp.size() == w.cls.size();
-        for (std::size_t k = 0; k < nV && (hasA || hasVzArr); ++k) {
+        const bool hasF = w.flg.size() == w.cls.size();
+        for (std::size_t k = 0; k < nV && (hasA || hasVzArr || hasF); ++k) {
           std::size_t ea, eb;  // the edgel(s) attributed to vertex k
           if (runClosed && (k == 0 || k == nV - 1)) {
             ea = e0;
@@ -1807,6 +1858,12 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           }
           if (hasA) pts[k].alpha = 0.5f * (w.alp[ea] + w.alp[eb]);
           if (hasVzArr) pts[k].vz = 0.5f * (w.vz[ea] + w.vz[eb]);
+          // Contact weight (ScreenChainVert::contact): the run's own edgels
+          // again, so the depth-permission exemption stops exactly where
+          // the contact contour turns into an occlusion contour.
+          if (hasF)
+            pts[k].contact = 0.5f * (((w.flg[ea] & 4) ? 1.0f : 0.0f) +
+                                     ((w.flg[eb] & 4) ? 1.0f : 0.0f));
         }
       }
       collapseCollinear(pts, runClosed);
@@ -1936,12 +1993,15 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       if (pts.size() < 2) continue;
       // Junction extension: append a vertex at the chain end's resolved
       // target (a probed free end's on-line intersection, or the small
-      // overlap of a barless taper end).
+      // overlap of a barless taper end). The extension lies past the
+      // contour, so it is never a contact vertex: its overshoot stays
+      // under the depth permission whatever the run was.
       if (si == 0 && extendStart > 0.0f) {
         const std::array<float, 2> din = endDirIn(w, 0);
         ScreenChainVert v = pts.front();
         v.x -= din[0] * extendStart;
         v.y -= din[1] * extendStart;
+        v.contact = 0.0f;
         pts.insert(pts.begin(), v);
       }
       if (si + 1 == spans.size() && extendEnd > 0.0f) {
@@ -1949,6 +2009,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
         ScreenChainVert v = pts.back();
         v.x -= din[0] * extendEnd;
         v.y -= din[1] * extendEnd;
+        v.contact = 0.0f;
         pts.push_back(v);
       }
       if (dbgRuns)
@@ -1972,7 +2033,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       }
       in.pts.reserve(pts.size());
       for (const ScreenChainVert& v : pts)
-        in.pts.push_back({v.x, v.y, v.vz, v.alpha, true});
+        in.pts.push_back({v.x, v.y, v.vz, v.alpha, true, v.contact});
       drawChains.push_back(std::move(in));
     }
   }

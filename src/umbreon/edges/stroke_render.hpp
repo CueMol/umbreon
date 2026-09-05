@@ -39,6 +39,12 @@ struct StrokePoint {
   float vz = 0.0f;
   float alpha = 1.0f;
   bool visible = true;
+  // Contact weight, 0..1 (ScreenChainVert::contact): a vertex >= 0.5 lies
+  // on a depth-continuous contact contour, and its offset band is exempt
+  // from the depth permission / outer-room clamp (the surface beside it is
+  // the other section's own surface at this depth, which rises and falls
+  // along the contour; culling on it would notch the band).
+  float contact = 0.0f;
 };
 
 // Optional END CLIP for the outside alignment (set by the screen source on

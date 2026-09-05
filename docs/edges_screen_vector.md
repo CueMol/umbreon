@@ -119,8 +119,9 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    OCCLUSION-contour run -- Silhouette, ObjectId and DepthGap alike --
    additionally votes its outer (non-owner, i.e. occluded or background)
    side over the per-edgel side bits (a majority absorbs owner jitter and
-   relabels; contact edgels abstain -- no outer side exists at a
-   depth-continuous contact, so an all-contact run stays centered) and the
+   relabels; contact edgels vote like the rest, their owner being the
+   dominant-line side, so a cap ring that is part occlusion and part
+   intersection keeps one band on one side) and the
    draw stage shifts the resolved width to that side: the full width inks
    on the FAR side of the contour (a <= 0.5 final px inner pad remains,
    covering the sub-pixel halo where Chaikin/RDP pull the backbone off the
@@ -212,7 +213,13 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      stem, got clipped along the near-parallel far line for a whole clip
      radius (a gap in the outline with a stub beyond it). Rejecting the
      pair lets the same-depth continuation weave and leaves the far line
-     as the stem.
+     as the stem. Among the admissible pairs, a pair of ends with the SAME
+     (class, group) key is preferred over a straighter pair of different
+     keys: two ends of one physical line share the key, two lines meeting
+     at the corner usually do not, and a contact ring woven onto a ribbon's
+     fold line (the straighter turn) left the ring split across two chains
+     with a lump where its halves met. Ends without a same-key partner
+     still pair by direction alone.
      Each junction records the woven bar's local direction, band side and
      style key (BarInfo, registered for every corner of the cluster) for
      the stem handling below.
@@ -251,7 +258,15 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      run's own edgels) by more than the classifier's depth-gap tolerance.
      Background and farther surfaces always permit; the inner pad and the
      first final pixel past the backbone (the owner's own grazing rim) are
-     never tested. This is the per-pixel form of the OuterRoomShader's
+     never tested. CONTACT vertices (a resampled vertex whose run edgels
+     are mostly depth-continuous contact edgels, `StrokePoint::contact`)
+     are exempt, in the permission and in the OuterRoomShader alike: the
+     surface beside an intersection contour is the other section's own
+     surface passing through the contour's depth, rising toward the viewer
+     on one stretch and falling on the next, so testing it notched the
+     band into lumps and gaps around every cap plunging into a ribbon; a
+     nearer third object there occludes both surfaces and draws its own
+     silhouette instead. This is the per-pixel form of the OuterRoomShader's
      vertex walk (which still shapes the vector width) and the one rule
      behind every end: a stem's overshoot lands on the object the bar
      outlines and is culled there, a band beside a thin background gap
@@ -262,11 +277,17 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      band's outer edge leaves the frame too (a contour crossing the border
      at a shallow angle otherwise stopped with a visible cap while its
      object ran on to the border); no probe, taper or cap.
-   - TAPER fallback: a run end whose neighbor run has a different voted
-     side, a deep fold at a run boundary, a junction with no woven bar
-     (e.g. a Y of three stems) and the closed-chain seam wrap still blend
-     the offset back to the symmetric ribbon over one stroke width
-     (AlignRecenterShader); tapered ends draw no round cap either.
+   - TAPER fallback: a run end whose SAME-KEY neighbor run has a different
+     voted side (the band switching sides along one contour), a deep fold
+     at a run boundary, a junction with no woven bar (e.g. a Y of three
+     stems) and the closed-chain seam wrap still blend the offset back to
+     the symmetric ribbon over one stroke width (AlignRecenterShader);
+     tapered ends draw no round cap either. A run boundary where a
+     DIFFERENT class/group takes over the lattice curve (a ribbon's fold
+     running into the contact ring of the atom embedded in it) is a line
+     change, not a side flip: the band stops flush there, since tapering
+     both ends of a short contact piece between two thin fold runs necked
+     it into a spindle.
    - CLOSED loop: a run covering a whole closed loop (an isolated sphere or
      capsule outline, `StrokeChainInput::closed`) is joined across its seam
      like an interior corner (miter, or square ends plus the outer arc fan

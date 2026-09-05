@@ -73,9 +73,9 @@ enum class CrackClass : std::uint8_t {
 // occlusion. It never promotes to strong, and the prune's strong-chain
 // hysteresis does not keep a ridge run dangling at a chain end. [7] the
 // CONTACT bit: the crack is a depth-CONTINUOUS contact/intersection contour
-// (the classifyPair contact branch), whose owner side is a deterministic
-// tie-break rule, not the nearer surface -- so it has no defined "outer"
-// side and the outside stroke alignment must leave it centered.
+// (the classifyPair contact branch), whose owner side is the section with
+// the dominant line (contactOwner), not the nearer surface; the outside
+// stroke alignment still treats the non-owner side as the outer side.
 constexpr std::uint8_t kCrackClassMask = 0x07;
 constexpr std::uint8_t kCrackOwnerBit = 0x08;
 constexpr std::uint8_t kCrackConsumedBit = 0x10;
@@ -326,6 +326,12 @@ struct ScreenChainVert {
   float x = 0.0f, y = 0.0f;
   float vz = 0.0f;
   float alpha = 1.0f;
+  // Fraction of the vertex's attributed edgels that are depth-continuous
+  // CONTACT edgels (kCrackContactBit), 0..1; interpolated by the smoothing.
+  // The draw stage exempts contact vertices (>= 0.5) from the depth
+  // permission: the surface beside a contact contour is the other section's
+  // own surface at the contour's depth, not a nearer occluder.
+  float contact = 0.0f;
 };
 
 // One traced chain: an ordered corner-lattice polyline. A closed loop
@@ -343,8 +349,9 @@ struct ScreenChain {
   std::vector<std::uint16_t> edgeGroup;
   // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis),
   // bit 1 = the crack's kCrackRidgeBit (convex ridge crease), bit 2 = the
-  // crack's kCrackContactBit (depth-continuous contact contour; no defined
-  // outer side), bit 3 = the OUTER (non-owner) side lies on the LEFT
+  // crack's kCrackContactBit (depth-continuous contact contour; the owner
+  // is the dominant-line side), bit 3 = the OUTER (non-owner) side lies on
+  // the LEFT
   // (+normal, orth(d) = {-dy, dx}) of the walk direction of this edgel --
   // consumed by the Stage-4 outside stroke alignment vote.
   std::vector<std::uint8_t> edgeFlags;

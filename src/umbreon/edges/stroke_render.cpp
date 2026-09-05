@@ -81,6 +81,7 @@ struct Pt2 {
   float vz = 0.0f;
   float surfA = 1.0f;
   bool visible = true;
+  float contact = 0.0f;  // StrokePoint::contact
 };
 
 // A ribbon strip: a flat list of offset border vertices in pairs (left,right)
@@ -754,6 +755,7 @@ struct StrokeVertex {
   float vz = 0.0f;
   float surfA = 1.0f;
   bool visible = true;
+  float contact = 0.0f;  // Pt2::contact, interpolated by the resample
   float u = 0.0f, ca = 0.0f;
   StrokeAttribute attr;
 };
@@ -1098,6 +1100,9 @@ struct OuterRoomShader : StrokeShader {
       const Vec2 out = side > 0 ? Vec2{-t.y, t.x} : Vec2{t.y, -t.x};
       float& outer = side > 0 ? v.attr.leftThick : v.attr.rightThick;
       if (outer <= skipPx) continue;
+      // A contact vertex's outer side is the other section's own surface at
+      // this depth (exempt; see StrokePoint::contact).
+      if (v.contact >= 0.5f) continue;
       const float tol = tolConst + tolSlope * v.vz;
       for (float d = skipPx; d <= outer; d += 1.0f) {
         const int x = static_cast<int>(std::lround(v.p.x + out.x * d));
@@ -1132,6 +1137,7 @@ Stroke buildStroke(const std::vector<Pt2>& proj, const StrokeAttribute& def,
     v.vz = proj[i].vz;
     v.surfA = proj[i].surfA;
     v.visible = proj[i].visible;
+    v.contact = proj[i].contact;
     v.ca = ca;
     v.attr = def;
     s.verts.push_back(v);
@@ -1153,6 +1159,7 @@ StrokeVertex lerpStrokeVertex(const StrokeVertex& a, const StrokeVertex& b,
   q.p = a.p + (b.p - a.p) * t;
   q.vz = a.vz + (b.vz - a.vz) * t;
   q.surfA = a.surfA + (b.surfA - a.surfA) * t;
+  q.contact = a.contact + (b.contact - a.contact) * t;
   q.u = a.u + (b.u - a.u) * t;
   q.ca = a.ca + (b.ca - a.ca) * t;
   q.visible = a.visible;
@@ -1218,6 +1225,7 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
   std::size_t runFirst = 0, vIdx = 0;  // stroke-vertex span of the current run
   std::vector<Vec2> pos;
   std::vector<float> lw, rw, av, vzv;
+  std::vector<float> ctv;  // per-vertex contact weight (permission exemption)
   std::vector<std::array<float, 3>> cv;  // per-vertex ink color (fog gradient)
   float col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
   float depthMin = 0.0f;  // min view-z over the current run
@@ -1305,6 +1313,9 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
           const float l = norm2(n);
           nv[i] = l > kZero ? Vec2{n.x / l * sgn, n.y / l * sgn}
                             : Vec2{0.0f, 0.0f};
+          // A contact vertex is exempt from the permission (a zero normal
+          // makes depthDenied pass everything; see StrokePoint::contact).
+          if (ctv[i] >= 0.5f) nv[i] = Vec2{0.0f, 0.0f};
         }
         ss.pairRef.reserve(pairSrc.size());
         for (std::size_t src : pairSrc)
@@ -1322,6 +1333,7 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
     rw.clear();
     av.clear();
     vzv.clear();
+    ctv.clear();
     cv.clear();
   };
   for (std::size_t i = 0; i < s.verts.size(); ++i) {
@@ -1346,6 +1358,7 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
     rw.push_back(v.attr.rightThick);
     av.push_back(v.attr.alpha * v.surfA);
     vzv.push_back(v.vz);
+    ctv.push_back(v.contact);
     cv.push_back({v.attr.color[0], v.attr.color[1], v.attr.color[2]});
   }
   vIdx = s.verts.size();
@@ -1491,12 +1504,15 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       q.vz = sp.vz;
       q.surfA = se.edgesOnly ? 1.0f : sp.alpha;
       q.visible = sp.visible;
+      q.contact = sp.contact;
       proj.push_back(q);
     }
     // Clipped junction ends: extend the RASTER backbone a hair past the
     // vector endpoint, so smoothing deviation of the met line cannot open
     // a sub-px seam; the end clip culls any overshoot. The vector data
     // (the node overlay, future exports) keeps the exact on-line endpoint.
+    // The pad vertex is past the contour, so it is never a contact vertex:
+    // its overshoot stays under the depth permission.
     const float padExt = (0.5f + se.screenSimplifyPx) * ssScale;
     if (in.clipStart.enabled && proj.size() >= 2) {
       const Vec2 d = proj[0].p - proj[1].p;
@@ -1504,6 +1520,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       if (l > kZero) {
         Pt2 q = proj.front();
         q.p = q.p + d * (padExt / l);
+        q.contact = 0.0f;
         proj.insert(proj.begin(), q);
       }
     }
@@ -1513,6 +1530,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       if (l > kZero) {
         Pt2 q = proj.back();
         q.p = q.p + d * (padExt / l);
+        q.contact = 0.0f;
         proj.push_back(q);
       }
     }

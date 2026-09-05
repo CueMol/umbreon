@@ -47,7 +47,8 @@ namespace {
 inline ScreenChainVert lerpVert(const ScreenChainVert& a,
                                 const ScreenChainVert& b, float t) {
   return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
-          a.vz + (b.vz - a.vz) * t, a.alpha + (b.alpha - a.alpha) * t};
+          a.vz + (b.vz - a.vz) * t, a.alpha + (b.alpha - a.alpha) * t,
+          a.contact + (b.contact - a.contact) * t};
 }
 
 }  // namespace

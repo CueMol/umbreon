@@ -402,9 +402,10 @@ inline std::uint8_t classifyPair(const float* viewZ,
       if (!sil && !p.objectBoundary) return 0;
       const std::uint8_t owner =
           contactOwner(p, objectId[ia], objectId[ib], outA, outB, sil);
-      // The contact bit marks the owner as a tie-break, not the nearer
-      // surface: no outer side is defined, so the outside stroke alignment
-      // keeps these edgels centered.
+      // The contact bit records that the owner is the dominant-line side,
+      // not the nearer surface; the outside stroke alignment still lays the
+      // band on the non-owner side, in line with the occlusion segments of
+      // the same contour.
       return static_cast<std::uint8_t>(sil ? CrackClass::Silhouette
                                            : CrackClass::ObjectId) |
              owner | kCrackContactBit;
