@@ -366,6 +366,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   cp.groupSilhMode = groupMode.empty() ? nullptr : groupMode.data();
   cp.groupSilhModeCount = groupMode.size();
   cp.silhModeDefault = se.defaultStyle.silhouetteMode;
+  cp.outlineFarVz = se.outlineFarVz;
   // Per-section contact rank table (the contact owner is the side with the
   // more visible line; see ScreenClassifyParams::contactBoundary).
   std::vector<ScreenContactRank> groupRank;

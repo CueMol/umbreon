@@ -304,6 +304,7 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 | `--stroke-screen-smooth <int>` | 2 | Chaikin iterations |
 | `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all). A short open chain junctioned at both ends is a chopped piece of a longer boundary and stays; a short closed loop (a one-pixel island) drops whatever its seam corner's degree |
 | `--stroke-outline <on|off>` | off | outer-contour silhouette mode (`SilhouetteMode::Outline`) as the global default for every section |
+| `--stroke-outline-far <vz\|off>` | off | Outline mode: a same-section self-occlusion step whose FAR side (the surface behind the near object) lies beyond this linear view-z inks as a depth-gap line as in Full mode (see Outline mode) |
 | `--stroke-contact <on|off>` | off | ink depth-continuous CROSS-section contact/intersection contours (the curve where one section plunges into another) |
 | `--edge-group <ID=N>` | (each section its own) | put a section into EDGE GROUP N (repeatable): the stroke pass treats one edge group as one section -- no contact line inside it, a contact line between groups (under `--stroke-contact`), same-group depth steps as self-occlusion, one style per group (the `--edge` override of a member section; last wins). `Scene::edgeGroupOfGroup`; the transparency group stays per section |
 | `--stroke-align <outside\|center>` | outside | ink placement as the global default for every section: `outside` puts the full stroke width on the occluded/background side of every occlusion contour (Silhouette / ObjectId / DepthGap) so the nearer object never thins; `center` splits it across the line (legacy). Contact and Crease lines always center. Per section via `--edge ID=sil:align=...` (`EdgeStyle::align`, the OWNER section's setting governs) |
@@ -362,6 +363,23 @@ silhouette toggle extracts for that section:
   on` inks them (the contour then classifies as `Silhouette`, closing the
   group's outline where it plunges into another section's surface, in the
   style of whichever side has the more visible line -- see above).
+
+FAR-SIDE DEPTH RULE (`--stroke-outline-far <vz>`,
+`StrokeEdgeOptions::outlineFarVz`): an Outline section suppresses a
+same-section self-occlusion step only while the surface BEHIND the near
+object -- the far side of the step, the larger of the two view-z -- lies at
+or before the given linear view-z; a step over a surface beyond it
+classifies as `DepthGap` exactly as in Full mode and draws with the `disc`
+slot (its `sil` fallback). The rule reads the depth of the nearest surface
+behind the contour, not of the object drawing it, and a step whose far side
+belongs to another section is a cross-section boundary that never consults
+it. Meant for fogged scenes: with the depth set where the fog has all but
+swallowed the far surface (CueMol derives it from its fog range), a near
+object's contour over a fogged-away sibling reads as a contour against the
+background instead of vanishing with it. Pair it with `--clip-far` at the
+fog end, which removes the fully fogged geometry altogether and turns those
+steps into true silhouettes against the background. Default +inf = pure
+Outline.
 
 `--stroke-outline on` sets Outline as the default for every section; a
 per-section `--edge` spec sets it with the `mode` attribute, e.g.
