@@ -19,6 +19,15 @@ using screen_edge::facingCos;
 using screen_edge::kBackground;
 using screen_edge::pixelSizeAt;
 
+// Depth tolerance at pixel size `px` for a crack whose nearer side sits at
+// view-z `vz`: the lateral-pixel scaled threshold, floored by the
+// intersectors' relative precision (ScreenClassifyParams::depthTolRel) so
+// that coincident surfaces z-fighting at float precision never read as a
+// depth step, however far the frame is zoomed in.
+inline float depthTolAt(const ScreenClassifyParams& p, float px, float vz) {
+  return std::max(p.depthGapPx * px, p.depthTolRel * vz);
+}
+
 // One-sided slope of the viewZ field at pixel `a` looking away from the crack
 // (toward `outer`), clamped to +-clampS. Background / off-image outer neighbors
 // contribute zero slope (flat extrapolation).
@@ -88,6 +97,29 @@ inline bool bgAlongCrack(const std::uint32_t* objectId, int W, int H, int x,
   return false;
 }
 
+// The silhouette-clearance rule for a depth step INSIDE a section: true when
+// the crack survives (clearance off, no background within bgClearancePx of
+// either pixel, or background reached ALONG the crack's own direction -- a
+// contour terminal running into the outline). A step hugging the outline
+// sideways is grazing-rim signal the silhouette class already inks: a
+// tube's own rim piling depth into its last pixels, or a one-pixel sliver
+// of a coincident surface (a bond's cap sphere alternating with the bond's
+// side along their tangent circle) reading as a huge step between two ids.
+// Such slivers fragment the outline into junction clusters whose stem
+// clips then cut the outline's own band.
+inline bool outlineClear(const ScreenClassifyParams& p,
+                         const std::uint32_t* objectId, int W, int H, int ia,
+                         int ib) {
+  if (p.bgClearancePx <= 0) return true;
+  const int ax = ia % W, ay = ia / W;
+  const int bx = ib % W, by = ib / W;
+  if (!nearBackground(objectId, W, H, ax, ay, p.bgClearancePx) &&
+      !nearBackground(objectId, W, H, bx, by, p.bgClearancePx))
+    return true;
+  return bgAlongCrack(objectId, W, H, ax, ay, (ib - ia) == 1,
+                      p.bgClearancePx);
+}
+
 // Wide-baseline recession slope of a crack's NEAR side (world units per
 // pixel): walk up to 6 pixels away from the crack along the pair axis,
 // staying on the near pixel's objectId, and return the steepest secant
@@ -127,6 +159,44 @@ inline bool outlineMode(const ScreenClassifyParams& p, std::uint32_t id) {
                                ? p.groupSilhMode[g]
                                : p.silhModeDefault;
   return m == SilhouetteMode::Outline;
+}
+
+// Contact rank of a foreground pixel's section for the class the contact
+// would draw as (sil: Silhouette slot, else Object slot). No table / group
+// past it: "no line" (width 0, lightness 1) -- both sides then tie and the
+// mode / id tie-breaks decide.
+inline ScreenContactRankEntry contactRank(const ScreenClassifyParams& p,
+                                          std::uint32_t id, bool sil) {
+  const std::uint32_t g = id >> 2;
+  if (!p.groupContactRank || g >= p.groupContactRankCount)
+    return ScreenContactRankEntry{};
+  const ScreenContactRank& r = p.groupContactRank[g];
+  return sil ? r.sil : r.obj;
+}
+
+// Owner of a CONTACT crack between the sections of pixels A (first) and B
+// (second): 0 = A, kCrackOwnerBit = B. The near side is noise at a contact,
+// so the owner is the side whose contact line is the more VISIBLE one -- the
+// wider band, then the darker one -- which makes the intersection contour
+// continue the dominant outline and never depends on scene order. A section
+// drawing no line in this class (disabled slot) always loses, so a contact
+// with an edge-less section still inks in the other side's style. Ties fall
+// to a single Outline-mode side (its outer contour) and then to the smaller
+// group id, which is reached only when both styles are identical and the
+// choice is invisible. The ranks are per section, so the owner is constant
+// along a contour and the run key never flickers.
+inline std::uint8_t contactOwner(const ScreenClassifyParams& p,
+                                 std::uint32_t idA, std::uint32_t idB,
+                                 bool outA, bool outB, bool sil) {
+  const ScreenContactRankEntry ra = contactRank(p, idA, sil);
+  const ScreenContactRankEntry rb = contactRank(p, idB, sil);
+  constexpr float kEps = 1e-4f;
+  if (std::fabs(ra.width - rb.width) > kEps)
+    return ra.width > rb.width ? 0 : kCrackOwnerBit;
+  if (std::fabs(ra.light - rb.light) > kEps)
+    return ra.light < rb.light ? 0 : kCrackOwnerBit;
+  if (outA != outB) return outA ? 0 : kCrackOwnerBit;
+  return (idA >> 2) <= (idB >> 2) ? 0 : kCrackOwnerBit;
 }
 
 // Classify ONE crack between pixel indices ia (first: left/top) and ib
@@ -222,7 +292,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
       const float s =
           sideSlope(viewZ, objectId, iFg, iOutFg, outFgValid, clampS);
       const float pred = viewZ[iFg] + s;
-      const float tol = p.depthGapPx * px;
+      const float tol = depthTolAt(p, px, viewZ[iFg]);
       const float rn = clip->nearVz ? clip->nearVz[iBg] : 0.0f;
       const float rf = clip->farVz ? clip->farVz[iBg] : 0.0f;
       if ((rn > 0.0f && std::fabs(rn - pred) <= tol) ||
@@ -307,7 +377,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
       return 0;
     const float px = pixelSizeAt(sp, std::min(vzA, vzB));
     const float clampS = p.slopeClampPx * px;
-    const float tol = p.depthGapPx * px;
+    const float tol = depthTolAt(p, px, std::min(vzA, vzB));
     const float gapA = std::fabs(
         vzB - (vzA + contactSideSlope(viewZ, objectId, normal, sp, ia, iOutA,
                                       outAValid, clampS, p.borderGrazeCos)));
@@ -321,31 +391,48 @@ inline std::uint8_t classifyPair(const float* viewZ,
       // depth-continuous boundary the near side is numerical noise, and a
       // noisy owner would flicker the (class, group) run key along the
       // contour (alternating styles, dashed lines where one side's slot is
-      // disabled). A single Outline-mode side owns (the contour belongs to
-      // that section's outline, Silhouette class in its sil style);
-      // otherwise the smaller group id owns (ObjectId under the border
-      // gate; Silhouette when both sides are Outline).
+      // disabled). It is decided from the two sections' styles instead
+      // (contactOwner): the class is Silhouette when either side is Outline
+      // (the contour belongs to that section's outline), else ObjectId under
+      // the border gate, and the side whose line in that class is more
+      // visible owns it.
       const bool outA = p.silhouette && outlineMode(p, objectId[ia]);
       const bool outB = p.silhouette && outlineMode(p, objectId[ib]);
       const bool sil = outA || outB;
       if (!sil && !p.objectBoundary) return 0;
       const std::uint8_t owner =
-          outA != outB ? (outA ? 0 : kCrackOwnerBit)
-                       : ((objectId[ia] >> 2) <= (objectId[ib] >> 2)
-                              ? 0
-                              : kCrackOwnerBit);
-      // The contact bit marks the owner as a tie-break, not the nearer
-      // surface: no outer side is defined, so the outside stroke alignment
-      // keeps these edgels centered.
+          contactOwner(p, objectId[ia], objectId[ib], outA, outB, sil);
+      // The contact bit records that the owner is the dominant-line side,
+      // not the nearer surface; the outside stroke alignment still lays the
+      // band on the non-owner side, in line with the occlusion segments of
+      // the same contour.
       return static_cast<std::uint8_t>(sil ? CrackClass::Silhouette
                                            : CrackClass::ObjectId) |
              owner | kCrackContactBit;
     }
+    // Silhouette clearance for the same-section step (the rule of the weak
+    // same-id path below): a mixed-kind step hugging the outline sideways
+    // is the rim's grazing signal (or a coincident-surface sliver), not a
+    // contour, and the outline already inks there. Cross-section boundaries
+    // are exempt: those are the object borders themselves.
+    if (sameSection && !outlineClear(p, objectId, W, H, ia, ib)) {
+      if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kBgKilled;
+      return 0;
+    }
     const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
+    // A same-section mixed-kind step that cleared the contact veto is STRONG
+    // evidence: the veto already demanded the full depth-gap threshold from
+    // both one-sided extrapolations, and an id change has no grazing-rim
+    // profile of its own to suppress (the weak/strong hysteresis exists for
+    // the same-id rim noise of the block below). Left weak, the crack only
+    // survived the prune with strong neighbors: a sphere in front of a bond
+    // of its own section lost its outline exactly where the bond was behind
+    // it, while the same sphere in front of another sphere (same id, the
+    // block below) kept it.
     return static_cast<std::uint8_t>(sameSection ? CrackClass::DepthGap
                                      : outlineSil ? CrackClass::Silhouette
                                                   : CrackClass::ObjectId) |
-           owner;
+           owner | (sameSection ? kCrackStrongBit : 0);
   }
 
   // 3. DepthGap: same id, both one-sided planar extrapolations miss the far
@@ -365,6 +452,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
     const float vzNear = std::min(vzA, vzB);
     const float px = pixelSizeAt(sp, vzNear);
     const float clampS = p.slopeClampPx * px;
+    const float tolGap = depthTolAt(p, px, vzNear);
     const float sA = sideSlope(viewZ, objectId, ia, iOutA, outAValid, clampS);
     const float sB = sideSlope(viewZ, objectId, ib, iOutB, outBValid, clampS);
     const float predA = vzA + sA;
@@ -395,7 +483,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
     // weak hysteresis crack.
     const bool ridge = sA < -0.25f * px && sB < -0.25f * px;
     const float weakRatio = std::max(0.0f, std::min(1.0f, p.weakGapRatio));
-    if (std::min(gapA, gapB) > weakRatio * p.depthGapPx * px) {
+    if (std::min(gapA, gapB) > weakRatio * tolGap) {
       const float g0 = std::fabs(vzB - vzA);
       // Parallel-pair strength on a's far side (pair outA-a) and b's far side
       // (pair b-outB): bg neighbor => that pair is a silhouette boundary =>
@@ -412,11 +500,34 @@ inline std::uint8_t classifyPair(const float* viewZ,
                                                 : std::fabs(viewZ[iOutB] - vzB);
       if (g0 > gLeft && g0 >= gRight) {
         const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
-        // STRONG: full absolute threshold + step dominance (the raw step must
-        // dwarf the near side's own recession; see nearSideRecession). A
-        // ridge crease never promotes (see the ridge comment above).
-        bool strong = !ridge && std::min(gapA, gapB) > p.depthGapPx * px;
-        if (strong && p.stepDominanceK > 0.0f) {
+        // The ridge test and the step-dominance gate below exist for MESH
+        // artifacts: a coarse mesh's facet-horizon slivers (a sight line
+        // skimming a facet edge lands a few pixels' worth of the same
+        // grazing ramp deeper) and its convex fold ridges. A same-id step
+        // between ANALYTIC primitives (kind bits != Mesh; two spheres or two
+        // bonds of one section) has neither: a convex sphere or cylinder
+        // cannot self-occlude with a step, so the step is another primitive
+        // occluding, and the near primitive's rim is ALWAYS grazing there --
+        // the dominance gate then fails by construction, and the normal
+        // rescue only holds when the far surface happens to face away from
+        // the rim normal. Left to the gate, a sphere's rim over a sphere or
+        // bond of its own section dropped to weak and was pruned wherever
+        // no strong neighbor supported it (the mixed-kind branch above had
+        // the same defect). Analytic same-id steps are strong at the full
+        // threshold, like the mixed-kind step.
+        const bool analytic = (objectId[ia] & 3u) != 0u;
+        // STRONG: full absolute threshold + (meshes) step dominance -- the
+        // raw step must dwarf the near side's own recession; see
+        // nearSideRecession. A ridge crease never promotes (see the ridge
+        // comment above).
+        bool strong = !(ridge && !analytic) && std::min(gapA, gapB) > tolGap;
+        // An analytic step has no dominance gate, so the silhouette
+        // clearance below must reach it too: two coincident spheres of one
+        // section (a bond's cap on its atom) alternate along their tangent
+        // circle at the rim exactly like the mixed-kind sliver above.
+        if (strong && analytic && !outlineClear(p, objectId, W, H, ia, ib))
+          strong = false;
+        if (strong && !analytic && p.stepDominanceK > 0.0f) {
           const float rec = nearSideRecession(viewZ, objectId, W, H, ia, ib);
           strong = rec >= 0.0f && g0 > p.stepDominanceK * std::max(rec, px);
           // Normal-difference rescue: the dominance gate exists to kill
@@ -485,14 +596,7 @@ inline std::uint8_t classifyPair(const float* viewZ,
         // class already inks the boundary), EXCEPT when the crack runs into
         // the outline along its own direction -- the terminal piece of a
         // contour landing on the silhouette must reach it.
-        const int ax = ia % W, ay = ia / W;
-        const int bx = ib % W, by = ib / W;
-        const bool rightCrack = (ib - ia) == 1;
-        if (p.bgClearancePx <= 0 ||
-            (!nearBackground(objectId, W, H, ax, ay, p.bgClearancePx) &&
-             !nearBackground(objectId, W, H, bx, by, p.bgClearancePx)) ||
-            bgAlongCrack(objectId, W, H, ax, ay, rightCrack,
-                         p.bgClearancePx)) {
+        if (outlineClear(p, objectId, W, H, ia, ib)) {
           if (dbg) dbg->reason[dbgCell] = ScreenCrackDebug::kInkedWeak;
           return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner |
                  (ridge ? kCrackRidgeBit : std::uint8_t{0});
@@ -533,7 +637,26 @@ inline std::uint8_t classifyPair(const float* viewZ,
   return 0;
 }
 
+// Rank of one style slot: its band width, and its luminance composited over
+// white by the opacity (so a faint line ranks light). Disabled: no line.
+ScreenContactRankEntry slotRank(const EdgeClassStyle& cs) {
+  ScreenContactRankEntry e;
+  if (!cs.enabled) return e;
+  const float lum = 0.299f * cs.color[0] + 0.587f * cs.color[1] +
+                    0.114f * cs.color[2];
+  e.width = cs.width;
+  e.light = 1.0f - cs.opacity * (1.0f - lum);
+  return e;
+}
+
 }  // namespace
+
+ScreenContactRank screenContactRank(const EdgeStyle& es) {
+  ScreenContactRank r;
+  r.sil = slotRank(es.cls[static_cast<int>(EdgeClass::Silhouette)]);
+  r.obj = slotRank(es.cls[static_cast<int>(EdgeClass::Object)]);
+  return r;
+}
 
 CrackField classifyCracks(int W, int H, const float* viewZ,
                           const std::uint32_t* objectId, const float* normal,

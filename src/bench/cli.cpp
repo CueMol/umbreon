@@ -814,6 +814,28 @@ Options parseCli(int argc, char** argv) {
       }
       continue;
     }
+    if (a == "--edge-group") {
+      // --edge-group ID=N : put a section into edge group N (repeatable);
+      // same "_show"-stripped section id as --edge.
+      std::string kv = value("--edge-group");
+      std::size_t eq = kv.find('=');
+      int n = -1;
+      if (eq != std::string::npos) {
+        try {
+          n = std::stoi(kv.substr(eq + 1));
+        } catch (...) {
+          n = -1;
+        }
+      }
+      if (eq == std::string::npos || n < 0) {
+        fail("--edge-group expects ID=N (e.g. _34_35=1, N >= 0)");
+      } else {
+        std::string id = kv.substr(0, eq);
+        if (id.rfind("_show", 0) == 0) id = id.substr(5);
+        o.sectionEdgeGroup[id] = n;
+      }
+      continue;
+    }
     if (a == "--obj-edges") {
       std::string v = value("--obj-edges");
       if (o.ok && !parseBool(v, o.objEdges)) fail("--obj-edges expects on/off");
@@ -1417,6 +1439,10 @@ void printUsage(const char* prog) {
       "                           (attr mode=full|outline sets the section's\n"
       "                           silhouette mode, align=outside|center its\n"
       "                           silhouette stroke placement)\n"
+      "  --edge-group <ID=N>      put a section into edge group N (repeatable):\n"
+      "                           one group = one section for the stroke pass\n"
+      "                           (no contact line inside, one style; the\n"
+      "                           --edge override of a member applies to all)\n"
       "  --obj-edges <on|off>     analytic object-space edges (sph/cyl/mesh) [off]\n"
       "  --obj-edge-width <float> object-edge cylinder radius (world)   [0.03]\n"
       "  --obj-edge-raise <float> object-edge outward offset (world)    [0.00]\n"

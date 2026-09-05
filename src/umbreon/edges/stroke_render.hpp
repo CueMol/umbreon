@@ -39,6 +39,12 @@ struct StrokePoint {
   float vz = 0.0f;
   float alpha = 1.0f;
   bool visible = true;
+  // Contact weight, 0..1 (ScreenChainVert::contact): a vertex >= 0.5 lies
+  // on a depth-continuous contact contour, and its offset band is exempt
+  // from the depth permission / outer-room clamp (the surface beside it is
+  // the other section's own surface at this depth, which rises and falls
+  // along the contour; culling on it would notch the band).
+  float contact = 0.0f;
 };
 
 // Optional END CLIP for the outside alignment (set by the screen source on
@@ -47,11 +53,18 @@ struct StrokePoint {
 // rasterization time. The stem keeps its offset band and terminates flush
 // against the far edge of the met line's ink instead of poking past it or
 // re-centering (a taper visibly necks shallow-angle junctions).
+// A chain end that MEETS another line: a junction stem on a woven bar, or a
+// free end the crack-field probe connected to a line. The draw stage extends
+// the raster backbone by the pad past the vector endpoint (so a smoothing
+// deviation of the met line cannot open a pinhole) and draws no round cap
+// there. What that overshoot may paint is decided per pixel by the depth
+// permission of the offset band (it never paints over a surface nearer than
+// its own contour; see DepthPermit in stroke_render.cpp), not by any clip
+// geometry: the earlier clip planes, discs, zones and parallel guards were
+// local approximations of the met line that failed whenever the stem's own
+// body, a curved bar or a mis-fitted line re-entered them.
 struct StrokeEndClip {
   bool enabled = false;
-  float px = 0.0f, py = 0.0f;  // anchor, hi-res px
-  float nx = 0.0f, ny = 0.0f;  // unit normal; ink beyond it is culled
-  float radius = 0.0f;         // influence radius around the anchor
 };
 
 // One chain handed to the shared draw stage. styleSlot indexes EdgeStyle::cls[]
@@ -84,6 +97,12 @@ struct StrokeChainInput {
   // End clips (preferred over the taper at junction stem ends whose met
   // line is known; see StrokeEndClip).
   StrokeEndClip clipStart, clipEnd;
+  // A closed loop: pts.front() == pts.back() (the seam vertex duplicated)
+  // and the loop is continuous across it. The draw stage joins the ribbon
+  // at the seam like any interior corner and draws no end caps there -- an
+  // open-polyline seam left a wedge gap (butt) or, under outside alignment,
+  // cap fans whose outer -> pad radius lerp bulged into the object.
+  bool closed = false;
 };
 
 // Resolve the ribbon style for one chain by its style slot + section group:

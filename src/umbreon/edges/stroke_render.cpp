@@ -16,6 +16,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
+#include "edges/screen_edge_common.hpp"
 #include "postprocess/fog.hpp"
 
 namespace umbreon {
@@ -80,6 +81,7 @@ struct Pt2 {
   float vz = 0.0f;
   float surfA = 1.0f;
   bool visible = true;
+  float contact = 0.0f;  // StrokePoint::contact
 };
 
 // A ribbon strip: a flat list of offset border vertices in pairs (left,right)
@@ -92,22 +94,48 @@ using Strip = std::vector<Vec2>;
 // strip pair) carries a per-vertex effective opacity when the run's alpha
 // varies along it (surface-alpha gradient under the edge); EMPTY means the
 // constant `opacity` applies to the whole strip -- the exact legacy path.
-// Per-pixel end-clip disc (StrokeEndClip resolved for rasterization): a pixel
-// within r2 of (px, py) whose offset has a positive dot with (nx, ny) is
-// culled. nClips == 0 on every legacy path.
-struct ClipDisc {
-  float px = 0.0f, py = 0.0f;
-  float nx = 0.0f, ny = 0.0f;
-  float r2 = 0.0f;
+// Per-pixel DEPTH PERMISSION of an offset band (StrokeChainInput::outsideSide
+// != 0). The band lies on the contour's far side, which is "the background
+// or the occluded surface behind" only as long as nothing nearer sits there:
+// beyond a junction the stem's overshoot lands on the object the bar
+// outlines, and a band beside a thin background gap runs onto the object
+// past the gap. So the band's OUTER part paints a pixel only where the
+// hi-res plane view-z AOV holds nothing nearer than the stroke's own depth
+// by more than the classifier's depth-gap tolerance (the same rule the
+// OuterRoomShader applies per vertex to the vector width; this is its raster
+// safety net). The inner pad and the first `skipPx` beyond the backbone are
+// never tested: the owner's own grazing rim is nearer than the crack by far
+// more than the tolerance and must never count. Background (view-z 0) and
+// farther surfaces always permit, so a band can never be cut away from its
+// own object -- which every end-clip geometry (planes, discs, zones) used to
+// do when the stem's own body, a curved bar or a mis-fitted met line came
+// back inside it.
+struct DepthPermit {
+  const float* viewZ = nullptr;  // hi-res plane view-z; 0 = background
+  int W = 0, H = 0;
+  float tolConst = 0.0f, tolSlope = 0.0f;  // tolerance = tolConst + tolSlope*vz
+  float skipPx = 0.0f;                     // halo past the backbone, hi-res px
 };
 
-inline bool clippedPx(float x, float y, const ClipDisc* clips, int nClips) {
-  for (int c = 0; c < nClips; ++c) {
-    const float dx = x - clips[c].px, dy = y - clips[c].py;
-    if (dx * dx + dy * dy > clips[c].r2) continue;
-    if (dx * clips[c].nx + dy * clips[c].ny > 0.0f) return true;
-  }
-  return false;
+// Per-triangle reference for the permission test: a backbone point, the unit
+// normal toward the band's OUTER side ((0,0) = no test: centered ribbon), and
+// the stroke depth there.
+struct DepthRef {
+  Vec2 p;
+  Vec2 n;
+  float vz;
+};
+
+inline bool depthDenied(int x, int y, const DepthPermit& dp,
+                        const DepthRef& ref) {
+  if (ref.n.x == 0.0f && ref.n.y == 0.0f) return false;
+  const float d = (static_cast<float>(x) - ref.p.x) * ref.n.x +
+                  (static_cast<float>(y) - ref.p.y) * ref.n.y;
+  if (d <= dp.skipPx) return false;
+  if (x < 0 || y < 0 || x >= dp.W || y >= dp.H) return false;
+  const float sz = dp.viewZ[static_cast<std::size_t>(y) * dp.W + x];
+  if (sz <= 0.0f) return false;
+  return sz < ref.vz - (dp.tolConst + dp.tolSlope * ref.vz);
 }
 
 struct StyledStrip {
@@ -115,9 +143,10 @@ struct StyledStrip {
   float color[3] = {0.0f, 0.0f, 0.0f};
   float opacity = 1.0f;
   std::vector<float> alphas;
-  // Active end-clip discs of the source chain (0 on legacy paths).
-  std::array<ClipDisc, 2> clips;
-  int nClips = 0;
+  // Depth-permission references (offset bands only; empty = no test): one
+  // per strip pair and one per arc-fan triangle.
+  std::vector<DepthRef> pairRef;
+  std::vector<DepthRef> fanRef;
   // Per-backbone-vertex ink color (one entry per strip pair) when the color
   // varies along the run -- the depth-fog gradient path (ink melts toward the
   // fog color with distance). EMPTY means the constant `color` applies to the
@@ -147,7 +176,7 @@ struct StyledStrip {
 // passes L[k]==R[k]==halfThick (scalar overload below), reducing this to the
 // constant-width path expression-for-expression (byte-identical).
 Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
-                 const std::vector<float>& R) {
+                 const std::vector<float>& R, bool closed) {
   Strip out;
   const std::size_t n = bb.size();
   if (n < 2 || L.size() != n || R.size() != n) return out;
@@ -159,19 +188,10 @@ Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
     return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
   };
 
-  // First vertex: normal of the first segment.
-  {
-    const Vec2 dir = unit(bb[1] - bb[0]);
-    const Vec2 sd = orth(dir);
-    out[0] = bb[0] + sd * L[0];   // left (+)
-    out[1] = bb[0] - sd * R[0];   // right (-)
-  }
-
-  // Interior vertices: miter join (each side offset by the CURRENT vertex width).
-  for (std::size_t k = 1; k + 1 < n; ++k) {
+  // Miter join at vertex k between the segment from pPrev and the segment to
+  // pNext (each side offset by the CURRENT vertex width) -> out[2k], out[2k+1].
+  auto miterAt = [&](std::size_t k, const Vec2& pPrev, const Vec2& pNext) {
     const Vec2& p = bb[k];
-    const Vec2& pPrev = bb[k - 1];
-    const Vec2& pNext = bb[k + 1];
     const Vec2 dirN = pNext - p;        // to next
     const Vec2 dirP = p - pPrev;        // from prev
     const float dirNNorm = norm2(dirN);
@@ -219,10 +239,30 @@ Strip buildStrip(const std::vector<Vec2>& bb, const std::vector<float>& L,
       out[2 * k] = p + sdAvg * lw;
     if (overruns(out[2 * k + 1], rw * kMaxRatioLengthSingu))
       out[2 * k + 1] = p - sdAvg * rw;
+  };
+
+  // A closed loop (bb.front() == bb.back()) JOINS at its seam: vertex 0 is
+  // mitered between the last segment (from bb[n-2]) and the first, and the
+  // duplicated seam vertex n-1 repeats that pair, so the strip closes with
+  // no wedge gap and needs no end caps.
+  const bool seam = closed && n >= 3;
+
+  if (seam) {
+    miterAt(0, bb[n - 2], bb[1]);
+  } else {  // first vertex: normal of the first segment
+    const Vec2 dir = unit(bb[1] - bb[0]);
+    const Vec2 sd = orth(dir);
+    out[0] = bb[0] + sd * L[0];   // left (+)
+    out[1] = bb[0] - sd * R[0];   // right (-)
   }
 
-  // Last vertex: normal of the last segment.
-  {
+  // Interior vertices: miter join.
+  for (std::size_t k = 1; k + 1 < n; ++k) miterAt(k, bb[k - 1], bb[k + 1]);
+
+  if (seam) {
+    out[2 * (n - 1)] = out[0];
+    out[2 * (n - 1) + 1] = out[1];
+  } else {  // last vertex: normal of the last segment
     const Vec2 dir = unit(bb[n - 1] - bb[n - 2]);
     const Vec2 sd = orth(dir);
     out[2 * (n - 1)] = bb[n - 1] + sd * L[n - 1];
@@ -291,7 +331,7 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
                       const std::vector<float>& R,
                       std::vector<std::size_t>& pairSrc,
                       std::vector<Vec2>& fanPts,
-                      std::vector<std::size_t>& fanSrc) {
+                      std::vector<std::size_t>& fanSrc, bool closed) {
   Strip out;
   const std::size_t n = bb.size();
   if (n < 2 || L.size() != n || R.size() != n) return out;
@@ -308,7 +348,44 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
   };
   const float kStraightCos = 0.9848f;  // cos(10 deg)
 
-  {  // first vertex: normal of the first segment
+  // A closed loop (bb.front() == bb.back()) JOINS at its seam exactly like
+  // an interior corner: a near-straight seam gets the averaged-normal pair
+  // at both ends; a turning seam STARTS the strip square on the first
+  // segment, ENDS it square on the last, and fills the outer wedge with an
+  // arc fan at bb[0]. No end caps are needed (or wanted: under outside
+  // alignment the outer -> pad radius lerp of a cap fan bulged into the
+  // object at the seam).
+  const bool seam = closed && n >= 3;
+  Vec2 seamL{0.0f, 0.0f}, seamR{0.0f, 0.0f};  // the pair closing the strip
+
+  if (seam) {
+    const Vec2& p = bb[0];
+    const Vec2 udirP = unit(p - bb[n - 2]);
+    const Vec2 udirN = unit(bb[1] - p);
+    const Vec2 sdP = orth(udirP);
+    const Vec2 sdN = orth(udirN);
+    const float lw = L[0], rw = R[0];
+    const float turnCos = dot2(udirP, udirN);
+    Vec2 sdAvg = sdP + sdN;
+    const bool degenerate =
+        norm2(udirP) <= kZero || norm2(udirN) <= kZero || norm2(sdAvg) <= kZero;
+    if (degenerate || turnCos >= kStraightCos) {
+      sdAvg = degenerate ? Vec2{0.0f, 0.0f} : unit(sdAvg);
+      seamL = p + sdAvg * lw;
+      seamR = p - sdAvg * rw;
+      pushPair(seamL, seamR, 0);
+    } else {
+      pushPair(p + sdN * lw, p - sdN * rw, 0);
+      seamL = p + sdP * lw;
+      seamR = p - sdP * rw;
+      const float crossD = udirP.x * udirN.y - udirP.y * udirN.x;
+      const Vec2 a0 = crossD > 0.0f ? Vec2{-sdP.x * rw, -sdP.y * rw}
+                                    : Vec2{sdP.x * lw, sdP.y * lw};
+      const Vec2 a1 = crossD > 0.0f ? Vec2{-sdN.x * rw, -sdN.y * rw}
+                                    : Vec2{sdN.x * lw, sdN.y * lw};
+      appendArcFan(p, a0, a1, a0 + a1, 0, fanPts, fanSrc);
+    }
+  } else {  // first vertex: normal of the first segment
     const Vec2 sd = orth(unit(bb[1] - bb[0]));
     pushPair(bb[0] + sd * L[0], bb[0] - sd * R[0], 0);
   }
@@ -341,7 +418,9 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
                                   : Vec2{sdN.x * lw, sdN.y * lw};
     appendArcFan(p, a0, a1, a0 + a1, k, fanPts, fanSrc);
   }
-  {  // last vertex: normal of the last segment
+  if (seam) {
+    pushPair(seamL, seamR, n - 1);
+  } else {  // last vertex: normal of the last segment
     const Vec2 sd = orth(unit(bb[n - 1] - bb[n - 2]));
     pushPair(bb[n - 1] + sd * L[n - 1], bb[n - 1] - sd * R[n - 1], n - 1);
   }
@@ -349,9 +428,15 @@ Strip buildStripRound(const std::vector<Vec2>& bb, const std::vector<float>& L,
 }
 
 // Half-disk cap fans beyond the run's two endpoints (--stroke-cap round):
-// sweep from the left offset through the OUTWARD pole to the right offset,
-// radius lerping between the endpoint's left/right half-widths (a tapered
-// end keeps its thin tip). capStart/capEnd let the caller skip an end: a
+// the SEMICIRCLE over the band's end cross-section -- centered on the
+// band's midline (the backbone offset by half the left/right difference),
+// radius half the band width -- swept from the left offset through the
+// OUTWARD pole to the right offset. A symmetric band gets the legacy fan
+// around the backbone; an offset band (outside alignment) gets a proper
+// rounded end. The fan used to sit on the backbone with its radius lerping
+// from the outer width to the inner pad, which drew a spiral: the outer
+// edge curled around the backbone into a hook at every free end of an
+// occlusion contour. capStart/capEnd let the caller skip an end: a
 // junction-tapered end (outside alignment) must stay a butt -- its cap
 // would poke a half-width past the line it meets.
 void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
@@ -365,18 +450,22 @@ void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
     const float l = norm2(d);
     return l > kZero ? Vec2{d.x / l, d.y / l} : Vec2{0.0f, 0.0f};
   };
+  // `travel` is the backbone direction at the end (L is on its LEFT, as in
+  // the strip builders); `out` points away from the stroke.
+  auto cap = [&](std::size_t i, const Vec2& travel, const Vec2& out) {
+    const Vec2 sd = orth(travel);
+    const Vec2 c = bb[i] + sd * (0.5f * (L[i] - R[i]));
+    const float r = 0.5f * (L[i] + R[i]);
+    appendArcFan(c, sd * r, Vec2{-sd.x * r, -sd.y * r}, out, i, fanPts,
+                 fanSrc);
+  };
   if (capStart) {  // start: outward = against the first segment
     const Vec2 d = unit(bb[1] - bb[0]);
-    const Vec2 sd = orth(d);
-    appendArcFan(bb[0], sd * L[0], Vec2{-sd.x * R[0], -sd.y * R[0]},
-                 Vec2{-d.x, -d.y}, 0, fanPts, fanSrc);
+    cap(0, d, Vec2{-d.x, -d.y});
   }
   if (capEnd) {  // end: outward = along the last segment
     const Vec2 d = unit(bb[n - 1] - bb[n - 2]);
-    const Vec2 sd = orth(d);
-    appendArcFan(bb[n - 1], sd * L[n - 1],
-                 Vec2{-sd.x * R[n - 1], -sd.y * R[n - 1]}, d, n - 1, fanPts,
-                 fanSrc);
+    cap(n - 1, d, d);
   }
 }
 
@@ -387,8 +476,8 @@ void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
 // can tile deterministically over screen rows with TBB.
 void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
                   const Vec2& a, const Vec2& b, const Vec2& c,
-                  const float col[3], float opacity, const ClipDisc* clips,
-                  int nClips) {
+                  const float col[3], float opacity, const DepthPermit* dp,
+                  const DepthRef& ref) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -416,7 +505,7 @@ void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
           ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
-      if (nClips && clippedPx(px, py, clips, nClips)) continue;
+      if (dp != nullptr && depthDenied(x, y, *dp, ref)) continue;
       const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
       compositeOver(&color[idx], col, opacity);
     }
@@ -430,7 +519,7 @@ void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
 void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
                        int rowEnd, const Vec2& a, const Vec2& b, const Vec2& c,
                        const float col[3], float aA, float aB, float aC,
-                       const ClipDisc* clips, int nClips) {
+                       const DepthPermit* dp, const DepthRef& ref) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -456,7 +545,7 @@ void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
           ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
-      if (nClips && clippedPx(px, py, clips, nClips)) continue;
+      if (dp != nullptr && depthDenied(x, y, *dp, ref)) continue;
       const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
       compositeOver(&color[idx], col, w0 * aA + w1 * aB + w2 * aC);
     }
@@ -472,8 +561,8 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
                             int rowEnd, const Vec2& a, const Vec2& b,
                             const Vec2& c, const float colA[3],
                             const float colB[3], const float colC[3], float aA,
-                            float aB, float aC, const ClipDisc* clips,
-                            int nClips) {
+                            float aB, float aC, const DepthPermit* dp,
+                            const DepthRef& ref) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -499,7 +588,7 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
           ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) * inv;
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
-      if (nClips && clippedPx(px, py, clips, nClips)) continue;
+      if (dp != nullptr && depthDenied(x, y, *dp, ref)) continue;
       const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
       const float col[3] = {w0 * colA[0] + w1 * colB[0] + w2 * colC[0],
                             w0 * colA[1] + w1 * colB[1] + w2 * colC[1],
@@ -581,7 +670,7 @@ constexpr float kNodePalette[8][3] = {
 // the quad to the color+alpha-interpolating fill (the depth-fog gradient); it
 // composes with `alphas` (constant `opacity` is used where `alphas` is null).
 void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
-                    const StyledStrip& ss) {
+                    const StyledStrip& ss, const DepthPermit* permit) {
   const Strip& strip = ss.strip;
   const float* col = ss.color;
   const float opacity = ss.opacity;
@@ -589,42 +678,50 @@ void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
   const std::array<float, 3>* colors =
       ss.colors.empty() ? nullptr : ss.colors.data();
   const std::size_t pairs = strip.size() / 2;
+  // Depth permission rides only offset bands with references (see DepthRef).
+  const DepthRef noRef{{0.0f, 0.0f}, {0.0f, 0.0f}, 0.0f};
+  const DepthPermit* dp =
+      permit != nullptr && ss.pairRef.size() == pairs ? permit : nullptr;
   for (std::size_t k = 0; k + 1 < pairs; ++k) {
     const Vec2& l0 = strip[2 * k];
     const Vec2& r0 = strip[2 * k + 1];
     const Vec2& l1 = strip[2 * (k + 1)];
     const Vec2& r1 = strip[2 * (k + 1) + 1];
+    const DepthRef& ref = dp ? ss.pairRef[k] : noRef;
     if (colors) {
       const float* c0 = colors[k].data();
       const float* c1 = colors[k + 1].data();
       const float a0 = alphas ? alphas[k] : opacity;
       const float a1 = alphas ? alphas[k + 1] : opacity;
       fillTriangleColorAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, c0, c0, c1,
-                             a0, a0, a1, ss.clips.data(), ss.nClips);
+                             a0, a0, a1, dp, ref);
       fillTriangleColorAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, c0, c1, c1,
-                             a0, a1, a1, ss.clips.data(), ss.nClips);
+                             a0, a1, a1, dp, ref);
     } else if (alphas) {
       const float a0 = alphas[k], a1 = alphas[k + 1];
       fillTriangleAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, col, a0, a0,
-                        a1, ss.clips.data(), ss.nClips);
+                        a1, dp, ref);
       fillTriangleAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, col, a0, a1,
-                        a1, ss.clips.data(), ss.nClips);
+                        a1, dp, ref);
     } else {
-      fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity,
-                   ss.clips.data(), ss.nClips);
-      fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity,
-                   ss.clips.data(), ss.nClips);
+      fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity, dp,
+                   ref);
+      fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity, dp,
+                   ref);
     }
   }
   // Round cap/join arc fans: constant alpha/color per triangle (resolved at
   // rep-build time from the fan's backbone vertex). Empty unless
   // --stroke-cap/--stroke-join round.
+  const DepthPermit* dpf =
+      permit != nullptr && ss.fanRef.size() == ss.fanAlpha.size() ? permit
+                                                                  : nullptr;
   for (std::size_t i = 0; i < ss.fanAlpha.size(); ++i) {
     const float a = ss.fanAlpha[i];
     fillTriangleAlpha(color, W, rowBegin, rowEnd, ss.fanPts[3 * i],
                       ss.fanPts[3 * i + 1], ss.fanPts[3 * i + 2],
-                      ss.fanColor[i].data(), a, a, a, ss.clips.data(),
-                      ss.nClips);
+                      ss.fanColor[i].data(), a, a, a, dpf,
+                      dpf ? ss.fanRef[i] : noRef);
   }
 }
 
@@ -658,6 +755,7 @@ struct StrokeVertex {
   float vz = 0.0f;
   float surfA = 1.0f;
   bool visible = true;
+  float contact = 0.0f;  // Pt2::contact, interpolated by the resample
   float u = 0.0f, ca = 0.0f;
   StrokeAttribute attr;
 };
@@ -671,6 +769,9 @@ struct Stroke {
   float length2d = 0.0f;
   int chainIdx = 0;
   int precedence = 0;
+  // Closed loop (StrokeChainInput::closed): verts.front().p == verts.back().p
+  // and the ribbon is joined across the seam instead of capped.
+  bool closed = false;
 };
 
 // Stylization shader contract (Freestyle StrokeShader, StrokeShader.h:50-77): a
@@ -955,6 +1056,69 @@ struct AnisoSmoothingShader : StrokeShader {
   }
 };
 
+// Outside alignment: clamp the OUTER half-width to the room actually available
+// on that side. The offset band lays the whole width on the contour's far
+// side, which is "the background or the occluded surface behind" only as long
+// as nothing nearer sits within a stroke width of the crack: where the
+// background gap beside a far object's silhouette is thinner than the line,
+// the band runs on across the gap and onto the FOREGROUND object beyond -- a
+// bite out of a nearer sphere, carrying the far line's depth-fog color (the
+// foreground surface was never part of this contour). Per resampled vertex,
+// walk from the backbone along the outer normal over the hi-res plane view-z
+// AOV and stop at the first pixel whose surface is nearer than the vertex's
+// own view-z by more than the classifier's depth-gap tolerance
+// (screenDepthGapPx lateral pixels of depth -- a step the classifier itself
+// reads as a distinct occluder); the outer half-width then ends half a pixel
+// before it. The walk starts one FINAL pixel out, past the sub-pixel halo
+// where Chaikin/RDP may have pulled the backbone inside the owner: the
+// owner's own grazing rim is nearer than the vertex by far more than the
+// tolerance at high zoom and must never count, so no band is clamped below
+// that. The inner pad and centered ribbons are untouched, and a band that
+// meets no nearer surface is byte-identical.
+struct OuterRoomShader : StrokeShader {
+  const float* viewZ;  // hi-res plane view-z; 0 = background
+  int W, H;
+  float tolConst, tolSlope;  // tolerance = tolConst + tolSlope * vz
+  int side;                  // +1: outer side is +normal (left), -1: right
+  float skipPx;              // halo zone skipped at the walk start, hi-res px
+  OuterRoomShader(const float* z, int w, int h, float tc, float ts, int sd,
+                  float skip)
+      : viewZ(z), W(w), H(h), tolConst(tc), tolSlope(ts), side(sd),
+        skipPx(skip) {}
+  int shade(Stroke& s) const override {
+    const std::size_t n = s.verts.size();
+    if (n < 2) return 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      StrokeVertex& v = s.verts[i];
+      const Vec2& pa = s.verts[i == 0 ? 0 : i - 1].p;
+      const Vec2& pb = s.verts[i + 1 < n ? i + 1 : n - 1].p;
+      Vec2 t = pb - pa;
+      const float l = norm2(t);
+      if (l <= kZero) continue;
+      t = t * (1.0f / l);
+      // +normal (left of travel) is (-t.y, t.x), as in buildStrip.
+      const Vec2 out = side > 0 ? Vec2{-t.y, t.x} : Vec2{t.y, -t.x};
+      float& outer = side > 0 ? v.attr.leftThick : v.attr.rightThick;
+      if (outer <= skipPx) continue;
+      // A contact vertex's outer side is the other section's own surface at
+      // this depth (exempt; see StrokePoint::contact).
+      if (v.contact >= 0.5f) continue;
+      const float tol = tolConst + tolSlope * v.vz;
+      for (float d = skipPx; d <= outer; d += 1.0f) {
+        const int x = static_cast<int>(std::lround(v.p.x + out.x * d));
+        const int y = static_cast<int>(std::lround(v.p.y + out.y * d));
+        if (x < 0 || y < 0 || x >= W || y >= H) break;
+        const float sz = viewZ[static_cast<std::size_t>(y) * W + x];
+        if (sz > 0.0f && sz < v.vz - tol) {
+          outer = std::max(skipPx, d - 0.5f);
+          break;
+        }
+      }
+    }
+    return 0;
+  }
+};
+
 // Build a parametric Stroke from a visibility-tagged projected polyline, stamping
 // the resolved per-chain default attribute into every vertex (Freestyle
 // Operators::createStroke, Operators.cpp:1082-1155). Accumulates 2D arc length to
@@ -973,6 +1137,7 @@ Stroke buildStroke(const std::vector<Pt2>& proj, const StrokeAttribute& def,
     v.vz = proj[i].vz;
     v.surfA = proj[i].surfA;
     v.visible = proj[i].visible;
+    v.contact = proj[i].contact;
     v.ca = ca;
     v.attr = def;
     s.verts.push_back(v);
@@ -994,6 +1159,7 @@ StrokeVertex lerpStrokeVertex(const StrokeVertex& a, const StrokeVertex& b,
   q.p = a.p + (b.p - a.p) * t;
   q.vz = a.vz + (b.vz - a.vz) * t;
   q.surfA = a.surfA + (b.surfA - a.surfA) * t;
+  q.contact = a.contact + (b.contact - a.contact) * t;
   q.u = a.u + (b.u - a.u) * t;
   q.ca = a.ca + (b.ca - a.ca) * t;
   q.visible = a.visible;
@@ -1052,13 +1218,14 @@ void resampleStroke(Stroke& s, float stepPx) {
 // (junction-tapered ends stay butts); interior hidden-run boundaries always
 // cap as before.
 void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
-                     bool capStart, bool capEnd, const ClipDisc* chainClips,
-                     int nChainClips, std::vector<StyledStrip>& out) {
+                     bool capStart, bool capEnd, int side,
+                     std::vector<StyledStrip>& out) {
   const int precedence = s.precedence;
   const std::size_t minRun = 2;
   std::size_t runFirst = 0, vIdx = 0;  // stroke-vertex span of the current run
   std::vector<Vec2> pos;
-  std::vector<float> lw, rw, av;
+  std::vector<float> lw, rw, av, vzv;
+  std::vector<float> ctv;  // per-vertex contact weight (permission exemption)
   std::vector<std::array<float, 3>> cv;  // per-vertex ink color (fog gradient)
   float col[3] = {0.0f, 0.0f, 0.0f}, opacity = 1.0f;
   float depthMin = 0.0f;  // min view-z over the current run
@@ -1069,14 +1236,21 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
       // legacy miter builder, with duplicated corner entries under round
       // joins. fanSrc does the same per arc-fan triangle.
       std::vector<std::size_t> pairSrc, fanSrc;
+      // A closed loop drawn WHOLE (one visible run over every vertex, seam
+      // vertex still duplicated) joins the ribbon across its seam and draws
+      // no end caps there; a loop chopped by hidden runs is open pieces.
+      const bool seamJoin = s.closed && runFirst == 0 &&
+                            vIdx == s.verts.size() && pos.size() >= 3 &&
+                            norm2(pos.front() - pos.back()) < kZero;
       if (roundJoin) {
-        ss.strip = buildStripRound(pos, lw, rw, pairSrc, ss.fanPts, fanSrc);
+        ss.strip = buildStripRound(pos, lw, rw, pairSrc, ss.fanPts, fanSrc,
+                                   seamJoin);
       } else {
-        ss.strip = buildStrip(pos, lw, rw);
+        ss.strip = buildStrip(pos, lw, rw, seamJoin);
         pairSrc.resize(pos.size());
         for (std::size_t i = 0; i < pairSrc.size(); ++i) pairSrc[i] = i;
       }
-      if (roundCap)
+      if (roundCap && !seamJoin)
         appendCapFans(pos, lw, rw,
                       capStart || runFirst != 0,
                       capEnd || vIdx != s.verts.size(),
@@ -1120,16 +1294,46 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
         ss.fanAlpha.push_back(av[src]);
         ss.fanColor.push_back(cv[src]);
       }
+      // Depth-permission references (offset bands only): per strip pair and
+      // per fan triangle, the backbone point, the unit normal toward the
+      // band's outer side (averaged at interior vertices) and the stroke
+      // depth there.
+      if (side != 0) {
+        auto leftOf = [](const Vec2& a, const Vec2& b) {
+          const Vec2 d = b - a;
+          const float l = norm2(d);
+          return l > kZero ? Vec2{-d.y / l, d.x / l} : Vec2{0.0f, 0.0f};
+        };
+        const float sgn = static_cast<float>(side);
+        std::vector<Vec2> nv(pos.size());
+        for (std::size_t i = 0; i < pos.size(); ++i) {
+          Vec2 n{0.0f, 0.0f};
+          if (i > 0) n = n + leftOf(pos[i - 1], pos[i]);
+          if (i + 1 < pos.size()) n = n + leftOf(pos[i], pos[i + 1]);
+          const float l = norm2(n);
+          nv[i] = l > kZero ? Vec2{n.x / l * sgn, n.y / l * sgn}
+                            : Vec2{0.0f, 0.0f};
+          // A contact vertex is exempt from the permission (a zero normal
+          // makes depthDenied pass everything; see StrokePoint::contact).
+          if (ctv[i] >= 0.5f) nv[i] = Vec2{0.0f, 0.0f};
+        }
+        ss.pairRef.reserve(pairSrc.size());
+        for (std::size_t src : pairSrc)
+          ss.pairRef.push_back({pos[src], nv[src], vzv[src]});
+        ss.fanRef.reserve(fanSrc.size());
+        for (std::size_t src : fanSrc)
+          ss.fanRef.push_back({pos[src], nv[src], vzv[src]});
+      }
       ss.precedence = precedence;
       ss.depthKey = depthMin;
-      for (int c = 0; c < nChainClips; ++c) ss.clips[c] = chainClips[c];
-      ss.nClips = nChainClips;
       out.push_back(std::move(ss));
     }
     pos.clear();
     lw.clear();
     rw.clear();
     av.clear();
+    vzv.clear();
+    ctv.clear();
     cv.clear();
   };
   for (std::size_t i = 0; i < s.verts.size(); ++i) {
@@ -1153,6 +1357,8 @@ void buildStrokeReps(const Stroke& s, bool roundCap, bool roundJoin,
     lw.push_back(v.attr.leftThick);
     rw.push_back(v.attr.rightThick);
     av.push_back(v.attr.alpha * v.surfA);
+    vzv.push_back(v.vz);
+    ctv.push_back(v.contact);
     cv.push_back({v.attr.color[0], v.attr.color[1], v.attr.color[2]});
   }
   vIdx = s.verts.size();
@@ -1212,6 +1418,34 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
   const float stepPx =
       std::max(1.0f, static_cast<float>(se.resampleStepPx) * ssScale);
 
+  // Outer-room clamp inputs (OuterRoomShader): the hi-res plane view-z AOV
+  // the screen source classified from, and the classifier's depth-gap
+  // tolerance at hi-res pixel size (pixelSizeAt is a constant under ortho and
+  // proportional to view-z under perspective; read the coefficient off
+  // vz = 1). A source without the AOV skips the clamp.
+  const float* roomViewZ =
+      frame.viewZ.size() == static_cast<std::size_t>(W) * H
+          ? frame.viewZ.data()
+          : nullptr;
+  float roomTolConst = 0.0f, roomTolSlope = 0.0f;
+  if (roomViewZ != nullptr) {
+    const ScreenProj sp = makeScreenProj(scene.camera, W, H);
+    const float c1 = std::max(0.0f, se.screenDepthGapPx) *
+                     screen_edge::pixelSizeAt(sp, 1.0f);
+    roomTolConst = sp.ortho ? c1 : 0.0f;
+    roomTolSlope = sp.ortho ? 0.0f : c1;
+  }
+  // Per-pixel depth permission of the offset bands (same AOV and tolerance;
+  // the first final pixel past the backbone is the untested rim halo).
+  DepthPermit permit;
+  permit.viewZ = roomViewZ;
+  permit.W = W;
+  permit.H = H;
+  permit.tolConst = roomTolConst;
+  permit.tolSlope = roomTolSlope;
+  permit.skipPx = 1.0f * ssScale;
+  const DepthPermit* permitPtr = roomViewZ != nullptr ? &permit : nullptr;
+
   std::vector<StyledStrip> strips;
   std::vector<NodeDot> nodeDots;    // --stroke-node-dots overlay (else empty)
   std::vector<DebugPoly> debugPolys;
@@ -1270,12 +1504,15 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       q.vz = sp.vz;
       q.surfA = se.edgesOnly ? 1.0f : sp.alpha;
       q.visible = sp.visible;
+      q.contact = sp.contact;
       proj.push_back(q);
     }
     // Clipped junction ends: extend the RASTER backbone a hair past the
     // vector endpoint, so smoothing deviation of the met line cannot open
     // a sub-px seam; the end clip culls any overshoot. The vector data
     // (the node overlay, future exports) keeps the exact on-line endpoint.
+    // The pad vertex is past the contour, so it is never a contact vertex:
+    // its overshoot stays under the depth permission.
     const float padExt = (0.5f + se.screenSimplifyPx) * ssScale;
     if (in.clipStart.enabled && proj.size() >= 2) {
       const Vec2 d = proj[0].p - proj[1].p;
@@ -1283,6 +1520,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       if (l > kZero) {
         Pt2 q = proj.front();
         q.p = q.p + d * (padExt / l);
+        q.contact = 0.0f;
         proj.insert(proj.begin(), q);
       }
     }
@@ -1292,6 +1530,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
       if (l > kZero) {
         Pt2 q = proj.back();
         q.p = q.p + d * (padExt / l);
+        q.contact = 0.0f;
         proj.push_back(q);
       }
     }
@@ -1308,6 +1547,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     defAttr.alpha = opacity;
     Stroke stroke =
         buildStroke(proj, defAttr, static_cast<int>(ci), in.precedence);
+    stroke.closed = in.closed;
     resampleStroke(stroke, stepPx);
 
     // STYLIZATION: run the per-vertex stroke shaders (Freestyle
@@ -1342,28 +1582,25 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     if (scene.fog.enabled && !se.edgesOnly)
       shaders.push_back(std::make_unique<FogShader>(
           scene.fog, opt.transparentBackground));
+    // Outside alignment, after every shader that sets widths (taper, the
+    // junction re-centering): clamp the outer half-width to the room before
+    // the nearest foreground surface, so the band never paints onto an
+    // object in front of the contour (OuterRoomShader).
+    if (in.outsideSide != 0 && roomViewZ != nullptr)
+      shaders.push_back(std::make_unique<OuterRoomShader>(
+          roomViewZ, W, H, roomTolConst, roomTolSlope,
+          in.outsideSide > 0 ? 1 : -1, 1.0f * ssScale));
     for (const std::unique_ptr<StrokeShader>& sh : shaders) sh->shade(stroke);
 
     // Build the variable-width ribbon strips (one per maximal visible run).
-    // A junction-tapered or clipped end draws no round cap (appendCapFans);
-    // the end clips ride every strip of the chain and cull ink per pixel at
-    // rasterization time.
-    ClipDisc chainClips[2];
-    int nChainClips = 0;
-    for (const StrokeEndClip* ec : {&in.clipStart, &in.clipEnd}) {
-      if (!ec->enabled || ec->radius <= 0.0f) continue;
-      chainClips[nChainClips].px = ec->px;
-      chainClips[nChainClips].py = ec->py;
-      chainClips[nChainClips].nx = ec->nx;
-      chainClips[nChainClips].ny = ec->ny;
-      chainClips[nChainClips].r2 = ec->radius * ec->radius;
-      ++nChainClips;
-    }
+    // A junction-tapered end or an end meeting a line draws no round cap
+    // (appendCapFans); what an offset band's overshoot may paint is decided
+    // per pixel at rasterization time (DepthPermit).
     buildStrokeReps(
         stroke, se.roundCap, se.roundJoin,
         !(in.outsideSide != 0 && (in.taperStart || in.clipStart.enabled)),
         !(in.outsideSide != 0 && (in.taperEnd || in.clipEnd.enabled)),
-        chainClips, nChainClips, strips);
+        in.outsideSide, strips);
   }
 
   if (strips.empty() && debugPolys.empty()) return;
@@ -1403,7 +1640,7 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
         if (progress && progress->cancelRequested()) return;
         const int rb = rows.begin(), re = rows.end();
         for (const StyledStrip& ss : strips)
-          rasterizeStrip(frame.color, W, rb, re, ss);
+          rasterizeStrip(frame.color, W, rb, re, ss, permitPtr);
         for (const DebugPoly& dp : debugPolys)
           for (std::size_t k = 0; k + 1 < dp.pts.size(); ++k)
             drawThinSegment(frame.color, W, rb, re, dp.pts[k], dp.pts[k + 1],

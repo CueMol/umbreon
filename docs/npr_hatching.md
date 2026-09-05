@@ -136,7 +136,7 @@ umbreon_cli scene.pov --hatch on --hatch-look richardson --edges on
 |---|---|---|---|
 | `richardson` | paper base, ink from each section's own color, 3 pencils of one hue, pressure `inkShadeDark 0.40`, tone fog on | `pencil`, pitch 0.5 px, width 0.45 px | Jane-Richardson-style colored-pencil ribbon drawings |
 | `ink-cross` | white paper, fixed black ink | `pen-cross` | plain pen-and-ink monochrome figures |
-| `manga` | flat albedo fill (posterized to 4 steps), fixed black ink | `screentone-60` | comic-style flat fill under a halftone screen |
+| `manga` | flat albedo fill (each section's exact color), fixed black ink | `screentone-60` | comic-style flat fill under a halftone screen |
 
 ### `richardson` in detail
 
@@ -420,6 +420,13 @@ locale, booleans are `on`/`off`, colors `#rrggbb`. The keys are those of
 `base=paper|albedo`, `ink=fixed|albedo`, `inkcolor`, `papercolor`,
 `mincontrast`, `inkshade`, `tonefog`, `albedoquant`. A bad entry rejects the
 whole text (with its line number) and leaves the configuration untouched.
+
+`albedoquant=N` posterizes the albedo fill to N steps **per channel**. That
+rounds neighbouring hues onto the same lattice color (at 4 steps a pink
+`hsb(0, 0.3, 1)` helix and a peach `hsb(29, 0.3, 1)` one both become
+`(1, 0.75, 0.75)`), which breaks the molecular color coding the flat fill
+exists to carry -- so every look leaves it at 0 and the fill is each
+section's exact color. Set it only when a posterized palette is the point.
 
 ### AO interaction
 

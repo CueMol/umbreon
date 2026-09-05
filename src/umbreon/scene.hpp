@@ -464,13 +464,29 @@ struct Scene {
   // front-to-back "over" (fragment alpha).
   std::vector<GroupBlend> groupBlend;
 
-  // Per-section (per transparency group) stroke edge style, indexed by group id
-  // (objectId >> 2). Sized to groupNames.size() and pre-filled with
-  // StrokeEdgeOptions::defaultStyle when --edges is on, then overridden per --edge
-  // ID=spec. Empty (the default) means the stroke pass falls back to the global
-  // StrokeEdgeOptions::defaultStyle. Only consulted when
+  // Per-section stroke edge style, indexed by EDGE GROUP id: the primitive
+  // group (objectId >> 2) itself when edgeGroupOfGroup is empty, else the
+  // group's entry there. Sized to the number of edge groups and pre-filled
+  // with StrokeEdgeOptions::defaultStyle when --edges is on, then overridden
+  // per --edge ID=spec. Empty (the default) means the stroke pass falls back
+  // to the global StrokeEdgeOptions::defaultStyle. Only consulted when
   // RenderOptions::strokeEdges.enable is set.
   std::vector<EdgeStyle> groupEdgeStyle;
+
+  // EDGE GROUP of each primitive group (index = group id, objectId >> 2;
+  // value = edge group id). The screen-space edge pass treats every
+  // primitive of one edge group as ONE section: no line at a depth-continuous
+  // contact inside the group, a contact line between groups (under
+  // strokeEdges.contact), same-group depth steps as self-occlusion (DepthGap,
+  // Full/Outline mode), cross-group steps as ObjectId borders, and one style
+  // (groupEdgeStyle[edge group]) for the whole group. The primitive group
+  // itself stays the transparency unit (groupBlend). Empty (the default) =
+  // identity: every primitive group is its own edge group. A group past the
+  // end of the table maps to itself.
+  std::vector<std::uint16_t> edgeGroupOfGroup;
+  std::uint16_t edgeGroupFor(std::uint16_t group) const {
+    return group < edgeGroupOfGroup.size() ? edgeGroupOfGroup[group] : group;
+  }
 
   // Per-section tone-hatching style override (--hatch-style ID=spec), indexed
   // by group id like groupEdgeStyle. Empty (the default) means every section

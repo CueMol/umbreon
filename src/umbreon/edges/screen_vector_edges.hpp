@@ -73,9 +73,9 @@ enum class CrackClass : std::uint8_t {
 // occlusion. It never promotes to strong, and the prune's strong-chain
 // hysteresis does not keep a ridge run dangling at a chain end. [7] the
 // CONTACT bit: the crack is a depth-CONTINUOUS contact/intersection contour
-// (the classifyPair contact branch), whose owner side is a deterministic
-// tie-break rule, not the nearer surface -- so it has no defined "outer"
-// side and the outside stroke alignment must leave it centered.
+// (the classifyPair contact branch), whose owner side is the section with
+// the dominant line (contactOwner), not the nearer surface; the outside
+// stroke alignment still treats the non-owner side as the outer side.
 constexpr std::uint8_t kCrackClassMask = 0x07;
 constexpr std::uint8_t kCrackOwnerBit = 0x08;
 constexpr std::uint8_t kCrackConsumedBit = 0x10;
@@ -129,6 +129,21 @@ struct ScreenClipAovs {
   const float* farVz = nullptr;       // bg: removed-hit vz beyond clipFar
 };
 
+// How visible one section's line is, for the CONTACT owner decision: the
+// band width and the lightness (luminance composited over white by the
+// opacity; 1 = invisible) of one style slot. A disabled slot ranks as width 0,
+// lightness 1. Per section, one entry for the Silhouette slot and one for the
+// Object slot (screenContactRank builds them from an EdgeStyle).
+struct ScreenContactRankEntry {
+  float width = 0.0f;
+  float light = 1.0f;
+};
+struct ScreenContactRank {
+  ScreenContactRankEntry sil;
+  ScreenContactRankEntry obj;
+};
+ScreenContactRank screenContactRank(const EdgeStyle& es);
+
 // Stage-1 parameters. The class gates mirror the stroke master nature toggles
 // (silhouette gates Silhouette + DepthGap, objectBoundary gates ObjectId --
 // wired from the border toggle -- and crease gates Crease). Thresholds are in
@@ -142,10 +157,14 @@ struct ScreenClassifyParams {
   // where one section's primitive plunges into another section's surface)
   // instead of vetoing them as contact. Cross-section only: same-section
   // contact (a bond embedded in an atom) never inks. Ownership is
-  // DETERMINISTIC because the near side is numerical noise at a contact: a
-  // single Outline-mode side owns (Silhouette class, its outer contour);
-  // otherwise the smaller group id owns (ObjectId under objectBoundary,
-  // Silhouette when both sides are Outline). Wired from the contact toggle.
+  // DETERMINISTIC because the near side is numerical noise at a contact; it
+  // is decided from the two sections' STYLES (groupContactRank), so it does
+  // not depend on which section came first: the side whose contact line is
+  // WIDER owns, then the DARKER one, then a single Outline-mode side, then
+  // the smaller group id (reached only when the styles are identical, where
+  // the choice is invisible). The class is Silhouette when either side is
+  // Outline (that section's outer contour), else ObjectId under
+  // objectBoundary. Wired from the contact toggle.
   bool contactBoundary = false;
   bool crease = false;
   // Per-SECTION silhouette mode table, indexed by group id (objectId >> 2).
@@ -160,6 +179,14 @@ struct ScreenClassifyParams {
   const SilhouetteMode* groupSilhMode = nullptr;
   std::size_t groupSilhModeCount = 0;
   SilhouetteMode silhModeDefault = SilhouetteMode::Full;
+  // Per-SECTION contact rank table, indexed by group id: the width and
+  // lightness of the line each section would draw for a contact contour --
+  // its Silhouette slot when the contact classifies as Silhouette (either
+  // side Outline), its Object slot otherwise (screenContactRank). A null
+  // table or an out-of-range group ranks as "no line" on both sides, so the
+  // Outline / smaller-id tie-breaks decide as before the table existed.
+  const ScreenContactRank* groupContactRank = nullptr;
+  std::size_t groupContactRankCount = 0;
   // DepthGap: fire when BOTH one-sided planar extrapolations miss the far
   // pixel by more than depthGapPx * pixelSize (world units per lateral pixel;
   // this is the second-derivative form of the Mol*-style curvature veto -- a
@@ -169,6 +196,17 @@ struct ScreenClassifyParams {
   // continuity is treated as surface contact (intersection contour) and not
   // inked; only a genuine depth step draws a border.
   float depthGapPx = 12.0f;
+  // Floor on that depth tolerance, RELATIVE to view-z. The analytic
+  // intersectors resolve a hit distance only to a few 1e-5 of its magnitude
+  // (Embree's curve solvers in particular), so two surfaces that coincide --
+  // a capsule's hemispherical end cap centered on an atom sphere of the same
+  // radius -- z-fight by about that much. At extreme zoom depthGapPx *
+  // pixelSize drops below this noise and the jitter classifies as a field
+  // of one-pixel depth steps (blobs of ink inside the atom). Ordinary
+  // framings never reach the floor: at 200 world units of view distance it
+  // is 0.008, while depthGapPx * pixelSize is 0.02 for a 6-unit frame at
+  // 3600 px, so those classify byte-identically.
+  float depthTolRel = 4.0e-5f;
   // One-sided slope clamp in pixelSize units, so extreme grazing noise cannot
   // extrapolate across a genuine fold.
   float slopeClampPx = 300.0f;
@@ -288,6 +326,12 @@ struct ScreenChainVert {
   float x = 0.0f, y = 0.0f;
   float vz = 0.0f;
   float alpha = 1.0f;
+  // Fraction of the vertex's attributed edgels that are depth-continuous
+  // CONTACT edgels (kCrackContactBit), 0..1; interpolated by the smoothing.
+  // The draw stage exempts contact vertices (>= 0.5) from the depth
+  // permission: the surface beside a contact contour is the other section's
+  // own surface at the contour's depth, not a nearer occluder.
+  float contact = 0.0f;
 };
 
 // One traced chain: an ordered corner-lattice polyline. A closed loop
@@ -305,8 +349,9 @@ struct ScreenChain {
   std::vector<std::uint16_t> edgeGroup;
   // Per edgel, bit 0 = the crack's kCrackStrongBit (DepthGap hysteresis),
   // bit 1 = the crack's kCrackRidgeBit (convex ridge crease), bit 2 = the
-  // crack's kCrackContactBit (depth-continuous contact contour; no defined
-  // outer side), bit 3 = the OUTER (non-owner) side lies on the LEFT
+  // crack's kCrackContactBit (depth-continuous contact contour; the owner
+  // is the dominant-line side), bit 3 = the OUTER (non-owner) side lies on
+  // the LEFT
   // (+normal, orth(d) = {-dy, dx}) of the walk direction of this edgel --
   // consumed by the Stage-4 outside stroke alignment vote.
   std::vector<std::uint8_t> edgeFlags;
@@ -357,6 +402,22 @@ std::vector<ScreenChain> traceCrackChains(CrackField& cf,
 // pruneWeakChains may still keep one when BOTH its endpoint corners junction
 // into kept chains (support propagation).
 bool keepScreenChain(const ScreenChain& ch, int minStrong = 1);
+
+// Stage-4 speck filter: a chain shorter than `minLen` edgels (one hi-res px
+// each, so the count is the arc length) is an isolated speckle and is
+// dropped -- EXCEPT an open chain whose BOTH ends are junctions (degree >=
+// 3), which is a piece of a larger boundary chopped by side branches (e.g.
+// grazing-rim depth-gap spurs T-ing into the silhouette) and must stay, or
+// the outline would dash. A CLOSED loop is never such a piece: a 3-4 edgel
+// loop is a one-pixel island (a junction tangle around it gives its seam
+// corner degree 3 too), and drawn with a wide round-capped stroke it is a
+// blob, so short loops drop whatever their seam degree. minLen <= 0 keeps
+// everything.
+inline bool isScreenSpeck(const ScreenChain& ch, float minLen) {
+  if (minLen <= 0.0f) return false;
+  if (static_cast<float>(ch.edgeClass.size()) >= minLen) return false;
+  return ch.closed || !(ch.deg0 >= 3 && ch.deg1 >= 3);
+}
 
 // Zero every crack cell traversed by `ch` in the field (class bits and all).
 // Used by the Stage-2.5 prune: dropped chains stop chopping their neighbors

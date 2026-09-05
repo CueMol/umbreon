@@ -323,6 +323,28 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   const ScreenProj sp = makeScreenProj(scene.camera, W, H);
   const float ssScale = static_cast<float>(std::max(1, opt.supersample));
 
+  // EDGE GROUPS (Scene::edgeGroupOfGroup): the pass sees the objectId AOV
+  // with each primitive group replaced by its edge group, so every stage
+  // below (classification, tracing, prune, probes, styling) treats an edge
+  // group as one section. The frame's own AOV is untouched (transparency
+  // and everything else still key on the primitive group).
+  std::vector<std::uint32_t> edgeIdBuf;
+  const std::uint32_t* edgeIds = frame.objectId.data();
+  if (!scene.edgeGroupOfGroup.empty()) {
+    edgeIdBuf.resize(frame.objectId.size());
+    for (std::size_t i = 0; i < frame.objectId.size(); ++i) {
+      const std::uint32_t id = frame.objectId[i];
+      edgeIdBuf[i] =
+          id == kBackground
+              ? id
+              : (static_cast<std::uint32_t>(scene.edgeGroupFor(
+                     static_cast<std::uint16_t>(id >> 2)))
+                 << 2) |
+                    (id & 3u);
+    }
+    edgeIds = edgeIdBuf.data();
+  }
+
   // Stage 1: classify. The nature master toggles gate the classes here (the
   // shared draw stage applies only the per-section style table).
   ScreenClassifyParams cp;
@@ -344,6 +366,14 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   cp.groupSilhMode = groupMode.empty() ? nullptr : groupMode.data();
   cp.groupSilhModeCount = groupMode.size();
   cp.silhModeDefault = se.defaultStyle.silhouetteMode;
+  // Per-section contact rank table (the contact owner is the side with the
+  // more visible line; see ScreenClassifyParams::contactBoundary).
+  std::vector<ScreenContactRank> groupRank;
+  groupRank.reserve(scene.groupEdgeStyle.size());
+  for (const EdgeStyle& es : scene.groupEdgeStyle)
+    groupRank.push_back(screenContactRank(es));
+  cp.groupContactRank = groupRank.empty() ? nullptr : groupRank.data();
+  cp.groupContactRankCount = groupRank.size();
   const float* normalPtr = frame.normal.empty() ? nullptr : frame.normal.data();
   if (cp.crease && !normalPtr) cp.crease = false;
   const char* dumpPrefix = std::getenv("UMBREON_SCREEN_EDGE_DUMP");
@@ -387,15 +417,14 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     cp.clipNearVz = scene.clipNear;
     cp.clipFarVz = scene.clipFar;
   }
-  CrackField cf = classifyCracks(W, H, frame.viewZ.data(),
-                                 frame.objectId.data(), normalPtr, sp, cp,
-                                 dumpPrefix ? &dbg : nullptr,
+  CrackField cf = classifyCracks(W, H, frame.viewZ.data(), edgeIds,
+                                 normalPtr, sp, cp, dumpPrefix ? &dbg : nullptr,
                                  occluded ? &occluded : nullptr,
                                  hasClip ? &clipAovs : nullptr, progress);
   if (cancelled()) return;
   if (dumpPrefix) {
-    writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(),
-                   frame.objectId.data(), normalPtr, sp, cp);
+    writeCrackDump(dumpPrefix, cf, dbg, frame.viewZ.data(), edgeIds,
+                   normalPtr, sp, cp);
     // Raw clip-cut planes for offline analysis (full frame, debug only).
     if (hasClip) {
       const std::size_t n = static_cast<std::size_t>(W) * H;
@@ -420,18 +449,16 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   // sections / alpha-graded fragments fade their edges accordingly.
   const float* surfAlphaPtr =
       frame.surfAlpha.empty() ? nullptr : frame.surfAlpha.data();
-  std::vector<ScreenChain> traced =
-      traceCrackChains(cf, frame.viewZ.data(), frame.objectId.data(),
-                       surfAlphaPtr, progress);
+  std::vector<ScreenChain> traced = traceCrackChains(
+      cf, frame.viewZ.data(), edgeIds, surfAlphaPtr, progress);
   if (cancelled()) return;
   const std::size_t tracedRaw = traced.size();
   // Self-support needs ~2 FINAL px of strong evidence so a lone borderline
   // crack cannot resurrect an isolated sliver as a dash.
   const int minStrong = std::max(1, static_cast<int>(std::lround(
                                         2.0f * ssScale)));
-  traced = pruneWeakChains(cf, std::move(traced), frame.viewZ.data(),
-                           frame.objectId.data(), minStrong, surfAlphaPtr,
-                           progress);
+  traced = pruneWeakChains(cf, std::move(traced), frame.viewZ.data(), edgeIds,
+                           minStrong, surfAlphaPtr, progress);
   if (cancelled()) return;
 
   // Debug level 3+: one line per drawn run (side / taper / clip wiring);
@@ -857,6 +884,16 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       for (int dy = -2; dy <= 2; ++dy)
         for (int dx = -2; dx <= 2; ++dx) {
           if (dx == 0 && dy == 0) continue;
+          // Stay on the lattice: a neighbor id computed past the left or
+          // right border wraps onto the opposite border of the next/previous
+          // row, and once fused the two border ends of a contour crossing
+          // the whole frame (a stick's top edge) into one "junction": the
+          // two straight pieces were woven into a single chain bridged
+          // across the frame, drawn as a line through the object while the
+          // real edge lost its band.
+          if (cx + dx < 0 || cx + dx >= cornerW || cy + dy < 0 ||
+              cy + dy > static_cast<long>(cf.H))
+            continue;
           const auto it = cidIdx.find((cy + dy) * cornerW + (cx + dx));
           if (it == cidIdx.end()) continue;
           const std::size_t ra = findRoot(i), rb = findRoot(it->second);
@@ -875,6 +912,30 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
 
     // Greedy best-opposite pairing per junction CLUSTER; partner[chain][end].
     constexpr float kContinueCos = -0.82f;  // ~145 deg or straighter
+    // Depth gate on a pair: the owner view-z at the two ends must be
+    // continuous by the same slope-clamp criterion that splits a run (Stage
+    // 4). Two lines that continue each other in 2D but sit on surfaces at
+    // different depths -- a far object's silhouette running on into a near
+    // object's contour where the two are nearly tangent -- are not one
+    // physical line: the woven "bar" would be split back into two runs at
+    // that very corner (taper, re-centering bite), while the near object's
+    // own continuing contour, demoted to a stem, gets clipped along the
+    // near-parallel far line for a whole clip radius (a gap in the outline
+    // with a stub beyond it). Rejecting the pair lets the same-depth
+    // continuation pair instead, and leaves the far line as the stem.
+    auto endVz = [&](const WeaveEnd& e, float& out) {
+      const ScreenChain& c = traced[e.chain];
+      if (c.edgeVz.empty() || c.edgeVz.size() != c.edgeClass.size())
+        return false;
+      out = c.edgeVz[e.end == 0 ? 0 : c.edgeVz.size() - 1];
+      return true;
+    };
+    auto endsVzContinuous = [&](const WeaveEnd& A, const WeaveEnd& B) {
+      float a, b2;
+      if (!endVz(A, a) || !endVz(B, b2)) return true;
+      const float px = pixelSizeAt(sp, std::min(a, b2));
+      return std::fabs(b2 - a) <= se.screenSlopeClampPx * px;
+    };
     std::vector<std::array<int, 2>> partnerChain(
         traced.size(), {-1, -1});
     std::vector<std::array<int, 2>> partnerEnd(traced.size(), {-1, -1});
@@ -883,15 +944,38 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       if (ends.size() < 2) continue;
       std::vector<char> used(ends.size(), 0);
       bool haveBar = false;
+      // The (class, group) key of an end's last edgel: two ends of ONE
+      // physical line share it, two different lines meeting at the corner
+      // usually do not.
+      auto endKey = [&](const WeaveEnd& e) {
+        const ScreenChain& c = traced[e.chain];
+        const std::size_t ei = e.end == 0 ? 0 : c.edgeClass.size() - 1;
+        const std::uint32_t g = c.edgeGroup.size() == c.edgeClass.size()
+                                    ? c.edgeGroup[ei]
+                                    : 0u;
+        return (g << 8) | c.edgeClass[ei];
+      };
       for (;;) {
-        float best = kContinueCos;
-        int bi = -1, bj = -1;
+        // Straightest continuation, but a pair of the SAME key first: at a
+        // corner where a contact ring (ObjectId, the stick) meets the
+        // ribbon's own fold line (DepthGap, the ribbon), the fold ran on
+        // into a piece of the ring because that turn happened to be the
+        // straighter one, leaving the ring split across two chains; the
+        // piece then ended at run boundaries against the fold's runs
+        // (tapered, side-changed) while the rest of the ring ended clipped
+        // at the corner, and the two halves of one band met in a lump.
+        // Pairing like with like keeps each line whole; ends without a
+        // same-key partner still pair by direction alone.
+        float best = kContinueCos, bestSame = kContinueCos;
+        int bi = -1, bj = -1, si = -1, sj = -1;
         for (std::size_t i = 0; i < ends.size(); ++i) {
           if (used[i]) continue;
           const std::array<float, 2> di =
               dirOf(traced[ends[i].chain], ends[i].end);
+          const std::uint32_t ki = endKey(ends[i]);
           for (std::size_t j = i + 1; j < ends.size(); ++j) {
             if (used[j]) continue;
+            if (!endsVzContinuous(ends[i], ends[j])) continue;
             const std::array<float, 2> dj =
                 dirOf(traced[ends[j].chain], ends[j].end);
             const float cosT = di[0] * dj[0] + di[1] * dj[1];
@@ -900,7 +984,17 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
               bi = static_cast<int>(i);
               bj = static_cast<int>(j);
             }
+            if (ki == endKey(ends[j]) && cosT <= bestSame) {
+              bestSame = cosT;
+              si = static_cast<int>(i);
+              sj = static_cast<int>(j);
+            }
           }
+        }
+        if (si >= 0) {
+          best = bestSame;
+          bi = si;
+          bj = sj;
         }
         if (bi < 0) break;
         used[bi] = used[bj] = 1;
@@ -1127,17 +1221,12 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     if (cancelled()) return;
     const ScreenChain& ch = traced[chIdx];
     if (ch.pts.size() < 2 || ch.edgeClass.empty()) continue;
-    // Speck filter on the RAW chain: every edgel is one hi-res px long, so the
-    // edgel count IS the arc length. JUNCTION-AWARE: a short chain whose ends
-    // are both junctions (degree >= 3) is a piece of a larger boundary chopped
-    // by side-branches (e.g. grazing-rim depth-gap spurs T-ing into the
-    // silhouette) and is KEPT -- dropping it would dash the outline. Only a
-    // short chain with a free end (a spur) or a tiny closed loop is an
-    // isolated speckle and is dropped.
-    if (minChainLen > 0.0f &&
-        static_cast<float>(ch.edgeClass.size()) < minChainLen &&
-        !(ch.deg0 >= 3 && ch.deg1 >= 3))
-      continue;
+    // Speck filter on the RAW chain (isScreenSpeck): a short chain with a
+    // free end (a spur) or a short closed loop (a one-pixel island, whatever
+    // its seam corner's degree) is an isolated speckle and is dropped; a
+    // short open chain junctioned at both ends is a chopped piece of a
+    // larger boundary and is kept.
+    if (isScreenSpeck(ch, minChainLen)) continue;
 
     ChainWork w;
     w.chIdx = chIdx;
@@ -1289,12 +1378,17 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
     // thick line; only Crease stays centered (a surface fold has no
     // occluded side). Keyed on the run class, NOT styleSlot (the
     // DepthGap->sil slot fallback is a style lookup, not a class change).
-    // The run's group is the OWNER (nearer) section, so a section's align
-    // governs its own contours. The outer side is voted per run over the
-    // edgel side bits: a majority absorbs the few edgels whose owner
-    // flipped (owner jitter, mergeShortClassRuns relabels). Contact edgels
-    // (bit 2) have no defined outer side and abstain; an all-contact run
-    // (or a tie) stays centered.
+    // The run's group is the OWNER section, so a section's align governs
+    // its own contours. The outer side is voted per run over the edgel side
+    // bits: a majority absorbs the few edgels whose owner flipped (owner
+    // jitter, mergeShortClassRuns relabels). Contact edgels (bit 2) vote
+    // like the rest: their owner is the side with the dominant line
+    // (contactOwner), and the non-owner side is the contour's outer side
+    // exactly as on the occlusion segments of the same contour (a stick's
+    // cap ring over a ribbon is part occlusion, part intersection); a
+    // centered contact run beside an outside-aligned occlusion run would
+    // jog the band by half its width at every run boundary. A tie stays
+    // centered.
     w.side.assign(w.runs.size(), 0);
     for (std::size_t ri = 0; ri < w.runs.size(); ++ri) {
       const CrackClass rc = static_cast<CrackClass>(w.cls[w.runs[ri].e0]);
@@ -1303,11 +1397,8 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           w.flg.size() != w.cls.size())
         continue;
       long vote = 0;
-      for (std::size_t e = w.runs[ri].e0; e < w.runs[ri].e1; ++e) {
-        const std::uint8_t f = w.flg[e];
-        if (f & 4) continue;
-        vote += (f & 8) ? 1 : -1;
-      }
+      for (std::size_t e = w.runs[ri].e0; e < w.runs[ri].e1; ++e)
+        vote += (w.flg[e] & 8) ? 1 : -1;
       w.side[ri] = vote > 0 ? 1 : (vote < 0 ? -1 : 0);
     }
     works.push_back(std::move(w));
@@ -1336,41 +1427,6 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                        : std::array<float, 2>{0.0f, 0.0f};
   };
 
-  // Build the end clip for a stem terminating on a known bar line (Stage 3.5
-  // BarInfo or the free-end probe's fit): cull this chain's ink beyond the
-  // bar-ink boundary FARTHEST from the stem, so the stem keeps its offset
-  // band and stops flush at the bar's far edge -- clipping replaces the
-  // earlier re-centering taper, which visibly necked shallow junctions.
-  // Coordinates are STROKE coords. bandN = unit normal toward the bar's
-  // band; (0, 0) = unknown -> a small slack past the backbone (the bar's
-  // ink covers any overshoot when its band faces the stem; otherwise the
-  // sub-px slack is invisible).
-  auto stemClip = [&](float barPx, float barPy, float barDx, float barDy,
-                      float bandNx, float bandNy, float outX, float outY,
-                      CrackClass barCls, std::uint16_t barGrp, float stemHalf) {
-    StrokeEndClip clip;
-    float nx = -barDy, ny = barDx;
-    if (nx * outX + ny * outY < 0.0f) {
-      nx = -nx;
-      ny = -ny;
-    }
-    const float halfBar = halfFor(barCls, barGrp);
-    const float pad = std::min(halfBar, 0.5f * ssScale);
-    float extent;
-    if (bandNx == 0.0f && bandNy == 0.0f)
-      extent = 0.5f * ssScale;
-    else if (bandNx * nx + bandNy * ny > 0.0f)
-      extent = std::max(0.5f * ssScale, 2.0f * halfBar - pad);
-    else
-      extent = pad;
-    clip.enabled = true;
-    clip.px = barPx + nx * extent;
-    clip.py = barPy + ny * extent;
-    clip.nx = nx;
-    clip.ny = ny;
-    clip.radius = 4.0f * std::max(halfBar, stemHalf) + 2.0f * ssScale;
-    return clip;
-  };
 
   // FREE-END probe: the prune's weak-tail trim and the classifier's
   // bg-clearance kill leave a stem's lattice end 1-3 px short of the line
@@ -1458,9 +1514,10 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           if (vx * ox + vy * oy < 0.7071f * d) continue;  // 45-deg cone
           mids.push_back({mx, my});
           const bool second = (byte & kCrackOwnerBit) != 0;
-          if (!(byte & kCrackContactBit)) {
+          {
             // The met line's band (outer side) points toward the NON-owner
-            // pixel of its cracks; contact cracks abstain (arbitrary owner).
+            // pixel of its cracks, contact cracks included (their owner is
+            // the dominant-line side, see contactOwner).
             const float toOuter = second ? -1.0f : 1.0f;
             if (plane == 0)
               bnxAcc += toOuter;
@@ -1476,7 +1533,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                     : (second ? yy + 1 : yy) * cf.W + xx;
             hit.cls = static_cast<CrackClass>(byte & kCrackClassMask);
             hit.grp = static_cast<std::uint16_t>(
-                frame.objectId[static_cast<std::size_t>(ownPix)] >> 2);
+                edgeIds[static_cast<std::size_t>(ownPix)] >> 2);
           }
         }
       }
@@ -1615,6 +1672,9 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                                w.cls[w.runs[r].e0])));
       in.styleSlot = classStyleSlot(runClass);
       in.outsideSide = w.side[spans[si].r0];
+      // The whole loop as one span: the draw stage joins the ribbon across
+      // the seam (no end caps; see StrokeChainInput::closed).
+      in.closed = runClosed;
       // DepthGap falls back to the Silhouette slot when the section never
       // configured the Disconnected class (the default style table ships all
       // slots disabled except those the CLI enables; without the fallback a
@@ -1629,15 +1689,18 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       // Junction end handling. After the Stage-3.5 weaving, a chain end
       // still sitting at a junction is a true STEM -- the bar it meets was
       // woven into one chain and never ends here. The stem keeps its offset
-      // band and is CLIPPED against the woven bar's ink (stemClip; extended
-      // into the bar so smoothing deviations cannot open a pinhole). A
-      // degree-1 free end left short of a line by the weak-tail trims is
-      // connected the same way via the crack-field probe's fitted line.
-      // The re-centering TAPER remains for the cases with no met line to
-      // clip against: a run boundary whose neighbor's voted side differs, a
-      // deep fold at a run boundary (only real hairpins remain after the
-      // PASS-1 notch bridge), a junction with no woven bar (e.g. a Y of
-      // three stems), and the closed-chain seam wrap.
+      // band up to the bar (extended into it by the pad so smoothing
+      // deviations cannot open a pinhole, no round cap); what its overshoot
+      // may paint is decided per pixel by the draw stage's depth permission
+      // (an offset band never paints over a surface nearer than its own
+      // contour), so no clip geometry is derived from the bar. A degree-1
+      // free end left short of a line by the weak-tail trims is connected
+      // the same way, extended to the crack-field probe's fitted line. An
+      // end on the image border is extended off-screen. The re-centering
+      // TAPER remains for: a run boundary whose neighbor's voted side
+      // differs, a deep fold at a run boundary (only real hairpins remain
+      // after the PASS-1 notch bridge), a junction with no woven bar (e.g. a
+      // Y of three stems), and the closed-chain seam wrap.
       if (in.outsideSide != 0 && !runClosed) {
         const bool wrap = ch.closed && spans.size() > 1;
         // The run's resolved half-width sizes the fold window.
@@ -1669,8 +1732,23 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           return std::sqrt(cx2 * cx2 + cy2 * cy2) <
                  0.55f * (arcA + arcB);
         };
+        // Does the band continue across the run boundary into span nb (no
+        // taper)? Yes when the neighbor keeps the side, and also when the
+        // neighbor is a DIFFERENT LINE (another class/group takes over the
+        // lattice curve -- a ribbon's fold running into the contact ring of
+        // the atom embedded in it): the band then simply stops flush where
+        // the other line starts. The taper exists for a same-line owner
+        // flip (the band switching sides along one contour); applied at a
+        // line change it necked a 26 px contact piece between two thin fold
+        // runs into a spindle, and the ring's band grew a lump there.
+        auto keyOf = [&](std::size_t ri) {
+          return (static_cast<std::uint32_t>(w.grp[w.runs[ri].e0]) << 8) |
+                 static_cast<std::uint32_t>(w.cls[w.runs[ri].e0]);
+        };
         auto continues = [&](std::size_t nb) {  // nb = span index
-          return w.side[spans[nb].r0] == in.outsideSide;
+          const std::size_t rn = spans[nb].r0;
+          if (keyOf(rn) != keyOf(spans[si].r0)) return true;
+          return w.side[rn] == in.outsideSide;
         };
         // Resolve one chain end: bar clip (junction / probed free end) or
         // the taper fallback. The endpoint NODE lands exactly ON the met
@@ -1684,15 +1762,29 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                               float& extend) {
           const int deg = end == 0 ? ch.deg0 : ch.deg1;
           const std::array<float, 2> din = endDirIn(w, end);
+          const ScreenChainVert& ev = end == 0 ? w.pts.front() : w.pts.back();
+          // IMAGE-BORDER end: the contour leaves the frame. Extend the drawn
+          // backbone off-screen far enough that the band's OUTER edge leaves
+          // the frame as well -- a contour crossing the border at a shallow
+          // angle otherwise stopped with a visible cap while its object ran
+          // on to the border. No probe, taper or cap (the cap is off-screen).
+          const float fw = static_cast<float>(cf.W), fh = static_cast<float>(cf.H);
+          const bool atX = ev.x < 1.0f || ev.x > fw - 2.0f;
+          const bool atY = ev.y < 1.0f || ev.y > fh - 2.0f;
+          if ((atX || atY) && !(din[0] == 0.0f && din[1] == 0.0f)) {
+            float across = 0.0f;  // chain direction component across the border
+            if (atX) across = std::max(across, std::fabs(din[0]));
+            if (atY) across = std::max(across, std::fabs(din[1]));
+            const float pad = std::min(rh, 0.5f * ssScale);
+            extend = (2.0f * rh + pad + ssScale) / std::max(across, 0.1f) +
+                     2.0f * ssScale;
+            return;
+          }
           if (deg >= 3) {
             const auto bar = barAt.find(endCorner(w, end));
             if (bar != barAt.end() &&
                 !(din[0] == 0.0f && din[1] == 0.0f)) {
-              const ScreenChainVert& v =
-                  end == 0 ? w.pts.front() : w.pts.back();
-              clip = stemClip(v.x, v.y, bar->second.dx, bar->second.dy,
-                              bar->second.bnx, bar->second.bny, -din[0],
-                              -din[1], bar->second.cls, bar->second.grp, rh);
+              clip.enabled = true;  // stem end on a woven bar
             } else {
               taper = true;
               extend = extJunction;
@@ -1700,16 +1792,13 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           } else if (deg <= 1) {
             const auto h = probeFreeEnd(wi, end);
             if (h.dist >= 0.0f) {
-              clip = stemClip(h.px, h.py, h.dx, h.dy, h.bnx, h.bny, -din[0],
-                              -din[1], h.cls, h.grp, rh);
+              clip.enabled = true;  // free end connected to the probed line
               // Extend exactly to the intersection of the outward ray with
               // the fitted met line (near-parallel: fall back to the probe
               // reach; clamp against runaway grazing intersections).
               const float ox = -din[0], oy = -din[1];
               const float nx = -h.dy, ny = h.dx;
               const float denom = ox * nx + oy * ny;
-              const ScreenChainVert& ev =
-                  end == 0 ? w.pts.front() : w.pts.back();
               float t = h.dist;
               if (std::fabs(denom) > 0.2f)
                 t = ((h.px - ev.x) * nx + (h.py - ev.y) * ny) / denom;
@@ -1753,7 +1842,8 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       {
         const std::size_t nV = pts.size();
         const bool hasA = w.alp.size() == w.cls.size();
-        for (std::size_t k = 0; k < nV && (hasA || hasVzArr); ++k) {
+        const bool hasF = w.flg.size() == w.cls.size();
+        for (std::size_t k = 0; k < nV && (hasA || hasVzArr || hasF); ++k) {
           std::size_t ea, eb;  // the edgel(s) attributed to vertex k
           if (runClosed && (k == 0 || k == nV - 1)) {
             ea = e0;
@@ -1768,6 +1858,12 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           }
           if (hasA) pts[k].alpha = 0.5f * (w.alp[ea] + w.alp[eb]);
           if (hasVzArr) pts[k].vz = 0.5f * (w.vz[ea] + w.vz[eb]);
+          // Contact weight (ScreenChainVert::contact): the run's own edgels
+          // again, so the depth-permission exemption stops exactly where
+          // the contact contour turns into an occlusion contour.
+          if (hasF)
+            pts[k].contact = 0.5f * (((w.flg[ea] & 4) ? 1.0f : 0.0f) +
+                                     ((w.flg[eb] & 4) ? 1.0f : 0.0f));
         }
       }
       collapseCollinear(pts, runClosed);
@@ -1897,12 +1993,15 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       if (pts.size() < 2) continue;
       // Junction extension: append a vertex at the chain end's resolved
       // target (a probed free end's on-line intersection, or the small
-      // overlap of a barless taper end).
+      // overlap of a barless taper end). The extension lies past the
+      // contour, so it is never a contact vertex: its overshoot stays
+      // under the depth permission whatever the run was.
       if (si == 0 && extendStart > 0.0f) {
         const std::array<float, 2> din = endDirIn(w, 0);
         ScreenChainVert v = pts.front();
         v.x -= din[0] * extendStart;
         v.y -= din[1] * extendStart;
+        v.contact = 0.0f;
         pts.insert(pts.begin(), v);
       }
       if (si + 1 == spans.size() && extendEnd > 0.0f) {
@@ -1910,6 +2009,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
         ScreenChainVert v = pts.back();
         v.x -= din[0] * extendEnd;
         v.y -= din[1] * extendEnd;
+        v.contact = 0.0f;
         pts.push_back(v);
       }
       if (dbgRuns)
@@ -1933,7 +2033,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
       }
       in.pts.reserve(pts.size());
       for (const ScreenChainVert& v : pts)
-        in.pts.push_back({v.x, v.y, v.vz, v.alpha, true});
+        in.pts.push_back({v.x, v.y, v.vz, v.alpha, true, v.contact});
       drawChains.push_back(std::move(in));
     }
   }

@@ -183,6 +183,125 @@ int main() {
             (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
   }
 
+  // ---- (4a) mixed-kind view-z step: DepthGap, and STRONG ------------------
+  // The same step between two primitive kinds of ONE section (a sphere in
+  // front of a bond): the ID-keyed branch classifies it, and it must carry
+  // the strong bit -- a weak-only DepthGap chain is pruned unless strong
+  // neighbors support it, which left such a sphere's outline missing exactly
+  // where the bond was behind it.
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u, cyl = (9u << 2) | 3u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x)
+        b.set(x, y, x < 8 ? sph : cyl, x < 8 ? 10.0f : 60.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check_eq("mixed-kind step: one DepthGap crack per row",
+               countClass(cf, CrackClass::DepthGap), 16);
+    s.check_eq("mixed-kind step: nothing else fires", countActive(cf), 16);
+    s.check("mixed-kind step: the crack is strong",
+            (cf.right[b.idx(7, 5)] & kCrackStrongBit) != 0);
+    s.check("mixed-kind step: nearer (first) side owns",
+            (cf.right[b.idx(7, 5)] & kCrackOwnerBit) == 0);
+  }
+
+  // ---- (4a3) silhouette clearance on the same-section step ---------------
+  // A one-pixel sliver of another kind along the outline (a bond's cap
+  // sphere alternating with the bond's side at the rim) makes a huge
+  // mixed-kind step PARALLEL to the outline: killed, like the weak same-id
+  // rim noise. The same step 4 px inside stays strong, and a step running
+  // INTO the outline along its own direction (a contour terminal) stays.
+  // Background at x < 4; sphere sliver at x = 4 (rows 4-11); cylinder
+  // elsewhere; clearance 3 px (the default).
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u, cyl = (9u << 2) | 3u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x) {
+        const bool sliver = x == 4 && y >= 4 && y <= 11;
+        b.set(x, y, sliver ? sph : cyl, sliver ? 10.0f : 60.0f);
+      }
+    const CrackField cf = classify(b, defaults);
+    int sliverCracks = 0;
+    for (int y = 4; y <= 11; ++y)
+      if (cf.right[b.idx(4, y)] & kCrackClassMask) ++sliverCracks;
+    s.check_eq("sliver clearance: the sliver's side crack is killed",
+               sliverCracks, 0);
+    // Its end cracks (row 3|4 and 11|12 at x = 4) run into the outline.
+    s.check("sliver clearance: the sliver's end cracks reach the outline",
+            (cf.down[b.idx(4, 3)] & kCrackClassMask) != 0 &&
+                (cf.down[b.idx(4, 11)] & kCrackClassMask) != 0);
+  }
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u, cyl = (9u << 2) | 3u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x)
+        b.set(x, y, x < 9 ? sph : cyl, x < 9 ? 10.0f : 60.0f);
+    const CrackField cf = classify(b, defaults);
+    s.check("sliver clearance: the same step 4 px inside stays strong",
+            (cf.right[b.idx(8, 6)] & kCrackClassMask) ==
+                    static_cast<std::uint8_t>(CrackClass::DepthGap) &&
+                (cf.right[b.idx(8, 6)] & kCrackStrongBit) != 0);
+  }
+  {
+    // Analytic same-id: two spheres' sliver (same objectId) along the
+    // outline is killed too; 4 px inside it is strong.
+    Buffers b(16, 16);
+    const std::uint32_t sph = (9u << 2) | 1u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x) {
+        const bool sliver = x == 4 && y >= 4 && y <= 11;
+        b.set(x, y, sph, sliver ? 10.0f : 60.0f);
+      }
+    const CrackField cf = classify(b, defaults);
+    int sliverCracks = 0;
+    for (int y = 4; y <= 11; ++y)
+      if (cf.right[b.idx(4, y)] & kCrackClassMask) ++sliverCracks;
+    s.check_eq("sliver clearance: same-id analytic sliver crack is killed",
+               sliverCracks, 0);
+    Buffers c(16, 16);
+    for (int y = 0; y < 16; ++y)
+      for (int x = 4; x < 16; ++x) c.set(x, y, sph, x < 9 ? 10.0f : 60.0f);
+    const CrackField cf2 = classify(c, defaults);
+    s.check("sliver clearance: same-id analytic step 4 px inside is strong",
+            (cf2.right[c.idx(8, 6)] & kCrackStrongBit) != 0);
+  }
+
+  // ---- (4a2) analytic same-id step at a grazing rim: STRONG ---------------
+  // Two primitives of the same kind and section (two spheres) share an
+  // objectId, so their occlusion step goes through the same-id branch. The
+  // near side is a sphere's rim, receding steeply toward the crack: the
+  // mesh step-dominance gate (step > 250 x the near side's recession) then
+  // fails, and with matching normals the rescue cannot hold. For a MESH id
+  // that is the facet-sliver veto working as designed (the crack stays weak);
+  // for an analytic id it dropped the rim of a sphere over another sphere or
+  // bond of its own section, so analytic same-id steps are strong at the
+  // full threshold.
+  {
+    auto stepField = [&](std::uint32_t id) {
+      Buffers b(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+          // near side recedes 3 units per px toward the crack (x = 7: 31),
+          // far side flat at 100: step 69, recession 3 -> 250 x 3 > 69.
+          b.set(x, y, id, x < 8 ? 10.0f + 3.0f * x : 100.0f);
+      return b;
+    };
+    const Buffers sph = stepField((9u << 2) | 1u);
+    const CrackField cs = classify(sph, defaults);
+    s.check_eq("analytic same-id step: one DepthGap crack per row",
+               countClass(cs, CrackClass::DepthGap), 16);
+    s.check("analytic same-id step: strong despite the grazing near rim",
+            (cs.right[sph.idx(7, 5)] & kCrackStrongBit) != 0);
+    const Buffers mesh = stepField((9u << 2) | 0u);
+    const CrackField cm = classify(mesh, defaults);
+    s.check_eq("mesh same-id step: still fires (weak candidate)",
+               countClass(cm, CrackClass::DepthGap), 16);
+    s.check("mesh same-id step: the dominance gate keeps it weak",
+            (cm.right[mesh.idx(7, 5)] & kCrackStrongBit) == 0);
+  }
+
   // ---- (4b) facet kink: a pure slope change never fires --------------------
   // Piecewise-linear depth (flat, then a steep ramp) models the facet boundary
   // of a coarse mesh seen at grazing incidence: the steep side's one-sided
@@ -196,6 +315,32 @@ int main() {
         b.set(x, y, 9, x < 8 ? 100.0f : 100.0f + 30.0f * (x - 7));
     const CrackField cf = classify(b, defaults);
     s.check_eq("facet kink: slope change never fires", countActive(cf), 0);
+  }
+
+  // ---- (4c) precision floor: coincident surfaces never read as a step ----
+  // Two primitive kinds of one section share a surface (a capsule's end cap
+  // on its atom sphere) and alternate as the first hit with a view-z jitter
+  // of the intersectors' precision. With the lateral threshold shrunk below
+  // that jitter (an extreme zoom), the relative floor depthTolRel * viewZ
+  // keeps the mixed-kind boundary a contact; with the floor off it fires as
+  // a field of DepthGap cracks.
+  {
+    Buffers b(16, 16);
+    const std::uint32_t sph = (1u << 2) | 1u, cyl = (1u << 2) | 2u;
+    for (int y = 0; y < 16; ++y)
+      for (int x = 0; x < 16; ++x) {
+        const bool odd = ((x + y) & 1) != 0;
+        b.set(x, y, odd ? sph : cyl, 1.0e5f + (odd ? 0.5f : -0.5f));
+      }
+    ScreenClassifyParams p = defaults;
+    p.depthGapPx = 0.5f;  // lateral tolerance 0.5 < the 1.0 jitter step
+    const CrackField withFloor = classify(b, p);  // floor 4e-5 * 1e5 = 4
+    s.check_eq("precision floor: coincident kinds stay a contact",
+               countActive(withFloor), 0);
+    p.depthTolRel = 0.0f;
+    const CrackField noFloor = classify(b, p);
+    s.check("precision floor: without it the jitter fires DepthGap",
+            countClass(noFloor, CrackClass::DepthGap) > 0);
   }
 
   // ---- (4c) DepthGap NMS: a smeared step fires once, not as a band --------
@@ -690,6 +835,92 @@ int main() {
       s.check("contact (5p): occlusion step owned by the near side",
               (cf.right[b.idx(7, 8)] & kCrackOwnerBit) == 0);
     }
+    mode[2] = umbreon::SilhouetteMode::Full;
+    fill(10.0f);
+
+    // ---- (5q) contact owner by STYLE (groupContactRank) --------------------
+    // With a rank table the owner is the side whose contact line is more
+    // visible: wider, then darker; a disabled slot always loses. Only when
+    // both rank equal do the Outline / smaller-id tie-breaks above apply, so
+    // the owner never depends on which section came first.
+    {
+      auto styleOf = [](bool enabled, float width, float gray, float opacity) {
+        umbreon::EdgeStyle es;
+        for (int k : {static_cast<int>(umbreon::EdgeClass::Silhouette),
+                      static_cast<int>(umbreon::EdgeClass::Object)}) {
+          umbreon::EdgeClassStyle& cs = es.cls[k];
+          cs.enabled = enabled;
+          cs.width = width;
+          cs.color[0] = cs.color[1] = cs.color[2] = gray;
+          cs.opacity = opacity;
+        }
+        return es;
+      };
+      std::vector<umbreon::ScreenContactRank> rank(3);
+      p.groupContactRank = rank.data();
+      p.groupContactRankCount = rank.size();
+      auto ownerBit = [&]() {
+        return classify(b, p).right[b.idx(7, 8)] & kCrackOwnerBit;
+      };
+      auto setRanks = [&](const umbreon::EdgeStyle& a,
+                          const umbreon::EdgeStyle& c) {
+        rank[1] = umbreon::screenContactRank(a);
+        rank[2] = umbreon::screenContactRank(c);
+      };
+
+      // Helper: a disabled slot ranks as no line; lightness folds opacity.
+      {
+        const umbreon::ScreenContactRank r0 =
+            umbreon::screenContactRank(styleOf(false, 8.0f, 0.0f, 1.0f));
+        const umbreon::ScreenContactRank r1 =
+            umbreon::screenContactRank(styleOf(true, 3.0f, 0.0f, 0.5f));
+        s.check("contact (5q): disabled slot ranks as width 0 / light 1",
+                r0.obj.width == 0.0f && r0.obj.light == 1.0f &&
+                    r0.sil.width == 0.0f);
+        s.check("contact (5q): rank carries width and opacity-faded light",
+                r1.obj.width == 3.0f && std::fabs(r1.obj.light - 0.5f) < 1e-5f);
+      }
+
+      // Wider wins, whichever id it sits on.
+      setRanks(styleOf(true, 2.0f, 0.0f, 1.0f), styleOf(true, 8.0f, 0.0f, 1.0f));
+      s.check("contact (5q): the wider line owns (larger id)",
+              ownerBit() != 0);
+      setRanks(styleOf(true, 8.0f, 0.0f, 1.0f), styleOf(true, 2.0f, 0.0f, 1.0f));
+      s.check("contact (5q): the wider line owns (smaller id)",
+              ownerBit() == 0);
+
+      // Same width: the darker line owns; a fainter (opacity) line loses.
+      setRanks(styleOf(true, 4.0f, 0.6f, 1.0f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): same width, the darker line owns",
+              ownerBit() != 0);
+      setRanks(styleOf(true, 4.0f, 0.0f, 0.3f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): same width, the more opaque line owns",
+              ownerBit() != 0);
+
+      // An edge-less section never owns: the contact still inks, in the
+      // other side's style, even though the edge-less side has the smaller
+      // id (and even when it is the Outline side).
+      setRanks(styleOf(false, 0.0f, 0.0f, 1.0f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): an edge-less smaller id loses to the edged side",
+              ownerBit() != 0);
+      mode[1] = umbreon::SilhouetteMode::Outline;
+      s.check("contact (5q): an edge-less Outline side loses too",
+              ownerBit() != 0);
+      mode[1] = umbreon::SilhouetteMode::Full;
+
+      // Identical styles: the old tie-breaks (a single Outline side, then the
+      // smaller id) decide, where the choice is invisible anyway.
+      setRanks(styleOf(true, 4.0f, 0.0f, 1.0f), styleOf(true, 4.0f, 0.0f, 1.0f));
+      s.check("contact (5q): identical styles fall to the smaller id",
+              ownerBit() == 0);
+      mode[2] = umbreon::SilhouetteMode::Outline;
+      s.check("contact (5q): identical styles fall to the Outline side first",
+              ownerBit() != 0);
+      mode[2] = umbreon::SilhouetteMode::Full;
+
+      p.groupContactRank = nullptr;
+      p.groupContactRankCount = 0;
+    }
   }
 
   // ---- tracer helpers ------------------------------------------------------
@@ -985,13 +1216,18 @@ int main() {
   // but it does not dominate the near side's own recession, so it must stay
   // WEAK (drawable only with chain support). A same-magnitude-class step on a
   // flat surface is a true occlusion contour and is STRONG.
+  // NOTE: the same-id weak/strong hysteresis (dominance gate, ndelta rescue,
+  // fold probe, ridge test) is mesh-only; the analytic kinds (sphere,
+  // cylinder) go strong at the full threshold. The synthetic buffers in this
+  // and the later hysteresis/prune blocks therefore use mesh-kind ids (low
+  // two bits 0: 4 = group 1, 8 = group 2).
   {
     Buffers b(24, 8);
     for (int y = 0; y < 8; ++y)
       for (int x = 0; x < 24; ++x) {
         float vz = 100.0f + 10.0f * x;  // grazing ramp, 10 per px
         if (x >= 12) vz += 45.0f;       // sliver: ~4.5 px of ramp
-        b.set(x, y, 9, vz);
+        b.set(x, y, 8, vz);
       }
     const CrackField cf = classify(b, defaults);
     const std::uint8_t byte = cf.right[b.idx(11, 4)];
@@ -1005,7 +1241,7 @@ int main() {
     Buffers b(16, 8);
     for (int y = 0; y < 8; ++y)
       for (int x = 0; x < 16; ++x)
-        b.set(x, y, 9, x < 8 ? 100.0f : 500.0f);  // step 400 over flat
+        b.set(x, y, 8, x < 8 ? 100.0f : 500.0f);  // step 400 over flat
     const CrackField cf = classify(b, defaults);
     const std::uint8_t byte = cf.right[b.idx(7, 4)];
     s.check("flat step: DepthGap strong",
@@ -1031,7 +1267,7 @@ int main() {
           vz = 600.0f + (y >= 10 ? 30.0f : 0.0f);   // weak connector at y 9|10
         else
           vz = 1500.0f + (y >= 15 ? 30.0f : 0.0f);  // weak spur at y 14|15
-        b.set(x, y, 9, vz);
+        b.set(x, y, 8, vz);
       }
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
@@ -1083,11 +1319,11 @@ int main() {
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x < 8)
-          b.set(x, y, 5, 100.0f);       // near surface, section 1
+          b.set(x, y, 4, 100.0f);       // near surface, section 1
         else if (y < 8)
-          b.set(x, y, 9, 130.0f);       // far surface, section 2 -> ObjectId
+          b.set(x, y, 8, 130.0f);       // far surface, section 2 -> ObjectId
         else
-          b.set(x, y, 5, 130.0f);       // far surface, section 1 -> weak gap
+          b.set(x, y, 4, 130.0f);       // far surface, section 1 -> weak gap
       }
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
@@ -1127,11 +1363,11 @@ int main() {
     for (int y = 0; y < 12; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x < 8)
-          b.set(x, y, 5, 100.0f);
+          b.set(x, y, 4, 100.0f);
         else if (y < 8)
-          b.set(x, y, 9, 130.0f);
+          b.set(x, y, 8, 130.0f);
         else
-          b.set(x, y, 5, 130.0f);
+          b.set(x, y, 4, 130.0f);
       }
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
@@ -1162,7 +1398,7 @@ int main() {
                          510, 390, 270, 150, 30};
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x)
-        b.set(x, y, 9, x < 8 ? 100.0f : 100.0f + f[y]);
+        b.set(x, y, 8, x < 8 ? 100.0f : 100.0f + f[y]);
     CrackField cf = classify(b, defaults);
     std::vector<ScreenChain> chains =
         umbreon::traceCrackChains(cf, b.viewZ.data(), b.objectId.data());
@@ -1207,7 +1443,7 @@ int main() {
     Buffers b(16, 16);
     for (int y = 4; y < 12; ++y)
       for (int x = 4; x < 12; ++x)
-        b.set(x, y, 9, x >= 8 ? 130.0f : 100.0f);  // step 30 into the outline
+        b.set(x, y, 8, x >= 8 ? 130.0f : 100.0f);  // step 30 into the outline
     const CrackField cf = classify(b, defaults);
     s.check_eq("perpendicular weak line: every crack reaches the outline",
                countClass(cf, CrackClass::DepthGap), 8);
@@ -1216,7 +1452,7 @@ int main() {
     Buffers b(16, 16);
     for (int y = 4; y < 12; ++y)
       for (int x = 4; x < 12; ++x)
-        b.set(x, y, 9, y >= 6 ? 130.0f : 100.0f);  // line 2 px below outline
+        b.set(x, y, 8, y >= 6 ? 130.0f : 100.0f);  // line 2 px below outline
     const CrackField cf = classify(b, defaults);
     s.check("parallel weak line: interior crack killed by clearance",
             (cf.down[b.idx(7, 5)] & kCrackClassMask) == 0);
@@ -1498,9 +1734,9 @@ int main() {
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x < 8)
-          b.set(x, y, 9, 100.0f);  // near, facing (0,0,1)
+          b.set(x, y, 8, 100.0f);  // near, facing (0,0,1)
         else
-          b.set(x, y, 9, 130.0f, 1.0f, 0.0f, 0.0f);  // far, edge-on normal
+          b.set(x, y, 8, 130.0f, 1.0f, 0.0f, 0.0f);  // far, edge-on normal
       }
     // Step 30 over flat sides: full threshold (30 > 12) passes, dominance
     // (30 > 250) fails, ndelta = 1 > 0.3 -> rescue candidate on every row.
@@ -1698,10 +1934,10 @@ int main() {
     for (int y = 0; y < 16; ++y)
       for (int x = 0; x < 16; ++x) {
         if (x <= 7)
-          b.set(x, y, 9, 200.0f + 0.81f * static_cast<float>(7 - x), 0.7f,
+          b.set(x, y, 8, 200.0f + 0.81f * static_cast<float>(7 - x), 0.7f,
                 0.0f, 0.72f);
         else
-          b.set(x, y, 9, 217.0f + 1.04f * static_cast<float>(x - 8), -0.7f,
+          b.set(x, y, 8, 217.0f + 1.04f * static_cast<float>(x - 8), -0.7f,
                 0.0f, 0.72f);
       }
     CrackField cf = classify(b, defaults);
@@ -2128,6 +2364,287 @@ int main() {
     s.check("align draw: butt cap still ends at the endpoint", !buttBeyond);
   }
 
+  // (20d) closed loop (draw stage): a chain flagged `closed` (front == back)
+  // is joined across its seam like an interior corner and draws no end caps
+  // there. Drawn as an open polyline the seam showed a wedge gap (butt) or,
+  // under outside alignment, two cap fans whose outer -> pad radius lerp
+  // bulged into the object (the capsule "seam" bumps). A regular polygon
+  // traversed so that the +normal (left) points OUTWARD, outsideSide +1: the
+  // ring one px INSIDE the loop stays white all around (including the seam
+  // vertex at angle 0) and the ring inside the band is inked all around
+  // (no crack at the seam) -- for round cap/join (turning seam: square ends
+  // + fan) and butt/miter, and for a fine polygon whose seam is straight.
+  {
+    const int W = 64, H = 64;
+    const float cx = 32.5f, cy = 32.5f, rad = 16.0f;
+    auto render = [&](int sides, bool round, bool closedFlag) {
+      umbreon::FrameResult fr;
+      fr.width = W;
+      fr.height = H;
+      fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      umbreon::Scene scene;
+      umbreon::RenderOptions opt;
+      opt.width = W;
+      opt.height = H;
+      opt.supersample = 1;
+      opt.strokeEdges.enable = true;
+      opt.strokeEdges.thickness = 12;  // outside: 11.5 px out, 0.5 px pad in
+      opt.strokeEdges.roundCap = round;
+      opt.strokeEdges.roundJoin = round;
+      std::vector<umbreon::StrokeChainInput> chain(1);
+      // Decreasing angle: at angle 0 the travel is toward -y, whose left
+      // normal (-dy, dx) points +x = outward. The seam vertex is
+      // (cx + rad, cy) = (48.5, 32.5); pixel centers sit on integers.
+      for (int i = 0; i <= sides; ++i) {
+        const float th = -2.0f * 3.14159265f * static_cast<float>(i % sides) /
+                         static_cast<float>(sides);
+        chain[0].pts.push_back({cx + rad * std::cos(th), cy + rad * std::sin(th),
+                                10.0f, 1.0f, true});
+      }
+      chain[0].outsideSide = 1;
+      chain[0].closed = closedFlag;
+      umbreon::renderStrokeChains(fr, scene, opt, chain);
+      return fr;
+    };
+    auto lumAt = [&](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * fr.width + x) * 4];
+    };
+    // Ring samples every 3 degrees; returns (min, max) luminance.
+    auto ring = [&](const umbreon::FrameResult& fr, float r, float& mn,
+                    float& mx) {
+      mn = 1.0f;
+      mx = 0.0f;
+      for (int a = 0; a < 360; a += 3) {
+        const float th = 3.14159265f * static_cast<float>(a) / 180.0f;
+        const int x = static_cast<int>(std::lround(cx + r * std::cos(th)));
+        const int y = static_cast<int>(std::lround(cy + r * std::sin(th)));
+        const float l = lumAt(fr, x, y);
+        mn = std::min(mn, l);
+        mx = std::max(mx, l);
+      }
+    };
+    // Ink count in the two pixel columns 1.5 and 2.5 px INSIDE the seam
+    // vertex (x 47, 46), rows +-3 around it: past the 0.5 px pad, so the
+    // joined seam leaves them white; the old cap fans bulged ~2 px in.
+    auto seamInk = [&](const umbreon::FrameResult& fr) {
+      int n = 0;
+      for (int y = 29; y <= 36; ++y)
+        for (int x = 46; x <= 47; ++x)
+          if (lumAt(fr, x, y) < 0.5f) ++n;
+      return n;
+    };
+    for (int sides : {16, 48}) {
+      // Inradius of the polygon (edge midpoints); two px inside it (the
+      // rounded sample pixel stays clear of the pad).
+      const float inner =
+          rad * std::cos(3.14159265f / static_cast<float>(sides)) - 2.0f;
+      const char* tag = sides == 16 ? "turning seam" : "straight seam";
+      for (bool round : {true, false}) {
+        const umbreon::FrameResult fr = render(sides, round, true);
+        float mn, mx;
+        ring(fr, inner, mn, mx);
+        s.check(std::string("closed loop draw (") + tag +
+                    (round ? ", round" : ", butt") +
+                    "): ring inside the loop stays white at the seam",
+                mn > 0.9f);
+        ring(fr, rad + 4.0f, mn, mx);
+        s.check(std::string("closed loop draw (") + tag +
+                    (round ? ", round" : ", butt") +
+                    "): band inked all around (no seam crack)",
+                mx < 0.5f);
+        s.check_eq(std::string("closed loop draw (") + tag +
+                       (round ? ", round" : ", butt") +
+                       "): no ink inside the seam vertex",
+                   seamInk(fr), 0);
+      }
+    }
+    // Control: the same points NOT flagged closed keep the open-polyline
+    // ends -- with butt caps the turning seam shows its wedge crack.
+    {
+      const umbreon::FrameResult fr = render(16, false, false);
+      float mn, mx;
+      ring(fr, rad + 4.0f, mn, mx);
+      s.check("closed loop draw: open control leaves the seam crack",
+              mx > 0.5f);
+    }
+  }
+
+  // (20i) round cap on an offset band (draw stage): the semicircle over the
+  // band's end cross-section, centered on the band's midline. The fan used
+  // to sit on the backbone with its radius lerping from the outer width to
+  // the pad, a spiral whose outer edge curled around the backbone -- every
+  // free end of an occlusion contour ended in a hook. A horizontal chain
+  // with the band on its +y side, thickness 6: band y in [16, 22], free
+  // end at x 24.5, so the cap is the half-disc of radius 3 around
+  // (24.5, 19). Checked at the chain's END (+x travel, band on the left)
+  // and at its START (the same points reversed: -x travel, band on the
+  // right) -- the two caps take their normal from the travel direction.
+  for (bool atEnd : {true, false}) {
+    umbreon::FrameResult fr;
+    fr.width = 40;
+    fr.height = 32;
+    fr.color.assign(static_cast<std::size_t>(40) * 32 * 4, 1.0f);
+    umbreon::Scene scene;
+    umbreon::RenderOptions opt;
+    opt.width = 40;
+    opt.height = 32;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.thickness = 6;
+    opt.strokeEdges.roundCap = true;
+    std::vector<umbreon::StrokeChainInput> chain(1);
+    if (atEnd) {
+      chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
+                      {24.5f, 16.5f, 10.0f, 1.0f, true}};
+      chain[0].outsideSide = 1;
+    } else {
+      chain[0].pts = {{24.5f, 16.5f, 10.0f, 1.0f, true},
+                      {8.5f, 16.5f, 10.0f, 1.0f, true}};
+      chain[0].outsideSide = -1;
+    }
+    umbreon::renderStrokeChains(fr, scene, opt, chain);
+    auto lumAt = [&](int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * 40 + x) * 4];
+    };
+    const std::string tag = atEnd ? "offset cap (end): " : "offset cap (start): ";
+    s.check(tag + "the band lies below the backbone",
+            lumAt(16, 20) < 0.1f && lumAt(16, 14) > 0.9f);
+    s.check(tag + "the cap reaches out along the band's midline",
+            lumAt(27, 19) < 0.1f);
+    s.check(tag + "no hook past the inner edge (above the midline)",
+            lumAt(27, 17) > 0.9f);
+    s.check(tag + "symmetric about the band's midline",
+            lumAt(26, 17) < 0.1f && lumAt(26, 21) < 0.1f &&
+                lumAt(27, 21) > 0.9f);
+    // Nothing spills behind the endpoint on the inner side (the old spiral
+    // ended near the backbone; the new cap must not cross it either).
+    s.check(tag + "inner pad side stays clean", lumAt(25, 15) > 0.9f);
+  }
+
+  // (20k) depth permission (draw stage): an offset band paints its outer
+  // part only where the hi-res view-z AOV holds nothing nearer than the
+  // stroke's own depth. This is the one rule behind every end treatment:
+  // a stem's overshoot past a junction lands on the near object beyond the
+  // bar and is culled there, while background, farther surfaces and the rim
+  // halo always permit -- so a band can never be cut away from its own
+  // object (which every clip plane / disc / zone geometry could do). A +x
+  // chain at depth 10 with the band on +y (y 16..22); a one-pixel NEARER
+  // column (view-z 5) at x 26 -- between the resampled vertices, so the
+  // OuterRoomShader's vertex walk cannot see it -- a FARTHER block (view-z
+  // 20) under x 32..40, background elsewhere.
+  {
+    const int W = 56, H = 32;
+    umbreon::FrameResult fr;
+    fr.width = W;
+    fr.height = H;
+    fr.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    fr.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        if (x == 26 && y >= 17) fr.viewZ[static_cast<std::size_t>(y) * W + x] = 5.0f;
+        if (x >= 32 && x <= 40 && y >= 14)
+          fr.viewZ[static_cast<std::size_t>(y) * W + x] = 20.0f;
+      }
+    umbreon::Scene scene;
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.thickness = 6;
+    opt.strokeEdges.screenDepthGapPx = 0.0f;  // tolerance 0
+    std::vector<umbreon::StrokeChainInput> chain(1);
+    chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true},
+                    {48.5f, 16.5f, 10.0f, 1.0f, true}};
+    chain[0].outsideSide = 1;
+    umbreon::renderStrokeChains(fr, scene, opt, chain);
+    auto lumAt = [&](int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * W + x) * 4];
+    };
+    s.check("depth permission: nearer column culled beyond the halo",
+            lumAt(26, 19) > 0.9f && lumAt(26, 21) > 0.9f);
+    s.check("depth permission: the rim halo past the backbone is kept",
+            lumAt(26, 17) < 0.1f);
+    s.check("depth permission: neighbors over background untouched",
+            lumAt(25, 20) < 0.1f && lumAt(27, 20) < 0.1f);
+    s.check("depth permission: farther surface permits",
+            lumAt(36, 20) < 0.1f);
+    s.check("depth permission: inner side of the backbone untouched",
+            lumAt(26, 15) > 0.9f && lumAt(20, 15) > 0.9f);
+
+    // The same chain flagged CONTACT (StrokePoint::contact = 1): the
+    // surface beside a depth-continuous contact contour is the other
+    // section's own surface, so the nearer column is not a culling
+    // occluder and the band stays whole.
+    std::fill(fr.color.begin(), fr.color.end(), 1.0f);
+    chain[0].pts = {{8.5f, 16.5f, 10.0f, 1.0f, true, 1.0f},
+                    {48.5f, 16.5f, 10.0f, 1.0f, true, 1.0f}};
+    umbreon::renderStrokeChains(fr, scene, opt, chain);
+    s.check("depth permission: a contact chain is exempt",
+            lumAt(26, 19) < 0.1f && lumAt(26, 21) < 0.1f);
+    s.check("depth permission: contact exemption keeps the inner side clean",
+            lumAt(26, 15) > 0.9f);
+  }
+
+  // (20l) a contour crossing the whole frame keeps its band at both
+  // borders. A stick spanning the frame with a sphere in front of it: its
+  // top edge runs to the left and right borders around the sphere's rim.
+  // The junction clustering used to compute neighbor corner ids past the
+  // border, which wrap onto the opposite border of the adjacent row, so
+  // two border ends could fuse into one "junction" and be woven into a
+  // single chain bridged across the frame (the edge lost its band and a
+  // line crossed the sphere; reproduced end-to-end by the render test
+  // S12). Guarded here on the synthetic lattice.
+  {
+    const int W = 48, H = 24;
+    umbreon::FrameResult frame;
+    frame.width = W;
+    frame.height = H;
+    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+    frame.objectId.assign(static_cast<std::size_t>(W) * H, 0xFFFFFFFFu);
+    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        const std::size_t i = static_cast<std::size_t>(y) * W + x;
+        if (y >= 12) {  // the stick: section 1, capped cylinder, farther
+          frame.objectId[i] = (1u << 2) | 3u;
+          frame.viewZ[i] = 50.0f;
+        }
+        const int dx = x - 24, dy = y - 12;
+        if (dx * dx + dy * dy <= 64) {  // the sphere in front (step 30 >
+          frame.objectId[i] = (1u << 2) | 1u;  // the 12 px tolerance, so
+          frame.viewZ[i] = 20.0f;              // its rim reaches the edge)
+        }
+      }
+    umbreon::Scene scene;
+    scene.camera.position = {0.0f, 0.0f, 100.0f};
+    scene.camera.direction = {0.0f, 0.0f, -1.0f};
+    scene.camera.up = {0.0f, 1.0f, 0.0f};
+    scene.camera.orthographic = true;
+    scene.camera.height = static_cast<float>(H);  // pixelSize == 1
+    scene.background = {1.0f, 1.0f, 1.0f};
+    scene.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    umbreon::EdgeClassStyle& cs =
+        scene.groupEdgeStyle[1]
+            .cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    cs.enabled = true;
+    cs.width = 4.0f;  // outside band 3.5 px above the top edge (y 8..12)
+    umbreon::RenderOptions opt;
+    opt.width = W;
+    opt.height = H;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+    auto lum = [&](int x, int y) {
+      return frame.color[(static_cast<std::size_t>(y) * W + x) * 4];
+    };
+    s.check("border weave: the top edge keeps its band at both borders",
+            lum(4, 10) < 0.5f && lum(43, 10) < 0.5f);
+    s.check("border weave: no bridge line across the sphere",
+            lum(24, 9) > 0.9f && lum(20, 10) > 0.9f);
+  }
+
   // (20g) junction taper + fold re-centering (draw stage). A flagged end
   // blends the offset band back to the symmetric ribbon over one stroke
   // width, so the ribbon arrives centered where it meets other lines; a
@@ -2495,26 +3012,34 @@ int main() {
             lumAt(obCen, 20, 16) > 0.9f);
   }
 
-  // (20e) per-section align + contact runs stay centered: two touching
+  // (20e) per-section align + the contact run's side: two touching
   // same-depth sections (their shared outer silhouette splits into per-group
   // runs at the touch corners), section 1 overridden to Center, section 2 on
   // the Outside default; the depth-continuous contact boundary between them
-  // (both Outline, contact on -> Silhouette class) must ink BOTH sides even
-  // under Outside alignment (the vote abstains on contact edgels).
+  // (both Outline, contact on -> Silhouette class) is owned by section 1
+  // (identical styles, both Outline -> the smaller id), so it follows
+  // section 1's alignment: centered here, and on the non-owner (east) side
+  // once section 1 is Outside too -- contact edgels vote their outer side
+  // like occlusion edgels, so a contour that is part contact and part
+  // occlusion keeps one band on one side.
   {
     const int W = 48, H = 32;
     umbreon::FrameResult frame;
-    frame.width = W;
-    frame.height = H;
-    frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
-    frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
-    frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
-    for (int y = 8; y < 24; ++y)
-      for (int x = 4; x < 44; ++x) {
-        const std::size_t i = static_cast<std::size_t>(y) * W + x;
-        frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
-        frame.viewZ[i] = 50.0f;
-      }
+    auto makeFrame = [&]() {
+      frame = umbreon::FrameResult{};
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 44; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+    };
+    makeFrame();
     umbreon::Scene scene;
     scene.camera.position = {0.0f, 0.0f, 100.0f};
     scene.camera.direction = {0.0f, 0.0f, -1.0f};
@@ -2558,12 +3083,271 @@ int main() {
             lumAt(35, 3) < 0.1f);
     s.check("align per-section: Outside section leaves its interior clean",
             lumAt(35, 10) > 0.9f);
-    // Contact boundary x = 23.5 (width 6): centered band [20.5, 26.5] inks
-    // both sides at mid-height.
-    s.check("align contact: contact contour inks the owner (west) side",
-            lumAt(21, 16) < 0.1f);
-    s.check("align contact: contact contour inks the far (east) side",
-            lumAt(26, 16) < 0.1f);
+    // Contact boundary x = 23.5 (width 6), owner section 1 (Center): the
+    // band [20.5, 26.5] inks both sides at mid-height.
+    s.check("align contact: Center owner keeps the contact band centered",
+            lumAt(21, 16) < 0.1f && lumAt(26, 16) < 0.1f);
+    // Owner section 1 on Outside: the band lies on the non-owner (east)
+    // side, [23.5, 29.5], and the owner's side stays clean.
+    makeFrame();
+    scene.groupEdgeStyle[1].align = umbreon::StrokeAlign::Outside;
+    umbreon::applyScreenVectorEdges(frame, scene, opt);
+    s.check("align contact: Outside owner lays the contact band outside",
+            lumAt(25, 16) < 0.1f && lumAt(28, 16) < 0.1f);
+    s.check("align contact: Outside owner's own side stays clean",
+            lumAt(21, 16) > 0.9f);
+  }
+
+  // (20m) EDGE GROUPS (Scene::edgeGroupOfGroup): two touching same-depth
+  // sections (groups 1 and 2) mapped into ONE edge group behave as one
+  // section -- no contact line between them even with contact on, and one
+  // style for both (the edge group's entry); mapped into different edge
+  // groups the contact line inks (contact on) and each side keeps its own
+  // style. The frame's objectId AOV is not modified. Same lattice as (20e).
+  {
+    auto build = [&](umbreon::FrameResult& frame) {
+      const int W = 48, H = 32;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 44; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+    };
+    auto sceneFor = [&](std::vector<std::uint16_t> map, std::size_t nStyles,
+                        float redOfStyle1) {
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 100.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = 32.0f;  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      scene.groupEdgeStyle.assign(nStyles, umbreon::EdgeStyle{});
+      for (std::size_t g = 1; g < nStyles; ++g) {
+        umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
+        umbreon::EdgeClassStyle& cs =
+            es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+        cs.enabled = true;
+        cs.width = 4.0f;
+        cs.color[0] = g == 1 ? redOfStyle1 : 0.0f;  // style 1 may be red
+        cs.color[1] = 0.0f;
+        cs.color[2] = 0.0f;
+        es.cls[static_cast<int>(umbreon::EdgeClass::Object)] = cs;
+        es.silhouetteMode = umbreon::SilhouetteMode::Outline;
+      }
+      scene.edgeGroupOfGroup = std::move(map);
+      return scene;
+    };
+    umbreon::RenderOptions opt;
+    opt.width = 48;
+    opt.height = 32;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;
+    opt.strokeEdges.contact = true;
+    auto chan = [](const umbreon::FrameResult& fr, int x, int y, int c) {
+      return fr.color[(static_cast<std::size_t>(y) * 48 + x) * 4 + c];
+    };
+    // Helper semantics.
+    {
+      umbreon::Scene sc;
+      s.check("edge group: empty map is the identity",
+              sc.edgeGroupFor(7) == 7);
+      sc.edgeGroupOfGroup = {0, 3, 3};
+      s.check("edge group: mapped groups resolve, past the table = itself",
+              sc.edgeGroupFor(1) == 3 && sc.edgeGroupFor(2) == 3 &&
+                  sc.edgeGroupFor(5) == 5);
+    }
+    // ONE edge group (both primitive groups -> edge group 1, styled red).
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      const umbreon::Scene sc = sceneFor({0, 1, 1}, 2, 1.0f);
+      umbreon::applyScreenVectorEdges(fr, sc, opt);
+      // No contact line at x = 23.5 (mid-height, both sides).
+      s.check("edge group: no contact line inside one edge group",
+              chan(fr, 22, 16, 1) > 0.9f && chan(fr, 25, 16, 1) > 0.9f);
+      // The shared outer contour inks on both sides, in edge group 1's red.
+      s.check("edge group: the union's outline inks in the group's style",
+              chan(fr, 13, 6, 1) < 0.1f && chan(fr, 13, 6, 0) > 0.9f &&
+                  chan(fr, 35, 6, 1) < 0.1f && chan(fr, 35, 6, 0) > 0.9f);
+      s.check("edge group: the frame's objectId AOV is untouched",
+              fr.objectId[static_cast<std::size_t>(16) * 48 + 30] == (2u << 2));
+    }
+    // TWO edge groups (1 -> 1 red, 2 -> 2 black): contact line, own styles.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      const umbreon::Scene sc = sceneFor({0, 1, 2}, 3, 1.0f);
+      umbreon::applyScreenVectorEdges(fr, sc, opt);
+      // Same width on both sides, so the DARKER (black, east) group owns the
+      // contact contour: its 4 px band lies on the non-owner (west) side of
+      // x = 23.5, in black.
+      s.check("edge group: contact line between two edge groups",
+              chan(fr, 20, 16, 1) < 0.1f && chan(fr, 22, 16, 1) < 0.1f &&
+                  chan(fr, 22, 16, 0) < 0.1f && chan(fr, 25, 16, 1) > 0.9f);
+      s.check("edge group: each side keeps its own style",
+              chan(fr, 13, 6, 0) > 0.9f && chan(fr, 35, 6, 0) < 0.1f);
+    }
+  }
+
+  // (20n) CONTACT OWNER BY STYLE, end to end: the contact contour between two
+  // touching same-depth Full-mode sections (lattice of (20e)) is drawn in the
+  // style of the side with the WIDER line whichever group id it sits on, and
+  // still inks when the smaller-id side draws no edge lines at all (it then
+  // takes the edged side's style). Under the Outside default the band lies
+  // on the NON-owner side of the boundary x = 23.5: a 6 px band owned by the
+  // east section covers x = 18..23, one owned by the west section x = 24..29.
+  {
+    auto build = [&](umbreon::FrameResult& frame) {
+      const int W = 48, H = 32;
+      frame.width = W;
+      frame.height = H;
+      frame.color.assign(static_cast<std::size_t>(W) * H * 4, 1.0f);
+      frame.viewZ.assign(static_cast<std::size_t>(W) * H, 0.0f);
+      frame.objectId.assign(static_cast<std::size_t>(W) * H, kBg);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 44; ++x) {
+          const std::size_t i = static_cast<std::size_t>(y) * W + x;
+          frame.objectId[i] = (x < 24 ? 1u : 2u) << 2;
+          frame.viewZ[i] = 50.0f;
+        }
+    };
+    // Full mode, Silhouette and Object slots alike (as CueMol sets them);
+    // width 0 = the section draws no edge lines.
+    auto sceneFor = [&](float width1, float width2) {
+      umbreon::Scene scene;
+      scene.camera.position = {0.0f, 0.0f, 100.0f};
+      scene.camera.direction = {0.0f, 0.0f, -1.0f};
+      scene.camera.up = {0.0f, 1.0f, 0.0f};
+      scene.camera.orthographic = true;
+      scene.camera.height = 32.0f;  // pixelSize == 1
+      scene.background = {1.0f, 1.0f, 1.0f};
+      scene.groupEdgeStyle.assign(3, umbreon::EdgeStyle{});
+      const float widths[3] = {0.0f, width1, width2};
+      for (int g = 1; g <= 2; ++g) {
+        umbreon::EdgeStyle& es = scene.groupEdgeStyle[g];
+        for (int k : {static_cast<int>(umbreon::EdgeClass::Silhouette),
+                      static_cast<int>(umbreon::EdgeClass::Object)}) {
+          es.cls[k].enabled = widths[g] > 0.0f;
+          es.cls[k].width = widths[g];
+        }
+      }
+      return scene;
+    };
+    umbreon::RenderOptions opt;
+    opt.width = 48;
+    opt.height = 32;
+    opt.supersample = 1;
+    opt.strokeEdges.enable = true;
+    opt.strokeEdges.edgesOnly = true;
+    opt.strokeEdges.contact = true;
+    auto lum = [](const umbreon::FrameResult& fr, int x, int y) {
+      return fr.color[(static_cast<std::size_t>(y) * 48 + x) * 4];
+    };
+    // 6 px band on the west (east section owns) / east (west section owns)
+    // side of x = 23.5, the owner's side clean.
+    auto wideWest = [&](const umbreon::FrameResult& fr) {
+      return lum(fr, 19, 16) < 0.1f && lum(fr, 22, 16) < 0.1f &&
+             lum(fr, 26, 16) > 0.9f;
+    };
+    auto wideEast = [&](const umbreon::FrameResult& fr) {
+      return lum(fr, 25, 16) < 0.1f && lum(fr, 28, 16) < 0.1f &&
+             lum(fr, 21, 16) > 0.9f;
+    };
+    // Wider line on the LARGER (east) id: its 6 px band, laid west.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 6.0f), opt);
+      s.check("contact owner: the wider (larger-id) side styles the contact",
+              wideWest(fr));
+    }
+    // Wider line on the SMALLER (west) id: its 6 px band, laid east.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(6.0f, 2.0f), opt);
+      s.check("contact owner: the wider (smaller-id) side styles the contact",
+              wideEast(fr));
+    }
+    // Control: two 2 px sides (identical -> the west id owns) draw a 2 px
+    // band east of the boundary, x = 24 only.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 2.0f), opt);
+      s.check("contact owner: equal 2 px sides draw a 2 px contact band",
+              lum(fr, 24, 16) < 0.1f && lum(fr, 27, 16) > 0.9f &&
+                  lum(fr, 21, 16) > 0.9f);
+    }
+    // The smaller-id side draws no edge lines: the contact still inks, in
+    // the edged (east) side's 6 px style laid west, and the edge-less
+    // side's own rim stays clean.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      umbreon::applyScreenVectorEdges(fr, sceneFor(0.0f, 6.0f), opt);
+      s.check("contact owner: an edge-less smaller id still gets the contact",
+              wideWest(fr));
+      s.check("contact owner: the edge-less side draws no rim of its own",
+              lum(fr, 13, 6) > 0.9f && lum(fr, 13, 9) > 0.9f);
+    }
+    // (20o) CONTACT BAND OVER A RISING SURFACE: the west section now slopes
+    // toward the viewer away from the boundary (vz = 50 - 3 * (23.5 - x)),
+    // meeting the flat east section (vz 50) at the boundary -- a contact
+    // (the west side's extrapolation predicts the east pixel exactly). The
+    // east section owns (6 px vs 2 px) and its band lies west, over the
+    // rising surface, which 5 px in is 15 units nearer than the contour:
+    // past the depth-gap tolerance (12), so the depth permission used to
+    // notch the band there. A contact band is exempt and stays whole.
+    {
+      umbreon::FrameResult fr;
+      build(fr);
+      for (int y = 8; y < 24; ++y)
+        for (int x = 4; x < 24; ++x)
+          fr.viewZ[static_cast<std::size_t>(y) * 48 + x] =
+              50.0f - 3.0f * (23.5f - static_cast<float>(x));
+      umbreon::applyScreenVectorEdges(fr, sceneFor(2.0f, 6.0f), opt);
+      s.check("contact band: whole over the rising non-owner surface",
+              lum(fr, 18, 16) < 0.1f && lum(fr, 20, 16) < 0.1f &&
+                  lum(fr, 22, 16) < 0.1f);
+      s.check("contact band: still nothing on the owner's side",
+              lum(fr, 26, 16) > 0.9f);
+    }
+  }
+
+  // ---- speck filter predicate (isScreenSpeck) ----------------------------
+  // A short open chain junctioned at both ends is a chopped piece of a
+  // longer boundary and stays; a short chain with a free end, or a short
+  // CLOSED loop whatever its seam degree, is an isolated speckle. Length is
+  // the edgel count; minLen <= 0 disables the filter.
+  {
+    auto chain = [](std::size_t nEdgels, bool closed, int d0, int d1) {
+      ScreenChain c;
+      c.edgeClass.assign(nEdgels, static_cast<std::uint8_t>(CrackClass::DepthGap));
+      c.pts.resize(nEdgels + 1);
+      c.closed = closed;
+      c.deg0 = d0;
+      c.deg1 = d1;
+      return c;
+    };
+    s.check("speck: short open piece between junctions is kept",
+            !umbreon::isScreenSpeck(chain(3, false, 3, 3), 12.0f));
+    s.check("speck: short open spur with a free end is dropped",
+            umbreon::isScreenSpeck(chain(3, false, 3, 1), 12.0f));
+    s.check("speck: short closed loop is dropped even at a junction",
+            umbreon::isScreenSpeck(chain(3, true, 3, 3), 12.0f));
+    s.check("speck: long closed loop is kept",
+            !umbreon::isScreenSpeck(chain(40, true, 2, 2), 12.0f));
+    s.check("speck: filter off keeps a 1-edgel loop",
+            !umbreon::isScreenSpeck(chain(1, true, 3, 3), 0.0f));
   }
 
   return s.report();

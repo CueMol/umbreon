@@ -4,12 +4,93 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "render_test_util.hpp"
 #include "test_util.hpp"
 #include "umbreon.hpp"
+
+// Boundary completeness over a render's own G-buffer (edges-only, supersample
+// 1: objectId / viewZ / color are all at the output size). Every adjacent
+// pixel pair that is foreground on both sides with a view-z step of at least
+// `step`, or foreground against background, must have ink within `reach`
+// px of one of its pixels. Fills the pair counts and the misses.
+struct BoundaryStats {
+  int steps = 0, missSteps = 0, sils = 0, missSils = 0;
+};
+static BoundaryStats boundaryStats(const umbreon::FrameResult& f, float step,
+                                   int reach) {
+  const int W = f.width, H = f.height;
+  auto fg = [&](int x, int y) {
+    return f.objectId[static_cast<std::size_t>(y) * W + x] != 0xFFFFFFFFu;
+  };
+  auto vz = [&](int x, int y) {
+    return f.viewZ[static_cast<std::size_t>(y) * W + x];
+  };
+  auto inkNear = [&](int x, int y) {
+    for (int dy = -reach; dy <= reach; ++dy)
+      for (int dx = -reach; dx <= reach; ++dx) {
+        const int xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        if (f.color[(static_cast<std::size_t>(yy) * W + xx) * 4] < 0.5f)
+          return true;
+      }
+    return false;
+  };
+  BoundaryStats st;
+  auto pair = [&](int x0, int y0, int x1, int y1) {
+    const bool f0 = fg(x0, y0), f1 = fg(x1, y1);
+    if (f0 && f1) {
+      if (std::fabs(vz(x0, y0) - vz(x1, y1)) < step) return;
+      ++st.steps;
+      if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++st.missSteps;
+    } else if (f0 != f1) {
+      ++st.sils;
+      if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++st.missSils;
+    }
+  };
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x) {
+      if (x + 1 < W) pair(x, y, x + 1, y);
+      if (y + 1 < H) pair(x, y, x, y + 1);
+    }
+  return st;
+}
+
+// The outline band must HUG the object: with the outside alignment the ink
+// lies on the background side of every silhouette, so each background pixel
+// 4-adjacent to a foreground pixel has ink somewhere in its 3x3 neighborhood
+// (the half-pixel pad and the smoothed backbone allow one pixel of slack).
+// A band displaced off its object -- a stem clip cutting the outline's own
+// band, a seam or cap artifact -- shows up here as a white gap. Returns the
+// number of such gap pixels (edges-only, supersample 1).
+static int countBandGaps(const umbreon::FrameResult& f) {
+  const int W = f.width, H = f.height;
+  auto fg = [&](int x, int y) {
+    return x >= 0 && y >= 0 && x < W && y < H &&
+           f.objectId[static_cast<std::size_t>(y) * W + x] != 0xFFFFFFFFu;
+  };
+  int gaps = 0;
+  for (int y = 0; y < H; ++y)
+    for (int x = 0; x < W; ++x) {
+      if (fg(x, y)) continue;
+      if (!(fg(x - 1, y) || fg(x + 1, y) || fg(x, y - 1) || fg(x, y + 1)))
+        continue;
+      bool ink = false;
+      for (int dy = -1; dy <= 1 && !ink; ++dy)
+        for (int dx = -1; dx <= 1 && !ink; ++dx) {
+          const int xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          if (f.color[(static_cast<std::size_t>(yy) * W + xx) * 4] < 0.5f)
+            ink = true;
+        }
+      if (!ink) ++gaps;
+    }
+  return gaps;
+}
 
 int main() {
   umbreon::test::Suite s("render_edges");
@@ -417,6 +498,690 @@ int main() {
     s.check("S3 contact on: circle top inked", minR(on, 32, 16, 3) < 0.5f);
     s.check("S3 contact on: circle left inked", minR(on, 16, 32, 3) < 0.5f);
     s.check("S3 contact on: interior stays clean", minR(on, 32, 32, 2) > 0.9f);
+  }
+
+  // ===== S4: the outside-aligned band stops at a nearer surface =====
+  // A far cylinder B (same group) stands 2 px right of the near sphere A's
+  // rim with only background between them. B's silhouette band (6 px, laid
+  // on the background side by the outside alignment) is wider than the gap
+  // and must end at A's rim instead of running onto A: before the
+  // OuterRoomShader it painted a 4 px bite over the nearer sphere -- black,
+  // or with depth fog the far line's fog white. World (0.4, 0), A's rim, is
+  // px 38.4; B's rim (0.525, 0) is px 40.4. A is flat-shaded (flatOutline
+  // material), so every pixel of A must equal A's center color.
+  {
+    auto roomScene = [&](bool fog) {
+      umbreon::Scene sc;
+      sc.camera = makeOrthoCam();  // ortho, frames [-2,2]^2; camera at z=10
+      sc.background = {1, 1, 1};
+      umbreon::Sphere a;  // near, group 1
+      a.center = {-0.6f, 0, 0};
+      a.radius = 1.0f;
+      a.color = pigment;
+      a.group = 1;
+      sc.spheres.push_back(a);
+      umbreon::Cylinder b;  // far, same group, 2 px of background from A
+      b.p0 = {1.125f, -2.5f, -3.0f};
+      b.p1 = {1.125f, 2.5f, -3.0f};
+      b.radius = 0.6f;
+      b.color = {0.9f, 0.9f, 0.3f, 1.0f};
+      b.group = 1;
+      sc.cylinders.push_back(b);
+      if (fog) {  // A (view-z <= 10) unfogged, B (view-z 13) fully white
+        sc.fog.enabled = true;
+        sc.fog.color = {1, 1, 1};
+        sc.fog.start = 10.5f;
+        sc.fog.end = 12.0f;
+      }
+      umbreon::EdgeStyle es;
+      umbreon::EdgeClassStyle& sil =
+          es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+      sil.enabled = true;  // black, opacity 1 (defaults)
+      sil.width = 6.0f;    // wider than the 2 px gap
+      sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+      sc.groupEdgeStyle[1] = es;
+      return sc;
+    };
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.strokeEdges.enable = true;
+    auto px = [](const umbreon::FrameResult& f, int x, int y, int c) {
+      return f.color[(static_cast<std::size_t>(y) * 64 + x) * 4 + c];
+    };
+    // Every pixel of the window matches A's flat color (sampled at A's
+    // center, px (22, 32)): no ink of any color over A's rim interior.
+    auto flatLikeA = [&](const umbreon::FrameResult& f, int x0, int x1,
+                         int y0, int y1) {
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          for (int c = 0; c < 3; ++c)
+            if (std::fabs(px(f, x, y, c) - px(f, 22, 32, c)) > 0.05f)
+              return false;
+      return true;
+    };
+    auto minR = [&](const umbreon::FrameResult& f, int x0, int x1, int y0,
+                    int y1) {
+      float m = 1.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) m = std::min(m, px(f, x, y, 0));
+      return m;
+    };
+    // The probe window is 2-3 px inside A's rim: B's unclamped band reached
+    // px 34.9, A's own band (pad 0.5 px inside the rim) starts near 37.9.
+    const umbreon::FrameResult nf = umbreon::render(roomScene(false), o);
+    s.check("S4 room: A's color is a mid tone (probe is meaningful)",
+            px(nf, 22, 32, 0) > 0.1f && px(nf, 22, 32, 0) < 0.9f);
+    s.check("S4 room: the gap between A and B is inked",
+            minR(nf, 39, 40, 30, 34) < 0.5f);
+    s.check("S4 room: no black band over A's rim interior",
+            flatLikeA(nf, 35, 36, 30, 34));
+    const umbreon::FrameResult ff = umbreon::render(roomScene(true), o);
+    s.check("S4 room: no fog-white band over A's rim interior",
+            flatLikeA(ff, 35, 36, 30, 34));
+    s.check("S4 room: A's own rim is still outlined under fog",
+            minR(ff, 38, 43, 30, 34) < 0.5f);
+  }
+
+  // ===== S5: junction weaving does not join lines at different depths =====
+  // A near capsule C (cylinder + end sphere, one group) over a far cylinder
+  // D, 12 units deeper, whose top silhouette runs 0.05 above C's bottom edge:
+  // C covers D's edge under the stick, and where the sphere's arc meets D's
+  // exposed edge three cracks join -- the sphere's arc (Silhouette, near),
+  // the arc's continuation over D into the stick's bottom edge (DepthGap,
+  // near) and D's top edge against the background (Silhouette, far). In 2D
+  // the far edge continues the near contour almost straight while the arc
+  // arrives curving, so straightness alone wove far + near into one bar: the
+  // bar was split back into two runs at the corner and the re-centering taper
+  // at that split painted a bite of ink INTO the sphere, while the sphere's
+  // own arc, demoted to a stem, was clipped along the near-parallel bar. The
+  // depth gate rejects the far + near pair, so the near contour weaves with
+  // itself and the far edge becomes the stem. Frame: ortho [-2,2]^2 over
+  // 128 px (32 px per unit), camera at z = 10; the sphere is flat-shaded.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Cylinder c;  // near stick, group 1
+    c.p0 = {-3.0f, 0.0f, 0.0f};
+    c.p1 = {0.0f, 0.0f, 0.0f};
+    c.radius = 1.0f;
+    c.color = pigment;
+    c.group = 1;
+    sc.cylinders.push_back(c);
+    umbreon::Sphere cap;  // its rounded end, center px (64, 64), r 32 px
+    cap.center = {0.0f, 0.0f, 0.0f};
+    cap.radius = 1.0f;
+    cap.color = pigment;
+    cap.group = 1;
+    sc.spheres.push_back(cap);
+    umbreon::Cylinder d;  // far stick: top edge y = -0.95, view-z 22
+    d.p0 = {-0.5f, -1.95f, -12.0f};
+    d.p1 = {3.0f, -1.95f, -12.0f};
+    d.radius = 1.0f;
+    d.color = {0.9f, 0.9f, 0.3f, 1.0f};
+    d.group = 1;
+    sc.cylinders.push_back(d);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 6.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 128;
+    o.height = 128;
+    o.strokeEdges.enable = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto px = [&](int x, int y, int c2) {
+      return f.color[(static_cast<std::size_t>(y) * 128 + x) * 4 + c2];
+    };
+    auto minR = [&](int x0, int x1, int y0, int y1) {
+      float m = 1.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) m = std::min(m, px(x, y, 0));
+      return m;
+    };
+    // Every pixel of the window matches the sphere's flat color at its
+    // center (64, 64): no ink inside the sphere.
+    auto flatLikeSphere = [&](int x0, int x1, int y0, int y1) {
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          for (int c2 = 0; c2 < 3; ++c2)
+            if (std::fabs(px(x, y, c2) - px(64, 64, c2)) > 0.05f) return false;
+      return true;
+    };
+    // The junction sits at px (75, 93); the woven far + near bar's taper
+    // used to paint the rows just above it, inside the sphere.
+    s.check("S5 weave: no bite of ink inside the sphere at the junction",
+            flatLikeSphere(70, 79, 88, 90));
+    // The far edge (a stem now) is still outlined, right of the sphere.
+    s.check("S5 weave: far edge stem still outlined",
+            minR(108, 118, 89, 93) < 0.5f);
+    // The near stick's bottom edge stays outlined left of the sphere.
+    s.check("S5 weave: stick bottom edge outlined",
+            minR(20, 26, 97, 99) < 0.5f);
+  }
+
+  // ===== S6: a sphere in front of a bond of its own section keeps its rim =====
+  // Full mode inks every same-section self-occlusion. A sphere over another
+  // SPHERE already did (S1: same primitive kind, the same-id branch marks the
+  // step strong); a sphere over a BOND -- the mixed-kind branch -- classified
+  // as a weak DepthGap that the prune dropped wherever no strong neighbor
+  // supported it, so the rim vanished exactly over the bond. Sphere A at the
+  // origin, cylinder B of the same group 6 units behind it crossing the view
+  // below A's center; A's lower rim over B (world (0, -0.7), px (32, 43))
+  // must be inked, as its upper rim over the background is.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();  // ortho, frames [-2,2]^2
+    sc.background = {1, 1, 1};
+    umbreon::Sphere a;
+    a.center = {0.0f, 0.0f, 0.0f};
+    a.radius = 0.7f;
+    a.color = pigment;
+    a.group = 1;
+    sc.spheres.push_back(a);
+    umbreon::Cylinder b;  // same section, 6 units behind, closed bond
+    b.p0 = {-3.0f, -1.0f, -6.0f};
+    b.p1 = {3.0f, -1.0f, -6.0f};
+    b.radius = 0.6f;
+    b.color = {0.9f, 0.9f, 0.3f, 1.0f};
+    b.group = 1;
+    sc.cylinders.push_back(b);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 2.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto minR = [&](int cx, int cy, int r) {
+      float m = 1.0f;
+      for (int y = cy - r; y <= cy + r; ++y)
+        for (int x = cx - r; x <= cx + r; ++x)
+          m = std::min(m, f.color[(static_cast<std::size_t>(y) * 64 + x) * 4]);
+      return m;
+    };
+    s.check("S6 rim over bond: upper rim over background inked",
+            minR(32, 21, 2) < 0.5f);
+    s.check("S6 rim over bond: lower rim over the bond inked",
+            minR(32, 43, 2) < 0.5f);
+  }
+
+  // ===== S7: a sphere's rim over another sphere of its own section =====
+  // Same primitive kind, same section: the same-id branch. Sphere B sits
+  // behind A, offset so that under A's right rim B's surface faces only ~40
+  // degrees away from the rim normal: the mesh step-dominance gate fails at
+  // A's grazing rim, the normal rescue does not reach its threshold, and the
+  // step dropped to weak and was pruned -- A's rim vanished exactly over B.
+  // Analytic same-id steps are strong at the full threshold now. Frame:
+  // ortho [-2,2]^2 over 128 px; A's right rim, world (0.5, 0), is px (80, 64).
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Sphere a;
+    a.center = {-0.5f, 0.0f, 0.0f};
+    a.radius = 1.0f;
+    a.color = pigment;
+    a.group = 1;
+    sc.spheres.push_back(a);
+    umbreon::Sphere b;  // behind A, its disc reaching past A's right rim
+    b.center = {-0.3f, 0.0f, -3.0f};
+    b.radius = 1.2f;
+    b.color = {0.9f, 0.9f, 0.3f, 1.0f};
+    b.group = 1;
+    sc.spheres.push_back(b);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 2.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 128;
+    o.height = 128;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto minR = [&](int x0, int x1, int y0, int y1) {
+      float m = 1.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          m = std::min(m, f.color[(static_cast<std::size_t>(y) * 128 + x) * 4]);
+      return m;
+    };
+    s.check("S7 rim over sphere: A's rim over B inked",
+            minR(78, 83, 58, 70) < 0.5f);
+    s.check("S7 rim over sphere: A's rim over the background inked",
+            minR(13, 18, 58, 70) < 0.5f);
+  }
+
+  // ===== S9: a lone sphere's closed outline has no seam =====
+  // The silhouette of an isolated sphere traces as ONE closed loop. The draw
+  // stage used to draw it as an open polyline: with the outside alignment
+  // and round caps the two cap fans at the seam bulged into the sphere (a
+  // two-humped bump on the inner edge of every capsule of a dashed line);
+  // with butt caps the seam showed a wedge crack. Sample two rings around the
+  // rim wherever the trace happened to start: one px inside the rim stays
+  // blank, the band outside is inked all around. Ortho [-2,2]^2 over 128 px:
+  // rim radius 32 px around (64, 64).
+  for (bool round : {true, false}) {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Sphere a;
+    a.center = {0.0f, 0.0f, 0.0f};
+    a.radius = 1.0f;
+    a.color = pigment;
+    a.group = 1;
+    sc.spheres.push_back(a);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 12.0f;  // outside: 11.5 px out, 0.5 px pad in
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 128;
+    o.height = 128;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = round;
+    o.strokeEdges.roundJoin = round;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto ring = [&](float r, float& mn, float& mx) {
+      mn = 1.0f;
+      mx = 0.0f;
+      for (int a = 0; a < 360; a += 2) {
+        const float th = 3.14159265f * static_cast<float>(a) / 180.0f;
+        const int x = static_cast<int>(std::lround(64.0f + r * std::cos(th)));
+        const int y = static_cast<int>(std::lround(64.0f + r * std::sin(th)));
+        const float l = f.color[(static_cast<std::size_t>(y) * 128 + x) * 4];
+        mn = std::min(mn, l);
+        mx = std::max(mx, l);
+      }
+    };
+    float mn, mx;
+    ring(30.0f, mn, mx);
+    s.check(std::string("S9 closed outline (") + (round ? "round" : "butt") +
+                "): two px inside the rim stays blank all around",
+            mn > 0.9f);
+    ring(38.0f, mn, mx);
+    s.check(std::string("S9 closed outline (") + (round ? "round" : "butt") +
+                "): the band is inked all around (no seam crack)",
+            mx < 0.5f);
+    s.check_eq(std::string("S9 closed outline (") + (round ? "round" : "butt") +
+                   "): the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S10: a small capsule behind a bigger one, junctioned twice =====
+  // The rear capsule's silhouette T's into the front capsule's outline at
+  // its top and bottom edges. Each stem end is clipped against the plane
+  // through the bar there; the upper bar is the front capsule's CURVED cap
+  // rim, and the rear band, wrapping around the small capsule to its lower
+  // edge, lay beyond that plane inside the clip's influence radius: a white
+  // gap opened between the front band and the rear band (the tRNA dashed
+  // line). The cull is confined to the stem's own extension zone now.
+  // Ortho [-2,2]^2 over 256 px (64 px/unit): front capsule A, axis x = -0.5
+  // from y -0.6 to 0.6, r 0.5 (right edge x = 0 -> px 128, its 31.5 px
+  // outside band ending near px 159); rear capsule B at z -2, axis y = 0.65
+  // from x -0.3 to 1.2, r 0.35 (lower edge y = 0.3 -> px row 109, band
+  // below it). The gap was the white triangle at x 159-163, y 109-113.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    auto capsule = [&](float x0, float y0, float x1, float y1, float z,
+                       float r) {
+      umbreon::Cylinder c;
+      c.p0 = {x0, y0, z};
+      c.p1 = {x1, y1, z};
+      c.radius = r;
+      c.color = pigment;
+      c.open = false;
+      c.group = 1;
+      sc.cylinders.push_back(c);
+      for (int e = 0; e < 2; ++e) {
+        umbreon::Sphere sp;
+        sp.center = e == 0 ? c.p0 : c.p1;
+        sp.radius = r;
+        sp.color = pigment;
+        sp.group = 1;
+        sc.spheres.push_back(sp);
+      }
+    };
+    capsule(-0.5f, -0.6f, -0.5f, 0.6f, 0.0f, 0.5f);
+    capsule(-0.3f, 0.65f, 1.2f, 0.65f, -2.0f, 0.35f);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 32.0f;  // half 16: clip radius 66 px reaches the lower band
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto maxR = [&](int x0, int x1, int y0, int y1) {
+      float m = 0.0f;
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+          m = std::max(m, f.color[(static_cast<std::size_t>(y) * 256 + x) * 4]);
+      return m;
+    };
+    // The rear band just below B's lower edge, right of A's band: inked
+    // without a gap (the old cull left a white triangle here).
+    s.check("S10 twice-junctioned stem: rear band below B is unbroken",
+            maxR(159, 163, 109, 112) < 0.5f);
+    // Further along the same band, and the band above B's upper edge
+    // (the other clip), stay inked as before.
+    s.check("S10 twice-junctioned stem: rear band below B inked further on",
+            maxR(164, 200, 110, 114) < 0.5f);
+    s.check("S10 twice-junctioned stem: rear band above B is unbroken",
+            maxR(160, 200, 52, 56) < 0.5f);
+    s.check_eq("S10 twice-junctioned stem: the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S8: completeness over a random ball-and-stick cluster =====
+  // Every genuine occlusion step between primitives of ONE section must be
+  // inked in Full mode. From the render's own G-buffer take each adjacent
+  // pixel pair that is foreground on both sides with a view-z step of at
+  // least 0.5 (2.7x the depth-gap tolerance at this frame: 12 px * 4/256),
+  // or foreground against background, and require ink within 3 px of it.
+  // A deterministic LCG cluster of 24 atoms and the bonds between close
+  // pairs, all one group; this is the check that caught the same-id rim
+  // defect above, kept as a broad regression net for the classifier.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();  // ortho [-2,2]^2
+    sc.background = {1, 1, 1};
+    std::uint32_t seed = 12345u;
+    auto rnd = [&]() {
+      seed = seed * 1664525u + 1013904223u;
+      return static_cast<float>(seed >> 8) / 16777216.0f;
+    };
+    std::vector<umbreon::Vec3> atoms;
+    for (int i = 0; i < 24; ++i)
+      atoms.push_back({rnd() * 3.0f - 1.5f, rnd() * 3.0f - 1.5f,
+                       rnd() * 3.0f - 1.5f});
+    for (const umbreon::Vec3& c : atoms) {
+      umbreon::Sphere sp;
+      sp.center = c;
+      sp.radius = 0.28f;
+      sp.color = pigment;
+      sp.group = 1;
+      sc.spheres.push_back(sp);
+    }
+    for (std::size_t i = 0; i < atoms.size(); ++i)
+      for (std::size_t j = i + 1; j < atoms.size(); ++j) {
+        const float dx = atoms[i].x - atoms[j].x, dy = atoms[i].y - atoms[j].y,
+                    dz = atoms[i].z - atoms[j].z;
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1.2f) continue;
+        umbreon::Cylinder cy;  // closed bond, as CueMol hands them over
+        cy.p0 = atoms[i];
+        cy.p1 = atoms[j];
+        cy.radius = 0.12f;
+        cy.color = pigment;
+        cy.group = 1;
+        sc.cylinders.push_back(cy);
+      }
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 2.0f;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;  // the G-buffer is then at the output resolution
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    const int W = 256, H = 256;
+    const float step = 0.5f;
+    auto fg = [&](int x, int y) {
+      return f.objectId[static_cast<std::size_t>(y) * W + x] != 0xFFFFFFFFu;
+    };
+    auto vz = [&](int x, int y) {
+      return f.viewZ[static_cast<std::size_t>(y) * W + x];
+    };
+    auto inkNear = [&](int x, int y) {
+      for (int dy = -3; dy <= 3; ++dy)
+        for (int dx = -3; dx <= 3; ++dx) {
+          const int xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+          if (f.color[(static_cast<std::size_t>(yy) * W + xx) * 4] < 0.5f)
+            return true;
+        }
+      return false;
+    };
+    int steps = 0, missSteps = 0, sils = 0, missSils = 0;
+    auto pair = [&](int x0, int y0, int x1, int y1) {
+      const bool f0 = fg(x0, y0), f1 = fg(x1, y1);
+      if (f0 && f1) {
+        if (std::fabs(vz(x0, y0) - vz(x1, y1)) < step) return;
+        ++steps;
+        if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++missSteps;
+      } else if (f0 != f1) {
+        ++sils;
+        if (!inkNear(x0, y0) && !inkNear(x1, y1)) ++missSils;
+      }
+    };
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        if (x + 1 < W) pair(x, y, x + 1, y);
+        if (y + 1 < H) pair(x, y, x, y + 1);
+      }
+    s.check("S8 completeness: the cluster has occlusion steps to check",
+            steps > 200 && sils > 500);
+    s.check("S8 completeness: every occlusion step is inked",
+            missSteps == 0);
+    s.check("S8 completeness: every silhouette is inked", missSils == 0);
+    if (missSteps != 0 || missSils != 0)
+      std::printf("  S8: steps %d (missing %d), silhouettes %d (missing %d)\n",
+                  steps, missSteps, sils, missSils);
+    s.check_eq("S8 completeness: the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S11: thick outlines hug oblique capsules (sliver junctions) =====
+  // A closed bond with its cap spheres, seen obliquely at high zoom: along
+  // the tangent circle where the cap sphere meets the bond's side, the two
+  // coincident surfaces alternate pixel by pixel at the rim. Their steps
+  // read as huge mixed-kind depth gaps parallel to the outline; they
+  // fragmented the outline into junction clusters whose stem clips (planes
+  // along the outline) cut the outline's own band off the object over a
+  // whole clip radius -- a white gap between the band and the bond. The
+  // silhouette clearance now kills such slivers and a clip along the stem
+  // is ignored. Two capsules, the far one crossing behind, thick round
+  // strokes as CueMol draws them; every boundary must be inked and the band
+  // must hug every silhouette pixel.
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();  // ortho [-2,2]^2
+    sc.background = {1, 1, 1};
+    auto capsule = [&](umbreon::Vec3 p0, umbreon::Vec3 p1, float r) {
+      umbreon::Cylinder c;
+      c.p0 = p0;
+      c.p1 = p1;
+      c.radius = r;
+      c.color = pigment;
+      c.open = false;
+      c.group = 1;
+      sc.cylinders.push_back(c);
+      for (const umbreon::Vec3& e : {p0, p1}) {
+        umbreon::Sphere sp;
+        sp.center = e;
+        sp.radius = r;
+        sp.color = pigment;
+        sp.group = 1;
+        sc.spheres.push_back(sp);
+      }
+    };
+    capsule({-1.2f, -1.4f, -0.8f}, {0.6f, 0.6f, 0.9f}, 0.7f);
+    capsule({-1.8f, 1.2f, -3.0f}, {1.9f, 0.2f, -2.5f}, 0.5f);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 24.0f;
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    const BoundaryStats st = boundaryStats(f, 0.5f, 3);
+    s.check("S11 oblique capsules: boundaries to check",
+            st.steps > 50 && st.sils > 300);
+    s.check_eq("S11 oblique capsules: every occlusion step is inked",
+               st.missSteps, 0);
+    s.check_eq("S11 oblique capsules: every silhouette is inked",
+               st.missSils, 0);
+    s.check_eq("S11 oblique capsules: the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S12: a sphere's rim ending on the outline of the stick behind =====
+  // A sphere in front of a stick: its rim over the stick (a depth-gap
+  // contour) ends where it meets the stick's top outline and the sphere's
+  // own silhouette. That free end used to be clipped against a line fitted
+  // through the cracks ahead of it -- the fit straddled the two outlines,
+  // and the plane cut the sphere's silhouette band diagonally off the
+  // sphere (the very chain the rim belongs to). Ends carry no clip geometry
+  // now; the band must hug the sphere all the way round. Ortho [-2,2]^2 over
+  // 256 px: stick axis y = -0.4, r 0.5 (top edge px row 122); sphere center
+  // (0.3, 0.2, 1) r 0.8 (right rim x 1.1 -> px 198 at the stick's top).
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Cylinder c;
+    c.p0 = {-2.5f, -0.4f, 0.0f};
+    c.p1 = {2.5f, -0.4f, 0.0f};
+    c.radius = 0.5f;
+    c.color = pigment;
+    c.open = false;
+    c.group = 1;
+    sc.cylinders.push_back(c);
+    umbreon::Sphere sp;
+    sp.center = {0.3f, 0.2f, 1.0f};
+    sp.radius = 0.8f;
+    sp.color = {0.9f, 0.2f, 0.2f, 1.0f};
+    sp.group = 1;
+    sc.spheres.push_back(sp);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 24.0f;
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto lum = [&](int x, int y) {
+      return f.color[(static_cast<std::size_t>(y) * 256 + x) * 4];
+    };
+    // The sphere's silhouette band just above the junction with the stick's
+    // top edge (10 px up the rim), 7 and 17 px outside the rim.
+    s.check("S12 rim end: sphere silhouette band intact above the junction",
+            lum(205, 112) < 0.5f && lum(215, 112) < 0.5f);
+    const BoundaryStats st = boundaryStats(f, 0.5f, 3);
+    s.check_eq("S12 rim end: every occlusion step is inked", st.missSteps, 0);
+    s.check_eq("S12 rim end: every silhouette is inked", st.missSils, 0);
+    s.check_eq("S12 rim end: the band hugs every silhouette",
+               countBandGaps(f), 0);
+  }
+
+  // ===== S13: contours leaving the frame run off-screen =====
+  // A chain ending on the image border is extended off-screen until the
+  // band's outer edge leaves the frame too. A stick whose top edge crosses
+  // the bottom border at a shallow angle (upper edge y = -1.7 - 0.3 x, px
+  // row 198 + 0.3 col, exiting at col 192): its band above the edge stays
+  // visible along the bottom rows until col ~243, where the old rounded end
+  // stopped at col ~200. A sphere leaving through the top border joins for
+  // the hug check. Ortho [-2,2]^2 over 256 px, width 16 (15.5 px outside).
+  {
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.background = {1, 1, 1};
+    umbreon::Cylinder c;
+    c.p0 = {-2.5f, -1.25f, 0.0f};
+    c.p1 = {1.8f, -2.54f, 0.0f};
+    c.radius = 0.3f;
+    c.color = pigment;
+    c.open = false;
+    c.group = 1;
+    sc.cylinders.push_back(c);
+    umbreon::Sphere sp;
+    sp.center = {-1.2f, 1.7f, 0.5f};
+    sp.radius = 0.8f;
+    sp.color = pigment;
+    sp.group = 1;
+    sc.spheres.push_back(sp);
+    umbreon::EdgeStyle es;
+    umbreon::EdgeClassStyle& sil =
+        es.cls[static_cast<int>(umbreon::EdgeClass::Silhouette)];
+    sil.enabled = true;
+    sil.width = 16.0f;
+    es.cls[static_cast<int>(umbreon::EdgeClass::Disconnected)] = sil;
+    sc.groupEdgeStyle.assign(2, umbreon::EdgeStyle{});
+    sc.groupEdgeStyle[1] = es;
+    umbreon::RenderOptions o;
+    o.width = 256;
+    o.height = 256;
+    o.supersample = 1;
+    o.strokeEdges.enable = true;
+    o.strokeEdges.edgesOnly = true;
+    o.strokeEdges.roundCap = true;
+    o.strokeEdges.roundJoin = true;
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    auto lum = [&](int x, int y) {
+      return f.color[(static_cast<std::size_t>(y) * 256 + x) * 4];
+    };
+    s.check("S13 border exit: the band runs on along the bottom rows",
+            lum(225, 253) < 0.5f && lum(232, 254) < 0.5f);
+    s.check("S13 border exit: nothing above the band's outer edge",
+            lum(225, 240) > 0.9f);
+    const BoundaryStats st = boundaryStats(f, 0.5f, 3);
+    s.check_eq("S13 border exit: every silhouette is inked", st.missSils, 0);
+    s.check_eq("S13 border exit: the band hugs every silhouette",
+               countBandGaps(f), 0);
   }
 
   return s.report();

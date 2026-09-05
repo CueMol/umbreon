@@ -30,7 +30,12 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      sections (`objectId >> 2`), across a genuine depth step. A boundary
      between mixed primitive kinds of ONE section (a sphere, cylinder and
      mesh mixed in one CueMol section) instead inks as `DepthGap` under the
-     silhouette toggle -- it is a self-occlusion, not a border. Either way a
+     silhouette toggle -- it is a self-occlusion, not a border -- and that
+     crack is always STRONG: the contact veto already demanded the full
+     depth-gap threshold from both one-sided extrapolations, and an id
+     change has no grazing-rim profile to suppress, so a sphere's rim over
+     a bond of its own section never depends on chain support (left weak,
+     it was pruned wherever no strong neighbor backed it). Either way a
      depth-CONTINUOUS contact (a bond embedded in an atom) is never inked,
      so connecting primitives join seamlessly,
    - `DepthGap`   -- same id, view-z discontinuity. Slope-adaptive: both
@@ -38,7 +43,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      grazing surface is predicted by at least one side; a pure slope change
      -- a facet kink -- is predicted exactly by the steep side), plus
      non-maximum suppression across the crack so the boundary stays one
-     crack thin. DepthGap cracks carry a STRONG/weak hysteresis tier: strong
+     crack thin. DepthGap cracks carry a STRONG/weak hysteresis tier. Between
+     two ANALYTIC primitives (kind bits != mesh: two spheres or two bonds of
+     one section) the step is strong at the full `--stroke-depth-gap`
+     threshold, like the mixed-kind step: a convex sphere or cylinder cannot
+     self-occlude, so the step is another primitive occluding, and the near
+     one's rim is always grazing at the crack, so the mesh gates below would
+     fail by construction (a sphere's rim over a sphere or bond of its own
+     section used to drop to weak and vanish). On a MESH id strong
      needs the full `--stroke-depth-gap` threshold AND step dominance -- the
      raw step must exceed `stepDominanceK` (default 250) times the near
      side's wide-baseline recession slope. This kills the facet-horizon
@@ -49,9 +61,14 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      contour (ratios >= ~500) stays strong even where the surface it sits
      on is steep. Weak cracks (above `weakGapRatio` = 0.5 of the threshold)
      trace normally but survive only with chain support (Stage 2.5). The
-     background-clearance kill applies to weak cracks only, and spares a
-     crack whose along-crack strip reaches the background (the terminal
-     piece of a contour landing on the outline). A section whose
+     background-clearance kill applies to weak cracks, to same-section
+     mixed-kind steps and to analytic same-id steps (none of which has a
+     dominance gate), and spares a crack whose along-crack strip reaches
+     the background (the terminal piece of a contour landing on the
+     outline). Besides a tube's own rim signal it removes the one-pixel
+     slivers of a coincident surface -- a bond's cap sphere alternating
+     with the bond's side along their tangent circle at the rim -- whose
+     huge steps fragmented the outline into junction clusters. A section whose
      `SilhouetteMode` is `Outline` suppresses BOTH DepthGap variants at
      classification (see "Outline mode" below),
    - `Crease`     -- shading-normal fold (off by default, `--stroke-crease`).
@@ -102,15 +119,29 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
    OCCLUSION-contour run -- Silhouette, ObjectId and DepthGap alike --
    additionally votes its outer (non-owner, i.e. occluded or background)
    side over the per-edgel side bits (a majority absorbs owner jitter and
-   relabels; contact edgels abstain -- no outer side exists at a
-   depth-continuous contact, so an all-contact run stays centered) and the
+   relabels; contact edgels vote like the rest, their owner being the
+   dominant-line side, so a cap ring that is part occlusion and part
+   intersection keeps one band on one side) and the
    draw stage shifts the resolved width to that side: the full width inks
    on the FAR side of the contour (a <= 0.5 final px inner pad remains,
    covering the sub-pixel halo where Chaikin/RDP pull the backbone off the
    crack line and keeping the round-cap fan radius nonzero), so a thick
    line never thins the object whose contour it draws -- the ink lands on
-   the background or on the occluded surface behind instead. Crease runs (a
-   surface fold, no occluded side) always draw centered.
+   the background or on the occluded surface behind instead. A round cap
+   on the offset band is the semicircle over the band's end cross-section,
+   centered on the band's midline (a fan around the backbone whose radius
+   lerped from the outer width to the pad drew a spiral that curled into a
+   hook at every free end of an occlusion contour). It never lands
+   on a surface in FRONT of the contour: per resampled vertex the draw stage
+   walks the outer normal over the hi-res view-z AOV and clamps the outer
+   half-width at the first pixel nearer than the vertex by more than the
+   depth-gap tolerance (`OuterRoomShader`), so where the background gap
+   beside a far object's silhouette is thinner than the line, the band
+   stops at the foreground object instead of running across the gap onto
+   it (with depth fog that bite carried the far line's fog color). The walk
+   skips the first final pixel, so the owner's own grazing rim inside the
+   smoothing halo never counts. Crease runs (a surface fold, no occluded
+   side) always draw centered.
    JUNCTION HANDLING. The TOPOLOGY mechanisms below (notch bridge,
    draw-span coalescing, junction weaving and re-wiring) run for EVERY
    alignment: center and outside share one extracted line structure --
@@ -172,7 +203,23 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      corners within a 2 px Chebyshev radius are clustered (union-find) and
      pairing runs once per cluster over all its ends. Pairs joining ends
      on different corners keep both endpoints and insert a short bridge
-     segment carrying the previous edgel's attributes.
+     segment carrying the previous edgel's attributes. A pair is DEPTH
+     GATED: the owner view-z at the two ends must be continuous by the same
+     slope-clamp test that splits a run. A far object's silhouette running
+     on into a near object's contour where the two are nearly tangent is
+     straight in 2D but not one physical line; woven, it would be split
+     back into two runs at that corner (a re-centering bite into the near
+     object) while the near object's own continuing contour, demoted to a
+     stem, got clipped along the near-parallel far line for a whole clip
+     radius (a gap in the outline with a stub beyond it). Rejecting the
+     pair lets the same-depth continuation weave and leaves the far line
+     as the stem. Among the admissible pairs, a pair of ends with the SAME
+     (class, group) key is preferred over a straighter pair of different
+     keys: two ends of one physical line share the key, two lines meeting
+     at the corner usually do not, and a contact ring woven onto a ribbon's
+     fold line (the straighter turn) left the ring split across two chains
+     with a lump where its halves met. Ends without a same-key partner
+     still pair by direction alone.
      Each junction records the woven bar's local direction, band side and
      style key (BarInfo, registered for every corner of the cluster) for
      the stem handling below.
@@ -188,36 +235,77 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      chain is split at the junction and the stem is spliced onto the
      continuing half; the remaining half becomes a stem. Iterated to a
      fixed point so long chains resolve every junction.
-   - STEM CLIP: a chain end still sitting at a junction after the weaving
-     is a true stem. It keeps its offset band, is EXTENDED into the
-     junction (the met line's drawn backbone can sit a few px off its
-     lattice cracks after smoothing) and its ink is CULLED beyond the bar's
-     far ink boundary (a half-plane + influence-radius test at
-     rasterization time): the stem terminates flush against the bar with no
-     spur, no gap, and no re-centering (a taper visibly necked
-     shallow-angle junctions). A degree-1 free end left short of a line by
-     the weak-tail trims / bg-clearance kills is connected the same way:
-     the crack-field probe (a 45-degree cone, ~half-width reach) fits the
-     met line through the foreign cracks it finds, estimates its outer-band
-     side from their owner bits, extends the stem to touch it and clips
-     beyond it. A free end with nothing in reach (a genuine cusp tail)
-     keeps its crisp offset tip. Clipped ends draw no round cap.
-   - TAPER fallback: a run end whose neighbor run has a different voted
-     side, a deep fold at a run boundary, a junction with no woven bar
-     (e.g. a Y of three stems) and the closed-chain seam wrap still blend
-     the offset back to the symmetric ribbon over one stroke width
-     (AlignRecenterShader); tapered ends draw no round cap either.
+   - STEM end: a chain end still sitting at a junction after the weaving
+     is a true stem. It keeps its offset band and is EXTENDED into the
+     junction by the pad (the met line's drawn backbone can sit a few px
+     off its lattice cracks after smoothing); it draws no round cap. A
+     degree-1 free end left short of a line by the weak-tail trims /
+     bg-clearance kills is connected the same way: the crack-field probe
+     (a 45-degree cone, ~half-width reach) fits the met line through the
+     foreign cracks it finds and extends the stem to touch it. A free end
+     with nothing in reach (a genuine cusp tail) keeps its crisp offset
+     tip. What the overshoot beyond the met line may paint is NOT decided
+     by any clip geometry but by the DEPTH PERMISSION below; the earlier
+     clip planes, influence discs, extension zones and parallel guards were
+     local approximations of the met line that failed whenever the stem's
+     own body (a capsule's silhouette junctioned at both ends), a curved
+     bar (a small cap rim) or a mis-fitted line (a free end whose probe cone
+     straddled two outlines) came back inside them, cutting the band away
+     from its own object.
+   - DEPTH PERMISSION (`DepthPermit`, rasterization): an offset band paints
+     its outer part only where the hi-res plane view-z AOV holds nothing
+     nearer than the stroke's own depth (per resampled vertex, from the
+     run's own edgels) by more than the classifier's depth-gap tolerance.
+     Background and farther surfaces always permit; the inner pad and the
+     first final pixel past the backbone (the owner's own grazing rim) are
+     never tested. CONTACT vertices (a resampled vertex whose run edgels
+     are mostly depth-continuous contact edgels, `StrokePoint::contact`)
+     are exempt, in the permission and in the OuterRoomShader alike: the
+     surface beside an intersection contour is the other section's own
+     surface passing through the contour's depth, rising toward the viewer
+     on one stretch and falling on the next, so testing it notched the
+     band into lumps and gaps around every cap plunging into a ribbon; a
+     nearer third object there occludes both surfaces and draws its own
+     silhouette instead. This is the per-pixel form of the OuterRoomShader's
+     vertex walk (which still shapes the vector width) and the one rule
+     behind every end: a stem's overshoot lands on the object the bar
+     outlines and is culled there, a band beside a thin background gap
+     stops at the object past the gap, and nothing can ever cut a band
+     away from its own object.
+   - IMAGE-BORDER end: a chain ending within a pixel of the frame is
+     extended off-screen along its end direction far enough that the
+     band's outer edge leaves the frame too (a contour crossing the border
+     at a shallow angle otherwise stopped with a visible cap while its
+     object ran on to the border); no probe, taper or cap.
+   - TAPER fallback: a run end whose SAME-KEY neighbor run has a different
+     voted side (the band switching sides along one contour), a deep fold
+     at a run boundary, a junction with no woven bar (e.g. a Y of three
+     stems) and the closed-chain seam wrap still blend the offset back to
+     the symmetric ribbon over one stroke width (AlignRecenterShader);
+     tapered ends draw no round cap either. A run boundary where a
+     DIFFERENT class/group takes over the lattice curve (a ribbon's fold
+     running into the contact ring of the atom embedded in it) is a line
+     change, not a side flip: the band stops flush there, since tapering
+     both ends of a short contact piece between two thin fold runs necked
+     it into a spindle.
+   - CLOSED loop: a run covering a whole closed loop (an isolated sphere or
+     capsule outline, `StrokeChainInput::closed`) is joined across its seam
+     like an interior corner (miter, or square ends plus the outer arc fan
+     under round joins) and draws no end caps there. An open-polyline seam
+     left a wedge crack (butt) or, with the outside alignment, two cap fans
+     whose outer-to-pad radius lerp bulged into the object.
 
 ## Flags
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--stroke-depth-gap <f>` | 12 | DepthGap threshold, world units per lateral pixel (a slope cutoff). Facet kinks of a coarse mesh measure a few px; genuine self-occlusion steps measure hundreds -- lower it only for very subtle depth steps |
+| `--stroke-depth-gap <f>` | 12 | DepthGap threshold, world units per lateral pixel (a slope cutoff). Facet kinks of a coarse mesh measure a few px; genuine self-occlusion steps measure hundreds -- lower it only for very subtle depth steps. Floored at `4e-5 * viewZ` (`ScreenClassifyParams::depthTolRel`), the analytic intersectors' relative precision: at an extreme zoom the lateral threshold would otherwise drop below the float jitter of two coincident surfaces (a capsule cap on its atom sphere) and classify it as a field of one-pixel steps |
 | `--stroke-screen-simplify <f>` | 0.4 | Douglas-Peucker tolerance, FINAL px |
 | `--stroke-screen-smooth <int>` | 2 | Chaikin iterations |
-| `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all) |
+| `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all). A short open chain junctioned at both ends is a chopped piece of a longer boundary and stays; a short closed loop (a one-pixel island) drops whatever its seam corner's degree |
 | `--stroke-outline <on|off>` | off | outer-contour silhouette mode (`SilhouetteMode::Outline`) as the global default for every section |
 | `--stroke-contact <on|off>` | off | ink depth-continuous CROSS-section contact/intersection contours (the curve where one section plunges into another) |
+| `--edge-group <ID=N>` | (each section its own) | put a section into EDGE GROUP N (repeatable): the stroke pass treats one edge group as one section -- no contact line inside it, a contact line between groups (under `--stroke-contact`), same-group depth steps as self-occlusion, one style per group (the `--edge` override of a member section; last wins). `Scene::edgeGroupOfGroup`; the transparency group stays per section |
 | `--stroke-align <outside\|center>` | outside | ink placement as the global default for every section: `outside` puts the full stroke width on the occluded/background side of every occlusion contour (Silhouette / ObjectId / DepthGap) so the nearer object never thins; `center` splits it across the line (legacy). Contact and Crease lines always center. Per section via `--edge ID=sil:align=...` (`EdgeStyle::align`, the OWNER section's setting governs) |
 
 The nature toggles keep their meaning under the screen source:
@@ -230,11 +318,19 @@ contact/intersection contours -- a stick penetrating a ribbon of another
 section, a bond embedded in an atom -- are suppressed by default,
 thresholded by `--stroke-depth-gap`. `--stroke-contact on` revives the
 CROSS-section contact contour (same-section contact stays seamless), in Full
-and Outline modes alike. Because the near side is numerical noise at a
-contact, its owner is deterministic instead: a single Outline-mode side owns
-(and draws its `sil` style as `Silhouette`); otherwise the smaller group id
-owns (its `obj` style under `--stroke-border`, `sil` when both sides are
-Outline). Same-section steps ink as depth-gap lines under
+and Outline modes alike. The contour classifies as `Silhouette` when either
+side is an Outline-mode section (it belongs to that section's outline), else
+as `ObjectId` under `--stroke-border`. Because the near side is numerical
+noise at a contact, its OWNER (whose style in that class draws it) is decided
+from the two sections' styles instead, so it never depends on scene order:
+the side whose line is WIDER owns, then the DARKER one (luminance faded by
+opacity), then a single Outline-mode side, then the smaller group id, which
+is reached only when both styles are identical and the choice is invisible.
+A section that draws no line in that class always loses, so a stick with
+edge lines plunging into an edge-less ribbon still gets its intersection
+contour, and the contour continues the dominant outline (a thick ball-and-
+stick line stays thick where it enters a thin-lined ribbon). Same-section
+steps ink as depth-gap lines under
 `--stroke-silhouette`. One exception to the border gate: a cross-section
 boundary whose NEAR side is an Outline-mode section promotes to `Silhouette`
 and follows `--stroke-silhouette` instead (see Outline mode below). The
@@ -263,8 +359,9 @@ silhouette toggle extracts for that section:
   side, the nearer section's `ObjectId` boundary (under `--stroke-border`)
   applies unchanged; hidden lines are still never drawn, and depth-continuous
   contact boundaries stay suppressed in every mode unless `--stroke-contact
-  on` inks them (an Outline side then owns the contact contour, closing the
-  group's outline where it plunges into another section's surface).
+  on` inks them (the contour then classifies as `Silhouette`, closing the
+  group's outline where it plunges into another section's surface, in the
+  style of whichever side has the more visible line -- see above).
 
 `--stroke-outline on` sets Outline as the default for every section; a
 per-section `--edge` spec sets it with the `mode` attribute, e.g.
@@ -299,6 +396,19 @@ raw viewZ/objectId planes. `UMBREON_SCREEN_EDGE_DUMP_ROI=x0,y0,x1,y1`
 restricts the PPM/CSV to a hi-res pixel rectangle. The hysteresis internals
 (`weakGapRatio`, `stepDominanceK`) are `ScreenClassifyParams` struct
 defaults, deliberately not CLI flags.
+
+## Edge groups
+
+A "section" above is a primitive group (`objectId >> 2`, one CueMol
+renderer). `Scene::edgeGroupOfGroup` maps primitive groups onto EDGE GROUPS
+(`--edge-group ID=N`; CueMol's `egroup` renderer property), and the screen
+source runs on the objectId AOV with the groups replaced by their edge
+groups: everything that says "section" here -- the contact veto, the
+same-section DepthGap vs cross-section ObjectId classification, the Outline
+union, the per-section style (`groupEdgeStyle` is indexed by edge group),
+the contact owner -- then means the edge group. The frame's own AOV is not
+modified, so transparency post-blending and every other consumer keep the
+primitive group. An empty map is the identity.
 
 ## Limitations
 

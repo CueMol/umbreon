@@ -357,9 +357,67 @@ int main() {
     s.check("looks: manga flat-fills with a dot screen",
             m.base == umbreon::HatchBase::Albedo && !m.layers.empty() &&
                 m.layers[0].kind == umbreon::LayerKind::Dot);
+    s.check("looks: manga does not posterize the fill", m.albedoQuantize == 0);
     umbreon::HatchOptions bad;
     s.check("looks: unknown name rejected",
             !umbreon::applyHatchLook(bad, "no-such-look"));
+  }
+
+  // --- 10c. The manga flat fill is each section's EXACT color. Two spheres
+  // in neighbouring saturated hues -- hsb(0, 0.3, 1) and hsb(29, 0.3, 1),
+  // the CueMol helix pair that rendered identical -- keep their own colors
+  // between the marks. The tone is pinned to paper (default recipe, ambient
+  // 1: no wrap / rim, so the tone clamps to 1 everywhere) so the canvas
+  // carries nothing but the fill. The per-channel posterize that merged
+  // them (both land on (1, 0.75, 0.75) at 4 steps) stays an explicit
+  // opt-in through the spec key.
+  {
+    const float leftC[3] = {1.0f, 0.702f, 0.702f};
+    const float rightC[3] = {1.0f, 0.847f, 0.702f};
+    umbreon::Scene sc;
+    sc.camera = makeOrthoCam();
+    sc.lights.push_back(makeKeyLight());
+    sc.background = {1.0f, 1.0f, 1.0f};
+    sc.assumedGamma = 1.0f;  // CueMol passes display values straight through
+    umbreon::Sphere left;
+    left.center = {-1.0f, 0.0f, 0.0f};
+    left.radius = 0.8f;
+    left.color = {leftC[0], leftC[1], leftC[2], 1.0f};
+    umbreon::Sphere right = left;
+    right.center = {1.0f, 0.0f, 0.0f};
+    right.color = {rightC[0], rightC[1], rightC[2], 1.0f};
+    sc.spheres.push_back(left);
+    sc.spheres.push_back(right);
+    umbreon::RenderOptions o;
+    o.width = 64;
+    o.height = 64;
+    o.hatch.enable = true;
+    umbreon::applyHatchLook(o.hatch, "manga");
+    o.hatch.tone = umbreon::ToneRecipe{};
+    o.hatch.tone.ambient = 1.0f;  // paper everywhere: no ink, fill only
+    // World (-1, 0) / (1, 0) map to pixels (16, 32) / (48, 32) under the
+    // height-4 ortho frame; both sphere centers, well inside the 0.8 radius.
+    auto pixelIs = [](const umbreon::FrameResult& f, int x, int y,
+                      const float c[3]) {
+      const std::size_t p = (static_cast<std::size_t>(y) * 64 + x) * 4;
+      for (int k = 0; k < 3; ++k)
+        if (std::fabs(f.color[p + k] - c[k]) > 1e-3f) return false;
+      return true;
+    };
+    const umbreon::FrameResult f = umbreon::render(sc, o);
+    s.check("manga fill: left section shows its exact color",
+            pixelIs(f, 16, 32, leftC));
+    s.check("manga fill: right section shows its exact color",
+            pixelIs(f, 48, 32, rightC));
+    // The opt-in posterize still works (and is what merged the pair).
+    std::string err;
+    s.check("manga fill: albedoquant accepted as an opt-in",
+            umbreon::applyHatchSpec(o.hatch, "ink: albedoquant=4",
+                                    umbreon::kHatchSpecInk, &err));
+    const float merged[3] = {1.0f, 0.75f, 0.75f};
+    const umbreon::FrameResult q = umbreon::render(sc, o);
+    s.check("manga fill: albedoquant=4 posterizes both sections alike",
+            pixelIs(q, 16, 32, merged) && pixelIs(q, 48, 32, merged));
   }
 
   // --- 11. Lp area normalization: at the same tone, the mean coverage of a
