@@ -270,16 +270,16 @@ int main() {
     // The weights are built per SAMPLE from the veils that cover it:
     //   T = prod(1 - a_i) is the background's weight, and 1 - T is shared out
     //   in a_i proportion. Never negative, whatever the alphas.
-    // Two differences from LayerWeights show up in the expected values: the
-    // composite happens in LINEAR light (before the gamma encode), so these
-    // checks compare f.color directly instead of through dsp(), and a sample
-    // covered by ONE veil reproduces that veil's alpha exactly.
+    // The domain is the same display-encoded one LayerWeights blends in, so a
+    // sample covered by ONE veil is IDENTICAL to the layer blend (its weights
+    // are already 1 - a and a there); only samples under two or more veils
+    // differ, and there the background keeps its transmittance instead of
+    // going negative.
 
     // P1: distinct alphas whose sum exceeds 1, overlapping over opaque
     // geometry -- the case LayerWeights composites with a negative background
     // weight (1 - 1.1 = -0.1), which inverts what the veils cover. Per pixel
-    // the background keeps its transmittance 0.4 * 0.5 = 0.2 and nothing
-    // inverts.
+    // the background keeps 0.4 * 0.5 = 0.2 and nothing inverts.
     {
       umbreon::Mesh m;
       addQuad(m, {0.5f, 0.5f, 0.5f, 1.0f}, 0.0f, 0);  // opaque grey, behind
@@ -291,23 +291,22 @@ int main() {
       o.width = 5; o.height = 5;
       o.groupBlendMode = static_cast<int>(umbreon::GroupBlendMode::PerPixel);
       umbreon::FrameResult f = umbreon::render(sc, o);
-      const float T = 0.4f * 0.5f;             // background transmittance
+      const float T = 0.4f * 0.5f;                 // background transmittance
       const float k = (1.0f - T) / (0.6f + 0.5f);  // share of 1 - T per alpha
-      const float expR = T * 0.5f;
-      const float expG = T * 0.5f + k * 0.6f;  // veil 1's own pass shows green
-      const float expB = T * 0.5f + k * 0.5f;  // veil 2's own pass shows blue
+      const float bg = T * dsp(0.5f);
       s.check("P1 overlap keeps the background R",
-              approx(f.color[kCenterRgba + 0], expR, 1e-4f));
+              approx(dsp(f.color[kCenterRgba + 0]), bg, 1e-4f));
       s.check("P1 overlap keeps the background G",
-              approx(f.color[kCenterRgba + 1], expG, 1e-4f));
+              approx(dsp(f.color[kCenterRgba + 1]), bg + k * 0.6f, 1e-4f));
       s.check("P1 overlap keeps the background B",
-              approx(f.color[kCenterRgba + 2], expB, 1e-4f));
+              approx(dsp(f.color[kCenterRgba + 2]), bg + k * 0.5f, 1e-4f));
       s.check("P1 overlap alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
     }
 
-    // P2: where the veils do NOT overlap, each keeps the alpha it was given --
-    // no rescaling, no approximation: out = (1 - a) * B + a * S per sample.
-    // Veil 1 (a = 0.6) covers the left half, veil 2 (a = 0.5) the right.
+    // P2: where the veils do NOT overlap, each keeps the alpha it was given and
+    // the frame is IDENTICAL to the layer blend -- no rescaling, no
+    // approximation, no domain change: out = (1 - a) * B + a * S per sample,
+    // which is what LayerWeights computes for a lone veil too.
     {
       // A quad spanning x0..x1 (the shared addQuad spans the whole frame).
       auto addHalfQuad = [](umbreon::Mesh& m, Vec4 color, float z,
@@ -323,26 +322,41 @@ int main() {
         m.triGroupId.push_back(g);
         m.triGroupId.push_back(g);
       };
-      umbreon::Mesh m;
-      addQuad(m, {0.5f, 0.5f, 0.5f, 1.0f}, 0.0f, 0);            // opaque grey
-      addHalfQuad(m, {0, 1, 0, 1.0f}, 0.5f, 1, -2.0f, 0.0f);    // left,  0.6
-      addHalfQuad(m, {0, 0, 1, 1.0f}, 0.5f, 2, 0.0f, 2.0f);     // right, 0.5
-      umbreon::Scene sc =
-          sceneOfBlend(std::move(m), {0, 0, 0}, {{1, 0.6f}, {2, 0.5f}});
-      umbreon::RenderOptions o;
-      o.width = 5; o.height = 5;
-      o.groupBlendMode = static_cast<int>(umbreon::GroupBlendMode::PerPixel);
-      umbreon::FrameResult f = umbreon::render(sc, o);
+      umbreon::Mesh base;
+      addQuad(base, {0.5f, 0.5f, 0.5f, 1.0f}, 0.0f, 0);          // opaque grey
+      // A gap around x = 0: sharing the edge would put both veils on the
+      // middle column's sample, i.e. an overlap, which is the one thing this
+      // check must not contain.
+      addHalfQuad(base, {0, 1, 0, 1.0f}, 0.5f, 1, -2.0f, -0.5f);  // left,  0.6
+      addHalfQuad(base, {0, 0, 1, 1.0f}, 0.5f, 2, 0.5f, 2.0f);    // right, 0.5
+      auto renderMode = [&](umbreon::GroupBlendMode mode) {
+        umbreon::Scene sc = sceneOfBlend(umbreon::Mesh(base), {0, 0, 0},
+                                         {{1, 0.6f}, {2, 0.5f}});
+        umbreon::RenderOptions o;
+        o.width = 5; o.height = 5;
+        o.groupBlendMode = static_cast<int>(mode);
+        return umbreon::render(sc, o);
+      };
+      const umbreon::FrameResult f =
+          renderMode(umbreon::GroupBlendMode::PerPixel);
       const std::size_t left = (2 * 5 + 1) * 4;
       const std::size_t right = (2 * 5 + 3) * 4;
+      const float dspGrey = dsp(0.5f);
       s.check("P2 single veil keeps alpha 0.6 (bg)",
-              approx(f.color[left + 0], 0.4f * 0.5f, 1e-4f));
+              approx(dsp(f.color[left + 0]), 0.4f * dspGrey, 1e-4f));
       s.check("P2 single veil keeps alpha 0.6 (veil)",
-              approx(f.color[left + 1], 0.4f * 0.5f + 0.6f, 1e-4f));
+              approx(dsp(f.color[left + 1]), 0.4f * dspGrey + 0.6f, 1e-4f));
       s.check("P2 single veil keeps alpha 0.5 (bg)",
-              approx(f.color[right + 0], 0.5f * 0.5f, 1e-4f));
+              approx(dsp(f.color[right + 0]), 0.5f * dspGrey, 1e-4f));
       s.check("P2 single veil keeps alpha 0.5 (veil)",
-              approx(f.color[right + 2], 0.5f * 0.5f + 0.5f, 1e-4f));
+              approx(dsp(f.color[right + 2]), 0.5f * dspGrey + 0.5f, 1e-4f));
+      // ... and no pixel of a no-overlap frame differs from the layer blend.
+      const umbreon::FrameResult g =
+          renderMode(umbreon::GroupBlendMode::LayerWeights);
+      bool same = f.color.size() == g.color.size();
+      for (std::size_t q = 0; same && q < f.color.size(); ++q)
+        same = approx(f.color[q], g.color[q], 1e-4f);
+      s.check("P2 no overlap matches the layer blend everywhere", same);
     }
 
     // P3: veils and EDGE GROUPS are independent partitions of the same group

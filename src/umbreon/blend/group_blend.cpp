@@ -294,7 +294,11 @@ FrameResult blendPerPixel(const std::vector<Veil>& veils,
       static_cast<std::size_t>(bg.frame.width) * bg.frame.height;
   const bool doAlbedo = bg.frame.albedo.size() >= nsamp * 3;
   // Per sample: the veils' weighted color, the sum of their alphas, and the
-  // transmittance product that becomes the background's own weight.
+  // transmittance product that becomes the background's own weight. RGB is
+  // accumulated in the sRGB-ENCODED domain and alpha linearly, exactly as
+  // LayerWeights does, so a sample covered by ONE veil comes out identical to
+  // the layer blend (the weights are already the same there: 1 - a and a).
+  // Only samples under two or more veils differ, which is the point.
   std::vector<float> acc(nsamp * 4, 0.0f);
   std::vector<float> accAlbedo(doAlbedo ? nsamp * 3 : 0, 0.0f);
   std::vector<float> sumA(nsamp, 0.0f);
@@ -310,8 +314,9 @@ FrameResult blendPerPixel(const std::vector<Veil>& veils,
                             f.frame.height);
     for (std::size_t p = 0; p < n; ++p) {
       if (!veilCovers(bg.frame.depth[p], f.frame.depth[p])) continue;
-      for (int c = 0; c < 4; ++c)
-        acc[p * 4 + c] += v.alpha * f.frame.color[p * 4 + c];
+      for (int c = 0; c < 3; ++c)
+        acc[p * 4 + c] += v.alpha * srgbEncodeF(f.frame.color[p * 4 + c]);
+      acc[p * 4 + 3] += v.alpha * f.frame.color[p * 4 + 3];
       if (doAlbedo && f.frame.albedo.size() >= n * 3)
         for (int c = 0; c < 3; ++c)
           accAlbedo[p * 3 + c] += v.alpha * f.frame.albedo[p * 3 + c];
@@ -320,16 +325,26 @@ FrameResult blendPerPixel(const std::vector<Veil>& veils,
     }
   }
 
-  // out = T * background + (the veils' color, re-weighted to share 1 - T).
-  // Linear light, before the downsample and the gamma encode -- unlike
-  // LayerWeights, which mixes the display-encoded finished frames.
+  // out = T * background + (the veils' color, re-weighted to share 1 - T),
+  // in the display-encoded domain for RGB (LayerWeights' domain, so a lone
+  // veil matches it) and mapped back to FrameResult's linear-ish domain the
+  // same way, so the image writer's own encode reproduces the blend. The
+  // weights are non-negative and sum to 1, so the result cannot leave the
+  // range its inputs occupied. This runs BEFORE the box-downsample, which is
+  // what makes the coverage per sample rather than per output pixel.
   for (std::size_t p = 0; p < nsamp; ++p) {
     const float s = sumA[p];
     if (!(s > 0.0f)) continue;  // no veil covers this sample: background stands
     const float T = trans[p];
     const float k = (1.0f - T) / s;
-    for (int c = 0; c < 4; ++c)
-      bg.frame.color[p * 4 + c] = T * bg.frame.color[p * 4 + c] + k * acc[p * 4 + c];
+    for (int c = 0; c < 3; ++c) {
+      const float enc =
+          T * srgbEncodeF(bg.frame.color[p * 4 + c]) + k * acc[p * 4 + c];
+      bg.frame.color[p * 4 + c] = srgbDecodeF(enc);
+    }
+    bg.frame.color[p * 4 + 3] =
+        T * bg.frame.color[p * 4 + 3] + k * acc[p * 4 + 3];
+    // The albedo guide is a linear quantity, so it blends linearly.
     if (doAlbedo)
       for (int c = 0; c < 3; ++c)
         bg.frame.albedo[p * 3 + c] =

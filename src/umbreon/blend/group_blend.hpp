@@ -24,18 +24,19 @@
 //     under 1, inverted (dark reads brighter than light) where it does not.
 //
 //   PerPixel
-//     Combine at the RAW stage (supersampled, linear light, before the
-//     box-downsample) with weights built from the veils that actually cover each
-//     sample:
+//     Combine at the RAW stage (supersampled, before the box-downsample) with
+//     weights built from the veils that actually cover each sample:
 //         T = prod_{i in K} (1 - a_i)          background weight
 //         w_i = a_i * (1 - T) / sum_{j in K} a_j
 //     Non-negative and summing to 1 for any alphas and any K, so nothing
-//     inverts; a sample under a single veil reproduces LayerWeights exactly
-//     (T = 1 - a, w = a), and the difference is confined to overlaps, where the
-//     background keeps its physical transmittance instead of going negative.
-//     Coverage is read from the pass depths, which is why the composite has to
-//     happen at the raw stage: after the downsample a pixel is a mix of samples
-//     and "which veils cover it" is no longer a yes/no per surface.
+//     inverts. The domain is the same display-encoded one LayerWeights blends
+//     in, and for |K| = 1 the weights are already its weights, so a sample
+//     under a single veil comes out IDENTICAL: the difference is confined to
+//     overlaps, where the background keeps its physical transmittance instead
+//     of going negative. Coverage is read from the pass depths, which is why
+//     the composite has to happen at the raw stage: after the downsample a
+//     pixel is a mix of samples and "which veils cover it" is no longer a
+//     yes/no per surface.
 #pragma once
 
 #include <cstdint>
