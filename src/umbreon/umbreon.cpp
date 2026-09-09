@@ -1,6 +1,7 @@
 #include "umbreon.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <exception>
 #include <mutex>
@@ -128,13 +129,16 @@ void logPt1Timing(const RenderOptions& opt, const Pt1Timing& t,
 // form of CueMol's blendpng postprocess (blendpng.cpp: solvebeta + the
 // front-to-back lerp chain reduce exactly to):
 //   out = (1 - sum_i a_i) * render(scene minus every blend group)
-//       + sum_i a_i * render(scene with group i kept, other blend groups hidden)
+//       + sum_i a_i * render(scene with veil i kept, other veils hidden)
+// where i runs over VEILS, not over Scene::groupBlend entries: entries sharing
+// an alpha are one veil (see the bucketing in renderImpl), so two sections at
+// 0.6 contribute 0.6 once, not 1.2.
 // Each pass runs the FULL pipeline -- direct shading, GI, fog, edges, denoise,
 // gamma -- on its own geometry subset, and the blend combines the final
 // display-encoded framebuffers, exactly like blendpng combines the finished
 // PNG layers. GI therefore sees each pass's geometry consistently: the
-// background pass gathers without the blend groups occluding, each layer pass
-// with its group fully opaque.
+// background pass gathers without the blend groups occluding, each veil pass
+// with its own groups fully opaque.
 // Shared body for both public render() overloads. `progress` is null for the
 // zero-overhead 2-arg path; when non-null it is threaded into renderFrame (phase
 // / row progress + cooperative cancel) and marked Done on a successful finish.
@@ -147,13 +151,38 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
     return f;
   }
 
-  float sumA = 0.0f;
+  // Blend groups sharing an alpha are ONE veil, rendered in ONE pass with all
+  // of them visible. The host emits a group per section (its group id is also
+  // the edge-group / hatch / objectId key, so it cannot merge them itself), and
+  // counting one veil twice is what pushes the weights past 1: two sections at
+  // 0.6 asked for 1.2 and left the background at -0.2. The legacy blendpng
+  // driver bucketed its blend table the same way.
+  //
+  // First appearance (the host's section order) fixes both the pass order and
+  // the veil's alpha; kAlphaEps only absorbs round-trip noise, so the bucketing
+  // is deterministic for a given input. A NaN alpha buckets per entry and still
+  // poisons `sumA`, exactly as it does without the bucketing.
+  struct Layer {
+    float alpha;
+    std::vector<uint16_t> groups;
+  };
+  constexpr float kAlphaEps = 1.0e-4f;
+  std::vector<Layer> layers;
   uint16_t maxGroup = 0;
   for (const GroupBlend& gb : scene.groupBlend) {
-    sumA += gb.alpha;
     maxGroup = std::max(maxGroup, gb.group);
+    auto it = std::find_if(layers.begin(), layers.end(), [&](const Layer& l) {
+      return std::fabs(l.alpha - gb.alpha) <= kAlphaEps;
+    });
+    if (it == layers.end())
+      layers.push_back(Layer{gb.alpha, {gb.group}});
+    else
+      it->groups.push_back(gb.group);
   }
-  // The background weight is NEGATIVE once the blend weights sum to more than
+
+  float sumA = 0.0f;
+  for (const Layer& l : layers) sumA += l.alpha;
+  // The background weight is NEGATIVE once the veil weights sum to more than
   // 1, and that is the correct value rather than an error to clamp away. What
   // makes the blend faithful is that the pass weights sum to exactly 1:
   // geometry outside every blend group appears identically in all passes, so
@@ -162,7 +191,21 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
   // frame by that factor and clips opaque geometry to white. blendpng, whose
   // closed form this is, lets the same coefficient go negative (its
   // solvebeta + front-to-back lerp chain produces 1 - sum(beta) directly).
+  //
+  // The sum runs over VEILS, so it can only pass 1 with two or more DISTINCT
+  // alphas. Where such veils overlap, the per-pixel background coefficient
+  // (1 - the alphas covering that pixel) is the negative one, and it inverts
+  // whatever lies behind them: dark ink comes out brighter than its lit
+  // surroundings. Say so once, since nothing downstream can tell.
   const float bgW = 1.0f - sumA;
+  if (bgW < -kAlphaEps) {
+    logMessage(LogLevel::Warning,
+               "group-alpha veil weights sum to %.3f (> 1): background weight "
+               "%.3f. Where the veils overlap, geometry behind them is "
+               "composited with a negative weight and can invert or clip; "
+               "lower a section alpha to keep the sum <= 1.",
+               double(sumA), double(bgW));
+  }
 
   std::vector<uint8_t> hideAll(static_cast<std::size_t>(maxGroup) + 1, 0);
   for (const GroupBlend& gb : scene.groupBlend) hideAll[gb.group] = 1;
@@ -172,9 +215,10 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
   // FrameResult.color; alpha is stored linear in the PNG and blends as-is).
   // The LAST rendered pass is kept whole as the carrier frame so the
   // non-color outputs (edge G-buffer, GI guides, depth) come from a real
-  // render -- the final layer pass, which for the common single-group case is
-  // the full scene. Zero-weight passes still render: skipping them would
-  // silently change which pass carries those.
+  // render -- the final veil pass, which for the common single-alpha case
+  // shows every translucent group, i.e. the full scene. Zero-weight passes
+  // still render: skipping them would silently change which pass carries
+  // those.
   // One device for every pass of this render (see SharedDevice).
   const SharedDevice device;
 
@@ -189,21 +233,28 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
   std::vector<float> acc;
   double seconds = 0.0;
   Pt1Timing timing{};
-  // Each blend group renders as its own full-pipeline pass; report progress as
-  // one slot per pass (background + one per group) so fraction() spans them.
-  const std::uint64_t passCount = 1 + scene.groupBlend.size();
+  // Each veil renders as its own full-pipeline pass; report progress as one
+  // slot per pass (background + one per veil) so fraction() spans them.
+  const std::uint64_t passCount = 1 + layers.size();
   std::uint64_t passIndex = 0;
   bool cancelled = false;
-  auto addPass = [&](const std::vector<uint8_t>& hide, float w) {
+  auto addPass = [&](const std::vector<uint8_t>& hide, float w,
+                     std::size_t nGroups) {
     if (cancelled) return;  // a prior pass was cancelled: stop the chain
     if (progress) progress->beginPass(passIndex, passCount);
     ++passIndex;
     // Group-alpha transparency costs one FULL render per blend group plus one
     // for the background, which is the single most surprising thing about a
     // transparent scene's render time. Say so, per pass.
-    logMessage(LogLevel::Info, "group-alpha pass %llu/%llu (weight %.3f)",
-               static_cast<unsigned long long>(passIndex),
-               static_cast<unsigned long long>(passCount), w);
+    if (nGroups == 0)
+      logMessage(LogLevel::Info, "group-alpha pass %llu/%llu (weight %.3f)",
+                 static_cast<unsigned long long>(passIndex),
+                 static_cast<unsigned long long>(passCount), w);
+    else
+      logMessage(LogLevel::Info,
+                 "group-alpha pass %llu/%llu (weight %.3f, %zu group(s))",
+                 static_cast<unsigned long long>(passIndex),
+                 static_cast<unsigned long long>(passCount), w, nGroups);
     applyHideGroups(scene, hide, work, workMeshDropped);
     FrameResult f = renderFrame(work, opt, progress, device.get());
     if (f.cancelled) cancelled = true;
@@ -225,11 +276,20 @@ static FrameResult renderImpl(const Scene& scene, const RenderOptions& opt,
     carrier = std::move(f);
   };
 
-  addPass(hideAll, bgW);
-  for (const GroupBlend& gb : scene.groupBlend) {
+  // One line for the whole table: this is where the veil/weight contract is
+  // reported, so a host does not have to restate (or recompute) it.
+  logMessage(LogLevel::Info,
+             "group-alpha: %zu blend group(s) -> %zu veil(s), sum %.3f, "
+             "bg weight %.3f",
+             scene.groupBlend.size(), layers.size(), double(sumA),
+             double(bgW));
+
+  addPass(hideAll, bgW, 0);
+  for (const Layer& l : layers) {
     std::vector<uint8_t> hide = hideAll;
-    hide[gb.group] = 0;  // keep this group (opaque), hide the other layers
-    addPass(hide, gb.alpha);
+    // Keep every group of this veil (opaque), hide the other veils.
+    for (const uint16_t g : l.groups) hide[g] = 0;
+    addPass(hide, l.alpha, l.groups.size());
   }
 
   // Map the blended sRGB values back to FrameResult's linear-ish domain so

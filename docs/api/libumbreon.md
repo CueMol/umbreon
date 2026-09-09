@@ -276,7 +276,7 @@ RenderTask renderAsync(Scene scene, RenderOptions opt);  // 即 return（scene/o
 | `background` | `Vec3` | 背景色（linear） |
 | `fog` | `Fog` | POV fog（§4.5）。`fog.enabled` で有効化 |
 | `assumedGamma` | `float` | POV `assumed_gamma`。出力 RGB を `pow(c, gamma)`（既定 1.0 = 無変換） |
-| `groupBlend` | `vector<GroupBlend>` | section の group alpha。`render()` がグループ毎の不透明パスを追加レンダリングし、最終（表示エンコード後の）フレームを blendpng と等価にブレンドする: `out = (1-Σaᵢ)·render(全 blend グループ除外) + Σaᵢ·render(グループ i のみ表示)` |
+| `groupBlend` | `vector<GroupBlend>` | section の group alpha。**同じ alpha の entry は 1 つの veil** としてまとめられ（許容 1e-4、最初に現れた entry が veil の alpha とパス順を決める）、`render()` が veil 毎の不透明パスを追加レンダリングして、最終（表示エンコード後の）フレームを blendpng と等価にブレンドする: `out = (1-Σaᵢ)·render(全 blend グループ除外) + Σaᵢ·render(veil i のみ表示)`（i は **veil** を走る）。パス数 = **異なる alpha の数** + 1。異なる alpha の総和が 1 を超えると背景係数は負になり（意図された値）、veil が**重なった**画素ではその負係数が背後を反転させる（暗いインクが周囲より明るくなる）。`render()` はこの場合に警告を 1 行出す |
 
 > 補足: `Scene::ambientIntensity` と `Scene::aoDistance` は `render()` からは**直接読まれない**
 > （CLI/ビルダ用のキャリア）。CueMol からは環境光は `ambientColor`、AO 半径は
@@ -616,7 +616,10 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
     `index` 省略で de-indexed スープも可）。
   - ball-and-stick / VdW → `Scene::spheres` / `Scene::cylinders`。
   - シルエットエッジ → `Cylinder{open=true}`（連結される）。bond/wireframe → `Cylinder{open=false}`。
-  - section ごとの透過 → `triGroupId` / `Sphere::group` / `Cylinder::group` ＋ `groupBlend`（group alpha は blendpng 等価の多重パス blend として実現。パス数 = blend グループ数 + 1）。
+  - section ごとの透過 → `triGroupId` / `Sphere::group` / `Cylinder::group` ＋ `groupBlend`（group alpha は blendpng 等価の多重パス blend として実現。パス数 = **異なる alpha の数** + 1 で、同じ alpha の section は 1 veil にまとまる）。
+  - group id は **section の identity** であって grouping ではない。透過 veil は alpha で、edge group は
+    `edgeGroupOfGroup` で、同じ id 集合を**独立に**分割する（同一 veil の 2 section を別 edge group にでき、
+    1 つの edge group が別 veil の section をまたぐこともできる）。
 - 画像は `render()` → `srgbEncode8()` → CueMol の画像バッファ／保存へ。
 - カメラ・ライトは CueMol のビュー設定から `Camera` / `DistantLight` に変換する
   （POV-Ray 出力と一致させたい場合の換算は `docs/`／既存の POV パスを参照）。

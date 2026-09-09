@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -208,18 +209,20 @@ int main() {
     // T9: weights summing to MORE than 1 must not scale the rest of the frame.
     // Geometry outside every blend group appears identically in every pass, so
     // it survives only while the weights sum to exactly 1 -- which needs the
-    // background weight 1 - sum to go NEGATIVE (-0.9 here), exactly as
+    // background weight 1 - sum to go NEGATIVE (-0.85 here), exactly as
     // blendpng's solvebeta + lerp chain produces it. Clamping that weight to 0
-    // would leave the total at 1.9 and scale the grey quad by it, clipping to
+    // would leave the total at 1.85 and scale the grey quad by it, clipping to
     // white. The grey quad sits in FRONT of both blend groups, so every pass
     // shows it at the center and the expected value is the quad itself.
+    // The alphas must DIFFER to reach a sum above 1 at all: equal alphas are
+    // one veil counted once (T10).
     {
       umbreon::Mesh m;
       addQuad(m, {0, 0, 1, 1.0f}, 0.0f, 1);           // blend group 1 (behind)
       addQuad(m, {0, 1, 0, 1.0f}, 0.5f, 2);           // blend group 2 (behind)
       addQuad(m, {0.5f, 0.5f, 0.5f, 1.0f}, 1.0f, 0);  // opaque grey, no group
       umbreon::Scene sc =
-          sceneOfBlend(std::move(m), {0, 0, 0}, {{1, 0.95f}, {2, 0.95f}});
+          sceneOfBlend(std::move(m), {0, 0, 0}, {{1, 0.95f}, {2, 0.9f}});
       umbreon::RenderOptions o; o.width = 5; o.height = 5;
       umbreon::FrameResult f = umbreon::render(sc, o);
       const float dspGrey = dsp(0.5f);
@@ -227,6 +230,40 @@ int main() {
       s.check("T9 sum>1 keeps opaque G", approx(dsp(f.color[kCenterRgba + 1]), dspGrey, 1e-4f));
       s.check("T9 sum>1 keeps opaque B", approx(dsp(f.color[kCenterRgba + 2]), dspGrey, 1e-4f));
       s.check("T9 sum>1 alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
+
+    // T10: blend entries sharing an alpha are ONE veil, so a pixel they both
+    // cover keeps a non-negative background weight. Two sections at 0.6 asked
+    // for 1.2 and left the background at -0.2, and a negative background
+    // coefficient INVERTS what the veils cover (dark ink comes out brighter
+    // than its lit surroundings). Merged, they are one 0.6 veil whose pass
+    // shows the frontmost of its groups, and the background keeps 0.4.
+    // The grey quad sits BEHIND both veils -- the arrangement T9 avoids, which
+    // is why the defect escaped it.
+    {
+      umbreon::Mesh base;
+      addQuad(base, {0.5f, 0.5f, 0.5f, 1.0f}, 0.0f, 0);  // opaque grey, behind
+      addQuad(base, {0, 1, 0, 1.0f}, 0.5f, 1);           // veil group 1 (green)
+      addQuad(base, {0, 0, 1, 1.0f}, 1.0f, 2);           // veil group 2 (blue, front)
+      const float dspGrey = dsp(0.5f);
+      const float expRG = 0.4f * dspGrey;         // grey through one 0.6 veil
+      const float expB = 0.4f * dspGrey + 0.6f;   // + the blue veil itself
+      // Exactly equal, then just inside the 1e-4 bucketing tolerance (a scene
+      // round trip must not split one veil in two).
+      const float second[2] = {0.6f, 0.6f + 5.0e-5f};
+      const char* tag[2] = {"T10 equal alpha", "T10 near-equal alpha"};
+      for (int i = 0; i < 2; ++i) {
+        umbreon::Scene sc = sceneOfBlend(umbreon::Mesh(base), {0, 0, 0},
+                                         {{1, 0.6f}, {2, second[i]}});
+        umbreon::RenderOptions o; o.width = 5; o.height = 5;
+        umbreon::FrameResult f = umbreon::render(sc, o);
+        s.check(std::string(tag[i]) + " is one veil R",
+                approx(dsp(f.color[kCenterRgba + 0]), expRG, 1e-4f));
+        s.check(std::string(tag[i]) + " is one veil G",
+                approx(dsp(f.color[kCenterRgba + 1]), expRG, 1e-4f));
+        s.check(std::string(tag[i]) + " is one veil B",
+                approx(dsp(f.color[kCenterRgba + 2]), expB, 1e-4f));
+      }
     }
 
     // ===== Fragment alpha (intrinsic per-color opacity): front-to-back "over",
