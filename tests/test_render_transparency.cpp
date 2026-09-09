@@ -266,6 +266,130 @@ int main() {
       }
     }
 
+    // ===== PerPixel group blend (RenderOptions::groupBlendMode = 1) =====
+    // The weights are built per SAMPLE from the veils that cover it:
+    //   T = prod(1 - a_i) is the background's weight, and 1 - T is shared out
+    //   in a_i proportion. Never negative, whatever the alphas.
+    // Two differences from LayerWeights show up in the expected values: the
+    // composite happens in LINEAR light (before the gamma encode), so these
+    // checks compare f.color directly instead of through dsp(), and a sample
+    // covered by ONE veil reproduces that veil's alpha exactly.
+
+    // P1: distinct alphas whose sum exceeds 1, overlapping over opaque
+    // geometry -- the case LayerWeights composites with a negative background
+    // weight (1 - 1.1 = -0.1), which inverts what the veils cover. Per pixel
+    // the background keeps its transmittance 0.4 * 0.5 = 0.2 and nothing
+    // inverts.
+    {
+      umbreon::Mesh m;
+      addQuad(m, {0.5f, 0.5f, 0.5f, 1.0f}, 0.0f, 0);  // opaque grey, behind
+      addQuad(m, {0, 1, 0, 1.0f}, 0.5f, 1);           // veil 1 (green) a = 0.6
+      addQuad(m, {0, 0, 1, 1.0f}, 1.0f, 2);           // veil 2 (blue)  a = 0.5
+      umbreon::Scene sc =
+          sceneOfBlend(std::move(m), {0, 0, 0}, {{1, 0.6f}, {2, 0.5f}});
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.groupBlendMode = static_cast<int>(umbreon::GroupBlendMode::PerPixel);
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      const float T = 0.4f * 0.5f;             // background transmittance
+      const float k = (1.0f - T) / (0.6f + 0.5f);  // share of 1 - T per alpha
+      const float expR = T * 0.5f;
+      const float expG = T * 0.5f + k * 0.6f;  // veil 1's own pass shows green
+      const float expB = T * 0.5f + k * 0.5f;  // veil 2's own pass shows blue
+      s.check("P1 overlap keeps the background R",
+              approx(f.color[kCenterRgba + 0], expR, 1e-4f));
+      s.check("P1 overlap keeps the background G",
+              approx(f.color[kCenterRgba + 1], expG, 1e-4f));
+      s.check("P1 overlap keeps the background B",
+              approx(f.color[kCenterRgba + 2], expB, 1e-4f));
+      s.check("P1 overlap alpha=1", approx(f.color[kCenterRgba + 3], 1.0f, 1e-6f));
+    }
+
+    // P2: where the veils do NOT overlap, each keeps the alpha it was given --
+    // no rescaling, no approximation: out = (1 - a) * B + a * S per sample.
+    // Veil 1 (a = 0.6) covers the left half, veil 2 (a = 0.5) the right.
+    {
+      // A quad spanning x0..x1 (the shared addQuad spans the whole frame).
+      auto addHalfQuad = [](umbreon::Mesh& m, Vec4 color, float z,
+                            std::uint16_t g, float x0, float x1) {
+        const Vec3 c[6] = {{x0, -2, z}, {x1, -2, z}, {x1, 2, z},
+                           {x0, -2, z}, {x1, 2, z},  {x0, 2, z}};
+        const Vec3 n{0, 0, 1};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(c[i]);
+          m.normals.push_back(n);
+          m.colors.push_back(color);
+        }
+        m.triGroupId.push_back(g);
+        m.triGroupId.push_back(g);
+      };
+      umbreon::Mesh m;
+      addQuad(m, {0.5f, 0.5f, 0.5f, 1.0f}, 0.0f, 0);            // opaque grey
+      addHalfQuad(m, {0, 1, 0, 1.0f}, 0.5f, 1, -2.0f, 0.0f);    // left,  0.6
+      addHalfQuad(m, {0, 0, 1, 1.0f}, 0.5f, 2, 0.0f, 2.0f);     // right, 0.5
+      umbreon::Scene sc =
+          sceneOfBlend(std::move(m), {0, 0, 0}, {{1, 0.6f}, {2, 0.5f}});
+      umbreon::RenderOptions o;
+      o.width = 5; o.height = 5;
+      o.groupBlendMode = static_cast<int>(umbreon::GroupBlendMode::PerPixel);
+      umbreon::FrameResult f = umbreon::render(sc, o);
+      const std::size_t left = (2 * 5 + 1) * 4;
+      const std::size_t right = (2 * 5 + 3) * 4;
+      s.check("P2 single veil keeps alpha 0.6 (bg)",
+              approx(f.color[left + 0], 0.4f * 0.5f, 1e-4f));
+      s.check("P2 single veil keeps alpha 0.6 (veil)",
+              approx(f.color[left + 1], 0.4f * 0.5f + 0.6f, 1e-4f));
+      s.check("P2 single veil keeps alpha 0.5 (bg)",
+              approx(f.color[right + 0], 0.5f * 0.5f, 1e-4f));
+      s.check("P2 single veil keeps alpha 0.5 (veil)",
+              approx(f.color[right + 2], 0.5f * 0.5f + 0.5f, 1e-4f));
+    }
+
+    // P3: veils and EDGE GROUPS are independent partitions of the same group
+    // ids. Two sections at the SAME alpha are ONE veil -- one pass, both
+    // visible -- and yet their edge grouping still decides whether the contact
+    // contour between them inks: the identity map (two edge groups) draws it,
+    // one shared edge group does not. If the veil bucketing ever merged group
+    // IDS instead of passes, the two cases would render alike, which is why
+    // the merge lives in the pass plan and not in section identity.
+    {
+      auto inkCount = [&](std::vector<std::uint16_t> edgeMap) {
+        umbreon::Mesh m;
+        // Two touching coplanar quads, groups 1 and 2 (both veiled at 0.6).
+        auto half = [&m](Vec4 color, float x0, float x1, std::uint16_t g) {
+          const Vec3 c[6] = {{x0, -2, 0.0f}, {x1, -2, 0.0f}, {x1, 2, 0.0f},
+                             {x0, -2, 0.0f}, {x1, 2, 0.0f},  {x0, 2, 0.0f}};
+          const Vec3 n{0, 0, 1};
+          for (int i = 0; i < 6; ++i) {
+            m.positions.push_back(c[i]);
+            m.normals.push_back(n);
+            m.colors.push_back(color);
+          }
+          m.triGroupId.push_back(g);
+          m.triGroupId.push_back(g);
+        };
+        half({0.7f, 0.7f, 0.7f, 1.0f}, -2.0f, 0.0f, 1);
+        half({0.7f, 0.7f, 0.7f, 1.0f}, 0.0f, 2.0f, 2);
+        umbreon::Scene sc =
+            sceneOfBlend(std::move(m), {1, 1, 1}, {{1, 0.6f}, {2, 0.6f}});
+        sc.edgeGroupOfGroup = std::move(edgeMap);
+        umbreon::RenderOptions o;
+        o.width = 48; o.height = 32; o.supersample = 1;
+        o.strokeEdges.enable = true;   // ink on a blank background only, so
+        o.strokeEdges.edgesOnly = true;  // the count IS the line set
+        o.strokeEdges.contact = true;
+        umbreon::FrameResult f = umbreon::render(sc, o);
+        std::size_t dark = 0;
+        for (std::size_t p = 0; p + 3 < f.color.size(); p += 4)
+          if (f.color[p] < 0.7f) ++dark;
+        return dark;
+      };
+      const std::size_t twoGroups = inkCount({0, 1, 2});  // identity
+      const std::size_t oneGroup = inkCount({0, 1, 1});   // merged edge group
+      s.check("P3 edge groups are independent of the veil",
+              twoGroups > oneGroup);
+    }
+
     // ===== Fragment alpha (intrinsic per-color opacity): front-to-back "over",
     // EVERY surface composited (no dedup), order-DEPENDENT -- POV native
     // transmit. Selected whenever the group has no blend entry (groupBlend

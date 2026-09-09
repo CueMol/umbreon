@@ -12,6 +12,9 @@ namespace umbreon {
 // Options for umbreon::render(). Every field here is honored by the renderer;
 // the defaults reproduce the POV-faithful look with all secondary effects off
 // (so a default-constructed RenderOptions yields plain primary-ray shading).
+/// RenderOptions::groupBlendMode values (see blend/group_blend.hpp).
+enum class GroupBlendMode { LayerWeights = 0, PerPixel = 1 };
+
 struct RenderOptions {
   // --- output ---
   int width = 1024;   // final image width  (pixels)
@@ -317,8 +320,21 @@ struct RenderOptions {
   // When on, the renderer walks hits front-to-back and composites every
   // transparent fragment ("over", fragment alpha). Off = opaque only. Group
   // alpha (CueMol sections) is separate: Scene::groupBlend renders one extra
-  // pass per group and blends the final frames (blendpng equivalence).
+  // pass per veil and combines them (see groupBlendMode below).
   bool transparency = true;
+  // How the group-alpha passes are combined. Only consulted when
+  // Scene::groupBlend is non-empty (see blend/group_blend.hpp).
+  //   0 = LayerWeights: sum the FINISHED, display-encoded frames with global
+  //       weights -- the closed form of CueMol's blendpng. Faithful wherever a
+  //       pixel is covered by veils whose alphas sum to <= 1; where they sum to
+  //       more, the background coefficient is negative and inverts what the
+  //       veils cover.
+  //   1 = PerPixel: combine at the raw stage (supersampled, linear) with
+  //       weights built from the veils that actually cover each sample:
+  //       bg = prod(1 - a_i), the rest shared out in a_i proportion. Never
+  //       negative, alphas kept exactly where a single veil covers; the
+  //       difference from LayerWeights is confined to overlaps.
+  int groupBlendMode = 0;
   // When on, the background contributes 0 coverage so the output alpha equals the
   // accumulated transparent coverage (POV "_transpbg"); default = opaque bg.
   bool transparentBackground = false;

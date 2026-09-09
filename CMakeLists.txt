@@ -138,6 +138,7 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/edges/edge_mesh_bvh.cpp
     src/umbreon/edges/analytic_silhouette.cpp
     src/umbreon/npr/hatch_shade.cpp
+    src/umbreon/blend/group_blend.cpp
     src/umbreon/umbreon.cpp
     src/umbreon/log.cpp
   )

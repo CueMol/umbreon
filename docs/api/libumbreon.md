@@ -445,6 +445,7 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `lightRadius` | 0.0 | ライトの角半径（度）。> 0 でソフト影（penumbra） |
 | `specularScale` | 1.0 | 各マテリアルの specular 量に乗算 |
 | `transparency` | true | front-to-back 透過 walk。false = 不透明のみ（最前面で停止） |
+| `groupBlendMode` | 0 | group-alpha パスの合成方法（`Scene::groupBlend` が空でないときのみ参照）。0 = **layer weights**: 完成した表示エンコード済みフレームを大域的な重みで加算（blendpng の閉形式）。veil の alpha の和が 1 を超えると背景係数が負になり、veil が重なった画素で背後が反転する。1 = **per-pixel**: raw stage（supersample 解像度・linear）で、その sample を覆う veil から重みを作る (`bg = Π(1-aᵢ)`、残り `1-Π(1-aᵢ)` を `aᵢ` 比で配分)。負係数が出ず、veil が 1 枚だけ覆う sample では 要求 alpha が厳密に再現される（差が出るのは重なり領域のみ。合成が linear 域なので単一 veil でも layer weights と数値は一致しない）。詳細は `src/umbreon/blend/group_blend.hpp` |
 | `transparentBackground` | false | 背景の被覆 0 → 出力 alpha = 累積被覆（POV `_transpbg`）。fog 有効時は fog 色を焼かず `alpha *= f` でフェード（§4.5） |
 | `maxTransparentLayers` | 256 | 1レイあたり透過ヒット数の安全上限（通常は alpha 早期終了で停止） |
 | `strokeEdges` | `enable=false` | 方式A: Freestyle 風ストロークエッジ（§4.9）。`StrokeEdgeOptions` |

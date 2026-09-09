@@ -856,6 +856,7 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
   // driven refinement instead of the full supersample grid. render() falls
   // back to grid for --gi (unvalidated combination, warns on stderr).
   ropt.aaMode = opt.aaMode;
+  ropt.groupBlendMode = opt.groupBlendMode;
   ropt.aaThreshold = opt.aaThreshold;
   ropt.aaDepth = opt.aaDepth;
   ropt.aaDebug = opt.aaDebug;

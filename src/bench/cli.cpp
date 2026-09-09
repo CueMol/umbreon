@@ -726,6 +726,16 @@ Options parseCli(int argc, char** argv) {
         fail("--aa expects grid/adaptive");
       continue;
     }
+    if (a == "--group-blend") {
+      std::string v = value("--group-blend");
+      if (v == "layer")
+        o.groupBlendMode = 0;
+      else if (v == "per-pixel")
+        o.groupBlendMode = 1;
+      else
+        fail("--group-blend expects layer/per-pixel");
+      continue;
+    }
     if (a == "--aa-threshold") {
       o.aaThreshold =
           static_cast<float>(std::atof(value("--aa-threshold").c_str()));
@@ -1442,7 +1452,12 @@ void printUsage(const char* prog) {
       "  --specular-scale <float> cartoon specular x      [.pov: 0 = matte]\n"
       "  --threads <int>          TBB parallelism cap (1 = serial)  [0 = all]\n"
       "  --alpha <ID=value>       section group alpha (e.g. _34_35=0.5),\n"
-      "                           blendpng-equivalent multipass blend\n"
+      "                           blendpng-equivalent multipass blend;\n"
+      "                           sections sharing a value are one veil\n"
+      "  --group-blend <layer|per-pixel> how the group-alpha passes are\n"
+      "                           combined: global weights (blendpng), or\n"
+      "                           per-sample coverage (no negative bg\n"
+      "                           weight where veils overlap)    [layer]\n"
       "  --list-groups            list the input's section ids and exit\n"
       "  --edges <on|off>         Freestyle stroke edge pass (sil/crease/border) [off]\n"
       "  --edges-only <on|off>    draw ONLY edges over blank bg, full opacity (verify) [off]\n"
