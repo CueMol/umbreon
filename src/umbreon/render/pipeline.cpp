@@ -19,7 +19,15 @@
 
 namespace umbreon {
 
-FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
+// The RAW stage: object-space edges, the normalized (supersampled) options,
+// the Embree render, the hatch base, fog and the hi-res stroke edge pass --
+// i.e. the frame while it is still at the supersampled resolution and in
+// linear light, with per-sample coverage still intact. Split from the
+// finishing stage so a caller that must combine several renders (the
+// group-alpha per-pixel blend in umbreon.cpp) can composite them HERE, before
+// the box-downsample turns per-sample coverage into partial pixels, and then
+// finish once.
+RawFrame renderFrameRaw(const Scene& sceneIn, const RenderOptions& opt,
                         RenderProgress* progress, RTCDevice sharedDevice) {
   // The two NPR edge methods both draw the silhouette and would double-ink if
   // run together (stroke ribbons over object-space edge cylinders); reject the
@@ -154,7 +162,7 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
   // Setup / CoarseAo / Primary / GlobalIllum phases ran inside render(); if it
   // was cancelled mid-flight the buffers are partial -- skip the post-passes and
   // return what we have (frame.cancelled is already set).
-  if (frame.cancelled) return frame;
+  if (frame.cancelled) return RawFrame{std::move(frame), hi, ss, finalW, finalH};
 
   // Tone hatching, Ink mode: paint the flat base (paper / first-hit albedo)
   // over every surface pixel NOW -- before fog and the stroke edge pass --
@@ -252,7 +260,7 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
       progress->beginPhase(RenderPhase::Edges);
       if (progress->cancelRequested()) {
         frame.cancelled = true;
-        return frame;
+        return RawFrame{std::move(frame), hi, ss, finalW, finalH};
       }
     }
     // VERIFICATION (--edges-only): blank the surface color to the scene
@@ -287,13 +295,22 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
                      OcclusionQuery{}, progress);
   }
 
-  // Fog / downsample / denoise / gamma: the finishing pass. One last cancel
+  return RawFrame{std::move(frame), hi, ss, finalW, finalH};
+}
+
+// The FINISHING stage: hi-res ink, box-downsample to the output resolution,
+// denoise, assumed_gamma and the output-resolution ink composite. `hi` is the
+// normalized options renderFrameRaw resolved; `opt` is the caller's, and each
+// is read exactly where the single-pass pipeline read it.
+void finishFrame(FrameResult& frame, const Scene& scene,
+                 const RenderOptions& opt, const RenderOptions& hi, int ss,
+                 int finalW, int finalH, RenderProgress* progress) {  // Fog / downsample / denoise / gamma: the finishing pass. One last cancel
   // check at its boundary; the steps themselves are not row-instrumented.
   if (progress) {
     progress->beginPhase(RenderPhase::Postprocess);
     if (progress->cancelRequested()) {
       frame.cancelled = true;
-      return frame;
+      return;
     }
   }
 
@@ -447,7 +464,15 @@ FrameResult renderFrame(const Scene& sceneIn, const RenderOptions& opt,
                                              : scene.groupHatchStyle.data(),
                scene.groupHatchStyle.size(),
                frame.hatchUv.empty() ? nullptr : frame.hatchUv.data());
-  return frame;
+}
+
+FrameResult renderFrame(const Scene& scene, const RenderOptions& opt,
+                        RenderProgress* progress, RTCDevice sharedDevice) {
+  RawFrame raw = renderFrameRaw(scene, opt, progress, sharedDevice);
+  if (raw.frame.cancelled) return std::move(raw.frame);
+  finishFrame(raw.frame, scene, opt, raw.hi, raw.ss, raw.finalW, raw.finalH,
+              progress);
+  return std::move(raw.frame);
 }
 
 }  // namespace umbreon

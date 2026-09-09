@@ -355,19 +355,29 @@ struct Cylinder {
 };
 
 // One group-alpha blend entry: CueMol "postprocess" transparency for a whole
-// section (transparency group). render() realizes the listed entries with one
-// extra full-pipeline pass per group and blends the FINAL display-encoded
+// section (transparency group). Entries that share an `alpha` are ONE VEIL:
+// render() buckets the list by alpha (within 1e-4, first appearance naming the
+// veil's alpha and its pass order), spends one extra full-pipeline pass per
+// VEIL showing all of that veil's groups, and blends the FINAL display-encoded
 // framebuffers -- the closed form of CueMol's blendpng lerp chain (solvebeta):
 //   out = (1 - sum_i a_i) * render(scene minus every listed group)
-//       + sum_i a_i * render(scene with group i kept, other listed groups hidden)
-// The group's geometry renders OPAQUE (colors untouched) inside its own pass;
+//       + sum_i a_i * render(scene with veil i kept, other veils hidden)
+// with i over veils, so pass count = distinct alphas + 1. A caller therefore
+// declares WHAT is translucent and HOW translucent, per section; how many
+// passes that costs, and what a layer is, is render()'s decision. (The group id
+// is a section identity, not a grouping: `edgeGroupOfGroup` partitions the same
+// ids independently for the edge pass, and groupHatchStyle keys off them too.)
+// The veil's geometry renders OPAQUE (colors untouched) inside its own pass;
 // fragment alpha (per-vertex color.w / POV native transmit) is orthogonal and
 // still composites front-to-back "over" within each pass.
-// sum_i a_i is NOT capped at 1: several sections may each be nearly opaque. The
-// background coefficient then goes negative, which is what keeps the pass
+// sum_i a_i is NOT capped at 1: two DISTINCT alphas may each be nearly opaque.
+// The background coefficient then goes negative, which is what keeps the pass
 // weights summing to exactly 1 -- the property that leaves geometry outside
 // every blend group (it appears identically in all passes) unchanged. blendpng
 // behaves the same way; only the final pixel is clamped to the output range.
+// Where such veils OVERLAP, that negative coefficient inverts whatever lies
+// behind them (dark ink reads brighter than its lit surroundings); render()
+// warns when it happens.
 struct GroupBlend {
   uint16_t group = 0;  // transparency group (CueMol section) id
   float alpha = 1.0f;  // blend weight (CueMol group alpha; blendpng beta)
@@ -459,9 +469,10 @@ struct Scene {
   }
 
   // Group-alpha (section) transparency realized as a blendpng-equivalent
-  // multi-pass post-blend (see GroupBlend above). Empty (default) => a single
-  // render pass and no blending; every transparent surface then composites
-  // front-to-back "over" (fragment alpha).
+  // multi-pass post-blend (see GroupBlend above): one pass per DISTINCT alpha
+  // plus one for the background. Empty (default) => a single render pass and no
+  // blending; every transparent surface then composites front-to-back "over"
+  // (fragment alpha).
   std::vector<GroupBlend> groupBlend;
 
   // Per-section stroke edge style, indexed by EDGE GROUP id: the primitive
@@ -479,10 +490,15 @@ struct Scene {
   // contact inside the group, a contact line between groups (under
   // strokeEdges.contact), same-group depth steps as self-occlusion (DepthGap,
   // Full/Outline mode), cross-group steps as ObjectId borders, and one style
-  // (groupEdgeStyle[edge group]) for the whole group. The primitive group
-  // itself stays the transparency unit (groupBlend). Empty (the default) =
+  // (groupEdgeStyle[edge group]) for the whole group. Empty (the default) =
   // identity: every primitive group is its own edge group. A group past the
   // end of the table maps to itself.
+  //
+  // This partition is INDEPENDENT of the transparency veils: a group id is a
+  // section identity, the edge pass groups those ids through this table, and
+  // groupBlend groups them by alpha. Any combination is expressible -- two
+  // sections of one veil can sit in different edge groups, and one edge group
+  // can span sections of different veils.
   std::vector<std::uint16_t> edgeGroupOfGroup;
   std::uint16_t edgeGroupFor(std::uint16_t group) const {
     return group < edgeGroupOfGroup.size() ? edgeGroupOfGroup[group] : group;

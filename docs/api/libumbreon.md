@@ -276,7 +276,7 @@ RenderTask renderAsync(Scene scene, RenderOptions opt);  // 即 return（scene/o
 | `background` | `Vec3` | 背景色（linear） |
 | `fog` | `Fog` | POV fog（§4.5）。`fog.enabled` で有効化 |
 | `assumedGamma` | `float` | POV `assumed_gamma`。出力 RGB を `pow(c, gamma)`（既定 1.0 = 無変換） |
-| `groupBlend` | `vector<GroupBlend>` | section の group alpha。`render()` がグループ毎の不透明パスを追加レンダリングし、最終（表示エンコード後の）フレームを blendpng と等価にブレンドする: `out = (1-Σaᵢ)·render(全 blend グループ除外) + Σaᵢ·render(グループ i のみ表示)` |
+| `groupBlend` | `vector<GroupBlend>` | section の group alpha。**同じ alpha の entry は 1 つの veil** としてまとめられ（許容 1e-4、最初に現れた entry が veil の alpha とパス順を決める）、`render()` が veil 毎の不透明パスを追加レンダリングして、最終（表示エンコード後の）フレームを blendpng と等価にブレンドする: `out = (1-Σaᵢ)·render(全 blend グループ除外) + Σaᵢ·render(veil i のみ表示)`（i は **veil** を走る）。パス数 = **異なる alpha の数** + 1。異なる alpha の総和が 1 を超えると背景係数は負になり（意図された値）、veil が**重なった**画素ではその負係数が背後を反転させる（暗いインクが周囲より明るくなる）。`render()` はこの場合に警告を 1 行出す |
 
 > 補足: `Scene::ambientIntensity` と `Scene::aoDistance` は `render()` からは**直接読まれない**
 > （CLI/ビルダ用のキャリア）。CueMol からは環境光は `ambientColor`、AO 半径は
@@ -445,6 +445,7 @@ POV リーダが CueMol の POV ground-fog ハック（`distance=slabDepth/3`）
 | `lightRadius` | 0.0 | ライトの角半径（度）。> 0 でソフト影（penumbra） |
 | `specularScale` | 1.0 | 各マテリアルの specular 量に乗算 |
 | `transparency` | true | front-to-back 透過 walk。false = 不透明のみ（最前面で停止） |
+| `groupBlendMode` | 0 | group-alpha パスの合成方法（`Scene::groupBlend` が空でないときのみ参照）。0 = **layer weights**: 完成した表示エンコード済みフレームを大域的な重みで加算（blendpng の閉形式）。veil の alpha の和が 1 を超えると背景係数が負になり、veil が重なった画素で背後が反転する。1 = **per-pixel**: raw stage（supersample 解像度、box-downsample の前）で、その sample を覆う veil から重みを作る (`bg = Π(1-aᵢ)`、残り `1-Π(1-aᵢ)` を `aᵢ` 比で配分)。負係数が出ず、veil が 1 枚だけ覆う sample では 要求 alpha が厳密に再現される。合成域は layer weights と同じ表示エンコード域なので、**veil 1 枚の sample は layer weights と完全に一致**し、差が出るのは veil が 2 枚以上重なった sample のみ。詳細は `src/umbreon/blend/group_blend.hpp` |
 | `transparentBackground` | false | 背景の被覆 0 → 出力 alpha = 累積被覆（POV `_transpbg`）。fog 有効時は fog 色を焼かず `alpha *= f` でフェード（§4.5） |
 | `maxTransparentLayers` | 256 | 1レイあたり透過ヒット数の安全上限（通常は alpha 早期終了で停止） |
 | `strokeEdges` | `enable=false` | 方式A: Freestyle 風ストロークエッジ（§4.9）。`StrokeEdgeOptions` |
@@ -616,7 +617,10 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
     `index` 省略で de-indexed スープも可）。
   - ball-and-stick / VdW → `Scene::spheres` / `Scene::cylinders`。
   - シルエットエッジ → `Cylinder{open=true}`（連結される）。bond/wireframe → `Cylinder{open=false}`。
-  - section ごとの透過 → `triGroupId` / `Sphere::group` / `Cylinder::group` ＋ `groupBlend`（group alpha は blendpng 等価の多重パス blend として実現。パス数 = blend グループ数 + 1）。
+  - section ごとの透過 → `triGroupId` / `Sphere::group` / `Cylinder::group` ＋ `groupBlend`（group alpha は blendpng 等価の多重パス blend として実現。パス数 = **異なる alpha の数** + 1 で、同じ alpha の section は 1 veil にまとまる）。
+  - group id は **section の identity** であって grouping ではない。透過 veil は alpha で、edge group は
+    `edgeGroupOfGroup` で、同じ id 集合を**独立に**分割する（同一 veil の 2 section を別 edge group にでき、
+    1 つの edge group が別 veil の section をまたぐこともできる）。
 - 画像は `render()` → `srgbEncode8()` → CueMol の画像バッファ／保存へ。
 - カメラ・ライトは CueMol のビュー設定から `Camera` / `DistantLight` に変換する
   （POV-Ray 出力と一致させたい場合の換算は `docs/`／既存の POV パスを参照）。

@@ -148,6 +148,11 @@ struct Options {
   // byte-identical. aaDepth > ss samples flagged pixels FINER than the grid
   // (edge quality above --supersample at flat-region cost); 0 = ss density.
   int aaMode = 0;             // 0 = grid, 1 = adaptive
+  // --group-blend: how the group-alpha (--alpha) passes are combined.
+  // 0 = layer weights (global, blendpng equivalent), 1 = per pixel
+  // (raw-stage composite with per-sample coverage; see
+  // src/umbreon/blend/group_blend.hpp).
+  int groupBlendMode = 0;
   float aaThreshold = 0.1f;   // per-channel linear contrast that flags a pair
   int aaDepth = 0;            // flagged-pixel lattice (rounded up to n*ss)
   bool aaDebug = false;       // dump the refinement mask AOV

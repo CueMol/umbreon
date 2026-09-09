@@ -218,8 +218,10 @@ bool buildSceneFromPov(Options& opt, Scene& scene, RenderOptions& ropt,
   // Apply per-section group alpha (--alpha ID=value). The section is
   // resolved against the group names recovered by the parser and recorded
   // in Scene::groupBlend; render() then realizes it as the blendpng-
-  // equivalent multi-pass post-blend (one extra full pass per section,
-  // rendered opaque, blended into the final image with weight `value`).
+  // equivalent multi-pass post-blend (one extra full pass per VEIL, rendered
+  // opaque, blended into the final image with weight `value`). Sections given
+  // the SAME value are one veil sharing one pass, so `--alpha A=0.6
+  // --alpha B=0.6` costs two passes, not three, and weighs 0.6 once.
   // The geometry's intrinsic (fragment) opacity is left untouched.
   if (!opt.sectionAlpha.empty()) {
     std::map<std::string, int> gidx;
@@ -854,6 +856,7 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
   // driven refinement instead of the full supersample grid. render() falls
   // back to grid for --gi (unvalidated combination, warns on stderr).
   ropt.aaMode = opt.aaMode;
+  ropt.groupBlendMode = opt.groupBlendMode;
   ropt.aaThreshold = opt.aaThreshold;
   ropt.aaDepth = opt.aaDepth;
   ropt.aaDebug = opt.aaDebug;
