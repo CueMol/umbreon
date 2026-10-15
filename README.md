@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/umbreon_banner.webp" alt="Umbreon banner" width="960">
+</p>
+
 # Umbreon
 
 [![CI](https://github.com/CueMol/umbreon/actions/workflows/ci.yml/badge.svg)](https://github.com/CueMol/umbreon/actions/workflows/ci.yml)
