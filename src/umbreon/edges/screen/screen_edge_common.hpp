@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "edges/screen_projection.hpp"
+#include "edges/common/screen_projection.hpp"
 
 namespace umbreon {
 namespace screen_edge {

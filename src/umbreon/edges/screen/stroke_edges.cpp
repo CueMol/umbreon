@@ -2,9 +2,9 @@
 // pipeline lives in the screen vector source (screen_vector_edges.cpp) and the
 // shared draw stage in stroke_render.cpp; this TU only keeps the historical
 // applyStrokeEdges signature.
-#include "edges/stroke_edges.hpp"
+#include "edges/screen/stroke_edges.hpp"
 
-#include "edges/screen_vector_edges.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
 
 namespace umbreon {
 

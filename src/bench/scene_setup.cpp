@@ -7,7 +7,7 @@
 #include <map>
 #include <stdexcept>
 
-#include "edges/object_space_edges.hpp"
+#include "edges/object/object_space_edges.hpp"
 #include "geom/mesh2_reader.hpp"
 #include "material_convert.hpp"
 #include "npr/hatch_shade.hpp"

@@ -128,7 +128,7 @@ downstream から直接 include しないでください）。
 
 > **エッジAPIの境界**: 2つのエッジ方式（ストローク / オブジェクト空間）の**公開API は
 > オプション型のみ**で、いずれも `render_types.hpp` にあります。抽出・QI可視性・リボン生成などの
-> 実装（`edges/stroke_edges.hpp` / `edges/mesh_feature_edges.hpp` / `edges/object_space_edges.hpp`
+> 実装（`edges/screen/stroke_edges.hpp` / `edges/object/mesh_feature_edges.hpp` / `edges/object/object_space_edges.hpp`
 > ほか）は INTERNAL に降格し、install されません。`render()` が内部でこれらを駆動します。
 
 この一覧は次の **3箇所と一致**していなければなりません（ヘッダを追加・移動する際は3箇所すべてを更新）:
@@ -315,7 +315,7 @@ RenderTask renderAsync(Scene scene, RenderOptions opt);  // 即 return（scene/o
 > 出力し、巻き境界の頂点・法線が重複するため、隣接巻きとの接続は座標一致としてしか存在しない）。
 > エッジ抽出（`--edges` / `--obj-edges`）は `posClass` で隣接を見て water-tight トポロジーを判定する
 > （`posClass` 不在なら抽出器が同じ位置溶接を自前で再現する fallback）。溶接の単一定義は
-> `edges/mesh_weld.hpp`、詳細・限界は `edges/mesh_feature_edges.cpp` の step 1 を参照。
+> `edges/common/mesh_weld.hpp`、詳細・限界は `edges/object/mesh_feature_edges.cpp` の step 1 を参照。
 
 **`Sphere`**: `center`, `radius`, `color`(rgb+opacity), `material`（既定 `Material::flatOutline()`）, `group`。
 

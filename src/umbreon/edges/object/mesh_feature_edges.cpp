@@ -11,7 +11,7 @@
 //   2) buildFacesAndAdjacency welded face indices, normals, edge adjacency
 //   3) detectSilhouettes      smooth n.v==0 contour + hard-edge straddle
 //   4) detectCreasesAndBorders dihedral creases + open-boundary borders
-#include "edges/mesh_feature_edges.hpp"
+#include "edges/object/mesh_feature_edges.hpp"
 
 #include <array>
 #include <cmath>
@@ -20,7 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "edges/mesh_weld.hpp"
+#include "edges/common/mesh_weld.hpp"
 
 namespace umbreon {
 namespace {
@@ -128,7 +128,7 @@ struct ExtractContext {
 // smooth winding seams. NOTE: this weld is unrelated to the smooth-silhouette
 // CUSP visibility gap (the missing outline at grazing twists); that is a contour
 // fold-back handled by Freestyle's computeCusps, independent of topology.
-// The weld key (WeldKey/weldKey, edges/mesh_weld.hpp) and ~1e-4 tolerance are
+// The weld key (WeldKey/weldKey, edges/common/mesh_weld.hpp) and ~1e-4 tolerance are
 // shared with the mesh2 reader, which bakes the very same partition into
 // mesh.posClass at load time. When that map is present we CONSUME it (the fast
 // path) instead of rehashing; otherwise (hand-built meshes) we weld here.

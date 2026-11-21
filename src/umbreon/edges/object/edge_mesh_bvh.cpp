@@ -1,5 +1,5 @@
 // Object-space edge visibility BVH. See edge_mesh_bvh.hpp.
-#include "edges/edge_mesh_bvh.hpp"
+#include "edges/object/edge_mesh_bvh.hpp"
 
 #include <cmath>
 #include <cstddef>

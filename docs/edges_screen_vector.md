@@ -3,7 +3,7 @@
 The chain extractor for the stroke edge pass (`--edges on`). It vectorizes the
 per-pixel edge G-buffer AOVs (`viewZ` / `objectId` / `normal` / `surfAlpha`)
 by crack tracing.
-It shares the stylization and rasterization back half (`edges/stroke_render.hpp`)
+It shares the stylization and rasterization back half (`edges/screen/stroke_render.hpp`)
 with the retired mesh-topology source, so all style flags
 (`--stroke-thickness`, `--stroke-taper`, `--stroke-smooth`, `--edge ID=spec`,
 ...) apply.

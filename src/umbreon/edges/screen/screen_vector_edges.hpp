@@ -34,8 +34,9 @@
 #include <limits>
 #include <vector>
 
-#include "edges/mesh_feature_edges.hpp"
-#include "edges/stroke_edges.hpp"
+#include "edges/common/screen_projection.hpp"
+#include "scene.hpp"
+#include "edges/screen/stroke_edges.hpp"
 #include "render/render_types.hpp"
 
 namespace umbreon {

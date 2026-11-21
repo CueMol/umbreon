@@ -11,8 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "edges/mesh_feature_edges.hpp"
-#include "edges/screen_vector_edges.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
 #include "geom/mesh2_reader.hpp"
 #include "pov/pov_scene_reader.hpp"
 #include "test_util.hpp"

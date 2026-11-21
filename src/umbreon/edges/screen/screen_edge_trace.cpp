@@ -1,7 +1,7 @@
 // SCREEN-SPACE VECTOR edges, Stage 2: deterministic lattice tracing of the
 // classified cracks into maximal continuous chains.
 // See screen_vector_edges.hpp for the pipeline overview.
-#include "edges/screen_vector_edges.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
 
 #include <algorithm>
 #include <cmath>

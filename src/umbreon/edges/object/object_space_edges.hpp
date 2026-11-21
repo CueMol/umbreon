@@ -6,7 +6,7 @@
 // (--obj-edges). Its public knob is ObjectSpaceEdgeOptions in
 // render/render_types.hpp; render() drives this pass internally via
 // RenderOptions::objectSpaceEdges. Its counterpart is the Freestyle-style STROKE
-// method in edges/stroke_edges.hpp. The two are independent; render() rejects
+// method in edges/screen/stroke_edges.hpp. The two are independent; render() rejects
 // enabling both at once (they would double-draw).
 //
 // For each analytic primitive (Sphere, Cylinder) this computes the 3D locus

@@ -1,5 +1,5 @@
 // Analytic object-space silhouette-edge generation. See object_space_edges.hpp.
-#include "edges/object_space_edges.hpp"
+#include "edges/object/object_space_edges.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,9 +8,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "edges/analytic_silhouette.hpp"
-#include "edges/edge_mesh_bvh.hpp"
-#include "edges/mesh_feature_edges.hpp"
+#include "edges/object/analytic_silhouette.hpp"
+#include "edges/object/edge_mesh_bvh.hpp"
+#include "edges/object/mesh_feature_edges.hpp"
 #include "scene.hpp"
 
 namespace umbreon {

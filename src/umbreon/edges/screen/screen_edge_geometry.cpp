@@ -1,7 +1,7 @@
 // SCREEN-SPACE VECTOR edges, Stage 3: chain geometry cleanup (collinear
 // collapse, Chaikin corner cutting, Douglas-Peucker simplification).
 // See screen_vector_edges.hpp for the pipeline overview.
-#include "edges/screen_vector_edges.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
 
 #include <algorithm>
 #include <cmath>

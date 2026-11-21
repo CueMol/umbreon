@@ -23,7 +23,7 @@
 #include <cstddef>
 #include <stdexcept>
 
-#include "edges/object_space_edges.hpp"
+#include "edges/object/object_space_edges.hpp"
 #include "scene.hpp"
 #include "test_util.hpp"
 #include "umbreon.hpp"  // render(): drives method B via RenderOptions::objectSpaceEdges

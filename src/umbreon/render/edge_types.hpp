@@ -16,7 +16,7 @@ namespace umbreon {
 // onto an EdgeClass slot for per-section coloring (see Scene::groupEdgeStyle).
 // They are also consumed by the OBJECT-SPACE (3D geometry) edge pass via
 // ObjectSpaceEdgeOptions (defined below); its implementation lives in
-// edges/object_space_edges.hpp (--obj-edges).
+// edges/object/object_space_edges.hpp (--obj-edges).
 //
 // The five edge classes. The stroke pass uses Silhouette / Object (border) /
 // Crease as its per-nature styling slots and composites in a fixed precedence
@@ -308,7 +308,7 @@ struct StrokeEdgeOptions {
 };
 
 // --- Analytic OBJECT-SPACE silhouette edges (--obj-edges) ------------------
-// Options for the analytic object-space edge pass (edges/object_space_edges.cpp).
+// Options for the analytic object-space edge pass (edges/object/object_space_edges.cpp).
 // This is the counterpart of the Freestyle STROKE method (StrokeEdgeOptions):
 // for each analytic primitive (Sphere, Cylinder) and the triangle mesh it emits
 // the n.v == 0 silhouette (plus mesh crease/border edges) as thin flat-black

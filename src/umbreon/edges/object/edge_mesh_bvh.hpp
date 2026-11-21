@@ -2,7 +2,7 @@
 // Implementation detail; may change without notice. Do not include downstream.
 // Dedicated edge-mesh BVH for object-space edge visibility / clipping queries.
 //
-// The object-space edge pass (edges/object_space_edges.cpp) runs BEFORE the
+// The object-space edge pass (edges/object/object_space_edges.cpp) runs BEFORE the
 // render BVH is built (it appends edge cylinders to the scene, which the renderer
 // then traces). So it cannot reuse EmbreeRenderer's scene for the hidden-line
 // visibility test CueMol did with a CGAL AABB tree (RendIntData_AABBTree.cpp).

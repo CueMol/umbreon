@@ -1,5 +1,5 @@
 // Screen projection shared by the edge passes. See screen_projection.hpp.
-#include "edges/screen_projection.hpp"
+#include "edges/common/screen_projection.hpp"
 
 #include <cmath>
 

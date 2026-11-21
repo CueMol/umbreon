@@ -31,7 +31,7 @@
 #include "scene.hpp"
 // ScreenProj/makeScreenProj/worldToScreen historically lived here; re-exported
 // so existing includers keep compiling.
-#include "edges/screen_projection.hpp"
+#include "edges/common/screen_projection.hpp"
 
 namespace umbreon {
 

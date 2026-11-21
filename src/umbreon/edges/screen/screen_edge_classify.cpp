@@ -1,6 +1,6 @@
 // SCREEN-SPACE VECTOR edges, Stage 1: pixel-pair crack classification.
 // See screen_vector_edges.hpp for the pipeline overview.
-#include "edges/screen_vector_edges.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +10,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
-#include "edges/screen_edge_common.hpp"
+#include "edges/screen/screen_edge_common.hpp"
 
 namespace umbreon {
 namespace {

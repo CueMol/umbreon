@@ -2,7 +2,7 @@
 // Implementation detail; may change without notice. Do not include downstream.
 // Shared stroke DRAW stage: style resolution + parametric-stroke stylization +
 // ribbon rasterization, factored out of the Freestyle stroke path
-// (edges/stroke_edges.cpp:applyStrokeEdges) so that any edge-chain SOURCE can
+// (edges/screen/stroke_edges.cpp:applyStrokeEdges) so that any edge-chain SOURCE can
 // feed it. The stroke edge pass (--edges on) is driven by the SCREEN source:
 // AOV crack tracing -> 2D polylines (screen_vector_edges.cpp), visibility exact
 // from the z-buffer. (The retired mesh-topology source -- feature edges ->
