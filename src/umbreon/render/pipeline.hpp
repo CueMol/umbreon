@@ -32,9 +32,13 @@ struct RawFrame {
 
 // Run the raw stage and return the frame at that boundary. A cancelled render
 // comes back with frame.cancelled set and the later stages skipped.
+// `inkEdgeGroups`, when non-null and the stroke edges are on, is a mask
+// indexed by EDGE group: the stroke pass records the ink coverage of the runs
+// those groups own into frame.inkCover (the group-alpha PerPixel veil pass).
 RawFrame renderFrameRaw(const Scene& scene, const RenderOptions& opt,
                         RenderProgress* progress = nullptr,
-                        RTCDevice sharedDevice = nullptr);
+                        RTCDevice sharedDevice = nullptr,
+                        const std::vector<std::uint8_t>* inkEdgeGroups = nullptr);
 
 // Run the finishing stage in place: hi-res ink, box-downsample to finalW/finalH,
 // denoise, assumed_gamma, ink composite. `hi` / `ss` / `finalW` / `finalH` come

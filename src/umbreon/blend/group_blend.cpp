@@ -140,7 +140,10 @@ class PassRunner {
   /// Render one pass: the geometry left visible by `hide`, at the raw stage.
   /// `label` describes the pass for the log (weights are the mode's business).
   /// A pass rendered after a cancellation returns an empty frame.
-  RawFrame run(const std::vector<uint8_t>& hide, const std::string& label) {
+  /// `inkEdgeGroups` (null = none) asks the stroke pass to record the ink of
+  /// those edge groups' lines (FrameResult::inkCover; PerPixel veil passes).
+  RawFrame run(const std::vector<uint8_t>& hide, const std::string& label,
+               const std::vector<uint8_t>* inkEdgeGroups = nullptr) {
     if (cancelled_) return RawFrame{};  // a prior pass was cancelled
     if (progress_) progress_->beginPass(passIndex_, passCount_);
     ++passIndex_;
@@ -151,7 +154,8 @@ class PassRunner {
                static_cast<unsigned long long>(passIndex_),
                static_cast<unsigned long long>(passCount_), label.c_str());
     applyHideGroups(scene_, hide, work_, workMeshDropped_);
-    RawFrame raw = renderFrameRaw(work_, opt_, progress_, device_.get());
+    RawFrame raw =
+        renderFrameRaw(work_, opt_, progress_, device_.get(), inkEdgeGroups);
     if (raw.frame.cancelled) cancelled_ = true;
     seconds_ += raw.frame.renderSeconds;
     timing_.bvhBuild += raw.frame.pt1Timing.bvhBuild;
@@ -171,6 +175,19 @@ class PassRunner {
                 progress_);
   }
 
+  /// The edge groups a veil's lines belong to, as a mask by edge group, for
+  /// the PerPixel veil pass to record their ink. Empty when the stroke edges
+  /// are off (nothing inks, so no coverage is recorded or allocated).
+  std::vector<uint8_t> veilInkGroups(const Veil& v) const {
+    std::vector<uint8_t> mask;
+    if (!opt_.strokeEdges.enable) return mask;
+    for (const uint16_t g : v.groups) {
+      const uint16_t eg = scene_.edgeGroupFor(g);
+      if (eg >= mask.size()) mask.resize(static_cast<std::size_t>(eg) + 1, 0);
+      mask[eg] = 1;
+    }
+    return mask;
+  }
   bool cancelled() const { return cancelled_; }
   double seconds() const { return seconds_; }
   const Pt1Timing& timing() const { return timing_; }
@@ -280,6 +297,16 @@ inline bool veilCovers(float dBg, float dVeil) {
   return dVeil < dBg * (1.0f - 1.0e-5f);
 }
 
+/// Does the veil pass's own line ink this sample? An outline is drawn on the
+/// OUTER side of the veil's contour (StrokeAlign::Outside), where the veil's
+/// surface is not hit, so the depth test alone would drop it. The pass color
+/// there is the ink over what lies beneath, which matches the background pass,
+/// so weighting it by the veil alpha composites the ink at alpha * ink
+/// opacity. An empty buffer (edges off) records no ink.
+inline bool veilInks(const std::vector<float>& inkCover, std::size_t p) {
+  return !inkCover.empty() && inkCover[p] > 0.0f;
+}
+
 FrameResult blendPerPixel(const std::vector<Veil>& veils,
                           const std::vector<uint8_t>& hideAll,
                           PassRunner& runner) {
@@ -307,13 +334,17 @@ FrameResult blendPerPixel(const std::vector<Veil>& veils,
   for (const Veil& v : veils) {
     std::vector<uint8_t> hide = hideAll;
     for (const uint16_t g : v.groups) hide[g] = 0;
-    RawFrame f = runner.run(hide, veilLabel(v.alpha, v.groups.size()));
+    const std::vector<uint8_t> inkGroups = runner.veilInkGroups(v);
+    RawFrame f = runner.run(hide, veilLabel(v.alpha, v.groups.size()),
+                            inkGroups.empty() ? nullptr : &inkGroups);
     if (f.frame.cancelled) break;  // partial: composite what we have
     const std::size_t n =
         std::min(nsamp, static_cast<std::size_t>(f.frame.width) *
                             f.frame.height);
     for (std::size_t p = 0; p < n; ++p) {
-      if (!veilCovers(bg.frame.depth[p], f.frame.depth[p])) continue;
+      if (!veilCovers(bg.frame.depth[p], f.frame.depth[p]) &&
+          !veilInks(f.frame.inkCover, p))
+        continue;
       for (int c = 0; c < 3; ++c)
         acc[p * 4 + c] += v.alpha * srgbEncodeF(f.frame.color[p * 4 + c]);
       acc[p * 4 + 3] += v.alpha * f.frame.color[p * 4 + 3];

@@ -22,11 +22,12 @@ namespace umbreon {
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
                       const OcclusionQuery& occludedRaw,
-                      const RenderProgress* progress) {
+                      const RenderProgress* progress,
+                      const std::vector<std::uint8_t>* inkEdgeGroups) {
   (void)occludedRaw;
   const StrokeEdgeOptions& se = opt.strokeEdges;
   if (!se.enable) return;
-  applyScreenVectorEdges(frame, scene, opt, occluded, progress);
+  applyScreenVectorEdges(frame, scene, opt, occluded, progress, inkEdgeGroups);
 }
 
 

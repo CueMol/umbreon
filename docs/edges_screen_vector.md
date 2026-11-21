@@ -443,6 +443,16 @@ primitive group. An empty map is the identity.
   opacity TIMES that per-vertex surface alpha, lerped along the stroke. A
   fully transparent section's outline vanishes with it; a vertex-alpha fade
   (CueMol fadeout) fades its edge linearly in step.
+- Under the group-alpha PerPixel blend each veil pass draws its own lines,
+  and the blend takes a sample from a veil pass only where that veil covers
+  it. An outline inks on the OUTER side of the contour, where the veil's
+  surface is not hit, so a PerPixel veil pass records the ink coverage of
+  the runs the veil's edge groups own (`FrameResult::inkCover`) and the blend
+  counts those samples as covered too: the outline composites at the veil's
+  alpha times the ink opacity, as under LayerWeights. In such a pass a drawn
+  span never coalesces the veil's runs with another section's, so a veil
+  outline continuing an opaque section's outline still records. See
+  `docs/plans/edge-veil-ink-coverage.md`.
 - Junctions are exact T-vertices, but the chains meeting there are smoothed
   independently (endpoints pinned), which can leave a small kink.
 - With the outside alignment, the ribbon re-centers over one stroke width

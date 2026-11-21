@@ -404,6 +404,55 @@ int main() {
               twoGroups > oneGroup);
     }
 
+    // P4: a veil's outline survives the PerPixel blend. The stroke pass inks
+    // an occlusion contour on its OUTER side (StrokeAlign::Outside), where the
+    // veil's surface is not hit; the blend must still take those samples from
+    // the veil pass, at the veil's alpha: black ink over a white background
+    // through a 0.6 veil is 0.4. An opaque quad of the same line style touches
+    // the veil on its LEFT, so their shared outer contour is one loop whose
+    // trace starts on the opaque side: a drawn span coalescing across the two
+    // would take the opaque group and leave the veil's outline at 1 (no ink).
+    {
+      auto rect = [](umbreon::Mesh& m, Vec4 color, float x0, float x1,
+                     std::uint16_t g) {
+        const Vec3 c[6] = {{x0, -1, 0.0f}, {x1, -1, 0.0f}, {x1, 1, 0.0f},
+                           {x0, -1, 0.0f}, {x1, 1, 0.0f},  {x0, 1, 0.0f}};
+        const Vec3 n{0, 0, 1};
+        for (int i = 0; i < 6; ++i) {
+          m.positions.push_back(c[i]);
+          m.normals.push_back(n);
+          m.colors.push_back(color);
+        }
+        m.triGroupId.push_back(g);
+        m.triGroupId.push_back(g);
+      };
+      umbreon::Mesh m;
+      rect(m, {0.7f, 0.7f, 0.7f, 1.0f}, -1.5f, 0.0f, 0);  // opaque, touching
+      rect(m, {0.7f, 0.7f, 0.7f, 1.0f}, 0.0f, 1.5f, 1);   // veil, a = 0.6
+      umbreon::Scene sc = sceneOfBlend(std::move(m), {1, 1, 1}, {{1, 0.6f}});
+      umbreon::RenderOptions o;
+      o.width = 64; o.height = 64; o.supersample = 1;
+      o.groupBlendMode = static_cast<int>(umbreon::GroupBlendMode::PerPixel);
+      o.strokeEdges.enable = true;
+      const umbreon::FrameResult f = umbreon::render(sc, o);
+      // The frame spans [-2, 2] on both axes (16 px per unit). The darkest
+      // sample in a run of pixels just OUTSIDE the veil's edge is its outline.
+      auto darkest = [&](int x0, int x1, int y0, int y1) {
+        float v = 1.0f;
+        for (int y = y0; y <= y1; ++y)
+          for (int x = x0; x <= x1; ++x)
+            v = std::fmin(v, dsp(f.color[(static_cast<std::size_t>(y) * 64 + x) * 4]));
+        return v;
+      };
+      const int col = 44;  // x = 0.75, the middle of the veil
+      s.check("P4 veil outline above the veil at alpha 0.6",
+              approx(darkest(col, col, 10, 15), 0.4f, 0.02f));
+      s.check("P4 veil outline below the veil at alpha 0.6",
+              approx(darkest(col, col, 48, 53), 0.4f, 0.02f));
+      s.check("P4 veil outline right of the veil at alpha 0.6",
+              approx(darkest(56, 61, 32, 32), 0.4f, 0.02f));
+    }
+
     // ===== Fragment alpha (intrinsic per-color opacity): front-to-back "over",
     // EVERY surface composited (no dedup), order-DEPENDENT -- POV native
     // transmit. Selected whenever the group has no blend entry (groupBlend

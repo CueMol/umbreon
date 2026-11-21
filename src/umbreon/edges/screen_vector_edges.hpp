@@ -525,9 +525,13 @@ void mergeShortClassRuns(std::vector<std::uint8_t>& cls,
 // whenever strokeEdges.enable is on. No QI (visibility) rays run under this
 // source; `occluded`, when non-empty, is used only by the Stage-1 fold probe
 // (one segment ray per strongNdelta-rescue candidate, see classifyCracks).
-void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
-                            const RenderOptions& opt,
-                            const OcclusionQuery& occluded = OcclusionQuery{},
-                            const RenderProgress* progress = nullptr);
+// `inkEdgeGroups` (mask by edge group, null = none): the runs those groups own
+// record their ink coverage (StrokeChainInput::recordInk), and a drawn span
+// never coalesces a recording run with a non-recording one.
+void applyScreenVectorEdges(
+    FrameResult& frame, const Scene& scene, const RenderOptions& opt,
+    const OcclusionQuery& occluded = OcclusionQuery{},
+    const RenderProgress* progress = nullptr,
+    const std::vector<std::uint8_t>* inkEdgeGroups = nullptr);
 
 }  // namespace umbreon

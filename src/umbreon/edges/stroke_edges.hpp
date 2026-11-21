@@ -45,9 +45,12 @@ using OcclusionQuery =
 // polled for cancellation at stage and loop boundaries (the pt1 idiom): on
 // cancel the pass returns early with a partial (or missing) line set, which
 // the caller reports via FrameResult::cancelled. Null = zero-overhead.
+// `inkEdgeGroups` (mask by edge group, null = none): the runs those groups
+// own record their ink coverage into frame.inkCover, which the caller sized.
 void applyStrokeEdges(FrameResult& frame, const Scene& scene,
                       const RenderOptions& opt, const OcclusionQuery& occluded,
                       const OcclusionQuery& occludedRaw = OcclusionQuery{},
-                      const RenderProgress* progress = nullptr);
+                      const RenderProgress* progress = nullptr,
+                      const std::vector<std::uint8_t>* inkEdgeGroups = nullptr);
 
 }  // namespace umbreon
