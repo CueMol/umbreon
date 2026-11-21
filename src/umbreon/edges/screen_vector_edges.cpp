@@ -307,8 +307,15 @@ void mergeShortClassRuns(std::vector<std::uint8_t>& cls,
 void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
                             const RenderOptions& opt,
                             const OcclusionQuery& occluded,
-                            const RenderProgress* progress) {
+                            const RenderProgress* progress,
+                            const std::vector<std::uint8_t>* inkEdgeGroups) {
   const StrokeEdgeOptions& se = opt.strokeEdges;
+  // Group-alpha PerPixel veil pass: does this edge group's ink count as the
+  // veil's (FrameResult::inkCover)? Always false outside such a pass.
+  const auto recordsInk = [inkEdgeGroups](std::uint16_t g) {
+    return inkEdgeGroups != nullptr && g < inkEdgeGroups->size() &&
+           (*inkEdgeGroups)[g] != 0;
+  };
   const int W = frame.width, H = frame.height;
   if (W <= 0 || H <= 0) return;
   if (frame.viewZ.empty() || frame.objectId.empty()) return;
@@ -1643,6 +1650,13 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
           break;
         if (!vzDrawMergeable(w.runs[rj + 1].e0 - 1, w.runs[rj + 1].e0))
           break;
+        // A span records ink as ONE unit (its first run's group), so it
+        // must not mix the veil's runs with others: a veil outline
+        // continuing an opaque section's outline would otherwise drop out
+        // of the coverage. Only a veil pass can split here.
+        if (recordsInk(w.grp[w.runs[rj].e0]) !=
+            recordsInk(w.grp[w.runs[rj + 1].e0]))
+          break;
         ++rj;
       }
       spans.push_back({ri, rj});
@@ -1662,6 +1676,7 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
 
       StrokeChainInput in;
       in.group = w.grp[e0];
+      in.recordInk = recordsInk(in.group);
       // A span may coalesce runs of different classes (identical styles);
       // paint with the highest precedence among them. Same-style ink
       // composites identically in any order, so this only decides

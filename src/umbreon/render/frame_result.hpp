@@ -59,6 +59,13 @@ struct FrameResult {
   // transparent surface inks with that surface's transparency (per-vertex
   // alpha varies linearly along the stroke via the standard lerp).
   std::vector<float> surfAlpha;           // width*height   first-hit opacity
+  // Stroke ink coverage of the veil's own lines, accumulated with the same
+  // "over" rule as the ink (cov += a * (1 - cov)). Sized ONLY for a
+  // group-alpha PerPixel veil pass with strokeEdges on (renderFrameRaw's
+  // inkEdgeGroups); the blend counts a sample this ink covers as covered by
+  // the veil, so an outline drawn outside the veil's surface survives the
+  // composite. Empty = no ink coverage recorded.
+  std::vector<float> inkCover;            // width*height
   // Clip-cut G-buffer: sized ONLY when strokeEdges is on AND the scene's
   // view-clip planes (Scene::clipNear/clipFar) are set. clipCut[pix] = 1
   // marks a first hit on the interior (backface) of a clip-cut surface; for

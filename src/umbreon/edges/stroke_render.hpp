@@ -103,6 +103,10 @@ struct StrokeChainInput {
   // open-polyline seam left a wedge gap (butt) or, under outside alignment,
   // cap fans whose outer -> pad radius lerp bulged into the object.
   bool closed = false;
+  // Record this chain's ink coverage into FrameResult::inkCover (when that
+  // buffer is sized): the group-alpha PerPixel veil pass marks the veil's own
+  // runs so the blend keeps their ink. False = paint only.
+  bool recordInk = false;
 };
 
 // Resolve the ribbon style for one chain by its style slot + section group:

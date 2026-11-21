@@ -73,6 +73,14 @@ inline void compositeOver(float* rgba, const float color[3], float a) {
   rgba[2] = rgba[2] * ia + color[2] * a;
 }
 
+// Accumulate ink coverage with the same "over" rule as compositeOver, so
+// overlapping ink never exceeds full coverage (FrameResult::inkCover).
+inline void coverOver(float* cov, float a) {
+  if (cov == nullptr || a <= 0.0f) return;
+  a = std::min(1.0f, a);
+  *cov += a * (1.0f - *cov);
+}
+
 // One projected, resampled backbone vertex of a chain: 2D pixel position, linear
 // view-z (carried for future depth use), the surface alpha multiplier (first-
 // hit fragment opacity under the vertex; 1 = opaque) and a visibility flag.
@@ -155,6 +163,7 @@ struct StyledStrip {
   std::vector<std::array<float, 3>> colors;
   int precedence = 0;     // nature tie-break key (lower paints first)
   float depthKey = 0.0f;  // min view-z over the run (FARTHER = larger); primary sort
+  bool recordInk = false;  // StrokeChainInput::recordInk of the source chain
   // Round cap / round join ARC FANS: a triangle soup rasterized after the
   // body quads (3*i vertices in fanPts; triangle i carries the constant ink
   // alpha/color of its backbone vertex in fanAlpha[i]/fanColor[i]). Empty --
@@ -477,7 +486,7 @@ void appendCapFans(const std::vector<Vec2>& bb, const std::vector<float>& L,
 void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
                   const Vec2& a, const Vec2& b, const Vec2& c,
                   const float col[3], float opacity, const DepthPermit* dp,
-                  const DepthRef& ref) {
+                  const DepthRef& ref, float* ink) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -506,8 +515,9 @@ void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
       if (dp != nullptr && depthDenied(x, y, *dp, ref)) continue;
-      const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
-      compositeOver(&color[idx], col, opacity);
+      const std::size_t pix = static_cast<std::size_t>(y) * W + x;
+      compositeOver(&color[pix * 4], col, opacity);
+      if (ink) coverOver(&ink[pix], opacity);
     }
   }
 }
@@ -519,7 +529,7 @@ void fillTriangle(std::vector<float>& color, int W, int rowBegin, int rowEnd,
 void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
                        int rowEnd, const Vec2& a, const Vec2& b, const Vec2& c,
                        const float col[3], float aA, float aB, float aC,
-                       const DepthPermit* dp, const DepthRef& ref) {
+                       const DepthPermit* dp, const DepthRef& ref, float* ink) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -546,8 +556,10 @@ void fillTriangleAlpha(std::vector<float>& color, int W, int rowBegin,
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
       if (dp != nullptr && depthDenied(x, y, *dp, ref)) continue;
-      const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
-      compositeOver(&color[idx], col, w0 * aA + w1 * aB + w2 * aC);
+      const std::size_t pix = static_cast<std::size_t>(y) * W + x;
+      const float a = w0 * aA + w1 * aB + w2 * aC;
+      compositeOver(&color[pix * 4], col, a);
+      if (ink) coverOver(&ink[pix], a);
     }
   }
 }
@@ -562,7 +574,7 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
                             const Vec2& c, const float colA[3],
                             const float colB[3], const float colC[3], float aA,
                             float aB, float aC, const DepthPermit* dp,
-                            const DepthRef& ref) {
+                            const DepthRef& ref, float* ink) {
   if (notValid(a) || notValid(b) || notValid(c)) return;
   float minXf = std::min({a.x, b.x, c.x});
   float maxXf = std::max({a.x, b.x, c.x});
@@ -589,11 +601,13 @@ void fillTriangleColorAlpha(std::vector<float>& color, int W, int rowBegin,
       const float w2 = 1.0f - w0 - w1;
       if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;  // outside
       if (dp != nullptr && depthDenied(x, y, *dp, ref)) continue;
-      const std::size_t idx = (static_cast<std::size_t>(y) * W + x) * 4;
+      const std::size_t pix = static_cast<std::size_t>(y) * W + x;
       const float col[3] = {w0 * colA[0] + w1 * colB[0] + w2 * colC[0],
                             w0 * colA[1] + w1 * colB[1] + w2 * colC[1],
                             w0 * colA[2] + w1 * colB[2] + w2 * colC[2]};
-      compositeOver(&color[idx], col, w0 * aA + w1 * aB + w2 * aC);
+      const float a = w0 * aA + w1 * aB + w2 * aC;
+      compositeOver(&color[pix * 4], col, a);
+      if (ink) coverOver(&ink[pix], a);
     }
   }
 }
@@ -669,8 +683,12 @@ constexpr float kNodePalette[8][3] = {
 // `colors`, when non-null, holds one ink color per backbone vertex and switches
 // the quad to the color+alpha-interpolating fill (the depth-fog gradient); it
 // composes with `alphas` (constant `opacity` is used where `alphas` is null).
+// `ink`, when non-null, is the per-pixel coverage plane this strip's fills
+// accumulate into (FrameResult::inkCover; the caller passes it only for a
+// recordInk strip).
 void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
-                    const StyledStrip& ss, const DepthPermit* permit) {
+                    const StyledStrip& ss, const DepthPermit* permit,
+                    float* ink) {
   const Strip& strip = ss.strip;
   const float* col = ss.color;
   const float opacity = ss.opacity;
@@ -694,20 +712,20 @@ void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
       const float a0 = alphas ? alphas[k] : opacity;
       const float a1 = alphas ? alphas[k + 1] : opacity;
       fillTriangleColorAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, c0, c0, c1,
-                             a0, a0, a1, dp, ref);
+                             a0, a0, a1, dp, ref, ink);
       fillTriangleColorAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, c0, c1, c1,
-                             a0, a1, a1, dp, ref);
+                             a0, a1, a1, dp, ref, ink);
     } else if (alphas) {
       const float a0 = alphas[k], a1 = alphas[k + 1];
       fillTriangleAlpha(color, W, rowBegin, rowEnd, l0, r0, l1, col, a0, a0,
-                        a1, dp, ref);
+                        a1, dp, ref, ink);
       fillTriangleAlpha(color, W, rowBegin, rowEnd, r0, r1, l1, col, a0, a1,
-                        a1, dp, ref);
+                        a1, dp, ref, ink);
     } else {
       fillTriangle(color, W, rowBegin, rowEnd, l0, r0, l1, col, opacity, dp,
-                   ref);
+                   ref, ink);
       fillTriangle(color, W, rowBegin, rowEnd, r0, r1, l1, col, opacity, dp,
-                   ref);
+                   ref, ink);
     }
   }
   // Round cap/join arc fans: constant alpha/color per triangle (resolved at
@@ -721,7 +739,7 @@ void rasterizeStrip(std::vector<float>& color, int W, int rowBegin, int rowEnd,
     fillTriangleAlpha(color, W, rowBegin, rowEnd, ss.fanPts[3 * i],
                       ss.fanPts[3 * i + 1], ss.fanPts[3 * i + 2],
                       ss.fanColor[i].data(), a, a, a, dpf,
-                      dpf ? ss.fanRef[i] : noRef);
+                      dpf ? ss.fanRef[i] : noRef, ink);
   }
 }
 
@@ -1596,14 +1614,25 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
     // A junction-tapered end or an end meeting a line draws no round cap
     // (appendCapFans); what an offset band's overshoot may paint is decided
     // per pixel at rasterization time (DepthPermit).
+    const std::size_t firstStrip = strips.size();
     buildStrokeReps(
         stroke, se.roundCap, se.roundJoin,
         !(in.outsideSide != 0 && (in.taperStart || in.clipStart.enabled)),
         !(in.outsideSide != 0 && (in.taperEnd || in.clipEnd.enabled)),
         in.outsideSide, strips);
+    for (std::size_t k = firstStrip; k < strips.size(); ++k)
+      strips[k].recordInk = in.recordInk;
   }
 
   if (strips.empty() && debugPolys.empty()) return;
+
+  // Ink coverage plane of the veil's own strips (FrameResult::inkCover);
+  // null unless the caller sized it, so a recordInk flag alone records
+  // nothing.
+  float* inkPlane =
+      frame.inkCover.size() == static_cast<std::size_t>(W) * H
+          ? frame.inkCover.data()
+          : nullptr;
 
   // Stable-sort strips for compositing. compositeOver paints in array order, so
   // the LAST strip is on top (painter's algorithm). Primary key = DEPTH: sort
@@ -1640,7 +1669,8 @@ void renderStrokeChains(FrameResult& frame, const Scene& scene,
         if (progress && progress->cancelRequested()) return;
         const int rb = rows.begin(), re = rows.end();
         for (const StyledStrip& ss : strips)
-          rasterizeStrip(frame.color, W, rb, re, ss, permitPtr);
+          rasterizeStrip(frame.color, W, rb, re, ss, permitPtr,
+                         ss.recordInk ? inkPlane : nullptr);
         for (const DebugPoly& dp : debugPolys)
           for (std::size_t k = 0; k + 1 < dp.pts.size(); ++k)
             drawThinSegment(frame.color, W, rb, re, dp.pts[k], dp.pts[k + 1],

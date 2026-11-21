@@ -28,7 +28,8 @@ namespace umbreon {
 // the box-downsample turns per-sample coverage into partial pixels, and then
 // finish once.
 RawFrame renderFrameRaw(const Scene& sceneIn, const RenderOptions& opt,
-                        RenderProgress* progress, RTCDevice sharedDevice) {
+                        RenderProgress* progress, RTCDevice sharedDevice,
+                        const std::vector<std::uint8_t>* inkEdgeGroups) {
   // The two NPR edge methods both draw the silhouette and would double-ink if
   // run together (stroke ribbons over object-space edge cylinders); reject the
   // combination rather than silently picking one.
@@ -287,12 +288,17 @@ RawFrame renderFrameRaw(const Scene& sceneIn, const RenderOptions& opt,
     // The edge pass polls `progress` for cancellation at its stage / loop
     // boundaries; a cancelled pass returns early with a partial line set and
     // the Postprocess boundary check below flags frame.cancelled.
+    // Group-alpha PerPixel veil pass: record where the veil's own lines ink
+    // (see FrameResult::inkCover).
+    if (inkEdgeGroups != nullptr)
+      frame.inkCover.assign(
+          static_cast<std::size_t>(frame.width) * frame.height, 0.0f);
     applyStrokeEdges(frame, scene, opt,
                      [&renderer](const Vec3& p, const Vec3& q,
                                  const int* excludeFaces, int nExclude) {
                        return renderer.occluded(p, q, excludeFaces, nExclude);
                      },
-                     OcclusionQuery{}, progress);
+                     OcclusionQuery{}, progress, inkEdgeGroups);
   }
 
   return RawFrame{std::move(frame), hi, ss, finalW, finalH};

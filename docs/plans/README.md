@@ -49,3 +49,7 @@
   （K=0 網点が全域で `被覆 = 1 - tone`）、確率的 `LayerKind::Stipple`、Line の auto fade（連続応答）と
   幅クランプ緩和、`ToneRecipe::strength / curve`、preset 別 tone recipe（`applyHatchStyle`）、
   ホスト向け spec テキスト（`applyHatchSpec` / `hatchStyleToSpec`）。**実装完了**（0.2.0）。
+- [edge-veil-ink-coverage.md](edge-veil-ink-coverage.md) — 半透明 veil に `--edges` を付けると per-pixel
+  group blend で外周の輪郭線が消える問題の修正。veil のパスで veil が持ち主の run のインク被覆
+  （`inkCover`）を記録し、`blendPerPixel` の被覆判定に加えて輪郭線を veil と同じ alpha で残す。
+  **実装完了**（branch `fix/edge-veil-ink-coverage`）。
