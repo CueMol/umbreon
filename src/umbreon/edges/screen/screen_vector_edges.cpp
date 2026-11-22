@@ -3,8 +3,8 @@
 // (stroke_render.hpp:renderStrokeChains). Also the UMBREON_SCREEN_EDGE_DUMP
 // debug sink (PPM/CSV crack dumps). Stages 1-3 live in screen_edge_*.cpp;
 // see screen_vector_edges.hpp for the pipeline overview.
-#include "../log.hpp"
-#include "edges/screen_vector_edges.hpp"
+#include "log.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,8 +17,8 @@
 #include <unordered_map>
 #include <utility>
 
-#include "edges/screen_edge_common.hpp"
-#include "edges/stroke_render.hpp"
+#include "edges/screen/screen_edge_common.hpp"
+#include "edges/screen/stroke_render.hpp"
 
 namespace umbreon {
 

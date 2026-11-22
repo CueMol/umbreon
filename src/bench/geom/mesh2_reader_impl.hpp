@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include "edges/mesh_weld.hpp"
+#include "edges/common/mesh_weld.hpp"
 #include "geom/mesh2_reader.hpp"
 #include "pov/pov_lexer.hpp"
 

@@ -12,13 +12,17 @@
 // inline; the renderer's TBB loop inlines the whole thing per pixel.
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <vector>
 
 #include <embree4/rtcore.h>
 
+#include "edges/common/outline_depth.hpp"
+#include "render/ray_masks.hpp"
 #include "shading/hit_shader.hpp"
 #include "scene.hpp"
 
@@ -147,7 +151,7 @@ inline bool backfaceHit(const RTCRayHit& rh, const Vec3& rd) {
 // of the near plane along this ray -- confirms a backface first hit is a
 // clip-cut interior rather than a legitimately visible open-mesh backface.
 inline bool clipConfirmFront(RTCScene scene, const Vec3& org, const Vec3& rd,
-                             float tMax) {
+                             float tMax, unsigned int mask = 0xFFFFFFFFu) {
   RTCRay r{};
   r.org_x = org.x;
   r.org_y = org.y;
@@ -158,7 +162,7 @@ inline bool clipConfirmFront(RTCScene scene, const Vec3& org, const Vec3& rd,
   r.tnear = std::max(1.0e-4f, 1.0e-4f * tMax);
   r.tfar = tMax * (1.0f - 1.0e-4f);
   if (r.tnear >= r.tfar) return false;
-  r.mask = 0xFFFFFFFFu;
+  r.mask = mask;
   r.flags = 0;
   r.time = 0.0f;
   RTCOccludedArguments oargs;
@@ -194,6 +198,249 @@ inline float clipProbeRange(RTCScene scene, const Vec3& org, const Vec3& rd,
   return rh.ray.tfar * dot(rd, camDir);
 }
 
+// The point on an edge line's center under a hit on its tube: Embree's curve
+// parameter u along the segment (EdgeLine) or the Bezier arc (EdgeArc).
+inline Vec3 edgeCenterAt(const ShadeContext& sc, GeomKind kind,
+                         unsigned int pid, float u) {
+  if (kind == GeomKind::EdgeArc) {
+    const std::array<Vec3, 4>& q = sc.built.edgeArcCP[pid];
+    const float v = 1.0f - u;
+    return q[0] * (v * v * v) + q[1] * (3.0f * v * v * u) +
+           q[2] * (3.0f * v * u * u) + q[3] * (u * u * u);
+  }
+  const Vec3& a = sc.built.edgeLineA[pid];
+  const Vec3& b = sc.built.edgeLineB[pid];
+  return a + (b - a) * u;
+}
+
+// Tangent (not normalized) of an edge line's centerline at parameter u.
+inline Vec3 edgeTangentAt(const ShadeContext& sc, GeomKind kind,
+                          unsigned int pid, float u) {
+  if (kind == GeomKind::EdgeArc) {
+    const std::array<Vec3, 4>& q = sc.built.edgeArcCP[pid];
+    const float v = 1.0f - u;
+    return (q[1] - q[0]) * (3.0f * v * v) + (q[2] - q[1]) * (6.0f * v * u) +
+           (q[3] - q[2]) * (3.0f * u * u);
+  }
+  return sc.built.edgeLineB[pid] - sc.built.edgeLineA[pid];
+}
+
+// Section (transparency group) of a non-edge surface hit.
+inline uint16_t surfaceGroupOf(const ShadeContext& sc, const RTCRayHit& rh) {
+  const GeomRecord& rec = sc.built.records[rh.hit.geomID];
+  const unsigned int pid = rh.hit.primID;
+  switch (rec.kind) {
+    case GeomKind::Mesh: return sc.mesh.groupForTri(pid);
+    case GeomKind::Sphere: return sc.built.sphereGroup[pid];
+    case GeomKind::CylinderCapped: return sc.built.cylCapGroup[pid];
+    case GeomKind::Cylinder: return sc.built.cylGroup[pid];
+    default: return 0;
+  }
+}
+
+// Outline-mode edge line test for a primary hit: true when `rh` hit an
+// Outline object-space edge line (Cylinder::objEdge / EdgeArc::kind ==
+// kObjEdgeOutline) that has a surface behind it along the same ray, inside the
+// clip range [.., tfar] and at or before the outline far depth
+// (outlineFarSideHidden). Such a line is treated as absent and the ray goes on.
+// The probe ignores every edge line (kNoEdgeRayMask).
+inline bool outlineEdgeHidden(const ShadeContext& sc, const RTCRayHit& rh,
+                              const Vec3& org, const Vec3& rd,
+                              const Vec3& camDir, float tfar) {
+  const GeomRecord& rec = sc.built.records[rh.hit.geomID];
+  if (!isEdgeKind(rec.kind)) return false;
+  const uint8_t kind = rec.kind == GeomKind::EdgeArc
+                           ? sc.built.edgeArcKind[rh.hit.primID]
+                           : sc.built.edgeLineKind[rh.hit.primID];
+  if (kind != kObjEdgeOutline) return false;
+  // Decide per point of the line's center (the contour point), not per pixel
+  // of its width, as POV-Ray does: the probe runs from the center point under
+  // the hit (Embree's curve parameter u) along the view ray. A pixel ray
+  // through the line's side would otherwise see a surface behind where the
+  // background shows through a gap narrower than the line, and thin the line
+  // to a sliver there.
+  const Vec3 C = edgeCenterAt(sc, rec.kind, rh.hit.primID, rh.hit.u);
+  const float tC = dot(C - org, rd);
+  if (tC >= tfar) return false;
+  // Only a surface of the line's own section counts as behind it: the
+  // silhouette of one renderer is its outline against everything that is not
+  // itself, so another section behind (a ball-and-stick behind a tube) keeps
+  // it, as in POV-Ray (per-section visibility) and the screen-space pass
+  // (same-section self-occlusion only). Other sections are passed through.
+  const uint16_t lineGroup = rec.kind == GeomKind::EdgeArc
+                                 ? sc.built.edgeArcGroup[rh.hit.primID]
+                                 : sc.built.edgeLineGroup[rh.hit.primID];
+  RTCRayHit ph;
+  ph.ray.org_x = C.x;
+  ph.ray.org_y = C.y;
+  ph.ray.org_z = C.z;
+  ph.ray.dir_x = rd.x;
+  ph.ray.dir_y = rd.y;
+  ph.ray.dir_z = rd.z;
+  ph.ray.tnear = 0.0f;
+  ph.ray.tfar = tfar - tC;
+  ph.ray.mask = kNoEdgeRayMask;
+  ph.ray.flags = 0;
+  ph.ray.time = 0.0f;
+  RTCIntersectArguments iargs;
+  rtcInitIntersectArguments(&iargs);
+  for (int k = 0; k < 32; ++k) {
+    ph.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+    ph.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+    rtcIntersect1(sc.built.scene, &ph, &iargs);
+    if (ph.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
+        ph.hit.geomID >= sc.built.records.size())
+      return false;
+    if (surfaceGroupOf(sc, ph) == lineGroup)
+      return outlineFarSideHidden((tC + ph.ray.tfar) * dot(rd, camDir),
+                                  sc.opt.objectSpaceEdges.outlineFarVz);
+    ph.ray.tnear =
+        std::nextafter(ph.ray.tfar, std::numeric_limits<float>::infinity());
+    ph.ray.tfar = tfar - tC;
+  }
+  return false;
+}
+
+// Nearest primary hit in [rh.ray.tnear, rh.ray.tfar], skipping hidden outline
+// edge lines (outlineEdgeHidden). `rh` must be initialized as for
+// rtcIntersect1; on return it holds the accepted hit or a miss.
+//
+// The view clip planes cut an edge line by its center, not by its tube: a line
+// whose center lies inside [clipNear, clipFar] is drawn at its full width
+// even where its tube crosses a plane, and one whose center lies outside is
+// dropped whole. Cutting the tube itself would leave slivers of a line that
+// runs along the near plane (a ring of a sphere just behind it), and a line
+// just in front of it would show the back half of its tube. So a primary walk
+// that starts at the near plane also looks for edge tubes in front of it, and
+// edge hits are filtered by their center's view-z.
+inline bool edgeCenterClipped(const ShadeContext& sc, const RTCRayHit& rh,
+                              const Vec3& org, const Vec3& camDir) {
+  const GeomRecord& rec = sc.built.records[rh.hit.geomID];
+  if (!isEdgeKind(rec.kind)) return false;
+  if (sc.clipNearZ <= -std::numeric_limits<float>::infinity() &&
+      sc.clipFarZ >= std::numeric_limits<float>::infinity())
+    return false;
+  const Vec3 C = edgeCenterAt(sc, rec.kind, rh.hit.primID, rh.hit.u);
+  const float vz = dot(C - org, camDir);
+  return vz < sc.clipNearZ || vz > sc.clipFarZ;
+}
+
+// A ray (org, rd) looks into a clip cut: its first surface behind the near
+// plane is a backface and the near plane removed a surface in front of it --
+// it sees the inside of a cut object (the far wall of a sliced surface, the
+// inside of a cut ribbon). The same backface + removed-front test as the
+// screen-space clip-cut G-buffer flag.
+inline bool rayLooksIntoCut(const ShadeContext& sc, const Vec3& org,
+                            const Vec3& rd, const ClipT& clip) {
+  RTCRayHit ph;
+  ph.ray.org_x = org.x;
+  ph.ray.org_y = org.y;
+  ph.ray.org_z = org.z;
+  ph.ray.dir_x = rd.x;
+  ph.ray.dir_y = rd.y;
+  ph.ray.dir_z = rd.z;
+  ph.ray.tnear = clip.tnear;
+  ph.ray.tfar = clip.tfar;
+  ph.ray.mask = kNoEdgeRayMask;
+  ph.ray.flags = 0;
+  ph.ray.time = 0.0f;
+  ph.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+  ph.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+  RTCIntersectArguments iargs;
+  rtcInitIntersectArguments(&iargs);
+  rtcIntersect1(sc.built.scene, &ph, &iargs);
+  if (ph.hit.geomID == RTC_INVALID_GEOMETRY_ID || !backfaceHit(ph, rd))
+    return false;
+  return clipConfirmFront(sc.built.scene, org, rd, clip.tnear, kNoEdgeRayMask);
+}
+
+// An edge line next to a clip cut: a view ray on either side of its
+// centerline (half a radius off, across the line on screen) looks into a cut.
+// The screen-space pass draws no line on a crack that touches a cut-interior
+// pixel (a fold of the far wall seen through the opening, the outline of a
+// cavity seen against it), so the line is dropped as a whole; a per-pixel
+// test would keep the half lying over a surface. The side rays stay close to
+// the line, as the screen-space test looks only at the pixels next to the
+// crack: for a contour (raised a quarter radius off the surface) the inner ray
+// is just inside the surface's outline and the outer one beyond it, so the
+// outline of a surface the plane cuts only farther in is kept. The rays are
+// shifted parallel to rd, off-axis only across the line, so their near/far
+// clip distances stay those of the primary ray.
+inline bool edgeNextToCut(const ShadeContext& sc, const RTCRayHit& rh,
+                          const Vec3& org, const Vec3& rd,
+                          const Vec3& camDir) {
+  const GeomRecord& rec = sc.built.records[rh.hit.geomID];
+  if (!isEdgeKind(rec.kind)) return false;
+  const ClipT clip = clipRangeT(sc, rd, camDir);
+  if (!clip.on || clip.tnear <= 0.0f) return false;
+  const Vec3 C = edgeCenterAt(sc, rec.kind, rh.hit.primID, rh.hit.u);
+  const Vec3 P = org + rd * rh.ray.tfar;
+  const float r = length(P - C);
+  const float tC = dot(C - org, rd);
+  const Vec3 base = C - rd * tC;  // origin of the ray parallel to rd via C
+  Vec3 side = cross(edgeTangentAt(sc, rec.kind, rh.hit.primID, rh.hit.u), rd);
+  side = side - camDir * dot(side, camDir);
+  const float sl = length(side);
+  if (sl <= 0.0f || r <= 0.0f) return rayLooksIntoCut(sc, base, rd, clip);
+  side = side * (0.5f * r / sl);
+  return rayLooksIntoCut(sc, base + side, rd, clip) ||
+         rayLooksIntoCut(sc, base - side, rd, clip);
+}
+
+inline void intersectPrimary(const ShadeContext& sc, RTCRayHit& rh,
+                             const Vec3& org, const Vec3& rd,
+                             const Vec3& camDir) {
+  const float tnear0 = rh.ray.tnear;
+  const float tfar = rh.ray.tfar;
+  RTCIntersectArguments iargs;
+  rtcInitIntersectArguments(&iargs);
+  auto edgeDropped = [&](const RTCRayHit& r) {
+    return edgeCenterClipped(sc, r, org, camDir) ||
+           outlineEdgeHidden(sc, r, org, rd, camDir, tfar) ||
+           edgeNextToCut(sc, r, org, rd, camDir);
+  };
+  auto skipTo = [&](RTCRayHit& r, float t, float tEnd) {
+    r.ray.tnear = std::nextafter(t, std::numeric_limits<float>::infinity());
+    r.ray.tfar = tEnd;
+    r.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+    r.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+  };
+  rtcIntersect1(sc.built.scene, &rh, &iargs);
+  // Bounded: each skip advances past one edge line.
+  for (int k = 0; k < 16; ++k) {
+    if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
+        rh.hit.geomID >= sc.built.records.size())
+      break;
+    if (!edgeDropped(rh)) break;
+    skipTo(rh, rh.ray.tfar, tfar);
+    rtcIntersect1(sc.built.scene, &rh, &iargs);
+  }
+  // Edge tubes in front of the near plane whose center is behind it.
+  const ClipT clip = clipRangeT(sc, rd, camDir);
+  if (!clip.on || clip.tnear <= 0.0f ||
+      std::fabs(tnear0 - clip.tnear) > 1.0e-4f * clip.tnear)
+    return;  // not a walk from the near plane
+  RTCRayHit eh = rh;
+  eh.ray.tnear = 0.0f;
+  eh.ray.tfar = clip.tnear;
+  eh.ray.mask = kEdgeGeomMask;
+  eh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+  eh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+  rtcIntersect1(sc.built.scene, &eh, &iargs);
+  for (int k = 0; k < 16; ++k) {
+    if (eh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
+        eh.hit.geomID >= sc.built.records.size())
+      return;
+    if (!edgeDropped(eh)) {
+      eh.ray.mask = rh.ray.mask;
+      rh = eh;  // nearer than any hit at or behind the near plane
+      return;
+    }
+    skipTo(eh, eh.ray.tfar, clip.tnear);
+    rtcIntersect1(sc.built.scene, &eh, &iargs);
+  }
+}
+
 // Trace one primary ray and fill the first-hit G-buffer. MIRRORS the G-buffer
 // branch of shadeHit (hit_shader.hpp): the mesh path interpolates the slot-0
 // smooth normal (face-forwarded via the geometric Ng, the silhouette-stable
@@ -220,9 +467,7 @@ inline GBufProbe probeGBuffer(const ShadeContext& sc, const Vec3& org,
   rh.ray.time = 0.0f;
   rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
   rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
-  RTCIntersectArguments iargs;
-  rtcInitIntersectArguments(&iargs);
-  rtcIntersect1(sc.built.scene, &rh, &iargs);
+  intersectPrimary(sc, rh, org, rd, camDir);
   if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
       rh.hit.geomID >= sc.built.records.size()) {
     // Background: record what the clip planes removed along the ray (the
@@ -249,6 +494,20 @@ inline GBufProbe probeGBuffer(const ShadeContext& sc, const Vec3& org,
 
   g.viewZ = rh.ray.tfar * dot(rd, camDir);
   const GeomRecord& rec = sc.built.records[rh.hit.geomID];
+  if (isEdgeKind(rec.kind)) {
+    // Object-space edge line (mirrors shadeHit's edge branch).
+    const bool arc = rec.kind == GeomKind::EdgeArc;
+    const BuiltScene& b = sc.built;
+    g.normal = faceForward(
+        normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
+    const int group = arc ? b.edgeArcGroup[rh.hit.primID]
+                          : b.edgeLineGroup[rh.hit.primID];
+    g.objectId = (static_cast<uint32_t>(group) << 2) | 2u;
+    g.materialId = 0u;
+    g.surfAlpha = arc ? b.edgeArcColor[rh.hit.primID].w
+                      : b.edgeLineColor[rh.hit.primID].w;
+    return g;
+  }
   if (rec.kind == GeomKind::Mesh) {
     // Smooth shading normal (slot 0), face-forwarded via the GEOMETRIC Ng --
     // the same stable flip shadeHit uses (see the comment there).
@@ -390,9 +649,7 @@ inline PixelResult integratePixel(const ShadeContext& sc, const Vec3& org,
     rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;
     rh.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
 
-    RTCIntersectArguments iargs;
-    rtcInitIntersectArguments(&iargs);
-    rtcIntersect1(rscene, &rh, &iargs);
+    intersectPrimary(sc, rh, org, rd, camDir);
 
     if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
         rh.hit.geomID >= sc.built.records.size()) {

@@ -10,10 +10,12 @@
 #include "../log.hpp"
 #include <cstdint>
 #include <cstdio>
+#include <array>
 #include <vector>
 
 #include <embree4/rtcore.h>
 
+#include "render/ray_masks.hpp"
 #include "scene.hpp"
 
 namespace umbreon {
@@ -50,7 +52,15 @@ inline void embreeErrorCallback(void* /*userPtr*/, RTCError code,
 // by the cyl* side-tables). CylinderCapped = POV capped bonds/wireframes
 // (CONE_LINEAR_CURVE, one segment per primID, indexed by the cylCap* tables).
 // The two need distinct kinds because Embree restarts primID at 0 per geometry.
-enum class GeomKind { Mesh, Sphere, Cylinder, CylinderCapped };
+// EdgeLine / EdgeArc = object-space edge lines (generateObjectSpaceEdges):
+// chained ROUND_LINEAR_CURVE and round cubic Bezier arcs, indexed by the
+// edgeLine* / edgeArc* tables. Both carry kEdgeGeomMask.
+enum class GeomKind { Mesh, Sphere, Cylinder, CylinderCapped, EdgeLine, EdgeArc };
+
+// True for the object-space edge line kinds.
+inline bool isEdgeKind(GeomKind k) {
+  return k == GeomKind::EdgeLine || k == GeomKind::EdgeArc;
+}
 
 struct GeomRecord {
   GeomKind kind = GeomKind::Mesh;
@@ -80,6 +90,20 @@ struct BuiltScene {
   std::vector<Material> cylCapMat;
   std::vector<uint16_t> cylCapGroup;
   std::vector<float> cylCapOpacity1;
+
+  // Object-space edge lines (GeomKind::EdgeLine), indexed by primID; and
+  // edge arcs (GeomKind::EdgeArc). Kind = Cylinder::objEdge / EdgeArc::kind.
+  std::vector<Vec4> edgeLineColor;
+  std::vector<uint16_t> edgeLineGroup;
+  std::vector<uint8_t> edgeLineKind;
+  // Center line of each edge-line segment (its two ends) and of each edge
+  // arc (its 4 Bezier control points), in primID order: the silhouette-mode
+  // test (outlineEdgeHidden) probes from the center point under a hit.
+  std::vector<Vec3> edgeLineA, edgeLineB;
+  std::vector<std::array<Vec3, 4>> edgeArcCP;
+  std::vector<Vec4> edgeArcColor;
+  std::vector<uint16_t> edgeArcGroup;
+  std::vector<uint8_t> edgeArcKind;
 
   // Origin tag carried from Scene::{Sphere,Cylinder}::fromEdgeMacro through the
   // build: 1 = baked NPR outline decoration (silhouette edge cylinder / joint

@@ -234,7 +234,7 @@ CLI: `--shadows on --shadow-samples N --light-radius <deg>`。
 |---|---|---|---|
 | なし | 両 `enable=false` | 既定 | — |
 | **A: ストローク** | `strokeEdges.enable=true` | Freestyle 風。可変幅リボン | `strokeEdges` 内の太さ/リサンプル/QI |
-| **B: オブジェクト空間** | `objectSpaceEdges.enable=true` | 解析的輪郭を細い円柱で描画 | `objectSpaceEdges.segments`（球/キャップ分割）等 |
+| **B: オブジェクト空間** | `objectSpaceEdges.enable=true` | 解析的輪郭を線（Bézier の円弧・円柱）で描画 | `objectSpaceEdges.width` / `raise`、セクション別は `Scene::groupObjectEdgeStyle` |
 
 スタイル（色・幅・クラス別 on/off、セクション別上書き）は `EdgeStyle` / `Scene::groupEdgeStyle` で
 指定。詳細は [libumbreon.md §4.9](api/libumbreon.md) と [edges_screen_vector.md](edges_screen_vector.md)。

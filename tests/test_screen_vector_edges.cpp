@@ -21,8 +21,8 @@
 #include <cstddef>
 #include <vector>
 
-#include "edges/screen_vector_edges.hpp"
-#include "edges/stroke_render.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
+#include "edges/screen/stroke_render.hpp"
 #include "test_util.hpp"
 
 namespace {

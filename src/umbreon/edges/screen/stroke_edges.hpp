@@ -3,9 +3,9 @@
 // Freestyle-style stroke edge rendering (--edges).
 //
 // The active --edges implementation dispatches to the SCREEN source
-// (edges/screen_vector_edges.hpp): vectorizes per-pixel edge AOVs by crack
+// (edges/screen/screen_vector_edges.hpp): vectorizes per-pixel edge AOVs by crack
 // tracing (tessellation-independent, z-buffer visibility, no QI rays). The
-// stylization + rasterization back half (edges/stroke_render.hpp) is shared.
+// stylization + rasterization back half (edges/screen/stroke_render.hpp) is shared.
 //
 // Runs as a post-process on the hi-res (supersampled) FrameResult, AFTER fog and
 // BEFORE the box downsample. Gated by the caller on RenderOptions::strokeEdges
@@ -37,7 +37,7 @@ using OcclusionQuery =
 
 // Detect, chain, stylize and composite Freestyle-style stroke edges over
 // `frame.color` in place, at the frame's current (hi-res) resolution. Dispatches
-// to the screen-space vector edge extractor (edges/screen_vector_edges.hpp).
+// to the screen-space vector edge extractor (edges/screen/screen_vector_edges.hpp).
 // `occluded`, when non-empty, feeds the extractor's fold probe (one segment ray
 // per strongNdelta-rescue candidate crack -- an edge-of-visible-surface test,
 // not per-vertex QI; visibility stays exact from the z-buffer). `occludedRaw`

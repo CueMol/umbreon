@@ -125,18 +125,17 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/integrator/pt1/pt1_denoise.cpp
     src/umbreon/postprocess/fog.cpp
     src/umbreon/postprocess/image_ops.cpp
-    src/umbreon/edges/stroke_edges.cpp
-    src/umbreon/edges/stroke_render.cpp
-    src/umbreon/edges/screen_edge_classify.cpp
-    src/umbreon/edges/screen_edge_trace.cpp
-    src/umbreon/edges/screen_edge_prune.cpp
-    src/umbreon/edges/screen_edge_geometry.cpp
-    src/umbreon/edges/screen_vector_edges.cpp
-    src/umbreon/edges/mesh_feature_edges.cpp
-    src/umbreon/edges/screen_projection.cpp
-    src/umbreon/edges/object_space_edges.cpp
-    src/umbreon/edges/edge_mesh_bvh.cpp
-    src/umbreon/edges/analytic_silhouette.cpp
+    src/umbreon/edges/screen/stroke_edges.cpp
+    src/umbreon/edges/screen/stroke_render.cpp
+    src/umbreon/edges/screen/screen_edge_classify.cpp
+    src/umbreon/edges/screen/screen_edge_trace.cpp
+    src/umbreon/edges/screen/screen_edge_prune.cpp
+    src/umbreon/edges/screen/screen_edge_geometry.cpp
+    src/umbreon/edges/screen/screen_vector_edges.cpp
+    src/umbreon/edges/object/mesh_feature_edges.cpp
+    src/umbreon/edges/common/screen_projection.cpp
+    src/umbreon/edges/object/object_space_edges.cpp
+    src/umbreon/edges/object/analytic_silhouette.cpp
     src/umbreon/npr/hatch_shade.cpp
     src/umbreon/blend/group_blend.cpp
     src/umbreon/umbreon.cpp

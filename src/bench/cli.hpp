@@ -325,7 +325,6 @@ struct Options {
   bool objEdges = false;
   float objEdgeWidth = 0.03f;    // edge cylinder radius (world units)
   float objEdgeRaise = 0.0f;     // outward contour offset (world units)
-  int objEdgeSegments = 48;      // ring tessellation per sphere / cap circle
   float objEdgeColor[3] = {0.0f, 0.0f, 0.0f};  // linear RGB (from #RRGGBB)
   bool objEdgeClip = true;       // union-boundary clip (drop notch-causing parts
                                  // inside connecting primitives); --obj-edge-clip
@@ -345,12 +344,11 @@ struct Options {
   bool objEdgeMeshSil = true;
   bool objEdgeMeshCrease = false;
   bool objEdgeMeshBorder = true;
-  // Object-space hidden-line clip for mesh edges (CueMol RendIntData_AABBTree
-  // visibility ported to Embree). off = legacy verbatim emit (ray tracer occludes
-  // the cylinders). on = pre-clip each edge to its camera-visible spans, so an
-  // edge raised off the surface or behind a transparent surface is hidden where
-  // it dips behind geometry.
-  bool objEdgeVisibility = false;
+  // --obj-edge ID=spec : per-section object-space edge style (repeatable),
+  // keyed by the "_show"-stripped section id. The spec is kept as text and
+  // resolved in applyObjectSpaceEdges, where the --obj-edge-* globals it
+  // inherits are known (see parseObjEdgeSpec there).
+  std::map<std::string, std::string> sectionObjEdge;
   // Verification only: after generating object-space edges, drop the surface
   // (mesh + original spheres/cylinders) so ONLY the edge cylinders render. Makes
   // the visibility ON/OFF difference visible (no occluder hides the back edges).

@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
           tbb::global_control::max_allowed_parallelism,
           static_cast<std::size_t>(opt.threads));
 
-    umbreon::applyObjectSpaceEdges(opt, scene, ropt);
+    umbreon::applyObjectSpaceEdges(opt, scene, ropt, groupNames);
 
     // umbreon backend: primary rays + direct POV local shading + fog + gamma.
     // This is exactly what CueMol will call (no POV-Ray SDL involved).

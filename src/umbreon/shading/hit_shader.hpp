@@ -256,6 +256,22 @@ inline HitShade shadeHit(const ShadeContext& c, const RTCRayHit& rh,
   const bool shadowsActive = c.opt.shadows || c.opt.envLights > 0;
   const GeomRecord& rec = c.built.records[rh.hit.geomID];
   const Vec3 V = normalize(Vec3{-rd.x, -rd.y, -rd.z});
+  if (isEdgeKind(rec.kind)) {
+    // Object-space edge line: its exact color, untouched by lights, shadows,
+    // ambient, AO or GI (not GI-eligible, so the composite leaves it alone).
+    const bool arc = rec.kind == GeomKind::EdgeArc;
+    const Vec4& fc = arc ? c.built.edgeArcColor[rh.hit.primID]
+                         : c.built.edgeLineColor[rh.hit.primID];
+    hs.color = Vec3{fc.x, fc.y, fc.z};
+    hs.opacity = fc.w;
+    hs.group = arc ? c.built.edgeArcGroup[rh.hit.primID]
+                   : c.built.edgeLineGroup[rh.hit.primID];
+    hs.normal = faceForward(
+        normalize(Vec3{rh.hit.Ng_x, rh.hit.Ng_y, rh.hit.Ng_z}), rd);
+    // Id as an open cylinder of its section (kind bits 2).
+    hs.objectId = (static_cast<uint32_t>(hs.group) << 2) | 2u;
+    return hs;
+  }
   if (rec.kind == GeomKind::Mesh) {
     // Interpolate the shading normal and pigment color (slots 0/1).
     float nbuf[3] = {0, 0, 0};

@@ -53,3 +53,8 @@
   group blend で外周の輪郭線が消える問題の修正。veil のパスで veil が持ち主の run のインク被覆
   （`inkCover`）を記録し、`blendPerPixel` の被覆判定に加えて輪郭線を veil と同じ alpha で残す。
   **実装完了**（branch `fix/edge-veil-ink-coverage`）。
+- [edge-object-space-completion.md](edge-object-space-completion.md) — 3D 空間の edge（`--obj-edges`、
+  輪郭を円柱として場面に足す方式）を CueMol から使える形に仕上げる。CueMol での切り替えと GL 基準の太さ、
+  セクションごとのスタイル表、背景との境だけに出す silhouette モード（intersection filter）、球・円柱の
+  切り落としの BVH 化、つなぎ目の球、影・AO・GI からの除外、veil の per-pixel 合成。**段階 1（不透明な
+  シーン）実装済み**。段階 2（veil）・段階 3（切り落としの BVH）は未着手。

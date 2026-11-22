@@ -1,7 +1,7 @@
 // SCREEN-SPACE VECTOR edges, Stage 2.5: hysteresis prune + retrace of the
 // traced chains (weak-DepthGap support propagation, run-level tail trim).
 // See screen_vector_edges.hpp for the pipeline overview.
-#include "edges/screen_vector_edges.hpp"
+#include "edges/screen/screen_vector_edges.hpp"
 
 #include <algorithm>
 #include <cmath>

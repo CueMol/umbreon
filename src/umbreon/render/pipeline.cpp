@@ -8,8 +8,8 @@
 #include <cstdio>
 #include <stdexcept>
 
-#include "edges/object_space_edges.hpp"
-#include "edges/stroke_edges.hpp"
+#include "edges/object/object_space_edges.hpp"
+#include "edges/screen/stroke_edges.hpp"
 #include "npr/hatch_shade.hpp"
 #include "postprocess/fog.hpp"
 #include "postprocess/image_ops.hpp"

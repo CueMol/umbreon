@@ -18,6 +18,7 @@
 
 #include <embree4/rtcore.h>
 
+#include "render/ray_masks.hpp"
 #include "scene.hpp"
 #include "shading/secondary_rays.hpp"  // Light, tea2, occluded, cosineSampleHemisphere
 
@@ -80,7 +81,7 @@ inline float intersectNearest(RTCScene rscene, const Vec3& O, const Vec3& dir,
   rh.ray.dir_z = dir.z;
   rh.ray.tnear = tnear;
   rh.ray.tfar = tfar;
-  rh.ray.mask = 0xFFFFFFFFu;
+  rh.ray.mask = kSecondaryRayMask;  // skip edge lines
   rh.ray.flags = 0;
   rh.ray.time = 0.0f;
   rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;

@@ -2,7 +2,7 @@
 // Freestyle Stroke/StrokeShader stylization layer, stroke assembly, and the
 // renderStrokeChains driver. See stroke_render.hpp; any edge-chain SOURCE
 // (today the screen vector source) feeds this stage.
-#include "edges/stroke_render.hpp"
+#include "edges/screen/stroke_render.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,7 +16,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
-#include "edges/screen_edge_common.hpp"
+#include "edges/screen/screen_edge_common.hpp"
 #include "postprocess/fog.hpp"
 
 namespace umbreon {

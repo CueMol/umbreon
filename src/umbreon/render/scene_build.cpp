@@ -169,6 +169,7 @@ BuiltScene buildEmbreeScene(RTCDevice device, const Scene& scene,
     buildSpheres(device, rscene, scene, bakeOffsets, out, buildEdgeTables);
     buildCylinderGeometry(device, rscene, scene, bakeOffsets, out,
                           buildEdgeTables, forceAxisTables);
+    buildEdgeArcGeometry(device, rscene, scene, bakeOffsets, out);
 
     rtcCommitScene(rscene);
     if (RTCError err = rtcGetDeviceError(device); err != RTC_ERROR_NONE)
