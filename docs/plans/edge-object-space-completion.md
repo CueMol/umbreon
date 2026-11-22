@@ -429,6 +429,12 @@ edge の側では扱わない (必要なら本体の別の作業にする)。
    - 同じシーンを silhouette モードで
 3. 段階 2 のテストを足し、PR を出す。
 
+結果: 直す所は無かった。group alpha の合成はパスごとに `renderFrameRaw` を呼び、edge の
+線はそのたびに隠すセクションを除いた場面から作り直す (`PassRunner::run`)。背景のパスに
+veil のセクションの線 (円柱・円弧とも) は無く、veil のパスでは veil と一緒に現れる。
+`~/Desktop/veil.qsc` (分子表面 alpha 0.6、per-pixel、中の stick にも線) を edges /
+silhouette の両モードで screen 方式と比べ、目視でも確認した。
+
 ### 段階 3: 切り落としの高速化
 
 対象: §2.4 の BVH。大きな構造 (数万原子の ball-and-stick) で edge の生成時間を測り、
