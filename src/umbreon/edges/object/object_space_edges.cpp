@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <vector>
 
+#include <embree4/rtcore.h>
+#include <tbb/parallel_for.h>
+
 #include "edges/object/analytic_silhouette.hpp"
 #include "edges/object/mesh_feature_edges.hpp"
 #include "scene.hpp"
@@ -123,33 +126,144 @@ bool insideCylinder(const Vec3& X, const Cylinder& c, float grow) {
   return length(perp) < c.radius + grow;
 }
 
-// True where `X` is inside any ORIGINAL solid of section `group` other than the
-// contour's source, each grown by `grow`. A sphere ring is clipped by every
-// bond, thinner ones too: where a bond leaves the atom, the ring runs inside
-// the bond, and POV-Ray (the reference) draws no ring there.
-bool insideAnySolid(const Vec3& X, const Scene& scene, std::size_t nSph,
-                    std::size_t nCyl, uint16_t group, int skipSphere,
-                    int skipCyl, float grow) {
-  for (std::size_t i = 0; i < nSph; ++i) {
-    const Sphere& s = scene.spheres[i];
-    if (static_cast<int>(i) == skipSphere || s.group != group || s.fromEdgeMacro)
-      continue;
-    if (insideSphere(X, s, grow)) return true;
+// The clip solids: every ORIGINAL sphere and cylinder that may clip a contour
+// (not a POV-macro edge, a line-derived noEdge cylinder or a generated edge),
+// indexed for point queries. inside() is true where `X` is inside a solid of
+// section `group` other than the contour's source, each grown by `grow`. A
+// sphere ring is clipped by every bond, thinner ones too: where a bond leaves
+// the atom, the ring runs inside the bond, and POV-Ray (the reference) draws
+// no ring there.
+//
+// The solids' boxes (grown past kClipEps) go into a separate Embree scene of
+// one user geometry, and a point query of radius 0 hands back only the solids
+// whose box holds the point, so a contour sample tests its neighbours rather
+// than the whole scene (a brute-force loop was quadratic: seconds for a few
+// thousand atoms). The inside test itself is unchanged, so the result is the
+// brute-force one exactly. Without a device the same test runs over all.
+class ClipSolids {
+ public:
+  ClipSolids(const Scene& scene, std::size_t nSph, std::size_t nCyl)
+      : scene_(scene) {
+    for (std::size_t i = 0; i < nSph; ++i)
+      if (!scene.spheres[i].fromEdgeMacro)
+        refs_.push_back({false, static_cast<int>(i)});
+    for (std::size_t i = 0; i < nCyl; ++i) {
+      const Cylinder& c = scene.cylinders[i];
+      if (!c.noEdge && !c.fromEdgeMacro && c.objEdge == 0)
+        refs_.push_back({true, static_cast<int>(i)});
+    }
+    if (refs_.empty()) return;
+    device_ = rtcNewDevice(nullptr);
+    if (!device_) return;
+    bvh_ = rtcNewScene(device_);
+    RTCGeometry g = rtcNewGeometry(device_, RTC_GEOMETRY_TYPE_USER);
+    rtcSetGeometryUserPrimitiveCount(g, static_cast<unsigned int>(refs_.size()));
+    rtcSetGeometryUserData(g, this);
+    rtcSetGeometryBoundsFunction(g, &ClipSolids::bounds, nullptr);
+    rtcCommitGeometry(g);
+    rtcAttachGeometry(bvh_, g);
+    rtcReleaseGeometry(g);
+    rtcCommitScene(bvh_);
   }
-  for (std::size_t i = 0; i < nCyl; ++i) {
-    const Cylinder& c = scene.cylinders[i];
-    if (static_cast<int>(i) == skipCyl || c.group != group || c.noEdge ||
-        c.fromEdgeMacro || c.objEdge != 0)
-      continue;
-    if (insideCylinder(X, c, grow)) return true;
+  ~ClipSolids() {
+    if (bvh_) rtcReleaseScene(bvh_);
+    if (device_) rtcReleaseDevice(device_);
   }
-  return false;
-}
+  ClipSolids(const ClipSolids&) = delete;
+  ClipSolids& operator=(const ClipSolids&) = delete;
+
+  bool inside(const Vec3& X, uint16_t group, int skipSphere, int skipCyl,
+              float grow) const {
+    Query q{this, X, group, skipSphere, skipCyl, grow, false};
+    if (!bvh_) {
+      for (std::size_t i = 0; i < refs_.size() && !q.hit; ++i) test(q, i);
+      return q.hit;
+    }
+    RTCPointQuery pq;
+    pq.x = X.x;
+    pq.y = X.y;
+    pq.z = X.z;
+    pq.time = 0.0f;
+    pq.radius = 0.0f;
+    RTCPointQueryContext ctx;
+    rtcInitPointQueryContext(&ctx);
+    rtcPointQuery(bvh_, &pq, &ctx, &ClipSolids::visit, &q);
+    return q.hit;
+  }
+
+ private:
+  struct Ref {
+    bool cyl;
+    int idx;
+  };
+  struct Query {
+    const ClipSolids* self;
+    Vec3 X;
+    uint16_t group;
+    int skipSphere, skipCyl;
+    float grow;
+    bool hit;
+  };
+
+  static void test(Query& q, std::size_t i) {
+    if (q.hit) return;
+    const Ref& r = q.self->refs_[i];
+    if (r.cyl) {
+      const Cylinder& c =
+          q.self->scene_.cylinders[static_cast<std::size_t>(r.idx)];
+      if (r.idx != q.skipCyl && c.group == q.group &&
+          insideCylinder(q.X, c, q.grow))
+        q.hit = true;
+    } else {
+      const Sphere& sp = q.self->scene_.spheres[static_cast<std::size_t>(r.idx)];
+      if (r.idx != q.skipSphere && sp.group == q.group &&
+          insideSphere(q.X, sp, q.grow))
+        q.hit = true;
+    }
+  }
+  static bool visit(RTCPointQueryFunctionArguments* args) {
+    test(*static_cast<Query*>(args->userPtr), args->primID);
+    return false;  // the query radius is unchanged
+  }
+  static void bounds(const RTCBoundsFunctionArguments* args) {
+    const ClipSolids* self = static_cast<const ClipSolids*>(args->geometryUserPtr);
+    const Ref& r = self->refs_[args->primID];
+    Vec3 lo, hi;
+    float pad;
+    if (r.cyl) {
+      const Cylinder& c = self->scene_.cylinders[static_cast<std::size_t>(r.idx)];
+      lo = {std::fmin(c.p0.x, c.p1.x), std::fmin(c.p0.y, c.p1.y),
+            std::fmin(c.p0.z, c.p1.z)};
+      hi = {std::fmax(c.p0.x, c.p1.x), std::fmax(c.p0.y, c.p1.y),
+            std::fmax(c.p0.z, c.p1.z)};
+      pad = c.radius;
+    } else {
+      const Sphere& sp = self->scene_.spheres[static_cast<std::size_t>(r.idx)];
+      lo = hi = sp.center;
+      pad = sp.radius;
+    }
+    // Generous margin over kClipEps so float rounding never leaves out a
+    // solid the inside test would accept.
+    pad = pad * 1.001f + 2.0f * kClipEps;
+    RTCBounds* b = args->bounds_o;
+    b->lower_x = lo.x - pad;
+    b->lower_y = lo.y - pad;
+    b->lower_z = lo.z - pad;
+    b->upper_x = hi.x + pad;
+    b->upper_y = hi.y + pad;
+    b->upper_z = hi.z + pad;
+  }
+
+  const Scene& scene_;
+  std::vector<Ref> refs_;
+  RTCDevice device_ = nullptr;
+  RTCScene bvh_ = nullptr;
+};
 
 // Sample `seg` and emit edge lines for the maximal runs that stay OUTSIDE every
 // clip solid. Sampling spacing ~= line radius.
 void clipAndEmit(const RawSeg& seg, const Style& st, const Scene& scene,
-                 std::size_t nSph, std::size_t nCyl, bool clip,
+                 const ClipSolids& solids, bool clip,
                  std::vector<Cylinder>& out) {
   const Vec3 d = seg.b - seg.a;
   const float len = length(d);
@@ -181,8 +295,8 @@ void clipAndEmit(const RawSeg& seg, const Style& st, const Scene& scene,
     return onAxis + radial * (src->radius / rl);
   };
   auto insideAt = [&](float t) {
-    return insideAnySolid(surfacePoint(seg.a + d * t), scene, nSph, nCyl,
-                          seg.group, seg.srcSphere, seg.srcCyl, kClipEps);
+    return solids.inside(surfacePoint(seg.a + d * t), seg.group,
+                         seg.srcSphere, seg.srcCyl, kClipEps);
   };
   const float ext = st.width / len;
   // The parameter where the line crosses a solid surface between an outside
@@ -254,7 +368,7 @@ void emitArc(const AnalyticLoop& loop, float th0, float th1, const Style& st,
 
 // Emit the parts of a circle loop that lie outside every clip solid.
 void clipAndEmitCircle(const AnalyticLoop& loop, const Style& st,
-                       const Scene& scene, std::size_t nSph, std::size_t nCyl,
+                       const Scene& scene, const ClipSolids& solids,
                        bool clip, std::vector<EdgeArc>& out,
                        std::vector<Cylinder>& caps) {
   if (loop.cr <= 0.0f) return;
@@ -281,8 +395,8 @@ void clipAndEmitCircle(const AnalyticLoop& loop, const Style& st,
   auto ringInside = [&](float th) {
     const Vec3 X =
         loop.cc + (loop.ct * std::cos(th) + loop.cb * std::sin(th)) * loop.cr;
-    return insideAnySolid(sc + (X - sc) * toSurface, scene, nSph, nCyl,
-                          loop.group, loop.srcSphere, loop.srcCyl, kClipEps);
+    return solids.inside(sc + (X - sc) * toSurface, loop.group, loop.srcSphere,
+                         loop.srcCyl, kClipEps);
   };
   // No extension past the boundary for an arc: its end gets a round cap
   // there instead (below), which reaches as far as the straight contours'
@@ -376,25 +490,46 @@ void generateObjectSpaceEdges(Scene& scene, const ObjectSpaceEdgeOptions& opt,
       scene, scene.camera, 48,
       [&](std::uint16_t g) { return styleOf(g).raise; },
       /*circumscribe=*/false, loops);
+  // Clip the loops in parallel: each is independent, the clip index is
+  // read-only, and fixed-size chunks concatenated in order keep the output
+  // identical to a serial walk. Styles are resolved up front (styleOf fills
+  // its cache lazily).
+  for (const AnalyticLoop& loop : loops) styleOf(loop.group);
+  const ClipSolids solids(scene, opt.clip ? sphereCount : 0,
+                          opt.clip ? cylinderCount : 0);
+  constexpr std::size_t kChunk = 256;
+  const std::size_t nChunks = (loops.size() + kChunk - 1) / kChunk;
+  std::vector<std::vector<Cylinder>> chunkEdges(nChunks);
+  std::vector<std::vector<EdgeArc>> chunkArcs(nChunks);
+  tbb::parallel_for(std::size_t(0), nChunks, [&](std::size_t c) {
+    if (cancelled()) return;
+    std::vector<Cylinder>& edges = chunkEdges[c];
+    std::vector<EdgeArc>& arcs = chunkArcs[c];
+    const std::size_t end = std::min(loops.size(), (c + 1) * kChunk);
+    for (std::size_t li = c * kChunk; li < end; ++li) {
+      const AnalyticLoop& loop = loops[li];
+      const Style& st = styles[loop.group];
+      if (!st.analyticSil) continue;
+      if (loop.circle) {
+        clipAndEmitCircle(loop, st, scene, solids, opt.clip, arcs, edges);
+        continue;
+      }
+      const std::size_t n = loop.pts.size();
+      if (n < 2) continue;
+      const std::size_t last = loop.closed ? n : n - 1;
+      for (std::size_t i = 0; i < last; ++i) {
+        const RawSeg seg{loop.pts[i], loop.pts[(i + 1) % n], loop.group,
+                         loop.srcSphere, loop.srcCyl};
+        clipAndEmit(seg, st, scene, solids, opt.clip, edges);
+      }
+    }
+  });
+  if (cancelled()) return;  // nothing appended yet; render bails next
   std::vector<Cylinder> edges;
   std::vector<EdgeArc> arcs;
-  for (const AnalyticLoop& loop : loops) {
-    if (cancelled()) return;  // nothing appended yet; render bails next
-    const Style& st = styleOf(loop.group);
-    if (!st.analyticSil) continue;
-    if (loop.circle) {
-      clipAndEmitCircle(loop, st, scene, sphereCount, cylinderCount, opt.clip,
-                        arcs, edges);
-      continue;
-    }
-    const std::size_t n = loop.pts.size();
-    if (n < 2) continue;
-    const std::size_t last = loop.closed ? n : n - 1;
-    for (std::size_t i = 0; i < last; ++i) {
-      const RawSeg seg{loop.pts[i], loop.pts[(i + 1) % n], loop.group,
-                       loop.srcSphere, loop.srcCyl};
-      clipAndEmit(seg, st, scene, sphereCount, cylinderCount, opt.clip, edges);
-    }
+  for (std::size_t c = 0; c < nChunks; ++c) {
+    edges.insert(edges.end(), chunkEdges[c].begin(), chunkEdges[c].end());
+    arcs.insert(arcs.end(), chunkArcs[c].begin(), chunkArcs[c].end());
   }
   if (cancelled()) return;
 
