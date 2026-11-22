@@ -352,6 +352,36 @@ struct Cylinder {
   // baked POV outlines so they do not double-draw against the generated edges,
   // applied per section and only when --edges is on (graceful degradation).
   bool fromEdgeMacro = false;
+  // A cylinder converted from a LINE primitive (a wireframe bond, a distance
+  // line): drawn like any cylinder, but never a source of object-space edges
+  // and never a union-boundary clip solid -- a line has no outline of its own.
+  bool noEdge = false;
+  // Object-space edge line produced by generateObjectSpaceEdges (not a scene
+  // primitive): 0 = none, else an ObjectEdgeKind. An edge line is drawn in its
+  // exact color (no lighting, AO or GI), casts no shadow and is invisible to
+  // secondary rays.
+  std::uint8_t objEdge = 0;
+};
+
+// Object-space edge line kinds (Cylinder::objEdge / EdgeArc::kind). Outline
+// lines are dropped per pixel where a surface lies behind them (the CueMol GL
+// "silhouette" edge type, ObjectEdgeStyle::mode == Outline).
+enum ObjectEdgeKind : std::uint8_t {
+  kObjEdgeNone = 0,
+  kObjEdgeFull = 1,
+  kObjEdgeOutline = 2,
+};
+
+// One cubic Bezier arc of an object-space edge line (a sphere horizon ring or a
+// cylinder cap rim, at most 45 degrees per arc), drawn as an Embree round
+// Bezier curve: a tube swept along the curve, so tangent-continuous arcs join
+// without overlap. Produced only by generateObjectSpaceEdges.
+struct EdgeArc {
+  Vec3 cp[4];
+  float radius = 0.03f;
+  Vec4 color{0.0f, 0.0f, 0.0f, 1.0f};
+  uint16_t group = 0;
+  std::uint8_t kind = kObjEdgeFull;
 };
 
 // One group-alpha blend entry: CueMol "postprocess" transparency for a whole
@@ -441,6 +471,7 @@ struct Scene {
   Mesh mesh;                          // base geometry (single copy)
   std::vector<Sphere> spheres;        // CueMol balls / silhouette joints
   std::vector<Cylinder> cylinders;    // CueMol sticks / silhouette edges
+  std::vector<EdgeArc> edgeArcs;      // object-space edge arcs (generated)
   std::vector<Vec3> instanceOffsets;  // translation per grid instance
   Camera camera;
   std::vector<DistantLight> lights;
@@ -500,6 +531,13 @@ struct Scene {
   // sections of one veil can sit in different edge groups, and one edge group
   // can span sections of different veils.
   std::vector<std::uint16_t> edgeGroupOfGroup;
+
+  // Per-section object-space edge style, indexed by the primitive group id
+  // itself (not edgeGroupFor). Empty (the default) = every section uses the
+  // global ObjectSpaceEdgeOptions; a group past the end also uses it. Only
+  // consulted when RenderOptions::objectSpaceEdges.enable is set.
+  std::vector<ObjectEdgeStyle> groupObjectEdgeStyle;
+
   std::uint16_t edgeGroupFor(std::uint16_t group) const {
     return group < edgeGroupOfGroup.size() ? edgeGroupOfGroup[group] : group;
   }

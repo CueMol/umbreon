@@ -37,6 +37,7 @@
 #include "render/render_types.hpp"
 #include "render/scene_build.hpp"
 #include "shading/secondary_rays.hpp"
+#include "render/ray_masks.hpp"
 #include "scene.hpp"
 
 namespace umbreon {
@@ -289,7 +290,7 @@ inline RTCRayHit intersectFull(RTCScene scene, const Vec3& O, const Vec3& dir,
   rh.ray.dir_z = dir.z;
   rh.ray.tnear = tnear;
   rh.ray.tfar = tfar;
-  rh.ray.mask = 0xFFFFFFFFu;
+  rh.ray.mask = kSecondaryRayMask;  // skip edge lines
   rh.ray.flags = 0;
   rh.ray.time = 0.0f;
   rh.hit.geomID = RTC_INVALID_GEOMETRY_ID;

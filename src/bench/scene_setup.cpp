@@ -866,8 +866,66 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
                 opt.aaDebug ? ", mask dump" : "");
 }
 
+// Parse a --obj-edge spec into `out` (pre-filled with the global style it
+// inherits). Comma-separated entries; each is a nature list head
+// (sil|crease|border|all|none) followed by ':'-separated attributes
+// color=#RRGGBB, width=R (line radius), raise=D, mode=full|outline. The listed
+// natures are enabled, the others off. Returns false on a malformed entry.
+static bool parseObjEdgeSpec(const std::string& spec,
+                             umbreon::ObjectEdgeStyle& out) {
+  out.silhouette = out.crease = out.border = false;
+  std::size_t pos = 0;
+  while (pos <= spec.size()) {
+    std::size_t comma = spec.find(',', pos);
+    if (comma == std::string::npos) comma = spec.size();
+    const std::string entry = spec.substr(pos, comma - pos);
+    pos = comma + 1;
+    if (entry.empty()) continue;
+    std::vector<std::string> parts;
+    std::size_t p0 = 0;
+    while (true) {
+      std::size_t c = entry.find(':', p0);
+      parts.push_back(entry.substr(p0, c == std::string::npos ? std::string::npos
+                                                               : c - p0));
+      if (c == std::string::npos) break;
+      p0 = c + 1;
+    }
+    const std::string& head = parts[0];
+    if (head == "sil") out.silhouette = true;
+    else if (head == "crease") out.crease = true;
+    else if (head == "border") out.border = true;
+    else if (head == "all") out.silhouette = out.crease = out.border = true;
+    else if (head == "none") out.silhouette = out.crease = out.border = false;
+    else return false;
+    for (std::size_t i = 1; i < parts.size(); ++i) {
+      const std::size_t eq = parts[i].find('=');
+      if (eq == std::string::npos) return false;
+      const std::string key = parts[i].substr(0, eq);
+      const std::string val = parts[i].substr(eq + 1);
+      if (key == "color") {
+        if (val.size() != 7 || val[0] != '#') return false;
+        for (int k = 0; k < 3; ++k)
+          out.color[k] = static_cast<float>(
+              std::strtol(val.substr(1 + 2 * k, 2).c_str(), nullptr, 16) / 255.0);
+      } else if (key == "width") {
+        out.width = static_cast<float>(std::atof(val.c_str()));
+      } else if (key == "raise") {
+        out.raise = static_cast<float>(std::atof(val.c_str()));
+      } else if (key == "mode") {
+        if (val == "outline") out.mode = umbreon::SilhouetteMode::Outline;
+        else if (val == "full") out.mode = umbreon::SilhouetteMode::Full;
+        else return false;
+      } else {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 void applyObjectSpaceEdges(const Options& opt, Scene& scene,
-                           RenderOptions& ropt) {
+                           RenderOptions& ropt,
+                           const std::vector<std::string>& groupNames) {
   if (opt.objEdges) {
     // Replace the baked POV outlines with generated ones: drop the baked
     // edge_line cylinders AND their joint-dot spheres (both fromEdgeMacro) so
@@ -892,19 +950,51 @@ void applyObjectSpaceEdges(const Options& opt, Scene& scene,
     silOpt.enable = true;
     silOpt.width = opt.objEdgeWidth;
     silOpt.raise = opt.objEdgeRaise;
-    silOpt.segments = opt.objEdgeSegments;
     silOpt.clip = opt.objEdgeClip;
     silOpt.creaseAngleDeg = opt.objEdgeCreaseDeg;
     silOpt.meshHardEdgeDeg = opt.objEdgeHardDeg;
     silOpt.meshSilhouette = opt.objEdgeMeshSil;
     silOpt.meshCrease = opt.objEdgeMeshCrease;
     silOpt.meshBorder = opt.objEdgeMeshBorder;
-    silOpt.visibilityClip = opt.objEdgeVisibility;
+    silOpt.outlineFarVz = opt.strokeOutlineFar;
     silOpt.meshCreaseSmoothVetoDeg = opt.objEdgeCreaseSmoothDeg;
     silOpt.meshCreaseConvexOnly = opt.objEdgeCreaseConvexOnly;
     silOpt.meshBorderCoplanarVetoDeg = opt.objEdgeBorderCoplanarDeg;
     silOpt.meshCreaseMaxDegree = opt.objEdgeCreaseMaxDeg;
     for (int k = 0; k < 3; ++k) silOpt.color[k] = opt.objEdgeColor[k];
+    // Per-section styles (--obj-edge ID=spec), indexed by group id. Every
+    // section starts from the global style; listed sections override it.
+    if (!opt.sectionObjEdge.empty()) {
+      umbreon::ObjectEdgeStyle ds;
+      ds.silhouette = true;
+      ds.crease = opt.objEdgeMeshCrease;
+      ds.border = opt.objEdgeMeshBorder;
+      ds.width = opt.objEdgeWidth;
+      ds.raise = opt.objEdgeRaise;
+      for (int k = 0; k < 3; ++k) ds.color[k] = opt.objEdgeColor[k];
+      scene.groupObjectEdgeStyle.assign(groupNames.size(), ds);
+      std::map<std::string, int> gidx;
+      for (std::size_t i = 0; i < groupNames.size(); ++i)
+        gidx[groupNames[i]] = static_cast<int>(i);
+      for (const auto& kv : opt.sectionObjEdge) {
+        auto it = gidx.find(kv.first);
+        if (it == gidx.end()) {
+          std::fprintf(stderr,
+                       "warning: section '%s' not found (try --list-groups)\n",
+                       kv.first.c_str());
+          continue;
+        }
+        umbreon::ObjectEdgeStyle st = ds;
+        if (!parseObjEdgeSpec(kv.second, st)) {
+          std::fprintf(stderr, "warning: --obj-edge %s: bad spec '%s'\n",
+                       kv.first.c_str(), kv.second.c_str());
+          continue;
+        }
+        scene.groupObjectEdgeStyle[static_cast<std::size_t>(it->second)] = st;
+        std::printf("  object edge override: section %s (group %d)\n",
+                    kv.first.c_str(), it->second);
+      }
+    }
     if (opt.objEdgeOnly) {
       // Verification path: render ONLY the generated edge cylinders. The
       // silhouette extraction needs the surfaces present, but they must be
@@ -926,8 +1016,8 @@ void applyObjectSpaceEdges(const Options& opt, Scene& scene,
       ropt.objectSpaceEdges = silOpt;
       std::printf(
           "  object-space silhouette edges: via render() "
-          "(width %.3f, raise %.3f, segments %d)\n",
-          silOpt.width, silOpt.raise, silOpt.segments);
+          "(width %.3f, raise %.3f)\n",
+          silOpt.width, silOpt.raise);
     }
   }
 }

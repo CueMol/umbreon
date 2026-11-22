@@ -17,6 +17,7 @@
 
 #include <embree4/rtcore.h>
 
+#include "render/ray_masks.hpp"
 #include "scene.hpp"
 
 namespace umbreon {
@@ -120,7 +121,7 @@ inline bool occluded(RTCScene rscene, const Vec3& P, const Vec3& dir, float tnea
   r.dir_z = dir.z;
   r.tnear = tnear;
   r.tfar = tfar;
-  r.mask = 0xFFFFFFFFu;
+  r.mask = kSecondaryRayMask;  // skip edge lines
   r.flags = 0;
   r.time = 0.0f;
   RTCOccludedArguments oargs;

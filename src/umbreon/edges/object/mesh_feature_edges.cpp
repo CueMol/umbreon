@@ -13,6 +13,7 @@
 //   4) detectCreasesAndBorders dihedral creases + open-boundary borders
 #include "edges/object/mesh_feature_edges.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -83,6 +84,7 @@ struct ExtractContext {
   // Phase 2: faces, normals, adjacency.
   std::vector<int> fa, fb, fc;   // per face: welded vertex ids
   std::vector<Vec3> fNg;         // per face: geometric normal
+  std::vector<std::uint8_t> degen;  // per face: zero-area sliver (see below)
   std::vector<Vec3> vN;          // per welded vertex: averaged normal
   std::vector<Vec3> cnrm;        // per corner: hard-edge cluster normal
   std::unordered_map<std::uint64_t, EAdj> emap;  // welded edge -> faces
@@ -94,6 +96,59 @@ struct ExtractContext {
   std::unordered_map<std::uint64_t, int> crossNode;
   int nextNode = 0;
 };
+
+// Section-local variant of the positional weld (ExtractParams::weldPerGroup):
+// the key is (position cell, triangle group), so coincident corners of two
+// different sections stay distinct vertices and an edge shared across sections
+// is a border of each. Uses the precomputed position classes when present.
+void weldCornersPerGroup(const Mesh& mesh, ExtractContext& x) {
+  const std::size_t nCorner = x.nCorner;
+  const bool usePosClass =
+      mesh.posClass.size() == mesh.vertexCount() && mesh.posClassCount > 0;
+  struct Key {
+    WeldKey k;
+    std::uint16_t g;
+    bool operator==(const Key& o) const { return k == o.k && g == o.g; }
+  };
+  struct KeyHash {
+    std::size_t operator()(const Key& q) const {
+      return WeldKeyHash{}(q.k) ^ (static_cast<std::size_t>(q.g) * 2654435761u);
+    }
+  };
+  std::unordered_map<Key, int, KeyHash> vmap;
+  vmap.reserve(nCorner);
+  for (std::size_t c = 0; c < nCorner; ++c) {
+    const std::uint16_t g = mesh.groupForTri(c / 3);
+    // A position class id is a unique cell id, so it can stand in for the
+    // quantized cell (packed into WeldKey::x; y/z unused).
+    const WeldKey wk =
+        usePosClass ? WeldKey{mesh.posClass[mesh.cornerVertex(c)], 0, 0}
+                    : weldKey(cornerPos(mesh, c));
+    const Key key{wk, g};
+    auto it = vmap.find(key);
+    int vi;
+    if (it == vmap.end()) {
+      vi = static_cast<int>(x.vpos.size());
+      vmap.emplace(key, vi);
+      x.vpos.push_back(cornerPos(mesh, c));
+      x.vacc.push_back(Vec3{0.0f, 0.0f, 0.0f});
+      if (x.haveCol) {
+        x.vAlphaSum.push_back(0.0f);
+        x.vAlphaCnt.push_back(0);
+      }
+    } else {
+      vi = it->second;
+    }
+    x.corner2v[c] = vi;
+    const std::size_t v = static_cast<std::size_t>(vi);
+    if (x.haveNrm) x.vacc[v] = x.vacc[v] + cornerNrm(mesh, c);
+    if (x.haveCol) {
+      x.vAlphaSum[v] += cornerAlpha(mesh, c);
+      x.vAlphaCnt[v]++;
+    }
+  }
+  x.nV = x.vpos.size();
+}
 
 // 1) POSITIONAL WELD of the de-indexed corners into shared vertices
 //    (quantized-position hash), accumulating an averaged vertex normal.
@@ -132,9 +187,14 @@ struct ExtractContext {
 // shared with the mesh2 reader, which bakes the very same partition into
 // mesh.posClass at load time. When that map is present we CONSUME it (the fast
 // path) instead of rehashing; otherwise (hand-built meshes) we weld here.
-void weldCorners(const Mesh& mesh, ExtractContext& x) {
+void weldCorners(const Mesh& mesh, const ExtractParams& opt,
+                 ExtractContext& x) {
   const std::size_t nCorner = x.nCorner;
   x.corner2v.resize(nCorner);
+  if (opt.weldPerGroup && !mesh.triGroupId.empty()) {
+    weldCornersPerGroup(mesh, x);
+    return;
+  }
   const bool usePosClass =
       mesh.posClass.size() == mesh.vertexCount() && mesh.posClassCount > 0;
   if (usePosClass) {
@@ -217,6 +277,25 @@ void buildFacesAndAdjacency(const Mesh& mesh, ExtractContext& x,
     x.fNg[f] = normalize(cross(x.vpos[static_cast<std::size_t>(x.fb[f])] - x.vpos[static_cast<std::size_t>(x.fa[f])],
                                x.vpos[static_cast<std::size_t>(x.fc[f])] - x.vpos[static_cast<std::size_t>(x.fa[f])]));
   }
+  // A zero-area sliver (e.g. the strip a ribbon's arrowhead step makes between
+  // two cross-sections at the same position) has no meaningful facing: its
+  // normal is rounding noise, so a straddle or dihedral test against it draws
+  // a line across a flat face. It is left out of the edge adjacency (where it
+  // would also take the slot of a real neighbour: EAdj keeps the first two
+  // faces of an edge), so a real face meeting only slivers across an edge
+  // gets a border there. The smooth contour, which reads only the vertex
+  // normals, still runs through it.
+  x.degen.assign(nTri, 0);
+  for (std::size_t f = 0; f < nTri; ++f) {
+    const Vec3& A = x.vpos[static_cast<std::size_t>(x.fa[f])];
+    const Vec3& B = x.vpos[static_cast<std::size_t>(x.fb[f])];
+    const Vec3& C = x.vpos[static_cast<std::size_t>(x.fc[f])];
+    const float lmax =
+        std::fmax(length(B - A), std::fmax(length(C - B), length(A - C)));
+    const float twiceArea = length(cross(B - A, C - A));
+    // smallest altitude = twiceArea / lmax, against an aspect of 1e4
+    if (twiceArea <= 1.0e-4f * lmax * lmax) x.degen[f] = 1;
+  }
   x.vN.assign(nV, Vec3{0.0f, 0.0f, 0.0f});
   for (std::size_t v = 0; v < nV; ++v) {
     const float l = length(x.vacc[v]);
@@ -264,6 +343,7 @@ void buildFacesAndAdjacency(const Mesh& mesh, ExtractContext& x,
   // silhouette and the crease/border pass.
   x.emap.reserve(nTri * 3);
   for (std::size_t f = 0; f < nTri; ++f) {
+    if (x.degen[f]) continue;
     const int v[3] = {x.fa[f], x.fb[f], x.fc[f]};
     for (int e = 0; e < 3; ++e) {
       EAdj& adj = x.emap[ekey(v[e], v[(e + 1) % 3])];
@@ -283,6 +363,7 @@ void buildFacesAndAdjacency(const Mesh& mesh, ExtractContext& x,
   // strand, many faces away) -- the discriminator the vertex 1-ring lacked.
   x.faceNbr.assign(nTri, std::array<int, 3>{-1, -1, -1});
   for (std::size_t f = 0; f < nTri; ++f) {
+    if (x.degen[f]) continue;  // left out of emap, so it has no neighbours
     const int v[3] = {x.fa[f], x.fb[f], x.fc[f]};
     for (int e = 0; e < 3; ++e) {
       auto it = x.emap.find(ekey(v[e], v[(e + 1) % 3]));
@@ -417,6 +498,18 @@ void emitSeg(ExtractContext& x, FeatureMesh& result, int n0, const Vec3& A,
   result.segs.push_back(std::move(s));
 }
 
+// Per-section raise / width (ExtractParams::groupRaise / groupWidth).
+float raiseOf(const ExtractParams& opt, std::uint16_t g) {
+  return g < opt.groupRaise.size() ? opt.groupRaise[g] : opt.raise;
+}
+float widthOf(const ExtractParams& opt, std::uint16_t g) {
+  const float w = g < opt.groupWidth.size() ? opt.groupWidth[g] : opt.width;
+  return w > 0.0f ? w : 0.0f;
+}
+bool outlineOf(const ExtractParams& opt, std::uint16_t g) {
+  return g < opt.groupOutline.size() && opt.groupOutline[g] != 0;
+}
+
 // Border/crease emit helper: lift endpoints outward along the vertex normal by
 // opt.raise (matching emitMeshEdges::push) and tag with welded node ids plus
 // the two incident faces (f1 < 0 for a single-face border edge).
@@ -432,8 +525,6 @@ void detectSilhouettes(const Mesh& mesh, const Camera& cam,
                        const ExtractParams& opt, ExtractContext& x,
                        FeatureMesh& result) {
   const std::size_t nTri = x.nTri;
-  const float w = opt.width > 0.0f ? opt.width : 0.0f;
-  const float silOff = opt.raise + w;
   double elsum = 0.0;
   for (std::size_t f = 0; f < nTri; ++f) {
     const std::size_t a = static_cast<std::size_t>(x.fa[f]);
@@ -448,8 +539,14 @@ void detectSilhouettes(const Mesh& mesh, const Camera& cam,
   // (opt.silhouetteCamBias==false) so its ray-cast QI starts on the TRUE surface
   // point (Freestyle center3d), not a point pulled toward the eye that floats in
   // front of its own occluder and wrongly votes visible.
-  const float camBias =
-      opt.silhouetteCamBias ? std::fmax(0.5f * w, 0.15f * meanEdge) : 0.0f;
+  // The bias scales with the mesh resolution but is capped at one line radius:
+  // a longer pull lets a thin line float in front of an opaque surface that
+  // covers its body.
+  auto camBiasOf = [&](std::uint16_t g) {
+    if (!opt.silhouetteCamBias) return 0.0f;
+    const float w = widthOf(opt, g);
+    return std::fmin(std::fmax(0.5f * w, 0.15f * meanEdge), w);
+  };
 
   // Silhouette method selector (opt.geomSilhouette): false (default) = SMOOTH
   // contour 3a (interpolated n.v==0, sub-triangle crossings; matches the smooth-
@@ -521,6 +618,9 @@ void detectSilhouettes(const Mesh& mesh, const Camera& cam,
       addVert(nullIdx[1]);
     }
     if (nc == 2) {
+      const std::uint16_t grp = mesh.groupForTri(f);
+      const float silOff = raiseOf(opt, grp);
+      const float camBias = camBiasOf(grp);
       const Vec3 v0 = viewerDirAt(cp[0], cam) * camBias;
       const Vec3 v1 = viewerDirAt(cp[1], cam) * camBias;
       // Incident faces: the contour segment lives inside face f (face0); the
@@ -531,8 +631,8 @@ void detectSilhouettes(const Mesh& mesh, const Camera& cam,
       // crossing-point interpolated normals (Freestyle FEdgeSmooth::normal()).
       const Vec3 segN = normalize(cn[0] + cn[1]);
       emitSeg(x, result, cid[0], cp[0] + cn[0] * silOff + v0, cid[1],
-              cp[1] + cn[1] * silOff + v1, EdgeNature::Silhouette,
-              mesh.groupForTri(f), static_cast<int>(f), adj, segN);
+              cp[1] + cn[1] * silOff + v1, EdgeNature::Silhouette, grp,
+              static_cast<int>(f), adj, segN);
     }
   }
 
@@ -555,16 +655,108 @@ void detectSilhouettes(const Mesh& mesh, const Camera& cam,
     if (opt.rejectConcaveEdges && isConcaveEdge(x, adj.f1, adj.f2, a, b))
       continue;
     const Vec3 outw = normalize(x.fNg[f1] + x.fNg[f2]);
+    const std::uint16_t grp = mesh.groupForTri(adj.f1);
+    const float silOff = raiseOf(opt, grp);
+    const float camBias = camBiasOf(grp);
     emitSeg(x, result, static_cast<int>(a),
             x.vpos[a] + outw * silOff + da * camBias, static_cast<int>(b),
             x.vpos[b] + outw * silOff + db * camBias, EdgeNature::Silhouette,
-            mesh.groupForTri(adj.f1), adj.f1, adj.f2);
+            grp, adj.f1, adj.f2);
+  }
+}
+
+// An open boundary edge of an Outline section (ExtractParams::groupOutline).
+struct OutlineBorder {
+  std::size_t a, b;
+  int f;  // its single incident face
+};
+
+// Emit the open boundary edges of Outline sections as silhouette contours.
+// Each edge's line center moves off the edge by the line radius along s,
+// the unit direction perpendicular to both the edge and the view that points
+// away from the edge's face -- in the plane facing the viewer, so the whole
+// line width lands outside the face on screen however the face is tilted
+// (moving within the face's own plane would shrink on screen as the face
+// turns). Where exactly two outline edges of one section meet, the two moved
+// ends are joined by an arc of that radius around the shared vertex, so a
+// sharp convex corner keeps a round, closed tip instead of splitting in two.
+void emitOutlineBorders(const Mesh& mesh, const Camera& cam,
+                        const ExtractParams& opt, ExtractContext& x,
+                        FeatureMesh& result,
+                        const std::vector<OutlineBorder>& edges) {
+  if (edges.empty()) return;
+  std::vector<Vec3> shift(edges.size(), Vec3{0.0f, 0.0f, 0.0f});
+  std::unordered_map<std::size_t, std::vector<std::size_t>> atVertex;
+  for (std::size_t i = 0; i < edges.size(); ++i) {
+    const OutlineBorder& e = edges[i];
+    const std::size_t f = static_cast<std::size_t>(e.f);
+    const std::uint16_t grp = mesh.groupForTri(f);
+    const Vec3 A = x.vpos[e.a];
+    const Vec3 B = x.vpos[e.b];
+    const std::size_t fv[3] = {static_cast<std::size_t>(x.fa[f]),
+                               static_cast<std::size_t>(x.fb[f]),
+                               static_cast<std::size_t>(x.fc[f])};
+    std::size_t apexV = fv[0];
+    for (std::size_t v : fv)
+      if (v != e.a && v != e.b) apexV = v;
+    const Vec3 M = (A + B) * 0.5f;
+    Vec3 sdir = cross(B - A, viewerDirAt(M, cam));
+    const float l = length(sdir);
+    if (l > 1.0e-12f) {
+      sdir = sdir * (1.0f / l);
+      if (dot(sdir, x.vpos[apexV] - M) > 0.0f) sdir = sdir * -1.0f;
+    } else {
+      sdir = Vec3{0.0f, 0.0f, 0.0f};  // edge along the view: no screen width
+    }
+    shift[i] = sdir;
+    // the whole line on the background side, whatever the section's raise
+    const float r = widthOf(opt, grp);
+    emitSeg(x, result, x.nextNode, A + sdir * r, x.nextNode + 1, B + sdir * r,
+            EdgeNature::Silhouette, grp, e.f, -1);
+    x.nextNode += 2;
+    atVertex[e.a].push_back(i);
+    atVertex[e.b].push_back(i);
+  }
+  for (const auto& kv : atVertex) {
+    if (kv.second.size() != 2) continue;
+    const std::size_t i1 = kv.second[0], i2 = kv.second[1];
+    const std::uint16_t grp = mesh.groupForTri(static_cast<std::size_t>(edges[i1].f));
+    if (mesh.groupForTri(static_cast<std::size_t>(edges[i2].f)) != grp) continue;
+    const Vec3 P = x.vpos[kv.first];
+    const Vec3 w = viewerDirAt(P, cam);
+    auto inPlane = [&](const Vec3& d) {
+      const Vec3 q = d - w * dot(d, w);
+      const float lq = length(q);
+      return lq > 1.0e-12f ? q * (1.0f / lq) : Vec3{0.0f, 0.0f, 0.0f};
+    };
+    const Vec3 s1 = inPlane(shift[i1]);
+    const Vec3 s2 = inPlane(shift[i2]);
+    if (length(s1) < 0.5f || length(s2) < 0.5f) continue;
+    const float ang = std::atan2(dot(cross(s1, s2), w), dot(s1, s2));
+    if (std::fabs(ang) < 1.0e-3f) continue;  // collinear: the ends coincide
+    const float r = raiseOf(opt, grp);
+    const int n = std::max(
+        1, static_cast<int>(std::ceil(std::fabs(ang) / (kPi / 8.0f))));
+    const Vec3 t = cross(w, s1);  // s1 rotated +90 degrees about w
+    Vec3 prev = P + s1 * r;
+    int prevNode = x.nextNode++;
+    for (int k = 1; k <= n; ++k) {
+      const float th = ang * static_cast<float>(k) / static_cast<float>(n);
+      const Vec3 d = s1 * std::cos(th) + t * std::sin(th);
+      const Vec3 cur = P + d * r;
+      const int curNode = x.nextNode++;
+      emitSeg(x, result, prevNode, prev, curNode, cur, EdgeNature::Silhouette,
+              grp, edges[i1].f, -1);
+      prev = cur;
+      prevNode = curNode;
+    }
   }
 }
 
 // 4) CREASE (dihedral) + BORDER (single-face) on mesh edges.
-void detectCreasesAndBorders(const Mesh& mesh, const ExtractParams& opt,
-                             ExtractContext& x, FeatureMesh& result) {
+void detectCreasesAndBorders(const Mesh& mesh, const Camera& cam,
+                             const ExtractParams& opt, ExtractContext& x,
+                             FeatureMesh& result) {
   const std::size_t nV = x.nV;
   const float creaseCos = std::cos(opt.creaseAngleDeg * kPi / 180.0f);
   const bool smoothVeto = opt.meshCreaseSmoothVetoDeg > 0.0f;
@@ -627,6 +819,7 @@ void detectCreasesAndBorders(const Mesh& mesh, const ExtractParams& opt,
     int f0, f1;  // the two incident faces (crease is always interior)
   };
   std::vector<CreaseCand> creaseCand;
+  std::vector<OutlineBorder> outlineBorders;
   std::vector<int> creaseDeg;
   const int maxDeg = opt.meshCreaseMaxDegree;
   if (maxDeg > 0) creaseDeg.assign(nV, 0);
@@ -637,10 +830,15 @@ void detectCreasesAndBorders(const Mesh& mesh, const ExtractParams& opt,
     const EAdj& adj = kv.second;
 
     if (adj.f2 < 0) {
+      const std::uint16_t bg = mesh.groupForTri(static_cast<std::size_t>(adj.f1));
+      if (outlineOf(opt, bg)) {
+        outlineBorders.push_back({a, b, adj.f1});
+        continue;
+      }
       if (!opt.border) continue;
       if (borderVeto && borderContinues(a, b) && borderContinues(b, a)) continue;
-      pushEdge(x, result, opt.raise, a, b, EdgeNature::Border,
-               mesh.groupForTri(static_cast<std::size_t>(adj.f1)), adj.f1, -1);
+      pushEdge(x, result, raiseOf(opt, bg), a, b, EdgeNature::Border, bg,
+               adj.f1, -1);
       continue;
     }
 
@@ -678,14 +876,15 @@ void detectCreasesAndBorders(const Mesh& mesh, const ExtractParams& opt,
       creaseDeg[b]++;
       creaseCand.push_back({a, b, grp, adj.f1, adj.f2});
     } else {
-      pushEdge(x, result, opt.raise, a, b, EdgeNature::Crease, grp, adj.f1,
-               adj.f2);
+      pushEdge(x, result, raiseOf(opt, grp), a, b, EdgeNature::Crease, grp,
+               adj.f1, adj.f2);
     }
   }
   for (const CreaseCand& c : creaseCand)
     if (creaseDeg[c.a] <= maxDeg && creaseDeg[c.b] <= maxDeg)
-      pushEdge(x, result, opt.raise, c.a, c.b, EdgeNature::Crease, c.grp, c.f0,
-               c.f1);
+      pushEdge(x, result, raiseOf(opt, c.grp), c.a, c.b, EdgeNature::Crease,
+               c.grp, c.f0, c.f1);
+  emitOutlineBorders(mesh, cam, opt, x, result, outlineBorders);
 }
 
 }  // namespace
@@ -705,11 +904,12 @@ FeatureMesh extractMeshFeatureEdges(const Mesh& mesh, const Camera& cam,
   // ExtractParams::selfExcludeRings.
   x.kSelfRings = opt.selfExcludeRings > 0 ? opt.selfExcludeRings : 0;
 
-  weldCorners(mesh, x);
+  weldCorners(mesh, opt, x);
   x.nextNode = static_cast<int>(x.nV);
   buildFacesAndAdjacency(mesh, x, result);
   if (opt.silhouette) detectSilhouettes(mesh, cam, opt, x, result);
-  if (opt.crease || opt.border) detectCreasesAndBorders(mesh, opt, x, result);
+  if (opt.crease || opt.border || !opt.groupOutline.empty())
+    detectCreasesAndBorders(mesh, cam, opt, x, result);
 
   // Tag each segment's endpoint opacity from the welded-vertex alpha. Welded-id
   // endpoints (hard-edge / crease / border, v < nV) get their vertex alpha;

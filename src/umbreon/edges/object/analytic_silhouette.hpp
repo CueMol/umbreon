@@ -22,6 +22,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "edges/object/mesh_feature_edges.hpp"  // FeatureSeg + scene.hpp (Scene/Camera/Vec3)
@@ -41,7 +42,18 @@ struct AnalyticLoop {
   std::uint16_t group = 0;
   int srcSphere = -1;
   int srcCyl = -1;
+  // Exact circle of a closed loop (sphere horizon ring / cap rim, already
+  // raised): center, an orthonormal in-plane frame (t, b) and radius, so the
+  // object-space pass can draw the true circle (Bezier arcs) instead of the
+  // chord polygon in `pts`. Valid only when `circle` is set; set only when the
+  // loop is not circumscribed (the polygon then inscribes this circle).
+  bool circle = false;
+  Vec3 cc, ct, cb;
+  float cr = 0.0f;
 };
+
+// Outward contour offset per section (primitive group id).
+using RaiseFn = std::function<float(std::uint16_t)>;
 
 // Append the analytic silhouette loops of every (non-fromEdgeMacro) sphere then
 // cylinder in `scene` for camera `cam`, in primitive-index order (spheres first,
@@ -53,8 +65,14 @@ struct AnalyticLoop {
 // self-hides the contour into dashes); cylinder side generators are straight
 // tangent lines and are unaffected. `circumscribe == false` reproduces the former
 // inline emitters EXACTLY (byte-identical --obj-edges).
+// Cylinders tagged noEdge (converted line primitives) are skipped as sources,
+// like the fromEdgeMacro primitives.
 void emitAnalyticSilhouettes(const Scene& scene, const Camera& cam, int N,
                              float raise, bool circumscribe,
+                             std::vector<AnalyticLoop>& out);
+// Same, with the outward offset chosen per source section.
+void emitAnalyticSilhouettes(const Scene& scene, const Camera& cam, int N,
+                             const RaiseFn& raiseFor, bool circumscribe,
                              std::vector<AnalyticLoop>& out);
 
 // Append the analytic sphere/cylinder silhouettes as Silhouette FeatureSegs into

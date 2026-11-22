@@ -32,5 +32,11 @@ void buildCylinderGeometry(RTCDevice device, RTCScene rscene, const Scene& scene
                            bool buildEdgeTables = false,
                            bool forceAxisTables = false);
 
+// Build the object-space edge arc geometry (Scene::edgeArcs, round cubic
+// Bezier curves, edge ray mask) and its side tables. No-op without arcs.
+void buildEdgeArcGeometry(RTCDevice device, RTCScene rscene, const Scene& scene,
+                          const std::vector<Vec3>& bakeOffsets,
+                          BuiltScene& out);
+
 }  // namespace detail
 }  // namespace umbreon

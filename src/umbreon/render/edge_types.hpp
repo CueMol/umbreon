@@ -307,6 +307,26 @@ struct StrokeEdgeOptions {
   bool qiSplit = false;
 };
 
+// Per-section object-space edge style (Scene::groupObjectEdgeStyle), indexed
+// directly by the primitive group id (the CueMol section), NOT by the stroke
+// edge group: two renderers whose stroke widths round to the same pixel width
+// still keep their own world-space line widths here. A section whose three
+// natures are all off draws no object-space edge.
+struct ObjectEdgeStyle {
+  bool silhouette = true;  // n.v == 0 contour (spheres, cylinders, mesh)
+  bool crease = false;     // mesh dihedral folds
+  bool border = true;      // mesh open boundaries
+  // Full: every contour of the section is drawn and occluded by the tracer.
+  // Outline: a line survives only where no surface of its own section lies
+  // behind it (the CueMol "silhouette" edge type); other sections behind keep
+  // it. See ObjectSpaceEdgeOptions::outlineFarVz.
+  SilhouetteMode mode = SilhouetteMode::Full;
+  float color[3] = {0.0f, 0.0f, 0.0f};  // linear RGB
+  float width = 0.03f;  // line radius, world units
+  float raise = 0.0f;   // outward offset of the line center, world units
+  bool enabled() const { return silhouette || crease || border; }
+};
+
 // --- Analytic OBJECT-SPACE silhouette edges (--obj-edges) ------------------
 // Options for the analytic object-space edge pass (edges/object/object_space_edges.cpp).
 // This is the counterpart of the Freestyle STROKE method (StrokeEdgeOptions):
@@ -323,13 +343,15 @@ struct ObjectSpaceEdgeOptions {
   bool enable = false;   // master gate; false => no-op, byte-identical default
   float width = 0.03f;   // edge cylinder radius, world units
   float raise = 0.0f;    // outward offset of the contour, world units
-  int segments = 48;     // ring tessellation (sphere ring / cylinder is 2 lines)
   float color[3] = {0.0f, 0.0f, 0.0f};  // edge color, linear RGB (w = 1 opacity)
   // Union-boundary clip: drop the parts of each primitive's silhouette that lie
-  // INSIDE another primitive's solid, so connecting primitives (a bond entering
-  // an atom) join along the intersection instead of crossing -- the per-primitive
-  // "junction notch" otherwise left at coincident depth. Sampled along each
-  // segment at ~`width` spacing (finer => cleaner, like a higher tessellation).
+  // INSIDE another primitive's solid OF THE SAME SECTION, so connecting
+  // primitives (a bond entering an atom) join along the intersection instead of
+  // crossing -- the per-primitive "junction notch" otherwise left at coincident
+  // depth. Solids of other sections and line-derived cylinders
+  // (Cylinder::noEdge) never clip: what they hide is left to the tracer (a
+  // translucent or slab-cut neighbor must not erase a visible contour).
+  // Sampled along each contour at ~`width` spacing.
   bool clip = true;
 
   // --- triangle-mesh edges (ribbon / SES / cartoon) ---
@@ -360,21 +382,17 @@ struct ObjectSpaceEdgeOptions {
   // crease/border semantics are unchanged; the ribbon-tuned values that reproduce
   // the clean CueMol OpenGL outline live in the CLI (Options::objEdge*), which is
   // the user-facing knob for this feature.
-  bool meshSilhouette = true;  // smooth n.v==0 contour through faces (primary)
+  bool meshSilhouette = true;  // contour on mesh edges (face-normal straddle)
   bool meshCrease = true;      // sharp folds (gated below), face-normal dihedral
   bool meshBorder = true;      // open boundary edges (gated below)
 
-  // Object-space HIDDEN-LINE clip for the triangle-mesh edges (CueMol
-  // RendIntData_AABBTree visibility/clipping ported to Embree). When false (the
-  // default) each mesh FeatureSeg is emitted verbatim and the ray tracer alone
-  // occludes the resulting cylinders -- byte-identical to the legacy path. When
-  // true, a throwaway mesh BVH (edges/edge_mesh_bvh) splits each edge into its
-  // VISIBLE spans before emission, so an edge raised off the surface (or behind a
-  // transparent surface) is correctly hidden where it dips behind geometry,
-  // exactly as CueMol pre-removed the hidden parts before emitting edge_line.
-  // Analytic sphere/cylinder silhouettes still use the union-boundary clip + ray
-  // tracer (they are not part of the triangle mesh).
-  bool visibilityClip = false;
+  // Outline-mode far-side depth (the counterpart of
+  // StrokeEdgeOptions::outlineFarVz): an Outline-mode section's edge line is
+  // dropped only where the surface behind it lies at or before this linear
+  // view-z (beyond it that surface is fogged away, so the line stays as a
+  // contour against the background). +inf (default) = drop wherever a surface
+  // of the line's own section lies behind it inside the clip range.
+  float outlineFarVz = std::numeric_limits<float>::infinity();
   // Hard-edge angle (degrees). CueMol ribbon meshes are deliberately NOT
   // water-tight: a sharp (rectangular beta-sheet) cross-section duplicates its
   // box-corner vertices with normals this far apart or more to encode the angular

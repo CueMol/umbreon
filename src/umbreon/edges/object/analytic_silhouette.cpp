@@ -69,6 +69,16 @@ bool emitSphereRingLoop(const Sphere& s, const Camera& cam, int N, float raise,
     out.pts[static_cast<std::size_t>(i)] = P;
   }
   out.closed = true;
+  if (!circumscribe) {
+    // Raising every ring point along its sphere normal by `raise` scales the
+    // ring about the sphere center by k: still a circle in the same plane.
+    const float k = 1.0f + raise / r;
+    out.circle = true;
+    out.cc = O + (Q - O) * k;
+    out.ct = fr.t;
+    out.cb = fr.b;
+    out.cr = rho * k;
+  }
   return true;
 }
 
@@ -90,6 +100,13 @@ void emitCapCircleLoop(const Vec3& center, const Vec3& axis, float r, int N,
     out.pts[static_cast<std::size_t>(i)] = center + dir * rr;
   }
   out.closed = true;
+  if (!circumscribe) {
+    out.circle = true;
+    out.cc = center;
+    out.ct = fr.t;
+    out.cb = fr.b;
+    out.cr = rr;
+  }
 }
 
 // The two silhouette contact directions (unit surface normals at the two grazing
@@ -188,6 +205,14 @@ void emitCylinderLoops(const Cylinder& cyl, const Camera& cam, int N, float rais
 void emitAnalyticSilhouettes(const Scene& scene, const Camera& cam, int N,
                              float raise, bool circumscribe,
                              std::vector<AnalyticLoop>& out) {
+  emitAnalyticSilhouettes(
+      scene, cam, N, [raise](std::uint16_t) { return raise; }, circumscribe,
+      out);
+}
+
+void emitAnalyticSilhouettes(const Scene& scene, const Camera& cam, int N,
+                             const RaiseFn& raiseFor, bool circumscribe,
+                             std::vector<AnalyticLoop>& out) {
   const int n = N < 3 ? 3 : N;
   // Spheres first, then cylinders, in primitive-index order -- the order the
   // former inline obj-edges collection produced (preserves byte-identity).
@@ -195,7 +220,7 @@ void emitAnalyticSilhouettes(const Scene& scene, const Camera& cam, int N,
     const Sphere& s = scene.spheres[i];
     if (s.fromEdgeMacro) continue;  // baked outline: an edge, not a surface
     AnalyticLoop loop;
-    if (emitSphereRingLoop(s, cam, n, raise, circumscribe, loop)) {
+    if (emitSphereRingLoop(s, cam, n, raiseFor(s.group), circumscribe, loop)) {
       loop.group = s.group;
       loop.srcSphere = static_cast<int>(i);
       out.push_back(std::move(loop));
@@ -203,8 +228,9 @@ void emitAnalyticSilhouettes(const Scene& scene, const Camera& cam, int N,
   }
   for (std::size_t i = 0; i < scene.cylinders.size(); ++i) {
     const Cylinder& c = scene.cylinders[i];
-    if (c.fromEdgeMacro) continue;
-    emitCylinderLoops(c, cam, n, raise, circumscribe, static_cast<int>(i), out);
+    if (c.fromEdgeMacro || c.noEdge || c.objEdge != 0) continue;
+    emitCylinderLoops(c, cam, n, raiseFor(c.group), circumscribe,
+                      static_cast<int>(i), out);
   }
 }
 

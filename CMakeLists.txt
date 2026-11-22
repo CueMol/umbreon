@@ -135,7 +135,6 @@ if(EMBREE_LINK AND TBB_LINK)
     src/umbreon/edges/object/mesh_feature_edges.cpp
     src/umbreon/edges/common/screen_projection.cpp
     src/umbreon/edges/object/object_space_edges.cpp
-    src/umbreon/edges/object/edge_mesh_bvh.cpp
     src/umbreon/edges/object/analytic_silhouette.cpp
     src/umbreon/npr/hatch_shade.cpp
     src/umbreon/blend/group_blend.cpp

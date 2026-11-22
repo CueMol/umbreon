@@ -85,7 +85,8 @@ struct FeatureSeg {
   // transmissive fade: alpha0 at p0/v0, alpha1 at p1/v1. 1 == opaque (the
   // default; kept for synthetic smooth-contour crossings with no single vertex,
   // and whenever the mesh carries no per-vertex color). Consumed by the
-  // object-space pass when visibilityClip is on; the verbatim path ignores them.
+  // object-space pass does not apply them yet (vertex-alpha line fade is a
+  // separate task, docs/plans/edge-object-space-completion.md section 7).
   float alpha0 = 1.0f, alpha1 = 1.0f;
 };
 
@@ -112,8 +113,14 @@ struct FeatureMesh {
 // existing values and stay byte-identical. The stroke pass passes its own values
 // (raise/width 0: ray-cast visibility needs no 3D lift).
 struct ExtractParams {
-  float raise = 0.0f;   // outward contour offset, world units
-  float width = 0.0f;   // edge radius: drives the silhouette lift + cam bias (A)
+  // Outward offset of the line center from the contour along the contour's
+  // surface normal, world units -- the same for every nature and primitive
+  // (the object-space pass passes the line radius so the line sits just
+  // outside the surface, like the GL inverted-hull band).
+  float raise = 0.0f;
+  // Line radius, world units: scales the silhouette's eye-ward bias
+  // (silhouetteCamBias) and caps it at one radius.
+  float width = 0.0f;
 
   // When false, the silhouette camera-ward camBias (max(0.5*w, 0.15*meanEdge)) is
   // zeroed so each silhouette emit lands on the TRUE n.v==0 crossing / hard-edge
@@ -158,6 +165,24 @@ struct ExtractParams {
   // identical; --obj-edges leaves it 0). Uses edge (not vertex) adjacency so it
   // never jumps a fold the way the retired vertex 1-ring did.
   int selfExcludeRings = 0;
+
+  // --- object-space pass (the stroke pass leaves these at their defaults) ---
+  // Weld vertices and build edge adjacency INSIDE each section (triangle group)
+  // only: an edge one section shares with another section's face is a border of
+  // each, as in the CueMol POV-Ray export. false = position-only weld across
+  // sections (the stroke pass).
+  bool weldPerGroup = false;
+  // Per-section raise / width (index = triangle group id; a group past the end,
+  // or an empty table, uses `raise` / `width`).
+  std::vector<float> groupRaise;
+  std::vector<float> groupWidth;
+  // Per-section Outline flag (index = group id, nonzero = Outline). An Outline
+  // section's open boundary edges are emitted as SILHOUETTE contours whether or
+  // not `border` is on: each is moved off the edge, perpendicular to it in the
+  // plane facing the viewer and away from its face, by the section's raise, and
+  // consecutive outline boundary edges are joined at their shared vertex by an
+  // arc of that radius around it (so the line's outer rim is round there).
+  std::vector<std::uint8_t> groupOutline;
 };
 
 // Detect topology-tagged feature edges of `mesh` for camera `cam`. Reproduces

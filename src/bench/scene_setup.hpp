@@ -39,6 +39,7 @@ void applyShadingOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
 // Analytic OBJECT-SPACE edges (--obj-edges): baked-edge removal + options,
 // including the --obj-edge-only verification path (which mutates the scene).
 void applyObjectSpaceEdges(const Options& opt, Scene& scene,
-                           RenderOptions& ropt);
+                           RenderOptions& ropt,
+                           const std::vector<std::string>& groupNames);
 
 }  // namespace umbreon

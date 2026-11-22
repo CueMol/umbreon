@@ -861,8 +861,16 @@ Options parseCli(int argc, char** argv) {
           static_cast<float>(std::atof(value("--obj-edge-raise").c_str()));
       continue;
     }
-    if (a == "--obj-edge-segments") {
-      o.objEdgeSegments = std::atoi(value("--obj-edge-segments").c_str());
+    if (a == "--obj-edge") {
+      std::string kv = value("--obj-edge");
+      std::size_t eq = kv.find('=');
+      if (eq == std::string::npos) {
+        fail("--obj-edge expects ID=spec (e.g. _34_35=sil:width=0.05)");
+      } else {
+        std::string id = kv.substr(0, eq);
+        if (id.rfind("_show", 0) == 0) id = id.substr(5);
+        o.sectionObjEdge[id] = kv.substr(eq + 1);
+      }
       continue;
     }
     if (a == "--obj-edge-color") {
@@ -923,12 +931,6 @@ Options parseCli(int argc, char** argv) {
       std::string v = value("--obj-edge-mesh-border");
       if (o.ok && !parseBool(v, o.objEdgeMeshBorder))
         fail("--obj-edge-mesh-border expects on/off");
-      continue;
-    }
-    if (a == "--obj-edge-visibility") {
-      std::string v = value("--obj-edge-visibility");
-      if (o.ok && !parseBool(v, o.objEdgeVisibility))
-        fail("--obj-edge-visibility expects on/off");
       continue;
     }
     if (a == "--obj-edge-only") {
@@ -1473,7 +1475,9 @@ void printUsage(const char* prog) {
       "  --obj-edges <on|off>     analytic object-space edges (sph/cyl/mesh) [off]\n"
       "  --obj-edge-width <float> object-edge cylinder radius (world)   [0.03]\n"
       "  --obj-edge-raise <float> object-edge outward offset (world)    [0.00]\n"
-      "  --obj-edge-segments <int> sphere/cap ring tessellation           [48]\n"
+      "  --obj-edge ID=spec       per-section object edge style (repeatable):\n"
+      "                           natures sil/crease/border|all|none, attrs\n"
+      "                           color=#RRGGBB:width=R:raise=D:mode=full|outline\n"
       "  --obj-edge-color <#RRGGBB> object-edge color              [#000000]\n"
       "  --obj-edge-clip <on|off> trim object edges at primitive joins    [on]\n"
       "  --obj-edge-crease-deg <float> mesh crease dihedral threshold     [75]\n"
@@ -1486,7 +1490,6 @@ void printUsage(const char* prog) {
       "  --obj-edge-mesh-sil <on|off> mesh smooth n.v==0 silhouette        [on]\n"
       "  --obj-edge-mesh-crease <on|off> mesh crease (sharp-fold) edges   [off]\n"
       "  --obj-edge-mesh-border <on|off> mesh open-boundary edges          [on]\n"
-      "  --obj-edge-visibility <on|off> object-space hidden-line clip      [off]\n"
       "  --obj-edge-only <on|off> render ONLY edges (drop surface, verify)  [off]\n"
       "  --stroke-thickness <float> stroke full width, final px             [2]\n"
       "  --stroke-resample <float> stroke arc-length resample step, px      [2]\n"

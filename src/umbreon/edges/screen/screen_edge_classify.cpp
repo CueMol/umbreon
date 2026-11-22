@@ -10,6 +10,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 
+#include "edges/common/outline_depth.hpp"
 #include "edges/screen/screen_edge_common.hpp"
 
 namespace umbreon {
@@ -168,7 +169,8 @@ inline bool outlineMode(const ScreenClassifyParams& p, std::uint32_t id) {
 // against the background and takes the Full-mode DepthGap path instead.
 inline bool outlineSuppress(const ScreenClassifyParams& p, std::uint32_t id,
                             float vzA, float vzB) {
-  return outlineMode(p, id) && std::max(vzA, vzB) <= p.outlineFarVz;
+  return outlineMode(p, id) &&
+         outlineFarSideHidden(std::max(vzA, vzB), p.outlineFarVz);
 }
 
 // Contact rank of a foreground pixel's section for the class the contact
