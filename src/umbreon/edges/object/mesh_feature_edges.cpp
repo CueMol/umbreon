@@ -640,6 +640,11 @@ void detectSilhouettes(const Mesh& mesh, const Camera& cam,
   for (const auto& kv : x.emap) {
     const EAdj& adj = kv.second;
     if (adj.f2 < 0) continue;  // border edge: handled in crease/border pass
+    // A face CueMol marked as edge-free (Mesh::kTriNoEdge) has no line on
+    // any of its edges (as in the POV-Ray export).
+    if (mesh.edgeModeForTri(static_cast<std::size_t>(adj.f1)) == Mesh::kTriNoEdge ||
+        mesh.edgeModeForTri(static_cast<std::size_t>(adj.f2)) == Mesh::kTriNoEdge)
+      continue;
     const std::size_t f1 = static_cast<std::size_t>(adj.f1);
     const std::size_t f2 = static_cast<std::size_t>(adj.f2);
     if (!geomSilOnly && dot(x.fNg[f1], x.fNg[f2]) >= x.hardCos)
@@ -830,6 +835,10 @@ void detectCreasesAndBorders(const Mesh& mesh, const Camera& cam,
     const EAdj& adj = kv.second;
 
     if (adj.f2 < 0) {
+      // No border on a face marked kTriNoBorder or kTriNoEdge.
+      if (mesh.edgeModeForTri(static_cast<std::size_t>(adj.f1)) !=
+          Mesh::kTriEdgeNormal)
+        continue;
       const std::uint16_t bg = mesh.groupForTri(static_cast<std::size_t>(adj.f1));
       if (outlineOf(opt, bg)) {
         outlineBorders.push_back({a, b, adj.f1});
@@ -843,6 +852,9 @@ void detectCreasesAndBorders(const Mesh& mesh, const Camera& cam,
     }
 
     if (!opt.crease) continue;
+    if (mesh.edgeModeForTri(static_cast<std::size_t>(adj.f1)) == Mesh::kTriNoEdge ||
+        mesh.edgeModeForTri(static_cast<std::size_t>(adj.f2)) == Mesh::kTriNoEdge)
+      continue;
     const std::size_t f1 = static_cast<std::size_t>(adj.f1);
     const std::size_t f2 = static_cast<std::size_t>(adj.f2);
     if (dot(x.fNg[f1], x.fNg[f2]) >= creaseCos) continue;

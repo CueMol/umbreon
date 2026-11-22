@@ -254,6 +254,16 @@ struct Mesh {
   // GROUP (single-layer transparency).
   std::vector<uint16_t> triGroupId;
 
+  // Per-triangle edge mode for the object-space edges (CueMol's MeshFace
+  // nmode). kTriEdgeNormal: an ordinary face. kTriNoBorder: its open edges
+  // draw no border line (MFMOD_NORGLN). kTriNoEdge: no edge line at all on
+  // its edges (MFMOD_MESHXX, e.g. the inner part of a ribbon arrowhead step).
+  // Empty (or shorter than the triangle count) means kTriEdgeNormal.
+  static constexpr uint8_t kTriEdgeNormal = 0;
+  static constexpr uint8_t kTriNoBorder = 1;
+  static constexpr uint8_t kTriNoEdge = 2;
+  std::vector<uint8_t> triEdgeMode;
+
   std::size_t vertexCount() const { return positions.size(); }
   std::size_t cornerCount() const {
     return index.empty() ? positions.size() : index.size();
@@ -273,6 +283,10 @@ struct Mesh {
 
   uint16_t groupForTri(std::size_t triIdx) const {
     return triGroupId.empty() ? 0 : triGroupId[triIdx];
+  }
+
+  uint8_t edgeModeForTri(std::size_t triIdx) const {
+    return triIdx < triEdgeMode.size() ? triEdgeMode[triIdx] : kTriEdgeNormal;
   }
 
   Aabb bounds() const {
@@ -306,6 +320,7 @@ struct Mesh {
     m.materials = materials;
     m.triMaterialId = triMaterialId;
     m.triGroupId = triGroupId;
+    m.triEdgeMode = triEdgeMode;
     return m;
   }
 };

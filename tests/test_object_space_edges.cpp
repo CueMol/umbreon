@@ -428,6 +428,24 @@ int main() {
               meshEdges(m, false, false, true) == 4);
     }
 
+    // EDGE MODES (CueMol MeshFace nmode): a kTriNoBorder face draws no border,
+    // and a kTriNoEdge face no line on any edge (the fold below is a crease).
+    {
+      umbreon::Mesh tri;
+      tri.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+      tri.normals.assign(3, Vec3{0, 0, 1});
+      tri.triEdgeMode = {umbreon::Mesh::kTriNoBorder};
+      umbreon::Mesh fold;
+      fold.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0},
+                        {1, 0, 0}, {0, 0, 0}, {0, 0, 1}};
+      fold.normals.assign(6, Vec3{0, 0, 1});
+      fold.triEdgeMode = {umbreon::Mesh::kTriEdgeNormal, umbreon::Mesh::kTriNoEdge};
+      s.check("mesh edge mode: a no-border face draws no border",
+              meshEdges(tri, false, false, true) == 0);
+      s.check("mesh edge mode: an edge on a no-edge face draws nothing",
+              meshEdges(fold, true, true, false) == 0);
+    }
+
     // CREASE: a 90 degree fold fires below the threshold but not above it.
     auto creaseCount = [&](float deg) {
       Scene sc;

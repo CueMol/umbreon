@@ -540,7 +540,10 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
 
 - **方式B の線**: 線は指定色そのままで描き、照明・影・AO・GI の影響を受けず、影も
   落とさない。mesh の輪郭は辺の両側の面の法線で決める（辺の上に線を置く）。面積 0 の
-  三角形は輪郭・折れ目・外周の判定に使わない。球・円柱の線は、同じセクションの立体の
+  三角形は輪郭・折れ目・外周の判定に使わない。`Mesh::triEdgeMode` で三角形ごとに線を
+  抑止できる（`kTriNoEdge`: その三角形の辺に線を出さない、`kTriNoBorder`: 外周の線だけ
+  出さない。CueMol の `MeshFace::nmode` の `MFMOD_MESHXX` / `MFMOD_NORGLN` に当たり、
+  リボンの矢じりの付け根の段差などに付く）。球・円柱の線は、同じセクションの立体の
   内側に入る部分を切り落とす（球より細い bond も切る。線描画由来の円柱
   `Cylinder::noEdge` は切らない）。view clip は線の中心で判定する（中心が [clipNear,
   clipFar] の内なら太さ全体を描き、外なら消す）。
