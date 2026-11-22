@@ -781,6 +781,55 @@ int main() {
       s.check("near clip: the outline of an opened sphere stays",
               ringDarkness(umbreon::render(sp, ro)) < 0.2f);
     }
+
+    // (R7) veil (group alpha, per-pixel blend): the lines of a veiled section
+    // go with it -- hidden in the background pass, shown in the veil pass --
+    // so a line outside the veil's surface still blends at the veil alpha, and
+    // the outline of an opaque sphere inside the veil shows through it. The
+    // blend is in the display-encoded domain; FrameResult is linear.
+    {
+      auto dec = [](float e) {
+        return std::pow((e + 0.055f) / 1.055f, 2.4f);
+      };
+      auto px = [&](const FrameResult& f, int col) {
+        const std::size_t i = (static_cast<std::size_t>(kW / 2) * kW + col) * 4;
+        return f.color[i + 1];
+      };
+      auto sphere = [](float r, uint16_t g) {
+        Sphere sp;
+        sp.center = {0, 0, 0};
+        sp.radius = r;
+        sp.color = {1, 1, 1, 1};
+        sp.material = flatWhite();
+        sp.group = g;
+        return sp;
+      };
+      ObjectEdgeStyle st;
+      st.width = 0.05f;
+      st.raise = 0.0125f;
+      RenderOptions rv = ro;
+      rv.groupBlendMode = 1;  // per pixel
+      auto colOf = [&](float r) {  // pixel column of the ring at radius r
+        return static_cast<int>(0.5f * kW + (r + st.raise) * kW / 4.0f);
+      };
+
+      Scene a;
+      a.camera = orthoZ();
+      a.background = {1, 1, 1};
+      a.spheres = {sphere(0.5f, 0)};
+      a.groupObjectEdgeStyle = {st};
+      a.groupBlend = {{0, 0.6f}};
+      const float outside = px(umbreon::render(a, rv), colOf(0.5f));
+      s.check("veil: its outline blends with the background at alpha 0.6",
+              std::fabs(outside - dec(0.4f)) < 0.03f);
+
+      Scene b = a;
+      b.spheres = {sphere(0.6f, 0), sphere(0.3f, 1)};
+      b.groupObjectEdgeStyle = {st, st};
+      const float inner = px(umbreon::render(b, rv), colOf(0.3f));
+      s.check("veil: an opaque sphere's outline shows through the veil",
+              std::fabs(inner - dec(0.6f)) < 0.03f);
+    }
   }
 
   return s.report();

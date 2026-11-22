@@ -545,7 +545,8 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
   出さない。CueMol の `MeshFace::nmode` の `MFMOD_MESHXX` / `MFMOD_NORGLN` に当たり、
   リボンの矢じりの付け根の段差などに付く）。球・円柱の線は、同じセクションの立体の
   内側に入る部分を切り落とす（球より細い bond も切る。線描画由来の円柱
-  `Cylinder::noEdge` は切らない）。view clip は線の中心で判定する（中心が [clipNear,
+  `Cylinder::noEdge` は切らない。立体の AABB の Embree 木への点の問い合わせで近くの立体だけを
+  調べ、輪郭ごとに並列で処理する）。view clip は線の中心で判定する（中心が [clipNear,
   clipFar] の内なら太さ全体を描き、外なら消す）。near clip で開いた物体の内側（切り口）
   に接する線は描かない（線の両脇の視線のどちらかが、最初の面が裏面で手前の面を clip が
   消した所を見ていたら線全体を消す。screen 方式の切り口の扱いと同じ）。
