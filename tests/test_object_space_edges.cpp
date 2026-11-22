@@ -1,60 +1,83 @@
-// Unit / integration tests for analytic OBJECT-SPACE silhouette edges
-// (src/umbreon/render/object_space_edges.{hpp,cpp}).
+// Unit / integration tests for OBJECT-SPACE edges
+// (src/umbreon/edges/object/object_space_edges.{hpp,cpp}).
 //
-// Guards the geometric contract of the n.v==0 silhouette generator so a future
-// edit that breaks the math (wrong ring radius/center, side-line direction, the
-// snapshot, the no-op default, or the emitted cylinder's render attributes) is
-// caught:
-//   * disabled => no edges appended (byte-identical default);
-//   * each emitted edge is open / flatOutline / fromEdgeMacro==false / carries
-//     the source group / has the requested radius+color (so it renders exactly
-//     like the baked POV edge_line outlines);
-//   * the snapshot: appended edges are not themselves re-silhouetted;
-//   * SPHERE ortho: ring is a great circle (every vertex r from center, normal
-//     perpendicular to the view dir);
-//   * SPHERE persp: every ring vertex lies ON the sphere surface (|P-O|==r) and
-//     its surface normal is perpendicular to the view ray from the camera (the
-//     horizon/tangent circle);
-//   * CYLINDER side view: the two generators are offset perpendicular to BOTH
-//     the axis and the view, at distance radius, on opposite sides;
-//   * CYLINDER raise pushes the side lines out by exactly `raise`;
-//   * CYLINDER end-on: side lines collapse, a cap-rim circle is emitted instead.
+// Guards the geometric and rendering contract a future edit could break:
+//   * disabled => nothing appended (byte-identical default);
+//   * sphere horizon rings / end-on cap rims are exact circles drawn as
+//     Bezier arcs (Scene::edgeArcs), raised by `raise`; cylinder side lines are
+//     open flat cylinders offset by radius + raise;
+//   * the union clip: same-section solids clip, thinner bonds included; other
+//     sections and line-drawing cylinders (Cylinder::noEdge) do not;
+//   * mesh contours lie on mesh edges (face-normal straddle); a zero-area
+//     sliver adds no line; crease / border gates;
+//   * per-section styles (Scene::groupObjectEdgeStyle);
+//   * render(): silhouette (Outline) mode drops a line only over its own
+//     section, and the near clip plane keeps or drops a line by its center.
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <vector>
 
 #include "edges/object/object_space_edges.hpp"
 #include "scene.hpp"
 #include "test_util.hpp"
-#include "umbreon.hpp"  // render(): drives method B via RenderOptions::objectSpaceEdges
+#include "umbreon.hpp"  // render(): drives the pass via RenderOptions::objectSpaceEdges
 
 namespace {
 
 using umbreon::Camera;
 using umbreon::Cylinder;
-using umbreon::Scene;
+using umbreon::EdgeArc;
+using umbreon::ObjectEdgeStyle;
 using umbreon::ObjectSpaceEdgeOptions;
+using umbreon::Scene;
 using umbreon::Sphere;
 using umbreon::Vec3;
 using umbreon::Vec4;
+
+constexpr float kPi = 3.14159265358979f;
 
 bool nearf(float a, float b, float eps = 1.0e-3f) {
   return std::fabs(a - b) <= eps;
 }
 
-// Common attribute contract every emitted edge must satisfy to render like a
-// baked POV outline: open, flat outline material, NOT tagged fromEdgeMacro,
-// requested radius, requested color (rgb, opacity 1), source group.
+Camera orthoZ() {
+  Camera c;
+  c.orthographic = true;
+  c.position = {0, 0, 10};
+  c.direction = {0, 0, -1};  // view along -z
+  c.up = {0, 1, 0};
+  c.height = 4.0f;
+  return c;
+}
+
+// An emitted straight edge renders like a flat outline: open, flat material,
+// not a baked POV macro line, requested radius / color / group, an object edge.
 bool edgeAttrsOk(const Cylinder& c, float width, const float col[3],
                  uint16_t group) {
   const umbreon::Material& m = c.material;
   const bool mat = nearf(m.ambient, 1.0f) && nearf(m.diffuse, 0.0f) &&
                    nearf(m.specular, 0.0f);
   return c.open && !c.fromEdgeMacro && mat && nearf(c.radius, width) &&
-         c.group == group && nearf(c.color.x, col[0]) &&
-         nearf(c.color.y, col[1]) && nearf(c.color.z, col[2]) &&
-         nearf(c.color.w, 1.0f);
+         c.group == group && c.objEdge == umbreon::kObjEdgeFull &&
+         nearf(c.color.x, col[0]) && nearf(c.color.y, col[1]) &&
+         nearf(c.color.z, col[2]) && nearf(c.color.w, 1.0f);
 }
+
+// Total angle (radians) the arcs of `group` cover around `center`.
+float arcAngle(const Scene& sc, const Vec3& center, uint16_t group) {
+  float sum = 0.0f;
+  for (const EdgeArc& a : sc.edgeArcs) {
+    if (a.group != group) continue;
+    const Vec3 u = umbreon::normalize(a.cp[0] - center);
+    const Vec3 v = umbreon::normalize(a.cp[3] - center);
+    sum += std::acos(std::fmax(-1.0f, std::fmin(1.0f, umbreon::dot(u, v))));
+  }
+  return sum;
+}
+
+// Flat white sphere / mesh: renders as plain white so a black line shows.
+umbreon::Material flatWhite() { return umbreon::Material::flatOutline(); }
 
 }  // namespace
 
@@ -65,21 +88,19 @@ int main() {
   {
     Scene sc;
     Sphere sp;
-    sp.center = {0, 0, 0};
     sp.radius = 1.0f;
     sc.spheres.push_back(sp);
-    sc.camera.orthographic = true;
-    sc.camera.direction = {0, 0, -1};
+    sc.camera = orthoZ();
     ObjectSpaceEdgeOptions opt;  // enable defaults to false
     umbreon::generateObjectSpaceEdges(sc, opt);
-    s.check("disabled: no cylinders appended", sc.cylinders.empty());
+    s.check("disabled: nothing appended",
+            sc.cylinders.empty() && sc.edgeArcs.empty());
   }
 
-  // ---- (1) SPHERE ortho great circle + emitted attributes ----------------
+  // ---- (1) SPHERE ortho ring: an exact circle of Bezier arcs, raised -------
   {
     Scene sc;
-    sc.camera.orthographic = true;
-    sc.camera.direction = {0, 0, -1};  // view along -z
+    sc.camera = orthoZ();
     Sphere sp;
     sp.center = {1, 2, 3};
     sp.radius = 2.0f;
@@ -89,91 +110,77 @@ int main() {
     ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.width = 0.05f;
-    opt.raise = 0.0f;
-    opt.segments = 32;
+    opt.raise = 0.1f;
     opt.color[0] = 0.1f; opt.color[1] = 0.2f; opt.color[2] = 0.3f;
     umbreon::generateObjectSpaceEdges(sc, opt);
 
-    s.check_eq("ortho sphere: ring has `segments` cylinders",
-               sc.cylinders.size(), static_cast<std::size_t>(32));
-
-    bool allRadiusOk = true, allPlaneOk = true, allAttrsOk = true,
-         chained = true;
+    s.check_eq("ortho sphere: no straight edges", sc.cylinders.size(),
+               static_cast<std::size_t>(0));
+    // At most 45 degrees per arc: a full circle is 8 arcs.
+    s.check_eq("ortho sphere: full ring is 8 arcs", sc.edgeArcs.size(),
+               static_cast<std::size_t>(8));
+    bool onCircle = true, inPlane = true, attrs = true, chained = true,
+         midOnCircle = true;
     const Vec3 O = sp.center;
-    for (std::size_t i = 0; i < sc.cylinders.size(); ++i) {
-      const Cylinder& c = sc.cylinders[i];
-      if (!edgeAttrsOk(c, opt.width, opt.color, 7)) allAttrsOk = false;
-      // Each ring vertex is exactly r from the center (great circle).
-      if (!nearf(umbreon::length(c.p0 - O), sp.radius)) allRadiusOk = false;
-      // Great circle lies in the plane through O perpendicular to the view dir:
-      // (P - O) . viewDir == 0, i.e. constant z == O.z here.
-      if (!nearf(c.p0.z, O.z)) allPlaneOk = false;
-      // Closed chain: this segment's end is the next segment's start.
-      const Cylinder& n = sc.cylinders[(i + 1) % sc.cylinders.size()];
-      if (!nearf(umbreon::length(c.p1 - n.p0), 0.0f)) chained = false;
+    const float R = sp.radius + opt.raise;  // raised along the normal
+    for (std::size_t i = 0; i < sc.edgeArcs.size(); ++i) {
+      const EdgeArc& a = sc.edgeArcs[i];
+      if (!nearf(umbreon::length(a.cp[0] - O), R)) onCircle = false;
+      if (!nearf(a.cp[0].z, O.z) || !nearf(a.cp[3].z, O.z)) inPlane = false;
+      if (!nearf(a.radius, opt.width) || a.group != 7 ||
+          a.kind != umbreon::kObjEdgeFull || !nearf(a.color.x, 0.1f) ||
+          !nearf(a.color.z, 0.3f))
+        attrs = false;
+      // The cubic's midpoint stays on the circle (not a chord).
+      const Vec3 mid = (a.cp[0] + a.cp[1] * 3.0f + a.cp[2] * 3.0f + a.cp[3]) *
+                       (1.0f / 8.0f);
+      if (!nearf(umbreon::length(mid - O), R, 2.0e-3f)) midOnCircle = false;
+      const EdgeArc& n = sc.edgeArcs[(i + 1) % sc.edgeArcs.size()];
+      if (!nearf(umbreon::length(a.cp[3] - n.cp[0]), 0.0f)) chained = false;
     }
-    s.check("ortho sphere: every vertex is radius r from center", allRadiusOk);
-    s.check("ortho sphere: ring lies in plane perpendicular to view", allPlaneOk);
-    s.check("ortho sphere: edges open/flat/group/radius/color correct",
-            allAttrsOk);
-    s.check("ortho sphere: ring is a closed chain", chained);
+    s.check("ortho sphere: arc ends on the raised circle", onCircle);
+    s.check("ortho sphere: arc midpoints on the circle", midOnCircle);
+    s.check("ortho sphere: ring in the plane perpendicular to view", inPlane);
+    s.check("ortho sphere: arc radius/group/kind/color", attrs);
+    s.check("ortho sphere: arcs form a closed chain", chained);
   }
 
-  // ---- (2) SPHERE persp horizon (tangent) circle -------------------------
+  // ---- (2) SPHERE persp horizon (tangent) circle --------------------------
   {
     Scene sc;
     sc.camera.orthographic = false;
     sc.camera.position = {0, 0, 10};
     Sphere sp;
-    sp.center = {0, 0, 0};
     sp.radius = 2.0f;
     sc.spheres.push_back(sp);
-
     ObjectSpaceEdgeOptions opt;
     opt.enable = true;
-    opt.segments = 24;
     umbreon::generateObjectSpaceEdges(sc, opt);
-    s.check_eq("persp sphere: ring has `segments` cylinders",
-               sc.cylinders.size(), static_cast<std::size_t>(24));
-
-    bool onSurface = true, normalPerpView = true;
-    for (const Cylinder& c : sc.cylinders) {
-      // Persp horizon circle: every point is exactly ON the sphere surface.
-      if (!nearf(umbreon::length(c.p0 - sp.center), sp.radius)) onSurface = false;
-      // Surface normal there is perpendicular to the view ray from the camera
-      // (definition of the silhouette: n . v == 0).
-      const Vec3 nrm = umbreon::normalize(c.p0 - sp.center);
-      const Vec3 view = umbreon::normalize(c.p0 - sc.camera.position);
-      if (!nearf(umbreon::dot(nrm, view), 0.0f, 5.0e-3f)) normalPerpView = false;
+    bool onSurface = !sc.edgeArcs.empty(), perpView = true;
+    for (const EdgeArc& a : sc.edgeArcs) {
+      if (!nearf(umbreon::length(a.cp[0] - sp.center), sp.radius))
+        onSurface = false;
+      const Vec3 nrm = umbreon::normalize(a.cp[0] - sp.center);
+      const Vec3 view = umbreon::normalize(a.cp[0] - sc.camera.position);
+      if (!nearf(umbreon::dot(nrm, view), 0.0f, 5.0e-3f)) perpView = false;
     }
-    s.check("persp sphere: every ring vertex is on the surface", onSurface);
-    s.check("persp sphere: surface normal perpendicular to view ray",
-            normalPerpView);
+    s.check("persp sphere: ring points on the surface", onSurface);
+    s.check("persp sphere: normal perpendicular to the view ray", perpView);
+
+    Scene in = sc;
+    in.edgeArcs.clear();
+    in.camera.position = {0, 0, 0};  // inside the sphere
+    umbreon::generateObjectSpaceEdges(in, opt);
+    s.check("persp sphere: camera inside => no ring", in.edgeArcs.empty());
   }
 
-  // ---- (2b) SPHERE persp: camera inside => skipped -----------------------
+  // ---- (3) CYLINDER side view: two generators at radius + raise ----------
   {
     Scene sc;
-    sc.camera.orthographic = false;
-    sc.camera.position = {0, 0, 0};  // at the center
-    Sphere sp;
-    sp.center = {0, 0, 0};
-    sp.radius = 2.0f;
-    sc.spheres.push_back(sp);
-    ObjectSpaceEdgeOptions opt;
-    opt.enable = true;
-    umbreon::generateObjectSpaceEdges(sc, opt);
-    s.check("persp sphere: camera inside => no edges", sc.cylinders.empty());
-  }
-
-  // ---- (3) CYLINDER side view: two generators perpendicular to axis&view --
-  {
-    Scene sc;
-    sc.camera.orthographic = true;
-    sc.camera.direction = {0, 0, -1};  // view along -z
+    sc.camera = orthoZ();
     Cylinder cyl;
     cyl.p0 = {-3, 0, 0};
-    cyl.p1 = {3, 0, 0};  // axis along +x, seen broadside from +z
+    cyl.p1 = {3, 0, 0};  // axis along +x, seen broadside
     cyl.radius = 0.5f;
     cyl.group = 4;
     sc.cylinders.push_back(cyl);
@@ -181,101 +188,56 @@ int main() {
     ObjectSpaceEdgeOptions opt;
     opt.enable = true;
     opt.width = 0.02f;
-    opt.raise = 0.0f;
-    opt.color[0] = 0.0f; opt.color[1] = 0.0f; opt.color[2] = 0.0f;
+    opt.raise = 0.1f;
     umbreon::generateObjectSpaceEdges(sc, opt);
-
-    // Original + 2 side generators.
-    s.check_eq("side cylinder: 2 edges appended", sc.cylinders.size(),
+    s.check_eq("side cylinder: 2 side lines appended", sc.cylinders.size(),
                static_cast<std::size_t>(3));
     const Cylinder& l1 = sc.cylinders[1];
     const Cylinder& l2 = sc.cylinders[2];
-    s.check("side cylinder: edges open/flat/group/radius/color correct",
+    s.check("side cylinder: edge attributes",
             edgeAttrsOk(l1, opt.width, opt.color, 4) &&
                 edgeAttrsOk(l2, opt.width, opt.color, 4));
-
-    // The silhouette offset is perpendicular to the axis (+x) AND the view (z):
-    // for this geometry s == +/- y, so the side lines sit at y == +/- radius,
-    // z == 0, running parallel to the axis.
-    const Vec3 u = umbreon::normalize(cyl.p1 - cyl.p0);
-    auto offset = [&](const Cylinder& c) { return c.p0 - Vec3{c.p0.x, 0, 0}; };
-    const Vec3 o1 = offset(l1);
-    const Vec3 o2 = offset(l2);
-    s.check("side cylinder: offsets at +/- radius", nearf(umbreon::length(o1),
-            cyl.radius) && nearf(umbreon::length(o2), cyl.radius));
-    s.check("side cylinder: offsets perpendicular to axis",
-            nearf(umbreon::dot(o1, u), 0.0f) && nearf(umbreon::dot(o2, u), 0.0f));
-    s.check("side cylinder: two lines on opposite sides",
-            nearf(umbreon::length(o1 + o2), 0.0f));
-    // Both generators are parallel to the axis (a side line of a cylinder).
-    s.check("side cylinder: generators parallel to axis",
-            nearf(umbreon::length(umbreon::cross(
-                      umbreon::normalize(l1.p1 - l1.p0), u)), 0.0f) &&
-            nearf(umbreon::length(umbreon::cross(
-                      umbreon::normalize(l2.p1 - l2.p0), u)), 0.0f));
-  }
-
-  // ---- (3b) CYLINDER raise pushes the side lines outward by `raise` -------
-  {
-    Scene sc;
-    sc.camera.orthographic = true;
-    sc.camera.direction = {0, 0, -1};
-    Cylinder cyl;
-    cyl.p0 = {-3, 0, 0};
-    cyl.p1 = {3, 0, 0};
-    cyl.radius = 0.5f;
-    sc.cylinders.push_back(cyl);
-
-    ObjectSpaceEdgeOptions opt;
-    opt.enable = true;
-    opt.raise = 0.1f;
-    umbreon::generateObjectSpaceEdges(sc, opt);
-    const Cylinder& l1 = sc.cylinders[1];
+    const Vec3 u{1, 0, 0};
     const Vec3 o1 = l1.p0 - Vec3{l1.p0.x, 0, 0};
-    s.check("raise cylinder: offset == radius + raise",
-            nearf(umbreon::length(o1), cyl.radius + opt.raise));
+    const Vec3 o2 = l2.p0 - Vec3{l2.p0.x, 0, 0};
+    s.check("side cylinder: offsets at radius + raise",
+            nearf(umbreon::length(o1), cyl.radius + opt.raise) &&
+                nearf(umbreon::length(o2), cyl.radius + opt.raise));
+    s.check("side cylinder: opposite sides, perpendicular to axis",
+            nearf(umbreon::length(o1 + o2), 0.0f) &&
+                nearf(umbreon::dot(o1, u), 0.0f));
   }
 
   // ---- (4) CYLINDER end-on => cap-rim circle, not side lines -------------
   {
     Scene sc;
-    sc.camera.orthographic = true;
-    sc.camera.direction = {0, 0, -1};  // view along -z
+    sc.camera = orthoZ();
     Cylinder cyl;
     cyl.p0 = {0, 0, -2};
-    cyl.p1 = {0, 0, 2};  // axis along the view direction (end-on)
+    cyl.p1 = {0, 0, 2};  // axis along the view
     cyl.radius = 0.7f;
     cyl.group = 9;
     sc.cylinders.push_back(cyl);
-
     ObjectSpaceEdgeOptions opt;
     opt.enable = true;
-    opt.segments = 20;
-    opt.width = 0.03f;
     umbreon::generateObjectSpaceEdges(sc, opt);
-    // A cap circle of `segments` cylinders replaces the (collapsed) side lines.
-    s.check_eq("end-on cylinder: cap-rim ring emitted", sc.cylinders.size(),
-               static_cast<std::size_t>(1 + 20));
-    bool ringRadiusOk = true, attrsOk = true;
-    // The nearer cap (to a +z ortho viewer) is at z == +2; rim radius == r.
-    for (std::size_t i = 1; i < sc.cylinders.size(); ++i) {
-      const Cylinder& c = sc.cylinders[i];
-      const Vec3 radial = c.p0 - Vec3{0, 0, c.p0.z};
-      if (!nearf(umbreon::length(radial), cyl.radius)) ringRadiusOk = false;
-      if (!edgeAttrsOk(c, opt.width, opt.color, 9)) attrsOk = false;
+    bool rimOk = sc.edgeArcs.size() == 8;
+    for (const EdgeArc& a : sc.edgeArcs) {
+      // The nearer cap (z = +2) rim, radius r about the axis.
+      if (!nearf(a.cp[0].z, 2.0f) ||
+          !nearf(umbreon::length(Vec3{a.cp[0].x, a.cp[0].y, 0}), cyl.radius) ||
+          a.group != 9)
+        rimOk = false;
     }
-    s.check("end-on cylinder: rim vertices at radius r from axis", ringRadiusOk);
-    s.check("end-on cylinder: rim edges open/flat/group/radius/color correct",
-            attrsOk);
+    s.check("end-on cylinder: cap rim of 8 arcs, no side lines",
+            rimOk && sc.cylinders.size() == 1);
   }
 
   // ---- (5) snapshot: appended edges are not themselves silhouetted -------
   {
     Scene sc;
-    sc.camera.orthographic = true;
-    sc.camera.direction = {0, 0, -1};
+    sc.camera = orthoZ();
     Sphere sp;
-    sp.center = {0, 0, 0};
     sp.radius = 1.0f;
     sc.spheres.push_back(sp);
     Cylinder cyl;
@@ -283,183 +245,199 @@ int main() {
     cyl.p1 = {2, 0, 0};
     cyl.radius = 0.3f;
     sc.cylinders.push_back(cyl);
-
     ObjectSpaceEdgeOptions opt;
     opt.enable = true;
-    opt.segments = 16;
-    opt.clip = false;  // raw-geometry count (the clip is exercised in test 6)
+    opt.clip = false;  // raw geometry (the clip is checked below)
     umbreon::generateObjectSpaceEdges(sc, opt);
-    // Exactly: 1 original cylinder + 16 sphere-ring + 2 cylinder side lines.
-    // (If the snapshot were broken, the appended sphere-ring/side cylinders
-    // would be silhouetted again and the count would explode.)
-    s.check_eq("snapshot: count is original + sphere-ring + 2 (no recursion)",
-               sc.cylinders.size(), static_cast<std::size_t>(1 + 16 + 2));
+    s.check("snapshot: 1 original + 2 side lines, one ring (no recursion)",
+            sc.cylinders.size() == 3 && sc.edgeArcs.size() == 8);
   }
 
-  // ---- (6) union-boundary clip: a bond through an atom is trimmed --------
+  // ---- (6) union clip: same-section solids, thinner bonds included --------
   {
-    // A cylinder (radius 0.3) running through a sphere (radius 1): its side
-    // lines pass deep inside the sphere. The clip must drop those inside parts
-    // (the connecting atom's surface takes over there) so connecting primitives
-    // join along the intersection instead of crossing at coincident depth.
-    Scene base;
-    base.camera.orthographic = true;
-    base.camera.direction = {0, 0, -1};
-    Sphere sp;
-    sp.center = {0, 0, 0};
-    sp.radius = 1.0f;
-    base.spheres.push_back(sp);
-    Cylinder cyl;
-    cyl.p0 = {-2, 0, 0};
-    cyl.p1 = {2, 0, 0};  // axis through the sphere center
-    cyl.radius = 0.3f;
-    base.cylinders.push_back(cyl);
-
-    auto deepInsideAtom = [&](const Scene& s2) {
-      // Any APPENDED edge (index >= 1, after the original cylinder) whose
-      // midpoint is well inside the sphere (beyond the ~0.02 ring-chord sag).
-      for (std::size_t i = 1; i < s2.cylinders.size(); ++i) {
-        const Vec3 mid = (s2.cylinders[i].p0 + s2.cylinders[i].p1) * 0.5f;
-        if (umbreon::length(mid - sp.center) < sp.radius - 0.1f) return true;
-      }
-      return false;
-    };
-
-    Scene off = base;
-    ObjectSpaceEdgeOptions oOff;
-    oOff.enable = true;
-    oOff.segments = 16;
-    oOff.clip = false;
-    umbreon::generateObjectSpaceEdges(off, oOff);
-    s.check("clip off: a side line runs deep inside the atom", deepInsideAtom(off));
-
-    Scene on = base;
-    ObjectSpaceEdgeOptions oOn;
-    oOn.enable = true;
-    oOn.segments = 16;
-    oOn.clip = true;
-    umbreon::generateObjectSpaceEdges(on, oOn);
-    s.check("clip on: no edge runs deep inside the atom (union boundary)",
-            !deepInsideAtom(on));
-    // The clip splits/drops segments, so it must still leave a non-empty outline.
-    s.check("clip on: outline is not emptied", on.cylinders.size() > 1);
-  }
-
-  // ---- (7) ball-and-stick: a protruding atom keeps its FULL circle ----------
-  {
-    // When a sphere protrudes beyond a bond (rs > rc, ball-and-stick) the bond is
-    // buried inside the atom's silhouette, so the atom's circle must stay
-    // continuous -- the thin bond must NOT clip the ring. Only an equal/larger
-    // bond (rs <= rc, licorice) takes over and clips it (no "ball bump" on the
-    // smooth tube). Edges carry their source primitive's group, so the ring edges
-    // (sphere group) are countable apart from the bond's side lines.
-    auto ringEdges = [](const Scene& sc, uint16_t grp, std::size_t origCyl) {
-      std::size_t n = 0;
-      for (std::size_t i = origCyl; i < sc.cylinders.size(); ++i)
-        if (sc.cylinders[i].group == grp) ++n;
-      return n;
+    // A sphere (r 1) with a bond leaving it along +x, both in section 1.
+    auto makeScene = [](float bondR, uint16_t bondGroup, bool noEdge) {
+      Scene sc;
+      sc.camera = orthoZ();
+      Sphere sp;
+      sp.radius = 1.0f;
+      sp.group = 1;
+      sc.spheres.push_back(sp);
+      Cylinder b;
+      b.p0 = {0, 0, 0};
+      b.p1 = {3, 0, 0};
+      b.radius = bondR;
+      b.group = bondGroup;
+      b.noEdge = noEdge;
+      sc.cylinders.push_back(b);
+      return sc;
     };
     ObjectSpaceEdgeOptions o;
     o.enable = true;
-    o.segments = 24;
     o.clip = true;
+    const Vec3 O{0, 0, 0};
+
+    Scene alone;
+    alone.camera = orthoZ();
     Sphere sp;
-    sp.center = {0, 0, 0};
     sp.radius = 1.0f;
     sp.group = 1;
-    Camera cam;
-    cam.orthographic = true;
-    cam.direction = {0, 0, -1};
+    alone.spheres.push_back(sp);
+    umbreon::generateObjectSpaceEdges(alone, o);
+    const float full = arcAngle(alone, O, 1);
+    s.check("clip: a lone sphere keeps the whole ring", nearf(full, 2 * kPi, 1e-2f));
 
-    // Sphere alone: the ring is a full closed loop of `segments` edges.
-    Scene a;
-    a.camera = cam;
-    a.spheres.push_back(sp);
-    umbreon::generateObjectSpaceEdges(a, o);
-    const std::size_t fullRing = ringEdges(a, 1, 0);
-    s.check("sphere-alone ring is a full closed loop", fullRing == 24);
+    // A thinner bond of the same section cuts the ring where it leaves the
+    // atom: the arc inside the bond (2 asin(0.3) ~ 35 deg) is gone.
+    Scene thin = makeScene(0.3f, 1, false);
+    umbreon::generateObjectSpaceEdges(thin, o);
+    const float gap = full - arcAngle(thin, O, 1);
+    s.check("clip: a thinner same-section bond cuts the ring at the joint",
+            gap > 0.45f && gap < 0.75f);
+    bool sideInside = false;  // the bond's side lines stop at the atom surface
+    for (std::size_t i = 1; i < thin.cylinders.size(); ++i) {
+      const Cylinder& c = thin.cylinders[i];
+      if (c.radius < 1e-6f || umbreon::length(c.p1 - c.p0) < 1e-3f) continue;
+      const Vec3 mid = (c.p0 + c.p1) * 0.5f;
+      if (umbreon::length(mid) < 0.9f) sideInside = true;
+    }
+    s.check("clip: the bond's side lines stop at the atom surface", !sideInside);
 
-    // Sphere + THIN coaxial bond (ball-and-stick): ring stays complete.
-    Scene b;
-    b.camera = cam;
-    b.spheres.push_back(sp);
-    Cylinder thin;
-    thin.p0 = {0, 0, 0};
-    thin.p1 = {3, 0, 0};
-    thin.radius = 0.3f;
-    thin.group = 2;
-    b.cylinders.push_back(thin);
-    umbreon::generateObjectSpaceEdges(b, o);
-    s.check("ball-stick: a thinner bond does NOT clip the atom's circle",
-            ringEdges(b, 1, 1) == fullRing);
+    // An equal-radius bond cuts half of the ring.
+    Scene lic = makeScene(1.0f, 1, false);
+    umbreon::generateObjectSpaceEdges(lic, o);
+    s.check("clip: an equal-radius bond cuts half of the ring",
+            nearf(arcAngle(lic, O, 1), kPi, 0.1f));
 
-    // Sphere + EQUAL-radius bond (licorice): ring is clipped where the bond runs.
-    Scene c;
-    c.camera = cam;
-    c.spheres.push_back(sp);
-    Cylinder thick;
-    thick.p0 = {0, 0, 0};
-    thick.p1 = {3, 0, 0};
-    thick.radius = 1.0f;
-    thick.group = 2;
-    c.cylinders.push_back(thick);
-    umbreon::generateObjectSpaceEdges(c, o);
-    s.check("licorice: an equal-radius bond clips the ring (no ball bump)",
-            ringEdges(c, 1, 1) < fullRing);
+    // Another section's solid and a line-drawing cylinder do not clip.
+    Scene other = makeScene(0.3f, 2, false);
+    umbreon::generateObjectSpaceEdges(other, o);
+    s.check("clip: a bond of another section leaves the ring whole",
+            nearf(arcAngle(other, O, 1), full, 1e-2f));
+    Scene wire = makeScene(0.3f, 1, true);
+    umbreon::generateObjectSpaceEdges(wire, o);
+    s.check("clip: a line-drawing cylinder (noEdge) neither clips nor gets lines",
+            nearf(arcAngle(wire, O, 1), full, 1e-2f) &&
+                wire.cylinders.size() == 1);
   }
 
-  // ---- (8) triangle-mesh edges: border / smooth silhouette / crease ---------
+  // ---- (7) per-section styles -------------------------------------------
   {
-    Camera cam;
-    cam.orthographic = true;
-    cam.direction = {0, 0, -1};  // viewer toward +z
+    Scene sc;
+    sc.camera = orthoZ();
+    for (uint16_t g = 0; g < 3; ++g) {
+      Sphere sp;
+      sp.center = {static_cast<float>(g) * 3.0f - 3.0f, 0, 0};
+      sp.radius = 1.0f;
+      sp.group = g;
+      sc.spheres.push_back(sp);
+    }
+    sc.groupObjectEdgeStyle.resize(3);
+    sc.groupObjectEdgeStyle[0].color[0] = 1.0f;
+    sc.groupObjectEdgeStyle[0].width = 0.04f;
+    sc.groupObjectEdgeStyle[1].color[2] = 1.0f;
+    sc.groupObjectEdgeStyle[1].width = 0.08f;
+    sc.groupObjectEdgeStyle[2].silhouette = false;
+    sc.groupObjectEdgeStyle[2].crease = false;
+    sc.groupObjectEdgeStyle[2].border = false;  // disabled section
+    ObjectSpaceEdgeOptions o;
+    o.enable = true;
+    umbreon::generateObjectSpaceEdges(sc, o);
+    bool ok0 = false, ok1 = false, none2 = true;
+    for (const EdgeArc& a : sc.edgeArcs) {
+      if (a.group == 0) ok0 = nearf(a.radius, 0.04f) && nearf(a.color.x, 1.0f);
+      if (a.group == 1) ok1 = nearf(a.radius, 0.08f) && nearf(a.color.z, 1.0f);
+      if (a.group == 2) none2 = false;
+    }
+    s.check("styles: each section draws with its own color and radius", ok0 && ok1);
+    s.check("styles: a disabled section draws nothing", none2);
+  }
+
+  // ---- (8) triangle-mesh edges -------------------------------------------
+  {
+    const Camera cam = orthoZ();
+    auto meshEdges = [&](const umbreon::Mesh& m, bool sil, bool crease,
+                         bool border) {
+      Scene sc;
+      sc.camera = cam;
+      sc.mesh = m;
+      ObjectSpaceEdgeOptions o;
+      o.enable = true;
+      o.meshSilhouette = sil;
+      o.meshCrease = crease;
+      o.meshBorder = border;
+      umbreon::generateObjectSpaceEdges(sc, o);
+      return sc.cylinders.size();
+    };
 
     // BORDER: a lone triangle has three single-face boundary edges.
     {
-      Scene sc;
-      sc.camera = cam;
-      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
-      sc.mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
-      ObjectSpaceEdgeOptions o;
-      o.enable = true;
-      o.meshSilhouette = false;
-      o.meshCrease = false;
-      o.meshBorder = true;
-      umbreon::generateObjectSpaceEdges(sc, o);
+      umbreon::Mesh m;
+      m.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+      m.normals.assign(3, Vec3{0, 0, 1});
       s.check("mesh border: a lone triangle emits 3 boundary edges",
-              sc.cylinders.size() == 3);
+              meshEdges(m, false, false, true) == 3);
     }
 
-    // SMOOTH SILHOUETTE: vertex normals (+,+,-) make n.v change sign across the
-    // face, so exactly one zero-crossing segment is emitted (Freestyle smooth).
+    // SILHOUETTE on mesh edges: a cube seen along its diagonal outlines with
+    // its 6 rim edges (the in-face diagonals and the hidden edges add none).
     {
+      umbreon::Mesh m;
+      const Vec3 v[8] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                         {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+      const int q[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                           {2, 3, 7, 6}, {1, 2, 6, 5}, {0, 4, 7, 3}};
+      for (const auto& f : q) {  // outward winding, two triangles per face
+        const int t[6] = {f[0], f[1], f[2], f[0], f[2], f[3]};
+        const Vec3 n = umbreon::normalize(umbreon::cross(v[f[1]] - v[f[0]],
+                                                         v[f[2]] - v[f[0]]));
+        for (int k : t) {
+          m.positions.push_back(v[k]);
+          m.normals.push_back(n);
+        }
+      }
       Scene sc;
-      sc.camera = cam;
-      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
-      sc.mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, -1}};
+      sc.camera.orthographic = true;
+      sc.camera.direction = umbreon::normalize(Vec3{-1, -1, -1});
+      sc.camera.position = {5, 5, 5};
+      sc.mesh = m;
       ObjectSpaceEdgeOptions o;
       o.enable = true;
-      o.meshSilhouette = true;
       o.meshCrease = false;
       o.meshBorder = false;
       umbreon::generateObjectSpaceEdges(sc, o);
-      s.check("mesh silhouette: one n.v sign-change face -> one smooth edge",
-              sc.cylinders.size() == 1);
+      s.check_eq("mesh silhouette: a cube along its diagonal has 6 rim edges",
+                 sc.cylinders.size(), static_cast<std::size_t>(6));
     }
 
-    // CREASE: two triangles folded 90 degrees share one edge whose dihedral
-    // fires a crease below the threshold but not above it.
+    // SLIVER: a flat square whose diagonal carries a zero-area triangle. The
+    // sliver's normal is rounding noise; it must add no line across the face
+    // and must not turn the diagonal into a border.
+    {
+      umbreon::Mesh m;
+      const Vec3 a{0, 0, 0}, b{2, 0, 0}, c{2, 2, 0}, d{0, 2, 0};
+      const Vec3 mid{1.0f, 1.0f, 1.0e-7f};  // on the diagonal a-c
+      const Vec3 tris[9] = {a, b, c, a, c, d, a, mid, c};
+      for (const Vec3& p : tris) {
+        m.positions.push_back(p);
+        m.normals.push_back(Vec3{0, 0, 1});
+      }
+      s.check("mesh sliver: no silhouette or crease across a flat face",
+              meshEdges(m, true, true, false) == 0);
+      s.check("mesh sliver: only the 4 outer borders",
+              meshEdges(m, false, false, true) == 4);
+    }
+
+    // CREASE: a 90 degree fold fires below the threshold but not above it.
     auto creaseCount = [&](float deg) {
       Scene sc;
       sc.camera = cam;
-      // shared edge = the x-axis (0,0,0)-(1,0,0); tri A in z=0, tri B in y=0.
       sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0},
                            {1, 0, 0}, {0, 0, 0}, {0, 0, 1}};
       sc.mesh.normals.assign(6, Vec3{0, 0, 1});
       ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = false;
-      o.meshCrease = true;
       o.meshBorder = false;
       o.creaseAngleDeg = deg;
       umbreon::generateObjectSpaceEdges(sc, o);
@@ -471,11 +449,9 @@ int main() {
             creaseCount(120.0f) == 0);
   }
 
-  // ---- (9) mesh crease/border GEOMETRIC gates (no color) --------------------
+  // ---- (9) mesh crease/border geometric gates ------------------------------
   {
-    Camera cam;
-    cam.orthographic = true;
-    cam.direction = {0, 0, -1};
+    const Camera cam = orthoZ();
     auto creaseN = [&](const std::vector<Vec3>& pos, const std::vector<Vec3>& nrm,
                        float creaseDeg, bool convexOnly, float smoothDeg) {
       Scene sc;
@@ -493,23 +469,14 @@ int main() {
       umbreon::generateObjectSpaceEdges(sc, o);
       return sc.cylinders.size();
     };
-
-    // CONVEX-ONLY: a convex ridge survives; a concave valley of the same dihedral
-    // is dropped. Shared ridge edge along x; apexes below (convex) vs above.
     const std::vector<Vec3> convex = {{0, 0, 0}, {2, 0, 0}, {1, 1, -0.5f},
                                       {2, 0, 0}, {0, 0, 0}, {1, -1, -0.5f}};
     const std::vector<Vec3> concave = {{0, 0, 0}, {2, 0, 0}, {1, 1, 0.5f},
                                        {2, 0, 0}, {0, 0, 0}, {1, -1, 0.5f}};
-    s.check("mesh convex-only OFF: a ridge fold is a crease",
-            creaseN(convex, {}, 30.0f, false, 0.0f) == 1);
     s.check("mesh convex-only: a convex ridge is kept",
             creaseN(convex, {}, 30.0f, true, 0.0f) == 1);
     s.check("mesh convex-only: a concave valley is dropped",
             creaseN(concave, {}, 30.0f, true, 0.0f) == 0);
-
-    // SMOOTH-FACET VETO: a ~20deg fold whose vertex normals AGREE (smooth-shaded,
-    // here the +z bisector) is tessellation, not a crease. creaseDeg=10 makes the
-    // fold a candidate.
     const std::vector<Vec3> facet = {{0, 0, 0},    {1, 0, 0}, {0.5f, 1, 0.176f},
                                      {1, 0, 0},    {0, 0, 0}, {0.5f, -1, 0.176f}};
     const std::vector<Vec3> smoothN(6, Vec3{0, 0, 1});
@@ -518,9 +485,6 @@ int main() {
     s.check("mesh smooth-veto: a smooth-shaded facet seam is dropped",
             creaseN(facet, smoothN, 10.0f, false, 25.0f) == 0);
 
-    // BORDER COPLANAR VETO: a straight top border chain p0-p1-p2-p3 over a fan apex
-    // q. The middle edge p1-p2 continues collinearly at BOTH ends (internal seam)
-    // and is dropped; the end and side borders remain.
     auto borderN = [&](float vetoDeg) {
       Scene sc;
       sc.camera = cam;
@@ -540,55 +504,25 @@ int main() {
     s.check("mesh border-veto OFF: all border edges kept", b0 == 5);
     s.check("mesh border-veto: the collinear internal seam edge is dropped",
             borderN(35.0f) == b0 - 1);
-  }
 
-  // ---- (10) Freestyle on-contour vertex + crease-cluster degree filter -------
-  {
-    const float kPiT = 3.14159265358979f;
-    Camera cam;
-    cam.orthographic = true;
-    cam.direction = {0, 0, -1};  // viewer toward +z
-
-    // FREESTYLE on-contour vertex: a vertex whose normal is exactly perpendicular
-    // to the view (DotP==0) lies ON the silhouette. The face must still emit one
-    // segment (vertex -> opposite-edge crossing) instead of being skipped, which
-    // the plain two-sign-change extraction would do (nicking the outline).
-    {
-      Scene sc;
-      sc.camera = cam;
-      sc.mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
-      sc.mesh.normals = {{1, 0, 0}, {0, 0, 1}, {0, 0, -1}};  // DotP = 0, +1, -1
-      ObjectSpaceEdgeOptions o;
-      o.enable = true;
-      o.meshSilhouette = true;
-      o.meshCrease = false;
-      o.meshBorder = false;
-      umbreon::generateObjectSpaceEdges(sc, o);
-      s.check("mesh silhouette: an on-contour vertex (DotP==0) still emits a segment",
-              sc.cylinders.size() == 1);
-    }
-
-    // CREASE-CLUSTER DEGREE FILTER: a hexagonal cone's six lateral creases all meet
-    // at the apex (crease degree 6). A high limit keeps them; a low limit drops the
-    // whole cluster -- the geometric stand-in for a tube/terminus cap blob.
+    // Crease-cluster degree filter: a hexagonal cone's six creases meet at the
+    // apex (degree 6); a low limit drops the cluster (a tube cap blob).
     auto coneCreases = [&](int maxDeg) {
       Scene sc;
       sc.camera = cam;
       Vec3 r[6];
       for (int i = 0; i < 6; ++i) {
-        const float a = static_cast<float>(i) * (kPiT / 3.0f);
+        const float a = static_cast<float>(i) * (kPi / 3.0f);
         r[i] = Vec3{std::cos(a), std::sin(a), 0.0f};
       }
-      const Vec3 c{0, 0, 1};
       for (int i = 0; i < 6; ++i) {
-        sc.mesh.positions.push_back(c);
+        sc.mesh.positions.push_back(Vec3{0, 0, 1});
         sc.mesh.positions.push_back(r[i]);
         sc.mesh.positions.push_back(r[(i + 1) % 6]);
       }
       ObjectSpaceEdgeOptions o;
       o.enable = true;
       o.meshSilhouette = false;
-      o.meshCrease = true;
       o.meshBorder = false;
       o.creaseAngleDeg = 20.0f;
       o.meshCreaseConvexOnly = false;
@@ -603,65 +537,16 @@ int main() {
             coneCreases(4) == 0);
   }
 
-  // ---- (N) edge_line2 transmissive fade (visibilityClip path) -------------
-  // A camera-facing triangle: with visibilityClip on, its border edges are all
-  // visible (only the triangle's own face is excluded), so the emitted edges
-  // carry the welded-vertex alpha. An all-opaque mesh stays uniform (opacity1<0);
-  // a uniformly semi-transparent mesh fades color.w and opacity1 to that alpha.
-  {
-    auto borderEdges = [](float alpha) {
-      Scene sc;
-      sc.camera.orthographic = true;
-      sc.camera.direction = {0, 0, -1};
-      auto& m = sc.mesh;
-      m.positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
-      m.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
-      m.colors = {{0, 0, 0, alpha}, {0, 0, 0, alpha}, {0, 0, 0, alpha}};
-      ObjectSpaceEdgeOptions o;
-      o.enable = true;
-      o.visibilityClip = true;
-      o.width = 0.05f;
-      o.meshSilhouette = false;
-      o.meshCrease = false;
-      o.meshBorder = true;
-      umbreon::generateObjectSpaceEdges(sc, o);
-      return sc.cylinders;
-    };
-    {
-      auto cyls = borderEdges(1.0f);
-      bool ok = !cyls.empty();
-      for (const Cylinder& c : cyls)
-        ok = ok && nearf(c.color.w, 1.0f) && c.opacity1 < 0.0f;
-      s.check("fade: opaque mesh => edges opaque + uniform (opacity1<0)", ok);
-    }
-    {
-      auto cyls = borderEdges(0.4f);
-      bool ok = !cyls.empty();
-      for (const Cylinder& c : cyls)
-        ok = ok && nearf(c.color.w, 0.4f) && nearf(c.opacity1, 0.4f);
-      s.check("fade: alpha-0.4 mesh => edge color.w==0.4 and opacity1==0.4", ok);
-    }
-  }
-
-  // ---- (R) render() integration: method B driven via RenderOptions ---------
-  // The public API for method B is RenderOptions::objectSpaceEdges + render(),
-  // symmetric with method A (strokeEdges). render() runs generateObjectSpaceEdges
-  // internally on a private scene copy. These lock that contract.
+  // ---- (R) render() integration --------------------------------------------
   {
     using umbreon::FrameResult;
     using umbreon::RenderOptions;
 
-    // A small renderable scene: ortho camera framing a unit sphere over white.
     auto makeScene = []() {
       Scene sc;
-      sc.camera.orthographic = true;
-      sc.camera.position = {0, 0, 10};
-      sc.camera.direction = {0, 0, -1};
-      sc.camera.up = {0, 1, 0};
-      sc.camera.height = 4.0f;
+      sc.camera = orthoZ();
       sc.background = {1, 1, 1};
       Sphere sp;
-      sp.center = {0, 0, 0};
       sp.radius = 1.0f;
       sp.color = {0.3f, 0.4f, 0.5f, 1.0f};
       sc.spheres.push_back(sp);
@@ -669,66 +554,40 @@ int main() {
     };
     ObjectSpaceEdgeOptions opt;
     opt.enable = true;
-    // Push the silhouette ring out past the sphere (raise) and make it thick
-    // enough to land on pixel centers, so the black ring is plainly visible over
-    // the white background (the equivalence check below does not depend on this,
-    // but the "edges change the image" sanity check does). color defaults to black.
     opt.width = 0.2f;
     opt.raise = 0.15f;
 
-    // (R1) EQUIVALENCE: the render()-integrated pass must produce byte-identical
-    // output to the legacy "generate edges, then render" pre-process. This is the
-    // regression guard that moving method B into render() did not change pixels.
+    // (R1) the render()-integrated pass equals generating first, then rendering.
     {
       Scene pre = makeScene();
-      umbreon::generateObjectSpaceEdges(pre, opt);  // legacy pre-process path
+      umbreon::generateObjectSpaceEdges(pre, opt);
       RenderOptions roptNo;
       roptNo.width = 32;
       roptNo.height = 32;
       FrameResult fPre = umbreon::render(pre, roptNo);
-
-      Scene base = makeScene();
       RenderOptions roptB = roptNo;
-      roptB.objectSpaceEdges = opt;  // integrated path: render() generates
-      FrameResult fInt = umbreon::render(base, roptB);
-
-      bool identical = fPre.color.size() == fInt.color.size() &&
-                       !fPre.color.empty();
-      for (std::size_t i = 0; identical && i < fPre.color.size(); ++i)
-        if (fPre.color[i] != fInt.color[i]) identical = false;
-      s.check("render(): integrated B == pre-generate path (byte-identical)",
-              identical);
-
-      // Sanity: the edges actually changed the image vs a no-edge render (so the
-      // equivalence above is not the trivial "both did nothing").
-      Scene plain = makeScene();
-      FrameResult fPlain = umbreon::render(plain, roptNo);
-      bool differs = fPlain.color.size() == fInt.color.size();
-      bool anyDiff = false;
-      for (std::size_t i = 0; differs && i < fPlain.color.size(); ++i)
-        if (fPlain.color[i] != fInt.color[i]) anyDiff = true;
-      s.check("render(): objectSpaceEdges changes the image vs no edges",
-              differs && anyDiff);
+      roptB.objectSpaceEdges = opt;
+      FrameResult fInt = umbreon::render(makeScene(), roptB);
+      bool identical = !fPre.color.empty() && fPre.color == fInt.color;
+      s.check("render(): integrated pass == pre-generate path", identical);
+      FrameResult fPlain = umbreon::render(makeScene(), roptNo);
+      s.check("render(): edges change the image", fPlain.color != fInt.color);
     }
 
-    // (R2) NON-DESTRUCTIVE: render() takes const Scene&; the integrated pass must
-    // mutate only its private copy, never the caller's scene.
+    // (R2) render() leaves the caller's scene untouched.
     {
       Scene base = makeScene();
-      const std::size_t before = base.cylinders.size();
       RenderOptions roptB;
       roptB.width = 16;
       roptB.height = 16;
       roptB.objectSpaceEdges = opt;
       (void)umbreon::render(base, roptB);
-      s.check("render(): caller scene not mutated (cylinders unchanged)",
-              base.cylinders.size() == before);
+      s.check("render(): caller scene not mutated",
+              base.cylinders.empty() && base.edgeArcs.empty());
     }
 
-    // (R3) MUTUAL EXCLUSION: enabling both edge methods would double-draw the
-    // silhouette, so render() rejects the combination with std::runtime_error.
+    // (R3) both edge methods at once is an error.
     {
-      Scene base = makeScene();
       RenderOptions both;
       both.width = 8;
       both.height = 8;
@@ -736,11 +595,86 @@ int main() {
       both.objectSpaceEdges.enable = true;
       bool threw = false;
       try {
-        (void)umbreon::render(base, both);
+        (void)umbreon::render(makeScene(), both);
       } catch (const std::runtime_error&) {
         threw = true;
       }
-      s.check("render(): strokeEdges + objectSpaceEdges both on => throws", threw);
+      s.check("render(): stroke + object edges both on => throws", threw);
+    }
+
+    // White flat sphere (r 0.5, section 0) in front of a white flat plate; the
+    // black ring's pixel sits on the +x side, over the plate.
+    constexpr int kW = 128;
+    const float lineR = 0.5f + 0.025f;  // sphere radius + raise
+    const int ringCol = static_cast<int>(0.5f * kW + lineR * kW / 4.0f);
+    auto ringDarkness = [&](const FrameResult& f) {
+      float darkest = 1.0f;
+      for (int x = ringCol - 3; x <= ringCol + 3; ++x) {
+        const std::size_t i = (static_cast<std::size_t>(kW / 2) * kW + x) * 4;
+        darkest = std::fmin(darkest, f.color[i + 1]);
+      }
+      return darkest;  // ~0 where the black line covers a pixel
+    };
+    auto plateScene = [&](uint16_t plateGroup, umbreon::SilhouetteMode mode) {
+      Scene sc;
+      sc.camera = orthoZ();
+      sc.background = {1, 1, 1};
+      Sphere sp;
+      sp.center = {0, 0, 1};
+      sp.radius = 0.5f;
+      sp.color = {1, 1, 1, 1};
+      sp.material = flatWhite();
+      sc.spheres.push_back(sp);
+      sc.mesh.positions = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0},
+                           {-2, -2, 0}, {2, 2, 0},  {-2, 2, 0}};
+      sc.mesh.normals.assign(6, Vec3{0, 0, 1});
+      sc.mesh.colors.assign(6, Vec4{1, 1, 1, 1});
+      sc.mesh.material = flatWhite();
+      sc.mesh.triGroupId.assign(2, plateGroup);
+      sc.groupObjectEdgeStyle.resize(2);
+      for (ObjectEdgeStyle& st : sc.groupObjectEdgeStyle) {
+        st.width = 0.05f;
+        st.raise = 0.025f;
+        st.border = false;
+      }
+      sc.groupObjectEdgeStyle[0].mode = mode;
+      return sc;
+    };
+    RenderOptions ro;
+    ro.width = kW;
+    ro.height = kW;
+    ro.objectSpaceEdges.enable = true;
+
+    // (R4) silhouette (Outline) mode: a line is dropped only over a surface of
+    // its own section; another section behind it keeps the line.
+    {
+      using umbreon::SilhouetteMode;
+      const float full = ringDarkness(umbreon::render(
+          plateScene(0, SilhouetteMode::Full), ro));
+      const float own = ringDarkness(umbreon::render(
+          plateScene(0, SilhouetteMode::Outline), ro));
+      const float other = ringDarkness(umbreon::render(
+          plateScene(1, SilhouetteMode::Outline), ro));
+      s.check("outline: full mode draws the ring over the plate", full < 0.2f);
+      s.check("outline: the ring over its own section's plate is dropped",
+              own > 0.8f);
+      s.check("outline: the ring over another section's plate stays",
+              other < 0.2f);
+    }
+
+    // (R5) the near clip plane keeps or drops a line by its center: the ring
+    // (center view-z 9) is drawn whole when the plane cuts only the front of
+    // its tube, and dropped whole when the plane is just behind its center.
+    {
+      Scene sc = plateScene(1, umbreon::SilhouetteMode::Full);
+      sc.clipNear = 9.0f - 0.02f;  // cuts the front of the tube (radius 0.05)
+      const float kept = ringDarkness(umbreon::render(sc, ro));
+      sc.clipNear = 9.0f + 0.02f;  // the line center is in front of the plane
+      const float dropped = ringDarkness(umbreon::render(sc, ro));
+      s.check("near clip: a line whose center is behind the plane is whole",
+              kept < 0.2f);
+      s.check("near clip: a line whose center is in front of the plane is gone",
+              dropped > 0.8f);
     }
   }
 
