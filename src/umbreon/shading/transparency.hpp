@@ -151,7 +151,7 @@ inline bool backfaceHit(const RTCRayHit& rh, const Vec3& rd) {
 // of the near plane along this ray -- confirms a backface first hit is a
 // clip-cut interior rather than a legitimately visible open-mesh backface.
 inline bool clipConfirmFront(RTCScene scene, const Vec3& org, const Vec3& rd,
-                             float tMax) {
+                             float tMax, unsigned int mask = 0xFFFFFFFFu) {
   RTCRay r{};
   r.org_x = org.x;
   r.org_y = org.y;
@@ -162,7 +162,7 @@ inline bool clipConfirmFront(RTCScene scene, const Vec3& org, const Vec3& rd,
   r.tnear = std::max(1.0e-4f, 1.0e-4f * tMax);
   r.tfar = tMax * (1.0f - 1.0e-4f);
   if (r.tnear >= r.tfar) return false;
-  r.mask = 0xFFFFFFFFu;
+  r.mask = mask;
   r.flags = 0;
   r.time = 0.0f;
   RTCOccludedArguments oargs;
@@ -211,6 +211,18 @@ inline Vec3 edgeCenterAt(const ShadeContext& sc, GeomKind kind,
   const Vec3& a = sc.built.edgeLineA[pid];
   const Vec3& b = sc.built.edgeLineB[pid];
   return a + (b - a) * u;
+}
+
+// Tangent (not normalized) of an edge line's centerline at parameter u.
+inline Vec3 edgeTangentAt(const ShadeContext& sc, GeomKind kind,
+                          unsigned int pid, float u) {
+  if (kind == GeomKind::EdgeArc) {
+    const std::array<Vec3, 4>& q = sc.built.edgeArcCP[pid];
+    const float v = 1.0f - u;
+    return (q[1] - q[0]) * (3.0f * v * v) + (q[2] - q[1]) * (6.0f * v * u) +
+           (q[3] - q[2]) * (3.0f * u * u);
+  }
+  return sc.built.edgeLineB[pid] - sc.built.edgeLineA[pid];
 }
 
 // Section (transparency group) of a non-edge surface hit.
@@ -313,6 +325,68 @@ inline bool edgeCenterClipped(const ShadeContext& sc, const RTCRayHit& rh,
   return vz < sc.clipNearZ || vz > sc.clipFarZ;
 }
 
+// A ray (org, rd) looks into a clip cut: its first surface behind the near
+// plane is a backface and the near plane removed a surface in front of it --
+// it sees the inside of a cut object (the far wall of a sliced surface, the
+// inside of a cut ribbon). The same backface + removed-front test as the
+// screen-space clip-cut G-buffer flag.
+inline bool rayLooksIntoCut(const ShadeContext& sc, const Vec3& org,
+                            const Vec3& rd, const ClipT& clip) {
+  RTCRayHit ph;
+  ph.ray.org_x = org.x;
+  ph.ray.org_y = org.y;
+  ph.ray.org_z = org.z;
+  ph.ray.dir_x = rd.x;
+  ph.ray.dir_y = rd.y;
+  ph.ray.dir_z = rd.z;
+  ph.ray.tnear = clip.tnear;
+  ph.ray.tfar = clip.tfar;
+  ph.ray.mask = kNoEdgeRayMask;
+  ph.ray.flags = 0;
+  ph.ray.time = 0.0f;
+  ph.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+  ph.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+  RTCIntersectArguments iargs;
+  rtcInitIntersectArguments(&iargs);
+  rtcIntersect1(sc.built.scene, &ph, &iargs);
+  if (ph.hit.geomID == RTC_INVALID_GEOMETRY_ID || !backfaceHit(ph, rd))
+    return false;
+  return clipConfirmFront(sc.built.scene, org, rd, clip.tnear, kNoEdgeRayMask);
+}
+
+// An edge line next to a clip cut: a view ray on either side of its
+// centerline (half a radius off, across the line on screen) looks into a cut.
+// The screen-space pass draws no line on a crack that touches a cut-interior
+// pixel (a fold of the far wall seen through the opening, the outline of a
+// cavity seen against it), so the line is dropped as a whole; a per-pixel
+// test would keep the half lying over a surface. The side rays stay close to
+// the line, as the screen-space test looks only at the pixels next to the
+// crack: for a contour (raised a quarter radius off the surface) the inner ray
+// is just inside the surface's outline and the outer one beyond it, so the
+// outline of a surface the plane cuts only farther in is kept. The rays are
+// shifted parallel to rd, off-axis only across the line, so their near/far
+// clip distances stay those of the primary ray.
+inline bool edgeNextToCut(const ShadeContext& sc, const RTCRayHit& rh,
+                          const Vec3& org, const Vec3& rd,
+                          const Vec3& camDir) {
+  const GeomRecord& rec = sc.built.records[rh.hit.geomID];
+  if (!isEdgeKind(rec.kind)) return false;
+  const ClipT clip = clipRangeT(sc, rd, camDir);
+  if (!clip.on || clip.tnear <= 0.0f) return false;
+  const Vec3 C = edgeCenterAt(sc, rec.kind, rh.hit.primID, rh.hit.u);
+  const Vec3 P = org + rd * rh.ray.tfar;
+  const float r = length(P - C);
+  const float tC = dot(C - org, rd);
+  const Vec3 base = C - rd * tC;  // origin of the ray parallel to rd via C
+  Vec3 side = cross(edgeTangentAt(sc, rec.kind, rh.hit.primID, rh.hit.u), rd);
+  side = side - camDir * dot(side, camDir);
+  const float sl = length(side);
+  if (sl <= 0.0f || r <= 0.0f) return rayLooksIntoCut(sc, base, rd, clip);
+  side = side * (0.5f * r / sl);
+  return rayLooksIntoCut(sc, base + side, rd, clip) ||
+         rayLooksIntoCut(sc, base - side, rd, clip);
+}
+
 inline void intersectPrimary(const ShadeContext& sc, RTCRayHit& rh,
                              const Vec3& org, const Vec3& rd,
                              const Vec3& camDir) {
@@ -320,6 +394,11 @@ inline void intersectPrimary(const ShadeContext& sc, RTCRayHit& rh,
   const float tfar = rh.ray.tfar;
   RTCIntersectArguments iargs;
   rtcInitIntersectArguments(&iargs);
+  auto edgeDropped = [&](const RTCRayHit& r) {
+    return edgeCenterClipped(sc, r, org, camDir) ||
+           outlineEdgeHidden(sc, r, org, rd, camDir, tfar) ||
+           edgeNextToCut(sc, r, org, rd, camDir);
+  };
   auto skipTo = [&](RTCRayHit& r, float t, float tEnd) {
     r.ray.tnear = std::nextafter(t, std::numeric_limits<float>::infinity());
     r.ray.tfar = tEnd;
@@ -332,9 +411,7 @@ inline void intersectPrimary(const ShadeContext& sc, RTCRayHit& rh,
     if (rh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
         rh.hit.geomID >= sc.built.records.size())
       break;
-    if (!edgeCenterClipped(sc, rh, org, camDir) &&
-        !outlineEdgeHidden(sc, rh, org, rd, camDir, tfar))
-      break;
+    if (!edgeDropped(rh)) break;
     skipTo(rh, rh.ray.tfar, tfar);
     rtcIntersect1(sc.built.scene, &rh, &iargs);
   }
@@ -354,8 +431,7 @@ inline void intersectPrimary(const ShadeContext& sc, RTCRayHit& rh,
     if (eh.hit.geomID == RTC_INVALID_GEOMETRY_ID ||
         eh.hit.geomID >= sc.built.records.size())
       return;
-    if (!edgeCenterClipped(sc, eh, org, camDir) &&
-        !outlineEdgeHidden(sc, eh, org, rd, camDir, tfar)) {
+    if (!edgeDropped(eh)) {
       eh.ray.mask = rh.ray.mask;
       rh = eh;  // nearer than any hit at or behind the near plane
       return;

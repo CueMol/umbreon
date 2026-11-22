@@ -680,19 +680,106 @@ int main() {
               other < 0.2f);
     }
 
-    // (R5) the near clip plane keeps or drops a line by its center: the ring
-    // (center view-z 9) is drawn whole when the plane cuts only the front of
-    // its tube, and dropped whole when the plane is just behind its center.
+    // (R5) the near clip plane keeps or drops a line by its center: the
+    // border line of a plate (center view-z 9 - raise) is drawn whole when the
+    // plane cuts only the front of its tube, and dropped whole when the plane
+    // is just behind its center.
     {
-      Scene sc = plateScene(1, umbreon::SilhouetteMode::Full);
-      sc.clipNear = 9.0f - 0.02f;  // cuts the front of the tube (radius 0.05)
-      const float kept = ringDarkness(umbreon::render(sc, ro));
-      sc.clipNear = 9.0f + 0.02f;  // the line center is in front of the plane
-      const float dropped = ringDarkness(umbreon::render(sc, ro));
+      Scene sc;
+      sc.camera = orthoZ();
+      sc.background = {1, 1, 1};
+      sc.mesh.positions = {{-1, -1, 1}, {1, -1, 1}, {1, 1, 1},
+                           {-1, -1, 1}, {1, 1, 1},  {-1, 1, 1}};
+      sc.mesh.normals.assign(6, Vec3{0, 0, 1});
+      sc.mesh.colors.assign(6, Vec4{1, 1, 1, 1});
+      sc.mesh.material = flatWhite();
+      sc.mesh.triGroupId.assign(2, 0);
+      ObjectEdgeStyle st;
+      st.width = 0.05f;
+      st.raise = 0.025f;
+      st.silhouette = false;
+      sc.groupObjectEdgeStyle = {st};
+      auto borderDarkness = [&](const FrameResult& f) {
+        float darkest = 1.0f;
+        const int col = kW / 2 + kW / 4;  // x = 1
+        for (int x = col - 3; x <= col + 3; ++x) {
+          const std::size_t i =
+              (static_cast<std::size_t>(kW / 2) * kW + x) * 4;
+          darkest = std::fmin(darkest, f.color[i + 1]);
+        }
+        return darkest;
+      };
+      const float centerVz = 9.0f - st.raise;
+      sc.clipNear = centerVz - 0.02f;  // cuts the front of the tube
+      const float kept = borderDarkness(umbreon::render(sc, ro));
+      sc.clipNear = centerVz + 0.02f;  // the line center is in front of it
+      const float dropped = borderDarkness(umbreon::render(sc, ro));
       s.check("near clip: a line whose center is behind the plane is whole",
               kept < 0.2f);
       s.check("near clip: a line whose center is in front of the plane is gone",
               dropped > 0.8f);
+    }
+
+    // (R6) cut convention (as the screen-space pass): a line next to the cut
+    // interior -- a crease of a backfacing fold seen where the near plane
+    // removed the plate in front -- is not drawn; without the removed plate
+    // the same fold is a plain backface and keeps its line. The outline of a
+    // sphere the plane opens only farther in (intact just inside the outline)
+    // stays.
+    {
+      auto foldScene = [&](bool plate) {
+        Scene sc;
+        sc.camera = orthoZ();
+        sc.background = {1, 1, 1};
+        // ridge along y at x = 0 (z 1), sloping to z 0.5 at x = +-1, wound
+        // to face -z (seen from its back)
+        sc.mesh.positions = {{0, -2, 1},  {-1, -2, 0.5f}, {-1, 2, 0.5f},
+                             {0, -2, 1},  {-1, 2, 0.5f},  {0, 2, 1},
+                             {0, -2, 1},  {0, 2, 1},      {1, 2, 0.5f},
+                             {0, -2, 1},  {1, 2, 0.5f},   {1, -2, 0.5f}};
+        sc.mesh.triGroupId.assign(4, 0);
+        if (plate) {
+          const std::vector<Vec3> q = {{-2, -2, 2}, {2, -2, 2}, {2, 2, 2},
+                                       {-2, -2, 2}, {2, 2, 2},  {-2, 2, 2}};
+          sc.mesh.positions.insert(sc.mesh.positions.end(), q.begin(),
+                                   q.end());
+          sc.mesh.triGroupId.push_back(1);
+          sc.mesh.triGroupId.push_back(1);
+        }
+        sc.mesh.normals.assign(sc.mesh.positions.size(), Vec3{0, 0, -1});
+        sc.mesh.colors.assign(sc.mesh.positions.size(), Vec4{1, 1, 1, 1});
+        sc.mesh.material = flatWhite();
+        ObjectEdgeStyle st;
+        st.width = 0.05f;
+        st.raise = 0.0125f;
+        st.silhouette = false;
+        st.border = false;
+        st.crease = true;
+        ObjectEdgeStyle none = st;
+        none.crease = false;
+        sc.groupObjectEdgeStyle = {st, none};
+        sc.clipNear = 8.5f;  // removes the plate (view-z 8), keeps the fold
+        return sc;
+      };
+      auto creaseDarkness = [&](const FrameResult& f) {
+        float darkest = 1.0f;
+        for (int x = kW / 2 - 3; x <= kW / 2 + 3; ++x) {
+          const std::size_t i =
+              (static_cast<std::size_t>(kW / 2) * kW + x) * 4;
+          darkest = std::fmin(darkest, f.color[i + 1]);
+        }
+        return darkest;
+      };
+      RenderOptions rc = ro;
+      rc.objectSpaceEdges.creaseAngleDeg = 30.0f;
+      s.check("near clip: a fold seen through no cut keeps its crease",
+              creaseDarkness(umbreon::render(foldScene(false), rc)) < 0.2f);
+      s.check("near clip: a fold seen through the cut loses its crease",
+              creaseDarkness(umbreon::render(foldScene(true), rc)) > 0.8f);
+      Scene sp = plateScene(1, umbreon::SilhouetteMode::Full);
+      sp.clipNear = 9.0f - 0.02f;
+      s.check("near clip: the outline of an opened sphere stays",
+              ringDarkness(umbreon::render(sp, ro)) < 0.2f);
     }
   }
 

@@ -546,7 +546,9 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
   リボンの矢じりの付け根の段差などに付く）。球・円柱の線は、同じセクションの立体の
   内側に入る部分を切り落とす（球より細い bond も切る。線描画由来の円柱
   `Cylinder::noEdge` は切らない）。view clip は線の中心で判定する（中心が [clipNear,
-  clipFar] の内なら太さ全体を描き、外なら消す）。
+  clipFar] の内なら太さ全体を描き、外なら消す）。near clip で開いた物体の内側（切り口）
+  に接する線は描かない（線の両脇の視線のどちらかが、最初の面が裏面で手前の面を clip が
+  消した所を見ていたら線全体を消す。screen 方式の切り口の扱いと同じ）。
 - **スタイリング（方式B）**: セクション単位の線色・半径（`width`）・持ち上げ量（`raise`）・
   描く種類（silhouette / crease / border）と `SilhouetteMode` は `Scene::groupObjectEdgeStyle`
   （`ObjectEdgeStyle`）で指定し、無い場合は `ObjectSpaceEdgeOptions` の値を使う。
