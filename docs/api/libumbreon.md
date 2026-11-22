@@ -520,7 +520,7 @@ libumbreon はシルエット/輪郭線（NPR エッジ）を2方式で描ける
 | 方式 | オプション | 手法 | 既定 |
 | --- | --- | --- | --- |
 | **A: ストロークエッジ** | `RenderOptions::strokeEdges`（`StrokeEdgeOptions`） | Freestyle 風。特徴エッジを抽出→チェーン化→QI可視判定（ライブBVHへレイキャスト）→可変幅リボンを linear 合成 | `enable=false` |
-| **B: オブジェクト空間エッジ** | `RenderOptions::objectSpaceEdges`（`ObjectSpaceEdgeOptions`） | 球/円柱/メッシュの n.v==0 輪郭を解析的に求め、細い flat-black の「open」円柱として描画（通常ジオメトリとしてレイトレースが遮蔽処理） | `enable=false` |
+| **B: オブジェクト空間エッジ** | `RenderOptions::objectSpaceEdges`（`ObjectSpaceEdgeOptions`） | 球/円柱/メッシュの輪郭を形から求め、線（管）として場面に足す（球の輪・端面の縁は 3 次 Bézier の円弧、直線は open 円柱）。遮蔽はレイトレースが処理 | `enable=false` |
 
 ```cpp
 umbreon::RenderOptions opts;
@@ -538,6 +538,17 @@ opts.objectSpaceEdges.color[0] = opts.objectSpaceEdges.color[1] =
 auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完結
 ```
 
+- **方式B の線**: 線は指定色そのままで描き、照明・影・AO・GI の影響を受けず、影も
+  落とさない。mesh の輪郭は辺の両側の面の法線で決める（辺の上に線を置く）。面積 0 の
+  三角形は輪郭・折れ目・外周の判定に使わない。球・円柱の線は、同じセクションの立体の
+  内側に入る部分を切り落とす（球より細い bond も切る。線描画由来の円柱
+  `Cylinder::noEdge` は切らない）。view clip は線の中心で判定する（中心が [clipNear,
+  clipFar] の内なら太さ全体を描き、外なら消す）。
+- **スタイリング（方式B）**: セクション単位の線色・半径（`width`）・持ち上げ量（`raise`）・
+  描く種類（silhouette / crease / border）と `SilhouetteMode` は `Scene::groupObjectEdgeStyle`
+  （`ObjectEdgeStyle`）で指定し、無い場合は `ObjectSpaceEdgeOptions` の値を使う。
+  `Outline` では、線の中心から視線方向に延ばした光線が同じセクションの面に当たる所の線を
+  消す（別のセクションの面は通り抜ける。`outlineFarVz` より奥の面は背景とみなす）。
 - **排他**: 両方式とも同じ輪郭を描くため、`strokeEdges.enable` と `objectSpaceEdges.enable` を
   **同時に true** にすると二重描画になる。これを防ぐため `render()` は両方 true のとき
   `std::runtime_error` を投げる（最大でも片方）。
