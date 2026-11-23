@@ -204,6 +204,14 @@ struct ScreenClassifyParams {
   // continuity is treated as surface contact (intersection contour) and not
   // inked; only a genuine depth step draws a border.
   float depthGapPx = 12.0f;
+  // Jump depth-step test (StrokeEdgeOptions::screenDepthStep == Jump): when
+  // on, a same-id step is decided by the absolute jump test alone and the
+  // slope-adaptive block (depthGapPx, weak tier, fold probe) never runs.
+  // jumpMin is the minimum step in world units, jumpMinPx its floor in
+  // pixel widths at the step's nearer depth.
+  bool jumpStep = false;
+  float jumpMin = 0.5f;
+  float jumpMinPx = 12.0f;
   // Floor on that depth tolerance, RELATIVE to view-z. The analytic
   // intersectors resolve a hit distance only to a few 1e-5 of its magnitude
   // (Embree's curve solvers in particular), so two surfaces that coincide --

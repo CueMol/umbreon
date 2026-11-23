@@ -1105,6 +1105,21 @@ Options parseCli(int argc, char** argv) {
       o.strokeSelfExcludeRingsSet = true;
       continue;
     }
+    if (a == "--stroke-depth-step") {
+      const std::string v = value("--stroke-depth-step");
+      if (v == "jump")
+        o.strokeDepthLegacy = false;
+      else if (v == "legacy")
+        o.strokeDepthLegacy = true;
+      else
+        fail("--stroke-depth-step expects jump/legacy");
+      continue;
+    }
+    if (a == "--stroke-depth-jump") {
+      o.strokeDepthJump =
+          static_cast<float>(std::atof(value("--stroke-depth-jump").c_str()));
+      continue;
+    }
     if (a == "--stroke-depth-gap") {
       o.strokeDepthGap =
           static_cast<float>(std::atof(value("--stroke-depth-gap").c_str()));
@@ -1526,7 +1541,9 @@ void printUsage(const char* prog) {
       "  --stroke-analytic <on|off> draw sphere/cylinder outlines (ball-stick) [on]\n"
       "  --stroke-analytic-segments <int> sphere ring / cap tessellation   [48]\n"
       "  --stroke-self-exclude-rings <int> QI self-occlusion exclude radius  [6]\n"
-      "  --stroke-depth-gap <float> screen: depth-gap slope cutoff, world/px [12]\n"
+      "  --stroke-depth-step <jump|legacy> screen: same-object step test [jump]\n"
+      "  --stroke-depth-jump <float> screen: jump test min step, world   [0.5]\n"
+      "  --stroke-depth-gap <float> screen: legacy slope cutoff, world/px [12]\n"
       "  --stroke-screen-simplify <float> screen: Douglas-Peucker eps, px [0.4]\n"
       "  --stroke-screen-smooth <int> screen: Chaikin corner-cut iterations [2]\n"
       "  --stroke-screen-minlen <float> screen: drop chains shorter than, px [4]\n"

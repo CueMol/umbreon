@@ -459,6 +459,8 @@ struct Options {
   bool strokeSelfExcludeRingsSet = false;
   // --- screen-source tuning ---
   float strokeDepthGap = 12.0f;     // --stroke-depth-gap, world units / px
+  bool strokeDepthLegacy = false;   // --stroke-depth-step legacy
+  float strokeDepthJump = 0.5f;     // --stroke-depth-jump, world units
   float strokeScreenSimplify = 0.4f;  // --stroke-screen-simplify, FINAL px
   int strokeScreenSmooth = 2;         // --stroke-screen-smooth, Chaikin iters
   float strokeScreenMinLen = 4.0f;    // --stroke-screen-minlen, FINAL px

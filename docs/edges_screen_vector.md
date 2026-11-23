@@ -38,7 +38,33 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
      it was pruned wherever no strong neighbor backed it). Either way a
      depth-CONTINUOUS contact (a bond embedded in an atom) is never inked,
      so connecting primitives join seamlessly,
-   - `DepthGap`   -- same id, view-z discontinuity. Slope-adaptive: both
+   - `DepthGap`   -- same id, view-z discontinuity. Two tests, chosen by
+     `StrokeEdgeOptions::screenDepthStep` (`--stroke-depth-step`):
+     - **Jump** (default). Every pixel pair is decided on its own and inks
+       STRONG, with no weak tier and so no chain vote. The pair inks when
+       its raw step is the largest of the three parallel pairs (non-maximum
+       suppression; a fg/bg neighbor pair counts as infinite), the step
+       exceeds `thr = max(screenDepthJump, screenDepthJumpPx * px)` (0.5
+       world units and 12 px by default, `--stroke-depth-jump`), and both
+       one-sided planar extrapolations (unclamped slopes) miss the other side
+       by more than `thr`. A step on a tilted plane is matched by both sides'
+       own extrapolations, so the inside of a near edge-on face (a cartoon
+       helix cylinder's cap seen almost edge-on: equal steps all along) never
+       inks. When the one-pair test fails and the neighbor pair on one side
+       continues the step (one sample landed on the near surface's steep
+       rim, splitting the discontinuity over two pairs), the two-pair span is
+       tested with each side extrapolated two pixels. Because nothing decides
+       a whole chain, a line never appears or vanishes as a whole between
+       frames of a rotation; it only grows or shrinks where its step crosses
+       `thr`. Known limits: a coarse mesh's facet-horizon slivers are genuine
+       steps and ink (raise the tessellation); a contour ending inside a
+       surface (its step goes to 0 at the tip, e.g. a tube leaving a cylinder
+       cap) stops where its step drops below `thr`.
+     - **Legacy**. The description below. Its weak cracks survive only on
+       chains with enough strong ones (Stage 2.5), so a long line can blink
+       as a whole in an animation when its strong count crosses the vote.
+
+     Legacy: slope-adaptive. Both
      one-sided planar extrapolations must miss the far pixel (a smooth or
      grazing surface is predicted by at least one side; a pure slope change
      -- a facet kink -- is predicted exactly by the steep side), plus
@@ -299,7 +325,9 @@ two: pixel-exact edge detection, then VECTORIZATION into continuous polylines.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--stroke-depth-gap <f>` | 12 | DepthGap threshold, world units per lateral pixel (a slope cutoff). Facet kinks of a coarse mesh measure a few px; genuine self-occlusion steps measure hundreds -- lower it only for very subtle depth steps. Floored at `4e-5 * viewZ` (`ScreenClassifyParams::depthTolRel`), the analytic intersectors' relative precision: at an extreme zoom the lateral threshold would otherwise drop below the float jitter of two coincident surfaces (a capsule cap on its atom sphere) and classify it as a field of one-pixel steps |
+| `--stroke-depth-step <jump\|legacy>` | jump | same-id DepthGap test (`StrokeEdgeOptions::screenDepthStep`): `jump` = per-pair absolute step with planar-extrapolation and NMS checks; `legacy` = the slope-adaptive test with the weak tier and chain vote |
+| `--stroke-depth-jump <f>` | 0.5 | Jump test: minimum step, world units (`screenDepthJump`); floored at `screenDepthJumpPx` (12) pixel widths at the step's nearer depth |
+| `--stroke-depth-gap <f>` | 12 | Legacy DepthGap threshold, world units per lateral pixel (a slope cutoff). Facet kinks of a coarse mesh measure a few px; genuine self-occlusion steps measure hundreds -- lower it only for very subtle depth steps. Floored at `4e-5 * viewZ` (`ScreenClassifyParams::depthTolRel`), the analytic intersectors' relative precision: at an extreme zoom the lateral threshold would otherwise drop below the float jitter of two coincident surfaces (a capsule cap on its atom sphere) and classify it as a field of one-pixel steps |
 | `--stroke-screen-simplify <f>` | 0.4 | Douglas-Peucker tolerance, FINAL px |
 | `--stroke-screen-smooth <int>` | 2 | Chaikin iterations |
 | `--stroke-screen-minlen <f>` | 4 | drop isolated chains shorter than this, FINAL px (0 = keep all). A short open chain junctioned at both ends is a chopped piece of a longer boundary and stays; a short closed loop (a one-pixel island) drops whatever its seam corner's degree |

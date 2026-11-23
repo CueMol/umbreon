@@ -576,6 +576,13 @@ auto fr = umbreon::render(scene, opts);   // どちらも render() だけで完�
   ノイズで不定なため、スタイルの帰属は決定的な規則で決まる: 片側だけ Outline mode なら
   その セクション（`sil` スロット・Silhouette class）、それ以外は group id の小さい側
   （`obj` スロット。両側 Outline なら `sil`）。既定 off では出力は従来と完全一致する。
+- **段差の判定（方式A）**: 同一オブジェクト内の奥行きの段差（DepthGap）をどう線にするかは
+  `strokeEdges.screenDepthStep`（CLI: `--stroke-depth-step <jump|legacy>`）で選ぶ。既定の
+  `Jump` は画素の組ごとに独立に判定する。段差が `max(screenDepthJump, screenDepthJumpPx ×
+  画素の大きさ)`（既定 0.5 と 12 px、CLI: `--stroke-depth-jump`）を超え、両側の面をそれぞれ
+  延長した奥行きが反対側と同じだけ外れ、平行に並ぶ 3 組の中で最大のときに線にする。chain 単位の
+  多数決が無いので、回転アニメーションで長い線がまるごと点滅しない。`Legacy` は従来の
+  勾配適応の判定（弱い段差は chain の多数決で残す）。詳細は `docs/edges_screen_vector.md`。
 - **リボンの配置（方式A）**: `StrokeAlign`（`strokeEdges.align`、既定 `Outside`、CLI:
   `--stroke-align <outside|center>`）は太い線を輪郭のどちら側に置くかを決める。
   `Center` はストローク幅を輪郭の両側に均等に割り振る（従来通り、手前オブジェクトの

@@ -211,6 +211,86 @@ inline std::uint8_t contactOwner(const ScreenClassifyParams& p,
   return (idA >> 2) <= (idB >> 2) ? 0 : kCrackOwnerBit;
 }
 
+// Jump depth-step test for the same-id pair (ia, ib) (see ScreenDepthStep
+// in render/edge_types.hpp). The pair inks when (1) its raw step is the
+// largest of the three parallel pairs (a fg/bg neighbor pair counts as
+// infinite: the silhouette owns that profile), and (2) the step exceeds the
+// threshold thr = max(jumpMin, jumpMinPx * px) and both one-sided planar
+// extrapolations (unclamped slopes) miss the other side by more than thr.
+// A step on a tilted plane is matched by both sides' own extrapolations, so
+// the inside of a near edge-on face never inks. When (2) fails over the one
+// pair, a step that continues into the neighbor pair on one side (one
+// sample landed on the near surface's steep rim) is tested over the
+// two-pair span with each side extrapolated two pixels.
+inline bool jumpStepInks(const float* viewZ, const std::uint32_t* objectId,
+                         int W, int H, int ia, int ib, int iOutA,
+                         bool outAValid, int iOutB, bool outBValid,
+                         const ScreenProj& sp, const ScreenClassifyParams& p,
+                         ScreenCrackDebugPlane* dbg, std::size_t dbgCell) {
+  const float inf = std::numeric_limits<float>::infinity();
+  const float vzA = viewZ[ia], vzB = viewZ[ib];
+  const float thr = std::max(p.jumpMin,
+                             p.jumpMinPx * pixelSizeAt(sp, std::min(vzA, vzB)));
+  const float g0 = std::fabs(vzB - vzA);
+  auto rec = [&](std::uint8_t reason, float gap1, float gap2) {
+    if (!dbg) return;
+    dbg->g0[dbgCell] = g0;
+    dbg->gapA[dbgCell] = gap1;
+    dbg->gapB[dbgCell] = gap2;
+    dbg->reason[dbgCell] = reason;
+  };
+  const bool bgOutA = outAValid && objectId[iOutA] == kBackground;
+  const bool bgOutB = outBValid && objectId[iOutB] == kBackground;
+  const float gLeft =
+      !outAValid ? 0.0f : bgOutA ? inf : std::fabs(vzA - viewZ[iOutA]);
+  const float gRight =
+      !outBValid ? 0.0f : bgOutB ? inf : std::fabs(viewZ[iOutB] - vzB);
+  if (!(g0 > gLeft && g0 >= gRight)) {
+    rec(ScreenCrackDebug::kNmsSuppressed, 0.0f, 0.0f);
+    return false;
+  }
+  const float sA = sideSlope(viewZ, objectId, ia, iOutA, outAValid, inf);
+  const float sB = sideSlope(viewZ, objectId, ib, iOutB, outBValid, inf);
+  const float gap1 =
+      std::min(std::fabs(vzB - (vzA + sA)), std::fabs(vzA - (vzB + sB)));
+  if (g0 > thr && gap1 > thr) {
+    rec(ScreenCrackDebug::kInked, gap1, 0.0f);
+    return true;
+  }
+  // Two-pair span on the side whose neighbor pair continues the step.
+  const int step = ib - ia;
+  const bool horiz = step == 1;
+  const float d = vzB - vzA;
+  const float dR = (outBValid && !bgOutB) ? viewZ[iOutB] - vzB : 0.0f;
+  const float dL = (outAValid && !bgOutA) ? vzA - viewZ[iOutA] : 0.0f;
+  float gap2 = 0.0f;
+  bool inks = false;
+  if (dR * d > 0.0f && std::fabs(dR) >= std::fabs(dL)) {
+    const int iC = iOutB + step;
+    const bool cValid = horiz ? (iOutB % W) + 1 < W : (iOutB / W) + 1 < H;
+    const float vzC = viewZ[iOutB];
+    if (std::fabs(vzC - vzA) > thr) {
+      const float sC = sideSlope(viewZ, objectId, iOutB, iC, cValid, inf);
+      gap2 = std::min(std::fabs(vzC - (vzA + 2.0f * sA)),
+                      std::fabs(vzA - (vzC + 2.0f * sC)));
+      inks = gap2 > thr;
+    }
+  } else if (dL * d > 0.0f) {
+    const int iC = iOutA - step;
+    const bool cValid = horiz ? (iOutA % W) > 0 : (iOutA / W) > 0;
+    const float vzC = viewZ[iOutA];
+    if (std::fabs(vzB - vzC) > thr) {
+      const float sC = sideSlope(viewZ, objectId, iOutA, iC, cValid, inf);
+      gap2 = std::min(std::fabs(vzB - (vzC + 2.0f * sC)),
+                      std::fabs(vzC - (vzB + 2.0f * sB)));
+      inks = gap2 > thr;
+    }
+  }
+  rec(inks ? ScreenCrackDebug::kInked : ScreenCrackDebug::kSubThreshold, gap1,
+      gap2);
+  return inks;
+}
+
 // Classify ONE crack between pixel indices ia (first: left/top) and ib
 // (second: right/bottom). iOutA / iOutB are the outer straight-line neighbors
 // (a's far side, b's far side) with validity flags. Returns the packed crack
@@ -465,7 +545,15 @@ inline std::uint8_t classifyPair(const float* viewZ,
   // An Outline-mode section suppresses the same-id DepthGap (self-occlusion)
   // block entirely -- unless the far side lies beyond the far-side depth
   // (outlineSuppress) -- but still falls through to the Crease test below.
-  if (p.silhouette && !outlineSuppress(p, objectId[ia], vzA, vzB)) {
+  if (p.jumpStep) {
+    if (p.silhouette && !outlineSuppress(p, objectId[ia], vzA, vzB) &&
+        jumpStepInks(viewZ, objectId, W, H, ia, ib, iOutA, outAValid, iOutB,
+                     outBValid, sp, p, dbg, dbgCell)) {
+      const std::uint8_t owner = vzA <= vzB ? 0 : kCrackOwnerBit;
+      return static_cast<std::uint8_t>(CrackClass::DepthGap) | owner |
+             kCrackStrongBit;
+    }
+  } else if (p.silhouette && !outlineSuppress(p, objectId[ia], vzA, vzB)) {
     const float vzNear = std::min(vzA, vzB);
     const float px = pixelSizeAt(sp, vzNear);
     const float clampS = p.slopeClampPx * px;
