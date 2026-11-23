@@ -360,6 +360,9 @@ void applyScreenVectorEdges(FrameResult& frame, const Scene& scene,
   cp.contactBoundary = se.contact;
   cp.crease = se.crease;
   cp.depthGapPx = se.screenDepthGapPx;
+  cp.jumpStep = se.screenDepthStep == ScreenDepthStep::Jump;
+  cp.jumpMin = se.screenDepthJump;
+  cp.jumpMinPx = se.screenDepthJumpPx;
   cp.slopeClampPx = se.screenSlopeClampPx;
   cp.creaseAngleDeg = se.creaseAngleDeg;
   cp.grazeK = se.screenGrazeK;

@@ -357,6 +357,35 @@ int main() {
                countClass(cf, CrackClass::DepthGap), 16);
   }
 
+  // ---- (4d) Jump depth-step test (StrokeEdgeOptions::screenDepthStep) ----
+  // Per-pair absolute test: a step over jumpMin that both one-sided
+  // extrapolations miss inks once per row; the inside of a tilted plane
+  // (equal steps all along, each over jumpMin) never inks; a step split
+  // across two pairs by one rim sample inks once over the two-pair span.
+  {
+    ScreenClassifyParams p = defaults;
+    p.jumpStep = true;
+    p.jumpMin = 0.5f;
+    p.jumpMinPx = 0.0f;  // unitProj: 1 px = 1 world unit
+    auto rows = [&](float (*z)(int)) {
+      Buffers b(16, 16);
+      for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x) b.set(x, y, 9, z(x));
+      return countClass(classify(b, p), CrackClass::DepthGap);
+    };
+    s.check_eq("jump: a step over jumpMin inks once per row",
+               rows([](int x) { return x < 8 ? 10.0f : 12.0f; }), 16);
+    s.check_eq("jump: a tilted plane never inks",
+               rows([](int x) { return 10.0f + 2.0f * x; }), 0);
+    s.check_eq("jump: a step under jumpMin does not ink",
+               rows([](int x) { return x < 8 ? 10.0f : 10.3f; }), 0);
+    s.check_eq("jump: a step split by a rim sample inks once per row",
+               rows([](int x) {
+                 return x < 8 ? 10.0f : (x == 8 ? 10.4f : 11.0f);
+               }),
+               16);
+  }
+
   // ---- (5) abutting sections at EQUAL depth: contact, not inked -----------
   {
     Buffers b(16, 16);

@@ -70,6 +70,27 @@ enum class StrokeAlign : uint8_t {
   Outside = 1,
 };
 
+// Same-object depth-step test of the screen source (StrokeEdgeOptions::
+// screenDepthStep), deciding which view-z steps between two pixels of one
+// object become DepthGap lines.
+//
+// Jump decides every pixel pair on its own: the raw step must exceed an
+// absolute size (screenDepthJump, floored at screenDepthJumpPx pixel
+// widths), both one-sided planar extrapolations must miss the other side by
+// as much, and the step must be the largest of the three parallel pairs.
+// The extrapolation keeps the inside of a near edge-on plane (equal steps
+// all along) line-free; a step sampled across two pairs (one sample on the
+// near surface's rim) is tested over both. No chain-level vote, so a line
+// never appears or vanishes as a whole between animation frames.
+//
+// Legacy is the slope-adaptive test with a weak/strong tier whose weak
+// cracks survive only on chains with enough strong ones (pruneWeakChains).
+// Its decision is per chain, which makes long lines blink in rotations.
+enum class ScreenDepthStep : uint8_t {
+  Jump = 0,
+  Legacy = 1,
+};
+
 // Per CueMol section (per transparency group): a bundle of the five class
 // styles. A section without an explicit override uses
 // StrokeEdgeOptions::defaultStyle.
@@ -98,6 +119,12 @@ struct StrokeEdgeOptions {
   // one-sided planar extrapolation makes it curvature-tolerant). See
   // ScreenClassifyParams::depthGapPx.
   float screenDepthGapPx = 12.0f;
+  // Same-object depth-step test (the DepthGap class). See ScreenDepthStep.
+  ScreenDepthStep screenDepthStep = ScreenDepthStep::Jump;
+  // Jump: minimum step, world units, and its floor in pixel widths at the
+  // step's nearer depth (the step must exceed the larger of the two).
+  float screenDepthJump = 0.5f;
+  float screenDepthJumpPx = 12.0f;
   float screenSlopeClampPx = 300.0f;  // extrapolation slope clamp, px units
   float screenSimplifyPx = 0.4f;     // Douglas-Peucker eps, FINAL px
   int screenSmoothIters = 2;         // Chaikin corner-cut iterations

@@ -356,6 +356,10 @@ void applyEdgeOptions(const Options& opt, Scene& scene, RenderOptions& ropt,
       ropt.strokeEdges.creaseAngleDeg = opt.strokeCreaseDeg;
     // Screen-source chain extraction + tuning.
     ropt.strokeEdges.screenDepthGapPx = opt.strokeDepthGap;
+    ropt.strokeEdges.screenDepthStep = opt.strokeDepthLegacy
+                                           ? umbreon::ScreenDepthStep::Legacy
+                                           : umbreon::ScreenDepthStep::Jump;
+    ropt.strokeEdges.screenDepthJump = opt.strokeDepthJump;
     ropt.strokeEdges.screenSimplifyPx = opt.strokeScreenSimplify;
     ropt.strokeEdges.screenSmoothIters = opt.strokeScreenSmooth;
     ropt.strokeEdges.screenMinLenPx = opt.strokeScreenMinLen;
