@@ -58,3 +58,10 @@
   セクションごとのスタイル表、背景との境だけに出す silhouette モード（intersection filter）、球・円柱の
   切り落としの BVH 化、つなぎ目の球、影・AO・GI からの除外、veil の per-pixel 合成。**段階 1（不透明な
   シーン）・段階 2（veil）・段階 3（切り落としの BVH）実装済み**。CueMol の既定の方式は screen のまま。
+- [edge-screen-depth-jump-report.md](edge-screen-depth-jump-report.md) — screen-space edge の回転時の
+  点滅対策として試した奥行き段差判定（絶対しきい値・外挿判定・法線の違いによる可変しきい値）の検証
+  レポート。回転テスト・回帰コーパス・計測の結果と評価。**abs_jmp_ex v2 を `ScreenDepthStep::Jump`
+  として実装・既定化済み**（従来の判定は `Legacy`）。
+- [edge-screen-depth-profile-experiment.md](edge-screen-depth-profile-experiment.md) — 回転中に
+  1 フレームだけ出入りする短い線の原因を、判定段階のログと深度断面で切り分ける実験計画。**段①
+  （判定段階のログ）実施済み**: 2 件とも原因が判明し、深度断面（§3〜4）は保留。
